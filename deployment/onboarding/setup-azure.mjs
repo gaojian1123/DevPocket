@@ -15,12 +15,12 @@ export function vmParts(id) {
     groupId: id.slice(0, id.toLowerCase().indexOf("/providers/")) };
 }
 
-export async function azdToken(tenantId) {
+export async function azdToken(tenantId, run = exec) {
   if (tenantId) uuid.parse(tenantId);
   let result;
   try {
-    result = await exec(process.platform === "win32" ? "azd.exe" : "azd",
-      ["auth", "token", "--scope", `${armOrigin}/.default`, "--no-prompt",
+    result = await run(process.platform === "win32" ? "azd.exe" : "azd",
+      ["auth", "token", "--scope", `${armOrigin}/.default`, "--output", "json", "--no-prompt",
         ...(tenantId ? ["--tenant-id", tenantId] : [])],
       { encoding: "utf8", windowsHide: true, timeout: 30_000, maxBuffer: 1024 * 1024 });
   } catch {

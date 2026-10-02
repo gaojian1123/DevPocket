@@ -70,7 +70,9 @@ then installs the user extension. The host token and recipient private key never
 appear in Azure requests or ordinary output. The one-time private key is removed
 after local authentication; the private host configuration and bridge data remain.
 
-It prints the relay origin and a `pair --config` command. Run that command when
+It prints the relay origin and a PowerShell `pair --config` command with absolute,
+literal-quoted package/configuration paths, independent of the current directory.
+Run that command when
 the Android pairing screen is ready; setup does not pre-generate an expiring code.
 Only loading the extension in a CLI session makes that session available.
 

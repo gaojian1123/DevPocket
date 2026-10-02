@@ -153,7 +153,7 @@ test("setup registers through encrypted handoff, authenticates and installs once
 
 test("the extracted standalone ZIP runs setup outside the source checkout", { timeout: 30_000 }, async (t) => {
   const f = await fixture(t);
-  const output = path.join(f.root, "packages"), extracted = path.join(f.root, "extracted package");
+  const output = path.join(f.root, "packages"), extracted = path.join(f.root, "extracted package's $literal");
   await exec("pwsh", ["-NoProfile", "-File", path.join(repo, "scripts", "package-extension.ps1"), "-OutputDirectory", output],
     { cwd: f.root, timeout: 15_000 });
   const version = JSON.parse(await readFile(path.join(repo, "package.json"), "utf8")).version;
@@ -163,9 +163,20 @@ test("the extracted standalone ZIP runs setup outside the source checkout", { ti
       SETUP_TEST_ZIP: path.join(output, `DevPocket-extension-${version}.zip`), SETUP_TEST_OUTPUT: extracted },
   });
   const packaged = await import(pathToFileURL(path.join(extracted, "setup.mjs")).href);
-  const result = await packaged.runSetup(options, {
+  const packagedAdapters = {
     ...f.adapters, bundleDirectory: extracted, assetDirectory: path.join(extracted, "setup-assets"),
-  });
+  };
+  const result = await packaged.runSetup(options, packagedAdapters);
+  const quote = (value) => `'${value.replaceAll("'", "''")}'`;
+  const pairingCommand = f.logs.at(-1).split("\n").at(-1);
+  assert.equal(pairingCommand,
+    `node ${quote(path.join(extracted, "devpocket.mjs"))} pair --config ${quote(result.configPath)}`);
+  const help = await exec("pwsh", ["-NoProfile", "-Command",
+    `$ErrorActionPreference = 'Stop'; ${pairingCommand} --help; if ($LASTEXITCODE -ne 0) { throw 'Pairing command path failed.' }`],
+  { cwd: f.root, timeout: 15_000 });
+  assert.match(help.stdout, /pair --config/);
+  await packaged.runSetup({}, packagedAdapters);
+  assert.equal(f.logs.at(-1).split("\n").at(-1), pairingCommand);
   assert.equal(result.hostId, f.store.db.prepare("SELECT id FROM hosts").get().id);
   assert.equal(await exists(path.join(extracted, "node_modules")), undefined);
   assert.equal(await exists(path.join(extracted, ".data")), undefined);

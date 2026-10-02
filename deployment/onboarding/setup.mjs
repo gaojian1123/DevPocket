@@ -68,13 +68,14 @@ function verifySavedConfig(config, scope, registered) {
     sha(JSON.stringify(config)) === registered.envelope.metadata.configSha256, "EXISTING_HOST_CONFIG_DIFFERS");
 }
 
-function instructions(ui, configPath, config) {
+function instructions(ui, configPath, config, bundle) {
+  const quote = (value) => `'${value.replaceAll("'", "''")}'`;
   ui.log(`Setup complete. Private host configuration: ${configPath}`);
   ui.log(`Relay: ${config.relayUrl}`);
   ui.log("All projects' CLI sessions that load the user extension connect automatically, subject to normal CLI trust and permission prompts.");
   ui.log("Existing CLI sessions were not restarted or reloaded. Explicitly invoke extensions_reload in each existing session you want to attach.");
   ui.log("Project extensions named devpocket still take precedence. No project files or CLI permission settings were changed.");
-  ui.log(`When Android is ready, generate its one-use pairing code:\nnode .\\devpocket.mjs pair --config "${configPath}"`);
+  ui.log(`When Android is ready, generate its one-use pairing code:\nnode ${quote(path.join(bundle, "devpocket.mjs"))} pair --config ${quote(configPath)}`);
 }
 
 export async function runSetup(input = {}, adapters = {}) {
@@ -96,7 +97,7 @@ export async function runSetup(input = {}, adapters = {}) {
     const azure = adapters.azure ?? new AzureSetupClient();
     const authenticate = adapters.authenticate ?? authenticateHost;
     const install = adapters.install ?? installUserExtension;
-    const bundle = adapters.bundleDirectory ?? base;
+    const bundle = path.resolve(adapters.bundleDirectory ?? base);
     for (const name of ["extension.mjs", "bridge.mjs"]) {
       const file = path.join(bundle, "extension", name), info = await exists(file);
       requireValue(info?.isFile() && !info.isSymbolicLink(), "SETUP_EXTENSION_BUNDLE_REQUIRED");
@@ -133,7 +134,7 @@ export async function runSetup(input = {}, adapters = {}) {
           requireValue(sha(await readFile(path.join(installed, name))) === sha(await readFile(path.join(bundle, "extension", name))),
             "SETUP_INSTALLATION_CHANGED: The host is already registered. Use install --user to update the extension; no new registration is needed.");
         }
-        instructions(ui, configPath, config);
+        instructions(ui, configPath, config, bundle);
         return { configPath, hostId: config.hostId, resumed: true };
       }
       await azure.selectTenant(state.target.tenantId, state.target.principalId);
@@ -220,7 +221,7 @@ export async function runSetup(input = {}, adapters = {}) {
     state.installed = true;
     state.complete = true;
     await save();
-    instructions(ui, configPath, config);
+    instructions(ui, configPath, config, bundle);
     return { configPath, hostId: config.hostId, resumed: false };
   } finally {
     try { if (unlock) await unlock(); }

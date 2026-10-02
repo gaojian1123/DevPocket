@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AzureSetupClient, vmParts } from "../setup-azure.mjs";
+import { azdToken, AzureSetupClient, vmParts } from "../setup-azure.mjs";
 
 const tenantId = "11111111-1111-4111-8111-111111111111";
 const principalId = "22222222-2222-4222-8222-222222222222";
@@ -13,6 +13,26 @@ const vm = { id: vmId, tags, properties: { vmId: "55555555-5555-4555-8555-555555
   storageProfile: { osDisk: { osType: "Linux" }, dataDisks: [{ lun: 0, managedDisk: { id: groupId + "/providers/Microsoft.Compute/disks/data" } }] },
   instanceView: { statuses: [{ code: "PowerState/running" }] },
 } };
+
+test("azd token acquisition explicitly requests JSON for default and selected tenants", async () => {
+  const claims = Buffer.from(JSON.stringify({ tid: tenantId, oid: principalId, exp: Math.floor(Date.now() / 1000) + 600 }))
+    .toString("base64url");
+  const token = `fixture.${claims}.signature`;
+  for (const tenant of [undefined, tenantId]) {
+    const calls = [];
+    const result = await azdToken(tenant, async (command, args, options) => {
+      calls.push({ command, args, options });
+      return { stdout: args.includes("--output") && args[args.indexOf("--output") + 1] === "json"
+        ? JSON.stringify({ token }) : token };
+    });
+    assert.deepEqual(result, { token, tenantId, principalId });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].command, process.platform === "win32" ? "azd.exe" : "azd");
+    assert.deepEqual(calls[0].args, ["auth", "token", "--scope", "https://management.azure.com/.default",
+      "--output", "json", "--no-prompt", ...(tenant ? ["--tenant-id", tenant] : [])]);
+    assert.equal(calls[0].options.timeout, 30_000);
+  }
+});
 
 function fixture() {
   const calls = [], tokenRequests = [];

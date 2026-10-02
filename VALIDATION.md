@@ -314,3 +314,20 @@ was performed. Setup does not change the relay wire contract or Android sources.
 The previously sealed APK and running/frozen cloud release remain unchanged.
 Temporary fixture processes and directories were cleaned up; no tag or extension
 release was published by these local checks.
+
+### Setup review follow-up (2026-10-03)
+
+Focused regressions first reproduced both review findings: the token adapter
+rejected azd's default raw-token output, and setup printed a pairing command
+relative to the caller instead of the extracted package. Token acquisition now
+explicitly requests JSON. Pairing instructions use absolute, PowerShell
+literal-quoted paths for both the package CLI and the private configuration.
+
+`npm run test:setup` passed **21 JavaScript tests** and **3 Python tests** after
+the fixes. The extracted-ZIP check uses a directory containing spaces, an
+apostrophe and a dollar sign, executes the printed command with `--help` from
+its parent directory, and verifies the same command after completed-setup
+re-entry. The standalone distribution check and all **29 backend tests** also
+passed. The azd command adapter was simulated; a local `azd auth token --output
+json --help` check did not request a token. No Azure credential retrieval,
+real enrollment, device pairing or live extension loading occurred.
