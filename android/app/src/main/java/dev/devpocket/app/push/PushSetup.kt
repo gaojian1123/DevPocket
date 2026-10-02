@@ -154,9 +154,10 @@ object Notifications {
         NotificationManagerCompat.from(context).cancel("$BACKGROUND_TAG${scope.key}", 0)
     }
 
-    fun clearBackgroundNotices(context: Context) {
+    fun clearBackgroundNotices(context: Context, accountId: String, hostId: String? = null) {
         val manager = context.getSystemService(NotificationManager::class.java)
-        manager.activeNotifications.filter { it.tag?.startsWith(BACKGROUND_TAG) == true }
+        val prefix = "$BACKGROUND_TAG$accountId|" + (hostId?.let { "$it|" } ?: "")
+        manager.activeNotifications.filter { it.tag?.startsWith(prefix) == true }
             .forEach { manager.cancel(it.tag, it.id) }
     }
 

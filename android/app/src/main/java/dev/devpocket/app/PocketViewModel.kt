@@ -444,7 +444,8 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
             apiFor(scope).metadata(scope, buildJsonObject {
                 title?.let { put("title", it) }; pinned?.let { put("pinned", it) }; archived?.let { put("archived", it) }
             })
-            if (archived != null) background.configurationChanged()
+            if (archived == true) background.sessionArchived(scope)
+            else if (archived == false) background.configurationChanged()
             refresh()
         } }
     }
@@ -556,7 +557,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch { attempt {
             val account = mutable.value.accounts.first { it.id == accountId }
             RelayApi(account).revoke(hostId)
-            background.configurationChanged()
+            background.accessRemoved(accountId, hostId)
             if (mutable.value.selected?.let { it.accountId == accountId && it.hostId == hostId } == true) closeSession()
             refresh()
         } }
@@ -566,7 +567,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch { attempt {
             val accounts = mutable.value.accounts.filterNot { it.id == accountId }
             withContext(Dispatchers.IO) { vault.saveAccounts(accounts); local.forgetAccount(accountId) }
-            background.configurationChanged()
+            background.accessRemoved(accountId)
             BackgroundCheckpoints(getApplication()).retainAccounts(accounts.map { it.id }.toSet())
             if (mutable.value.selected?.accountId == accountId) closeSession()
             mutable.update { it.copy(accounts = accounts, catalogs = it.catalogs - accountId, reachable = it.reachable - accountId) }

@@ -173,6 +173,11 @@ or new relay endpoint is needed.
   ones. Local pairing, archive, revoke and forget actions refresh subscriptions
   immediately. Invalid credentials stop the affected subscriptions and remain
   visible as errors; another relay or host can continue independently.
+- Refreshing subscriptions, pairing another relay or unarchiving a session
+  preserves existing unread reminders. Archiving clears only that session's
+  card; revoking a host clears only its cards in the paired account; removing a
+  relay clears only that account's cards. Unrelated unread cards are retained
+  even when their notification delivery has already been checkpointed.
 - The existing relay permits eight concurrent viewers per device. Background
   monitoring shares a budget of seven realtime streams across that relay/device,
   reserving a viewer for the foreground UI. Other sessions remain monitored by

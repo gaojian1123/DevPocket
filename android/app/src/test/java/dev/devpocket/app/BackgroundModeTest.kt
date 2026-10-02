@@ -173,8 +173,64 @@ class BackgroundModeTest {
         assertEquals(2, manager.activeNotifications.size)
         Notifications.clearBackgroundNotice(app, scope)
         assertEquals(1, manager.activeNotifications.size)
-        Notifications.clearBackgroundNotices(app)
+        Notifications.clearBackgroundNotices(app, another.accountId)
         assertTrue(manager.activeNotifications.isEmpty())
+    }
+
+    @Test fun configurationRefreshPreservesUnreadCardsAfterDeliveryWasCheckpointed() = runBlocking {
+        val scopes = listOf(Scope("account", "host", "pending"), Scope("another-account", "host", "pending"))
+        val store = BackgroundCheckpoints(app)
+        val checkpoint = NoticeCheckpoint(cursor = 5, initialized = true, requests = setOf("question:pending"),
+            requestEventId = "event", pending = null)
+        for (scope in scopes) {
+            Notifications.showBackground(app, scope, SessionNotice("event", "attention"))
+            store.save(scope, checkpoint)
+        }
+        val manager = app.getSystemService(NotificationManager::class.java)
+        val unread = manager.activeNotifications.map { it.tag }.toSet()
+        val revision = app.background.revision.value
+        app.background.configurationChanged()
+        assertEquals(revision + 1, app.background.revision.value)
+        assertEquals("Refreshing subscriptions must not dismiss unrelated unread reminders",
+            unread, manager.activeNotifications.map { it.tag }.toSet())
+        for (scope in scopes) assertEquals(checkpoint, BackgroundCheckpoints(app).load(scope))
+    }
+
+    @Test fun archivingOneSessionPreservesUnreadCardsForOtherSessionsHostsAndAccounts() {
+        val target = Scope("account", "host", "session")
+        val unrelated = listOf(target.copy(sessionId = "another-session"), target.copy(hostId = "another-host"),
+            target.copy(accountId = "another-account"))
+        assertScopedReminderCleanup(listOf(target), unrelated) { app.background.sessionArchived(target) }
+    }
+
+    @Test fun revokingAHostClearsItsSessionsButPreservesOtherHostsAndAccounts() {
+        val target = Scope("account", "host", "session")
+        val affected = listOf(target, target.copy(sessionId = "another-session"))
+        val unrelated = listOf(target.copy(hostId = "host-extra"), target.copy(hostId = "another-host"),
+            target.copy(accountId = "account-extra"), target.copy(accountId = "another-account"))
+        assertScopedReminderCleanup(affected, unrelated) { app.background.accessRemoved(target.accountId, target.hostId) }
+    }
+
+    @Test fun removingARelayPreservesUnreadCardsForOtherRelaysWithTheSameHostAndSessionIds() {
+        val target = Scope("account", "host", "session")
+        val affected = listOf(target, target.copy(hostId = "another-host"), target.copy(sessionId = "another-session"))
+        val unrelated = listOf(target.copy(accountId = "account-extra"), target.copy(accountId = "another-account"))
+        assertScopedReminderCleanup(affected, unrelated) { app.background.accessRemoved(target.accountId) }
+    }
+
+    private fun assertScopedReminderCleanup(affected: List<Scope>, unrelated: List<Scope>, change: () -> Unit) {
+        val manager = app.getSystemService(NotificationManager::class.java)
+        for (scope in unrelated) Notifications.showBackground(app, scope, SessionNotice("unread", "attention"))
+        Notifications.updateBackgroundConnection(app, "Background connection remains active")
+        val preserved = manager.activeNotifications.map { it.tag to it.id }.toSet()
+        for (scope in affected) Notifications.showBackground(app, scope, SessionNotice("affected", "attention"))
+        assertEquals(preserved.size + affected.size, manager.activeNotifications.size)
+        val revision = app.background.revision.value
+        change()
+        assertEquals(revision + 1, app.background.revision.value)
+        assertEquals(preserved, manager.activeNotifications.map { it.tag to it.id }.toSet())
+        for (notification in manager.activeNotifications.filter { it.tag != null })
+            assertEquals("unread", notification.notification.extras.getString("devpocket.eventId"))
     }
 
     @Test fun cursorsAreIndependentFromUiHistoryAndRemovingARelayRemovesItsCheckpoints() = runBlocking {

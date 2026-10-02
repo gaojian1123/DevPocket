@@ -186,3 +186,31 @@ and lint with zero errors (24 warnings). Additional coverage includes:
 This remains local development evidence, not real relay deployment, device
 installation, or BYD/DiLink acceptance. The earlier checkpoints and sealed
 artifacts remain unchanged.
+
+## Unread-reminder preservation checkpoint (2026-10-02)
+
+A follow-up review identified that `configurationChanged()` canceled every
+background reminder card even though posted notices already had their pending
+delivery cleared from the checkpoint. Restarting subscriptions therefore did
+not restore unrelated unread cards.
+
+The following targeted regression reproduced that loss on both Robolectric
+API 26 and 35 before the fix, using posted notifications and durable checkpoints
+with `pending = null`:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :app:testDebugUnitTest --tests 'dev.devpocket.app.BackgroundModeTest.configurationRefreshPreservesUnreadCardsAfterDeliveryWasCheckpointed*'
+```
+
+Ordinary configuration refresh now preserves notification cards. Successful
+archive, revoke and forget operations invalidate only the corresponding
+session, host/account or account. Added checks verify that unrelated sessions,
+hosts and relays retain their original unread cards, similar identifier
+prefixes do not broaden cleanup, and the ongoing connection notification
+remains present.
+
+The full `scripts\build-android.ps1` command recorded above passed again:
+debug APK assembly, **65 tests** with zero failures/errors/skips, and lint with
+zero errors. The original reproduction now passes on both platform models.
+No backend or wire changes, device installation, real-CLI operation or cloud
+deployment were performed. Earlier acceptance and sealed artifacts are unchanged.

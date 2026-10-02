@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import androidx.core.content.ContextCompat
+import dev.devpocket.app.data.Scope
 import dev.devpocket.app.push.Notifications
 import java.io.IOException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,7 +59,16 @@ class BackgroundMode(private val context: Context) {
 
     fun configurationChanged() {
         revision.update { it + 1 }
-        Notifications.clearBackgroundNotices(context)
+    }
+
+    fun sessionArchived(scope: Scope) {
+        configurationChanged()
+        Notifications.clearBackgroundNotice(context, scope)
+    }
+
+    fun accessRemoved(accountId: String, hostId: String? = null) {
+        configurationChanged()
+        Notifications.clearBackgroundNotices(context, accountId, hostId)
     }
 
     fun checkPermissions() {
