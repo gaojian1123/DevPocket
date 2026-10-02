@@ -10,6 +10,7 @@
     "build": "tsc -p backend/tsconfig.json && node scripts/bundle-extension.mjs",
     "package:extension": "npm run build && pwsh -NoProfile -File scripts\\package-extension.ps1",
     "test:extension-package": "npm run build && node --test scripts\\tests\\extension-package.test.mjs",
+    "test:setup": "npm run build && node --import tsx --test deployment/onboarding/tests/setup*.test.mjs && python -B -m unittest discover -s deployment/onboarding/tests -p setup_guest_test.py",
     "typecheck": "tsc -p backend/tsconfig.json --noEmit",
     "test": "node --import tsx --test backend/tests/*.test.ts",
     "relay": "node dist/cli.js relay",

@@ -20,6 +20,7 @@ Dev Box extension -> joinSession() -> original Copilot terminal
 | Native adaptive UI | Material 3; compact single-pane list/detail and bottom navigation; medium navigation rail; expanded list/detail panes; light/dark/system theme, dynamic color, edge-to-edge/IME insets, system Back, preserved drafts and reading position |
 | Pairing | Offline administrator-provisioned hosts; five-minute, 256-bit, one-use pairing; independent phone credentials; multiple hosts/relays; host-specific device revocation |
 | Extension installation | Install once for the OS user; all projects' CLI sessions that load the extension register automatically, without per-project switches; standalone ZIP distribution, no source checkout or npm dependencies on the target |
+| Azure setup | One interactive command uses an existing azd login to register a new Dev Box with a verified running relay, encrypt the credential handoff, and install the user extension; no old deployment checkout, new public endpoint or relay restart |
 | Sessions | Registered original runtime only; project grouping, search, pin/rename/archive metadata; explicit offline/unsupported state |
 | Chat | Earlier visible history, live assistant/tool output, terminal-to-phone and phone-to-terminal messages, durable command IDs, queued/admitted/processing/completed/uncertain delivery, offline drafts and replay |
 | Human decisions | Known permission forms: approve once or reject; actual permission mode is read-only; questions with exact choices/free text; stale results are errors; unsupported forms visibly require the terminal |
@@ -94,11 +95,34 @@ On the Android pairing screen enter the independent relay origin, one-time code 
 
 Use the standalone ZIP and checksum from an extension release; follow
 [`extension\README.md`](extension/README.md) to verify and extract them. The target
-needs Node 24.x, a compatible Copilot CLI, and its own administrator-provisioned
-private host configuration. It does not need this repository, npm dependencies,
-the Android toolchain or a local relay.
+needs Node 24.x and a compatible Copilot CLI. It does not need this repository,
+npm dependencies, the Android toolchain or a local relay.
 
-From the extracted package:
+For an existing Azure relay managed by this project, install Azure Developer CLI
+(`azd`) and sign in to its directory if not already authenticated. Run this from
+the extracted package **on the new Windows Dev Box**:
+
+```powershell
+node .\devpocket.mjs setup
+```
+
+Choose the Azure directory/subscription if necessary, the running DevPocket VM,
+and a unique Dev Box name. Review one explicit confirmation covering that target's
+host registration and this user's global extension installation. The account
+needs Azure read access to the selected subscription/resource group/VM and VM
+Run Command authority. Setup neither logs in for you nor grants itself permissions.
+
+Setup discovers the running relay and its existing database, saves
+`%LOCALAPPDATA%\DevPocket\setup\host.local.json` in a protected directory,
+authenticates it, and installs the extension. It prints the relay URL and the
+exact pairing command to use when Android is ready. It does not generate a code
+before the phone is ready. Re-running setup resumes recorded progress without
+repeating an uncertain cloud submission. See the [setup runbook](deployment/ONBOARDING.md)
+for prerequisites, optional target hints, recovery limits and the fixed supported
+Azure deployment layout.
+
+If an administrator has already provided this Dev Box's private configuration,
+the existing offline-install path remains available:
 
 ```powershell
 node .\devpocket.mjs install --user --config C:\DevPocketPrivate\host.local.json --confirm-install
@@ -129,6 +153,7 @@ On the development machine, with dependencies restored:
 
 ```powershell
 npm run test:extension-package
+npm run test:setup
 npm run package:extension
 ```
 
@@ -136,9 +161,9 @@ The package command creates `dist\packages\DevPocket-extension-0.1.0.zip` and
 its `.zip.sha256` file. It refuses to overwrite an existing package. For a separate
 development artifact, use
 `npm run package:extension -- -OutputDirectory .data\extension-candidate`.
-The archive is an explicit file allowlist: bundled command and bridge, entry,
-installation guide, dependency licenses and a per-file manifest; never a copy of
-the workspace, SDK or private host configuration.
+The archive is an explicit file allowlist: bundled command, setup and fixed
+onboarding helpers, bridge/entry, installation guide, dependency licenses and a
+per-file manifest; never a copy of the workspace, SDK or private host configuration.
 
 The **Extension distribution** GitHub Actions workflow can build downloadable
 artifacts manually. Pushing an `extension-vVERSION` tag matching `package.json`

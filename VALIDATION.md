@@ -263,3 +263,54 @@ cloud or Android operation occurred. Temporary fixture processes and data were
 cleaned up. The new GitHub Actions workflow has not been run remotely and no tag
 or GitHub release was created; its tag-triggered publication target is a draft
 extension release, separate from APK distribution.
+
+## Standalone Azure setup checkpoint (2026-10-03)
+
+This fork was fast-forwarded to the merged user-extension change before adding
+setup. The inherited files matched that merged source byte-for-byte; no duplicate
+installation change is included in the new work.
+
+The following local checks passed with Node 24.18.0, PowerShell 7 and Python 3.12:
+
+```powershell
+npm run test:setup
+node --test scripts\tests\extension-package.test.mjs
+npm test
+node --test deployment\onboarding\tests\action.test.mjs deployment\onboarding\tests\handoff.test.mjs deployment\onboarding\tests\registration.test.mjs deployment\onboarding\tests\acl.test.mjs deployment\azure\tests\package.test.mjs
+```
+
+`test:setup` includes the production TypeScript build and standalone bundles,
+**20 JavaScript tests** and **3 Python guest-discovery tests**. The backend suite
+passed **29 tests**, standalone extension distribution passed its integration
+check, and the selected legacy onboarding/deployment packaging checks passed
+**7 tests**.
+
+Setup checks exercise target selection and scoping, confirmation refusal,
+host-name collisions, private Windows ACLs, encrypted handoff, authentication
+against a real loopback relay, installation under an isolated `COPILOT_HOME`,
+and repeated setup without a second host identity. The actual extracted ZIP
+also completed setup outside the source checkout using its own bundled command
+and helper assets. The distribution still supports the prior project/plugin
+installations and multiple original fixture sessions.
+
+Failure coverage includes execution followed by a lost ARM response, GET-only
+reconciliation of an accepted asynchronous operation, mutated immutable request
+bodies, expired approval, changed Azure identity/VM/helper files, local host
+authentication failure, install failure after finalization, and changed saved
+credentials or installed files. A lost response without a saved Azure operation
+URL remains visibly uncertain and blocks replay. The original encryption,
+pre-commit registration recovery and legacy request-size checks still pass.
+
+**Azure management responses and Linux guest environment discovery were
+simulated.** Encryption, SQLite, the loopback relay, filesystem operations,
+Windows ACL checks, archive construction and user installation were real but
+isolated. These checks are not live Azure Run Command, public HTTPS, actual CLI
+discovery/consent, or new phone acceptance. The new interactive enrollment still
+needs a separately authorized real-target acceptance.
+
+No Azure login/token retrieval, resource mutation, real host/device enrollment,
+public endpoint request, global extension installation or existing-session reload
+was performed. Setup does not change the relay wire contract or Android sources.
+The previously sealed APK and running/frozen cloud release remain unchanged.
+Temporary fixture processes and directories were cleaned up; no tag or extension
+release was published by these local checks.

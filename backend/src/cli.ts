@@ -19,6 +19,7 @@ const { positionals, values } = parseArgs({
     "trusted-proxy": { type: "string" }, "dev-loopback": { type: "boolean", default: false },
     "fcm-credentials": { type: "string" }, device: { type: "string" }, project: { type: "string" },
     "plugin-dir": { type: "string" }, user: { type: "boolean", default: false },
+    "tenant-id": { type: "string" }, "vm-id": { type: "string" },
     "confirm-install": { type: "boolean", default: false },
     help: { type: "boolean", default: false },
   },
@@ -44,6 +45,7 @@ async function main(): Promise<void> {
   if (values.help || !command) {
     console.log(`DevPocket ${VERSION}
 Commands:
+  setup [--tenant-id <Azure-directory-id>] [--vm-id <relay-VM-resource-id>] [--name <Dev-Box-name>]
   relay --data <private-directory> --url https://relay.example --trusted-proxy 127.0.0.1
   relay --data .data/relay --dev-loopback --port 8787
   host create --data <relay-private-directory> --name <name> --url <relay-origin> --out <host.local.json> --bridge-data <Dev-Box-private-directory>
@@ -55,12 +57,25 @@ Commands:
   install --config <host.local.json> --plugin-dir <local-plugin-folder> --confirm-install
 
 Host creation is an offline administrative operation on the relay host. No network registration endpoint exists.
+Setup uses an existing azd login and Azure Run Command to register with an already-running relay,
+securely save this Dev Box's configuration, and install the user extension after explicit confirmation.
+It resumes recorded operations without repeating an uncertain submission. No old deployment checkout is needed.
 User installation uses COPILOT_HOME (default: ~/.copilot). All projects' CLI sessions that load it
 automatically connect to this host, including earlier visible history. Paired phones have host-wide access.
 Install never hot-reloads, changes CLI permission settings, starts a new session, or initializes Git.`);
     return;
   }
   switch (command) {
+    case "setup": {
+      const module: { runSetup(options: { tenantId?: string; vmId?: string; name?: string }): Promise<unknown> } =
+        await import(new URL("./setup.mjs", import.meta.url).href);
+      await module.runSetup({
+        ...(values["tenant-id"] ? { tenantId: values["tenant-id"] } : {}),
+        ...(values["vm-id"] ? { vmId: values["vm-id"] } : {}),
+        ...(values.name ? { name: values.name } : {}),
+      });
+      break;
+    }
     case "relay": {
       const port = Number(values.port);
       if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Fault("PORT_INVALID", "Port must be 0..65535.");

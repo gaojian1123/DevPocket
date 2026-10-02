@@ -30,6 +30,7 @@ jobs:
           }
       - run: npm ci --no-audit --no-fund
       - run: npm test
+      - run: npm run test:setup
       - run: npm run test:extension-package
       - run: npm run package:extension
       - uses: actions/upload-artifact@v4

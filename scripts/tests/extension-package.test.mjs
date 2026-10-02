@@ -43,7 +43,8 @@ test("standalone archive installs without a checkout and connects all projects t
   const manifest = JSON.parse(await readFile(path.join(extracted, "manifest.json"), "utf8"));
   assert.equal(manifest.version, version);
   assert.equal(manifest.node, "24.x");
-  const expected = ["README.md", "THIRD-PARTY-NOTICES.txt", "devpocket.mjs", "extension/bridge.mjs", "extension/extension.mjs"];
+  const expected = ["README.md", "THIRD-PARTY-NOTICES.txt", "devpocket.mjs", "extension/bridge.mjs", "extension/extension.mjs",
+    "setup-assets/cloud-host.mjs", "setup-assets/guest.py", "setup-assets/private-directory.ps1", "setup.mjs"];
   assert.deepEqual(manifest.files.map((file) => file.path).sort(), expected);
   for (const file of manifest.files) {
     const content = await readFile(path.join(extracted, ...file.path.split("/")));
@@ -51,7 +52,7 @@ test("standalone archive installs without a checkout and connects all projects t
     assert.equal(sha256(content), file.sha256);
   }
   assert.deepEqual((await readdir(extracted)).sort(),
-    ["README.md", "THIRD-PARTY-NOTICES.txt", "devpocket.mjs", "extension", "manifest.json"]);
+    ["README.md", "THIRD-PARTY-NOTICES.txt", "devpocket.mjs", "extension", "manifest.json", "setup-assets", "setup.mjs"]);
   assert.deepEqual((await readdir(path.join(extracted, "extension"))).sort(), ["bridge.mjs", "extension.mjs"]);
   assert.match(await readFile(path.join(extracted, "THIRD-PARTY-NOTICES.txt"), "utf8"), /MIT/);
   const home = path.join(root, "copilot home"), configPath = path.join(root, "host.local.json");
@@ -59,6 +60,8 @@ test("standalone archive installs without a checkout and connects all projects t
   const cli = (...args) => run(process.execPath, [path.join(extracted, "devpocket.mjs"), ...args],
     { cwd: root, env, timeout: 15_000 });
   assert.match((await cli("--help")).stdout, /install --user/);
+  assert.match((await cli("setup", "--help")).stdout, /setup \[--tenant-id/);
+  await assert.rejects(cli("setup"), /SETUP_INTERACTIVE_REQUIRED/);
   await assert.rejects(cli("install", "--user", "--config", configPath), /OPT_IN_REQUIRED/);
   await assert.rejects(cli("install", "--user", "--project", root, "--config", configPath, "--confirm-install"), /TARGET_REQUIRED/);
   await assert.rejects(access(home), { code: "ENOENT" });

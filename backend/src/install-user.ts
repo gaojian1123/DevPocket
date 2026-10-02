@@ -57,6 +57,11 @@ export function userExtensionDirectory(configDirectory = process.env.COPILOT_HOM
   return path.join(path.resolve(configDirectory), "extensions", "devpocket");
 }
 
+export async function inspectUserExtension(configDirectory?: string): Promise<{ target: string; installed: boolean }> {
+  const target = userExtensionDirectory(configDirectory);
+  return { target, installed: await existingInstallation(target) };
+}
+
 export async function installUserExtension(source: string, hostConfigPath: string,
   configDirectory?: string): Promise<{ target: string; updated: boolean }> {
   const target = userExtensionDirectory(configDirectory);

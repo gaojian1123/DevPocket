@@ -9,6 +9,7 @@ import resource
 import signal
 import subprocess
 import time
+import urllib.parse
 import urllib.request
 
 
@@ -24,25 +25,44 @@ def command(args, data=None):
     return result.stdout
 
 
-def context(scope):
+def context(scope, discovering=False):
     require(os.geteuid() == 0, "ROOT_REQUIRED")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(urllib.request.Request(
         "http://169.254.169.254/metadata/instance/compute/resourceId?api-version=2021-02-01&format=text",
         headers={"Metadata": "true"}), timeout=2) as response:
         require(response.read(2048).decode().strip().lower() == scope["vmId"].lower(), "VM_TARGET_MISMATCH")
+    if scope.get("vmUniqueId"):
+        with opener.open(urllib.request.Request(
+            "http://169.254.169.254/metadata/instance/compute/vmId?api-version=2021-02-01&format=text",
+            headers={"Metadata": "true"}), timeout=2) as response:
+            require(response.read(2048).decode().strip().lower() == scope["vmUniqueId"].lower(), "VM_INSTANCE_CHANGED")
     root = Path("/srv/devpocket")
     require(root.is_mount() and not root.is_symlink(), "OWNED_DATA_MOUNT_REQUIRED")
     require((root / ".owner").read_text().strip() == scope["deploymentId"] and
             Path("/var/lib/devpocket/owner").read_text().strip() == scope["deploymentId"], "OWNER_MISMATCH")
-    require(json.loads((root / "current.json").read_text())["releaseId"] == scope["releaseId"], "RELEASE_CHANGED")
+    release_id = json.loads((root / "current.json").read_text())["releaseId"]
+    require(re.fullmatch(r"[a-f0-9]{64}", release_id), "RELEASE_ID_INVALID")
+    require(discovering or release_id == scope["releaseId"], "RELEASE_CHANGED")
     ids = command(["docker", "ps", "--filter", "label=com.docker.compose.project=devpocket-azure",
                    "--filter", "label=com.docker.compose.service=relay", "--format", "{{.ID}}"]).decode().split()
     require(len(ids) == 1 and re.fullmatch(r"[a-f0-9]{12,64}", ids[0]), "EXACT_RELAY_CONTAINER_REQUIRED")
     container = json.loads(command(["docker", "inspect", ids[0]]))[0]
-    require(container["Image"] == scope["imageId"] and container["State"]["Running"] and
+    require((discovering or container["Image"] == scope["imageId"]) and container["State"]["Running"] and
             container["State"].get("Health", {}).get("Status") == "healthy", "LIVE_IMAGE_OR_HEALTH_CHANGED")
-    expected = ["node", "dist/cli.js", "relay", "--data", "/data", "--url", scope["relayUrl"],
+    require(not scope.get("containerId") or ids[0] == scope["containerId"], "RELAY_CONTAINER_CHANGED")
+    require(re.fullmatch(r"sha256:[a-f0-9]{64}", container["Image"]), "RELAY_IMAGE_INVALID")
+    if discovering:
+        require(container["Config"]["Image"] == "devpocket-relay:" + release_id, "RELAY_RELEASE_IMAGE_MISMATCH")
+        args = container["Config"]["Cmd"]
+        require(isinstance(args, list) and len(args) == 9, "RELAY_COMMAND_CHANGED")
+        relay_url = args[6]
+        parsed = urllib.parse.urlsplit(relay_url)
+        require(parsed.scheme == "https" and parsed.hostname and not parsed.username and not parsed.password and
+                not parsed.query and not parsed.fragment and parsed.path == "", "RELAY_URL_INVALID")
+    else:
+        relay_url = scope["relayUrl"]
+    expected = ["node", "dist/cli.js", "relay", "--data", "/data", "--url", relay_url,
                 "--trusted-proxy", "127.0.0.1"]
     require(container["Config"]["Cmd"] == expected and container["Config"]["User"] == "1000:1000", "RELAY_COMMAND_CHANGED")
     mounts = [m for m in container["Mounts"] if m["Destination"] == "/data"]
@@ -50,8 +70,9 @@ def context(scope):
             mounts[0]["Source"] == "/srv/devpocket/relay" and mounts[0]["RW"], "DATABASE_MOUNT_CHANGED")
     database = root / "relay" / "relay.sqlite"
     require(database.is_file() and not database.is_symlink(), "EXISTING_DATABASE_REQUIRED")
-    return {"vmVerified": True, "ownerVerified": True, "releaseId": scope["releaseId"],
-            "imageId": scope["imageId"], "containerId": ids[0], "databasePath": str(database)}
+    target = {"vmVerified": True, "ownerVerified": True, "releaseId": release_id,
+              "imageId": container["Image"], "containerId": ids[0], "databasePath": str(database)}
+    return (target, relay_url) if discovering else target
 
 
 def audit():
@@ -86,13 +107,16 @@ def main(payload):
     signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(RuntimeError("ACTION_TIME_LIMIT")))
     signal.alarm(60)
     try:
-        require(action in ["inspect", "register", "finalize"], "HOST_ACTION_DENIED")
+        require(action in ["discover", "inspect", "register", "finalize"], "HOST_ACTION_DENIED")
         require(int(time.time() * 1000) < scope["expiresAt"], "HOST_APPROVAL_EXPIRED")
         require(re.fullmatch(r"[a-f0-9-]{36}", scope["operationId"]), "OPERATION_ID")
         with Path("/run/lock/devpocket-onboarding.lock").open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            target = context(scope)
-            if action != "inspect":
+            if action == "discover":
+                target, relay_url = context(scope, discovering=True)
+            else:
+                target = context(scope)
+            if action in ["register", "finalize"]:
                 parent = Path("/srv/devpocket/relay/.devpocket-onboarding")
                 require(not parent.is_symlink(), "JOURNAL_PARENT_LINK")
                 if not parent.exists():
@@ -100,7 +124,8 @@ def main(payload):
                     os.chown(parent, 1000, 1000)
                 require(parent.stat().st_uid == 1000 and (parent.stat().st_mode & 0o777) == 0o700, "JOURNAL_PARENT_PERMISSIONS")
             node_input = {"scope": scope, "publicKeyPem": payload["publicKeyPem"],
-                          "action": action, "acknowledgement": payload.get("acknowledgement")}
+                          "action": "inspect" if action == "discover" else action,
+                          "acknowledgement": payload.get("acknowledgement")}
             suffix = """
 try {
   const result = await guestMain(JSON.parse(Buffer.from("__INPUT__", "base64")));
@@ -119,6 +144,9 @@ try {
             result["scopeHash"] = scope["scopeHash"]
             if result["status"] != "failed":
                 result["target"] = target
+                if action == "discover":
+                    result["status"] = "relay_discovered"
+                    result["relayUrl"] = relay_url
                 if action == "finalize":
                     result["logAudit"] = audit()
     except BaseException as error:
