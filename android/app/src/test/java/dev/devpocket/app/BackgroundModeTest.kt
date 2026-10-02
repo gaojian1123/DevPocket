@@ -15,7 +15,9 @@ import dev.devpocket.app.background.BackgroundCheckpoints
 import dev.devpocket.app.background.BackgroundMode
 import dev.devpocket.app.background.BackgroundService
 import dev.devpocket.app.background.NoticeCheckpoint
+import dev.devpocket.app.background.MonitorStatus
 import dev.devpocket.app.background.SessionNotice
+import dev.devpocket.app.background.WatchStatus
 import dev.devpocket.app.data.Scope
 import dev.devpocket.app.data.WireJson
 import dev.devpocket.app.push.Notifications
@@ -134,6 +136,21 @@ class BackgroundModeTest {
         app.background.checkPermissions()
         assertFalse(app.background.state.value.enabled)
         assertNotNull(app.background.state.value.error)
+    }
+
+    @Test fun pollingIsVisibleAndIsNotCountedAsARealtimeConnection() {
+        val scope = Scope("account", "host", "session")
+        app.background.start()
+        app.background.report(app.background.runId, MonitorStatus(sessions = mapOf(
+            scope to WatchStatus(connected = true),
+            scope.copy(sessionId = "overflow") to WatchStatus(polling = true),
+        )))
+        val status = app.background.state.value
+        assertTrue(status.enabled)
+        assertTrue(status.message.contains("1 个实时"))
+        assertTrue(status.message.contains("1 个定时同步"))
+        assertTrue(status.message.contains("可能延迟"))
+        assertNull(status.error)
     }
 
     @Test fun noticesAreGenericScopedAndReplaceOnlyTheSameSessionsCard() {

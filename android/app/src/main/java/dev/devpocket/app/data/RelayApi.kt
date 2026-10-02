@@ -121,7 +121,12 @@ class RelayApi(val account: Account) : SessionEventSource {
                 }
             }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                close(if (response?.code in listOf(401, 403)) ApiFailure(response!!.code, WireError("UNAUTHORIZED", "配对凭据无效或已被撤销。")) else t)
+                val status = response?.code
+                close(when {
+                    status == 401 || status == 403 -> ApiFailure(status, WireError("UNAUTHORIZED", "配对凭据无效或已被撤销。"))
+                    status == 429 -> ApiFailure(status, WireError("TOO_MANY_STREAMS", "中转实时连接额度已满。"))
+                    else -> t
+                })
             }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 close(if (code == 4003) ApiFailure(403, WireError("FORBIDDEN", "这台设备的配对已被撤销。"))

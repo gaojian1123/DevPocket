@@ -5,6 +5,7 @@ package dev.devpocket.app
 import dev.devpocket.app.background.*
 import dev.devpocket.app.data.*
 import java.io.IOException
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -20,6 +21,197 @@ class BackgroundMonitorTest {
     private val account = Account("account", "https://relay.example", "fixture-only", "device", "Test")
     private val a = Scope(account.id, "host-a", "session-a")
     private val b = Scope(account.id, "host-b", "session-b")
+
+    @Test fun foregroundViewerConnectsAlongsideSevenBackgroundSessions() = assertForegroundViewerAvailable(7)
+
+    @Test fun foregroundViewerConnectsAlongsideEightBackgroundSessions() = assertForegroundViewerAvailable(8)
+
+    @Test fun foregroundViewerConnectsAboveTheDeviceStreamLimit() = assertForegroundViewerAvailable(12)
+
+    @Test fun overflowSessionsContinueDeliveringAndDeduplicatingPendingNotices() = runTest {
+        val scopes = (1..12).map { a.copy(sessionId = "session-$it") }
+        val source = FakeSource(catalog(scopes.map(::info)), streamLimit = 8)
+        val store = MemoryStore()
+        val notices = mutableListOf<Pair<Scope, SessionNotice>>()
+        val monitor = BackgroundMonitor({ source }, store, { scope, notice -> notices.add(scope to notice) }, {})
+        backgroundScope.launch { monitor.run(listOf(account)) }
+        runCurrent()
+        assertEquals(7, monitor.status.value.connected)
+        assertEquals(5, monitor.status.value.polling)
+        for (scope in scopes) {
+            val request = page(requests(scope, 1, "pending"))
+            if (scope in source.opened) source.frames.getValue(scope).send(Result.success(request))
+            else source.pages[scope] = ArrayDeque(listOf(request, request))
+        }
+        advanceTimeBy(15_000)
+        runCurrent()
+        assertEquals(scopes.toSet(), notices.map { it.first }.toSet())
+        assertEquals(12, notices.size)
+        assertTrue(store.values.values.all { it.cursor == 1L && it.pending == null })
+        advanceTimeBy(15_000)
+        runCurrent()
+        assertEquals(12, notices.size)
+        assertEquals(7, source.streamAttempts)
+        assertEquals(7, source.activeStreams)
+        assertTrue(monitor.status.value.errors.isEmpty())
+    }
+
+    @Test fun anExistingForegroundViewerIsNotDisplacedByBackgroundStartup() = runTest {
+        val scopes = (1..9).map { a.copy(sessionId = "session-$it") }
+        val source = FakeSource(catalog(scopes.map(::info)), streamLimit = 8)
+        val foreground = backgroundScope.launch { source.stream(a, 0) {}.collect {} }
+        runCurrent()
+        val monitor = BackgroundMonitor({ source }, MemoryStore(), { _, _ -> }, {})
+        backgroundScope.launch { monitor.run(listOf(account)) }
+        runCurrent()
+        assertEquals(8, source.activeStreams)
+        assertEquals(7, monitor.status.value.connected)
+        assertEquals(2, monitor.status.value.polling)
+        assertTrue(foreground.isActive)
+        assertTrue(monitor.status.value.errors.isEmpty())
+    }
+
+    @Test fun accountsForTheSameRelayDeviceShareOneBackgroundBudget() = runTest {
+        val alias = account.copy(id = "alias", relayUrl = "${account.relayUrl}/")
+        val scopes = (1..6).map { a.copy(sessionId = "session-$it") }
+        val source = FakeSource(catalog(scopes.map(::info)), streamLimit = 8)
+        val monitor = BackgroundMonitor({ source }, MemoryStore(), { _, _ -> }, {})
+        backgroundScope.launch { monitor.run(listOf(account, alias)) }
+        runCurrent()
+        assertEquals(7, source.activeStreams)
+        assertEquals(12, monitor.status.value.sessions.size)
+        assertEquals(5, monitor.status.value.polling)
+        assertEquals(7, source.streamAttempts)
+    }
+
+    @Test fun separateDevicesHaveIndependentBackgroundBudgetsOnTheSameRelay() = runTest {
+        val other = account.copy(id = "other", deviceId = "another-device")
+        val scopes = (1..8).map { a.copy(sessionId = "session-$it") }
+        val firstSource = FakeSource(catalog(scopes.map(::info)), streamLimit = 8)
+        val secondSource = FakeSource(firstSource.current, streamLimit = 8)
+        val monitor = BackgroundMonitor({ if (it.id == account.id) firstSource else secondSource }, MemoryStore(), { _, _ -> }, {})
+        backgroundScope.launch { monitor.run(listOf(account, other)) }
+        runCurrent()
+        assertEquals(7, firstSource.activeStreams)
+        assertEquals(7, secondSource.activeStreams)
+        assertEquals(14, monitor.status.value.connected)
+        assertEquals(2, monitor.status.value.polling)
+    }
+
+    @Test fun archivingAStreamingSessionMakesItsPermitAvailableToAPollingSession() = runTest {
+        val scopes = (1..8).map { a.copy(sessionId = "session-$it") }
+        val source = FakeSource(catalog(scopes.map(::info)), streamLimit = 8)
+        val monitor = BackgroundMonitor({ source }, MemoryStore(), { _, _ -> }, {})
+        backgroundScope.launch { monitor.run(listOf(account)) }
+        runCurrent()
+        val polling = monitor.status.value.sessions.entries.single { it.value.polling }.key
+        source.current = catalog(scopes.drop(1).map(::info))
+        advanceTimeBy(15_000)
+        runCurrent()
+        assertTrue(source.closed.contains(scopes.first()))
+        // Catalog cancellation can finish after the polling task at the same deadline.
+        advanceTimeBy(15_000)
+        runCurrent()
+        assertTrue(monitor.status.value.sessions.getValue(polling).connected)
+        assertEquals(0, monitor.status.value.polling)
+        assertEquals(7, source.activeStreams)
+    }
+
+    @Test fun remoteStreamRejectionUsesPollingDuringCooldownThenRecovers() = runTest {
+        val source = FakeSource(catalog(listOf(info(a))), streamLimit = 0)
+        val notices = mutableListOf<SessionNotice>()
+        val monitor = BackgroundMonitor({ source }, MemoryStore(), { _, notice -> notices.add(notice) }, {})
+        backgroundScope.launch { monitor.run(listOf(account)) }
+        runCurrent()
+        assertEquals(1, source.streamAttempts)
+        assertEquals(1, monitor.status.value.polling)
+        source.pages[a] = ArrayDeque(listOf(page(requests(a, 1, "pending"))))
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals(listOf(SessionNotice("event-1", "attention")), notices)
+        assertEquals(1, source.streamAttempts)
+        assertTrue(monitor.status.value.errors.isEmpty())
+        source.streamLimit = 8
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals(2, source.streamAttempts)
+        assertEquals(1, monitor.status.value.connected)
+        assertEquals(0, monitor.status.value.polling)
+        assertEquals(1, notices.size)
+    }
+
+    @Test fun revokedPollingSessionStopsFetchingWithoutDisturbingLiveSessions() = runTest {
+        val scopes = (1..8).map { a.copy(sessionId = "session-$it") }
+        val source = FakeSource(catalog(scopes.map(::info)), streamLimit = 8)
+        val store = MemoryStore()
+        val dismissed = mutableListOf<Scope>()
+        val monitor = BackgroundMonitor({ source }, store, { _, _ -> }, dismissed::add)
+        backgroundScope.launch { monitor.run(listOf(account)) }
+        runCurrent()
+        val polling = monitor.status.value.sessions.entries.single { it.value.polling }.key
+        source.eventFailures[polling] = ApiFailure(403, WireError("FORBIDDEN", "revoked"))
+        advanceTimeBy(15_000)
+        runCurrent()
+        val reads = source.reads.count { it.first == polling }
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals(reads, source.reads.count { it.first == polling })
+        assertTrue(dismissed.contains(polling))
+        assertFalse(store.values.containsKey(polling))
+        assertEquals(0, monitor.status.value.polling)
+        assertEquals(7, monitor.status.value.connected)
+        assertNotNull(monitor.status.value.sessions.getValue(polling).error)
+    }
+
+    @Test fun replayConcurrencyIsBoundedAcrossStreamingAndOverflowSessions() = runTest {
+        val scopes = (1..12).map { a.copy(sessionId = "session-$it") }
+        val delegate = FakeSource(catalog(scopes.map(::info)), streamLimit = 8)
+        val release = Channel<Unit>(Channel.UNLIMITED)
+        var inFlight = 0
+        var maximum = 0
+        val source = object : SessionEventSource by delegate {
+            override suspend fun events(scope: Scope, after: Long): EventPage {
+                inFlight++
+                maximum = maxOf(maximum, inFlight)
+                try {
+                    release.receive()
+                    return delegate.events(scope, after)
+                } finally { inFlight-- }
+            }
+        }
+        val monitor = BackgroundMonitor({ source }, MemoryStore(), { _, _ -> }, {})
+        backgroundScope.launch { monitor.run(listOf(account)) }
+        runCurrent()
+        assertEquals(2, inFlight)
+        repeat(scopes.size) { release.send(Unit) }
+        runCurrent()
+        assertEquals(2, maximum)
+        assertEquals(0, inFlight)
+        assertEquals(7, monitor.status.value.connected)
+        assertEquals(5, monitor.status.value.polling)
+    }
+
+    private fun assertForegroundViewerAvailable(count: Int) = runTest {
+        val scopes = (1..count).map { a.copy(sessionId = "session-$it") }
+        val source = FakeSource(catalog(scopes.map(::info)), streamLimit = 8)
+        val monitor = BackgroundMonitor({ source }, MemoryStore(), { _, _ -> }, {})
+        val background = backgroundScope.launch { monitor.run(listOf(account)) }
+        runCurrent()
+        var connected = false
+        var failure: ApiFailure? = null
+        val foreground = backgroundScope.launch {
+            try {
+                source.stream(scopes.first(), 0) { connected = true }.collect {}
+            } catch (error: ApiFailure) { failure = error }
+        }
+        runCurrent()
+        assertNull("Background subscriptions must leave a viewer for the foreground UI", failure)
+        assertTrue(connected)
+        assertEquals(scopes.toSet(), monitor.status.value.sessions.keys)
+        assertTrue(source.reads.map { it.first }.containsAll(scopes))
+        foreground.cancelAndJoin()
+        background.cancelAndJoin()
+    }
 
     @Test fun watchesEveryAuthorizedUnarchivedSessionIncludingOfflineSessions() = runTest {
         val source = FakeSource(catalog(listOf(info(a), info(b).copy(online = false),
@@ -232,12 +424,17 @@ class BackgroundMonitorTest {
         override suspend fun remove(scope: Scope) { values.remove(scope) }
     }
 
-    private class FakeSource(var current: Catalog) : SessionEventSource {
+    private class FakeSource(var current: Catalog, var streamLimit: Int = Int.MAX_VALUE) : SessionEventSource {
         val pages = mutableMapOf<Scope, ArrayDeque<EventPage>>()
         val frames = mutableMapOf<Scope, Channel<Result<EventPage>>>()
         val opened = mutableListOf<Scope>()
         val closed = mutableListOf<Scope>()
         val reads = mutableListOf<Pair<Scope, Long>>()
+        val eventFailures = mutableMapOf<Scope, Exception>()
+        var streamAttempts = 0
+            private set
+        var activeStreams = 0
+            private set
         var catalogFailure: Exception? = null
         override suspend fun catalog(): Catalog {
             catalogFailure?.let { throw it }
@@ -245,15 +442,19 @@ class BackgroundMonitorTest {
         }
         override suspend fun events(scope: Scope, after: Long): EventPage {
             reads.add(scope to after)
+            eventFailures[scope]?.let { throw it }
             return pages[scope]?.removeFirstOrNull() ?: EventPage(emptyList(), after)
         }
         override fun stream(scope: Scope, after: Long, onOpen: () -> Unit): Flow<EventPage> = flow {
+            streamAttempts++
+            if (activeStreams >= streamLimit) throw ApiFailure(429, WireError("TOO_MANY_STREAMS", "Close another session stream first."))
+            activeStreams++
             opened.add(scope)
             onOpen()
             try {
                 val channel = frames.getOrPut(scope) { Channel(Channel.UNLIMITED) }
                 for (result in channel) emit(result.getOrThrow())
-            } finally { closed.add(scope) }
+            } finally { activeStreams--; closed.add(scope) }
         }
     }
 }

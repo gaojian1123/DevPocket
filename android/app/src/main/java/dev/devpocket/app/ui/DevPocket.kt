@@ -278,6 +278,8 @@ private fun SettingsPane(state: PocketUi, model: PocketViewModel, notifications:
                 state.background.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 Text("监听所有已配对主机的未归档会话，不需要 FCM。开启后显示常驻通知，可随时停止，不影响原始 CLI。",
                     style = MaterialTheme.typography.bodySmall)
+                Text("为前台会话保留连接额度；超出实时额度的会话定时同步，提醒可能延迟。",
+                    style = MaterialTheme.typography.bodySmall)
                 Text("需保持联网并允许通知。系统清理、Doze、车机休眠或断电仍可能中断接收；不会开机自启或自动重启。审批和问题请停车后处理。",
                     style = MaterialTheme.typography.bodySmall)
                 TextButton(onClick = notifications) { Text("通知权限") }

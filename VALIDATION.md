@@ -149,3 +149,40 @@ or Doze operation, vehicle power transitions, mobile networking and sustained
 background delivery remain **unverified**. No emulator/instrumentation or
 real-CLI check was run for this change, and no Google Play policy approval is
 claimed. FCM configuration and its earlier delivery gaps are unchanged.
+
+## Background viewer-budget review checkpoint (2026-10-02)
+
+Review identified that background subscriptions shared the relay's existing
+eight-viewer device quota with the foreground UI. The original monitor opened
+one stream per session without reserving a UI viewer.
+
+The targeted regression command, run from `android` with the same isolated
+JDK/SDK and Gradle cache, reproduced the boundary before the fix:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :app:testDebugUnitTest --tests 'dev.devpocket.app.BackgroundMonitorTest.foregroundViewer*'
+```
+
+Seven background sessions allowed the foreground viewer to connect; eight and
+twelve produced `TOO_MANY_STREAMS` instead. Those cases now pass. Background
+subscriptions share seven realtime slots per relay/device, leaving one for the
+foreground UI. Overflow uses bounded, authorized paged HTTP replay with an
+explicit periodic-sync status, without raising the relay limit or changing the
+wire protocol.
+
+The full `scripts\build-android.ps1` command from the preceding checkpoint
+passed again: debug APK assembly, **57 tests** with zero failures/errors/skips,
+and lint with zero errors (24 warnings). Additional coverage includes:
+
+- Foreground-before-background and background-before-foreground startup,
+  shared device budgets, independent devices, and notifications/deduplication
+  for overflow sessions.
+- Reusing a released stream permit, scoped polling revocation, bounded replay
+  concurrency, HTTP 429 polling/cooldown/recovery, and visible periodic status.
+- Real OkHttp HTTP/WebSocket connections against a loopback fixture enforcing
+  the relay's eight-viewer rule: twelve background sessions still receive
+  reminders while a foreground viewer connects, with no rejected upgrades.
+
+This remains local development evidence, not real relay deployment, device
+installation, or BYD/DiLink acceptance. The earlier checkpoints and sealed
+artifacts remain unchanged.

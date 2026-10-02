@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 interface SessionEventSource {
     suspend fun catalog(): Catalog
@@ -27,12 +29,18 @@ interface SessionEventSource {
     fun stream(scope: Scope, after: Long, onOpen: () -> Unit): Flow<EventPage>
 }
 
-data class WatchStatus(val connected: Boolean = false, val error: String? = null, val historyReset: Boolean = false)
+data class WatchStatus(
+    val connected: Boolean = false,
+    val error: String? = null,
+    val historyReset: Boolean = false,
+    val polling: Boolean = false,
+)
 data class MonitorStatus(
     val relays: Map<String, String?> = emptyMap(),
     val sessions: Map<Scope, WatchStatus> = emptyMap(),
 ) {
     val connected: Int get() = sessions.values.count { it.connected }
+    val polling: Int get() = sessions.values.count { it.polling }
     val errors: List<String> get() = (relays.values.filterNotNull() + sessions.values.mapNotNull { it.error }).distinct()
     val historyReset: Boolean get() = sessions.values.any { it.historyReset }
 }
@@ -49,11 +57,16 @@ class BackgroundMonitor(
     suspend fun run(accounts: List<Account>): Nothing = coroutineScope {
         require(accounts.isNotEmpty()) { "请先配对 Dev Box。" }
         mutable.value = MonitorStatus(relays = accounts.associate { it.id to null })
-        for (account in accounts) launch { watchAccount(account) }
+        val budgets = mutableMapOf<Pair<String, String>, SubscriptionBudget>()
+        for (account in accounts) {
+            val identity = account.relayUrl.trimEnd('/') to account.deviceId
+            val budget = budgets.getOrPut(identity) { SubscriptionBudget() }
+            launch { watchAccount(account, budget) }
+        }
         awaitCancellation()
     }
 
-    private suspend fun watchAccount(account: Account) = coroutineScope {
+    private suspend fun watchAccount(account: Account, budget: SubscriptionBudget) = coroutineScope {
         val jobs = mutableMapOf<Scope, Job>()
         try {
             val api = source(account)
@@ -76,7 +89,7 @@ class BackgroundMonitor(
                     ) }
                     for (scope in scopes - jobs.keys) {
                         mutable.update { it.copy(sessions = it.sessions + (scope to WatchStatus())) }
-                        jobs[scope] = launch { watchSession(scope, api) }
+                        jobs[scope] = launch { watchSession(scope, api, budget) }
                     }
                 } catch (error: CancellationException) {
                     throw error
@@ -104,12 +117,13 @@ class BackgroundMonitor(
         }
     }
 
-    private suspend fun watchSession(scope: Scope, api: SessionEventSource) {
+    private suspend fun watchSession(scope: Scope, api: SessionEventSource, budget: SubscriptionBudget) {
         var failures = 0
         var reset = false
-        fun report(connected: Boolean = false, error: String? = null) {
+        var pollsBeforeStreaming = 0
+        fun report(connected: Boolean = false, error: String? = null, polling: Boolean = false) {
             mutable.update { if (scope in it.sessions)
-                it.copy(sessions = it.sessions + (scope to WatchStatus(connected, error, reset))) else it }
+                it.copy(sessions = it.sessions + (scope to WatchStatus(connected, error, reset, polling))) else it }
         }
         try {
             var checkpoint = checkpoints.load(scope)
@@ -125,7 +139,7 @@ class BackgroundMonitor(
                 var pages = 0
                 while (true) {
                     val before = checkpoint.cursor
-                    val page = api.events(scope, before)
+                    val page = budget.replay.withPermit { api.events(scope, before) }
                     apply(page, durable = true)
                     if (!page.hasMore) break
                     check(page.reset || checkpoint.cursor > before) { "中转历史游标未前进。" }
@@ -145,24 +159,39 @@ class BackgroundMonitor(
             }
             while (currentCoroutineContext().isActive) {
                 try {
-                    report()
+                    report(polling = mutable.value.sessions[scope]?.polling == true)
                     catchUp()
                     deliver()
-                    api.stream(scope, checkpoint.cursor) { report(connected = true) }.collect { page ->
-                        if (page.hasMore) catchUp() else {
-                            apply(page)
-                            val ready = checkpoint.caughtUp()
-                            if (ready != checkpoint) checkpoints.save(scope, ready)
-                            checkpoint = ready
-                        }
-                        deliver()
+                    if (pollsBeforeStreaming > 0 || !budget.streams.tryAcquire()) {
+                        if (pollsBeforeStreaming > 0) pollsBeforeStreaming--
+                        report(polling = true)
                         failures = 0
-                        report(connected = true)
+                        delay(15_000)
+                        continue
                     }
+                    try {
+                        api.stream(scope, checkpoint.cursor) { report(connected = true) }.collect { page ->
+                            if (page.hasMore) catchUp() else {
+                                apply(page)
+                                val ready = checkpoint.caughtUp()
+                                if (ready != checkpoint) checkpoints.save(scope, ready)
+                                checkpoint = ready
+                            }
+                            deliver()
+                            failures = 0
+                            report(connected = true)
+                        }
+                    } finally { budget.streams.release() }
                     throw IOException("实时连接已结束，将重新同步。")
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
+                    if (error is ApiFailure && error.status == 429 && error.detail.code == "TOO_MANY_STREAMS") {
+                        pollsBeforeStreaming = 3
+                        report(polling = true, error = "实时连接额度已满，此会话改为定时同步，提醒可能延迟。")
+                        delay(15_000)
+                        continue
+                    }
                     report(error = describe(error))
                     if (error is ApiFailure && error.status in setOf(401, 403, 404)) {
                         dismiss(scope)
@@ -182,4 +211,10 @@ class BackgroundMonitor(
     private fun describe(error: Exception): String =
         if (error is ApiFailure && error.status in setOf(401, 403)) "配对已失效，请重新配对后手动重启后台模式。"
         else error.message ?: "后台同步失败，请检查网络并重新开启。"
+
+    private class SubscriptionBudget {
+        // The relay allows eight viewers per device; reserve one for the foreground UI.
+        val streams = Semaphore(7)
+        val replay = Semaphore(2)
+    }
 }

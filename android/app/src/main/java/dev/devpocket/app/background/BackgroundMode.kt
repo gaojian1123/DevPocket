@@ -70,6 +70,8 @@ class BackgroundMode(private val context: Context) {
     internal fun report(id: Long, status: MonitorStatus) {
         if (!isRequested(id)) return
         val message = if (status.sessions.isEmpty()) "后台模式已开启，正在发现未归档会话"
+            else if (status.polling > 0)
+                "后台监听：${status.connected} 个实时，${status.polling} 个定时同步，共 ${status.sessions.size} 个会话。定时提醒可能延迟。"
             else "后台监听 ${status.connected}/${status.sessions.size} 个会话"
         val errors = status.errors + if (status.historyReset) listOf("部分历史超出中转保留窗口，期间提醒可能不完整。") else emptyList()
         mutable.value = BackgroundState(enabled = true, message = message, error = errors.takeIf { it.isNotEmpty() }?.joinToString("\n"))

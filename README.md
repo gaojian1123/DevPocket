@@ -173,6 +173,15 @@ or new relay endpoint is needed.
   ones. Local pairing, archive, revoke and forget actions refresh subscriptions
   immediately. Invalid credentials stop the affected subscriptions and remain
   visible as errors; another relay or host can continue independently.
+- The existing relay permits eight concurrent viewers per device. Background
+  monitoring shares a budget of seven realtime streams across that relay/device,
+  reserving a viewer for the foreground UI. Other sessions remain monitored by
+  paged HTTP replay every 15 seconds, with at most two replay requests in flight
+  per relay/device. Settings and the ongoing notification distinguish realtime
+  connections from periodic synchronization; periodic reminders can be delayed.
+  Polling sessions can take a freed stream slot. If the relay rejects a stream
+  with HTTP 429, that session polls during a cooldown before retrying realtime
+  reception. No viewer limit is raised and no relay upgrade is required.
 - The first paged history import does not announce old completions. It can
   announce a request that is still pending at the end of that import. Later
   pending decisions and transitions to idle generate generic reminders.
