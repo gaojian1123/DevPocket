@@ -264,7 +264,10 @@ cleaned up. The new GitHub Actions workflow has not been run remotely and no tag
 or GitHub release was created; its tag-triggered publication target is a draft
 extension release, separate from APK distribution.
 
-## Standalone Azure setup checkpoint (2026-10-03)
+## Standalone Azure setup checkpoint (2026-10-03, UTC+08:00)
+
+This checkpoint and its review follow-ups use local UTC+08:00 dates. The
+overnight October 3 runs occurred on October 2 in UTC.
 
 This fork was fast-forwarded to the merged user-extension change before adding
 setup. The inherited files matched that merged source byte-for-byte; no duplicate
@@ -315,7 +318,7 @@ The previously sealed APK and running/frozen cloud release remain unchanged.
 Temporary fixture processes and directories were cleaned up; no tag or extension
 release was published by these local checks.
 
-### Setup review follow-up (2026-10-03)
+### Setup review follow-up (2026-10-03, UTC+08:00)
 
 Focused regressions first reproduced both review findings: the token adapter
 rejected azd's default raw-token output, and setup printed a pairing command
