@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { HostConfig } from "./bridge.js";
+import { installUserExtension } from "./install-user.js";
 import { startRelay } from "./relay.js";
 import { provisionHost } from "./store.js";
 import { Fault, relayUrl } from "./security.js";
@@ -17,7 +18,8 @@ const { positionals, values } = parseArgs({
     config: { type: "string" }, "bridge-data": { type: "string" },
     "trusted-proxy": { type: "string" }, "dev-loopback": { type: "boolean", default: false },
     "fcm-credentials": { type: "string" }, device: { type: "string" }, project: { type: "string" },
-    "plugin-dir": { type: "string" }, "confirm-install": { type: "boolean", default: false },
+    "plugin-dir": { type: "string" }, user: { type: "boolean", default: false },
+    "confirm-install": { type: "boolean", default: false },
     help: { type: "boolean", default: false },
   },
 });
@@ -48,11 +50,14 @@ Commands:
   pair --config <host.local.json>
   devices --config <host.local.json>
   revoke --config <host.local.json> --device <device-id>
+  install --user --config <host.local.json> --confirm-install
   install --config <host.local.json> --project <existing-git-root> --confirm-install
   install --config <host.local.json> --plugin-dir <local-plugin-folder> --confirm-install
 
 Host creation is an offline administrative operation on the relay host. No network registration endpoint exists.
-Install is opt-in and never hot-reloads, changes the global CLI, starts a new session, or initializes Git.`);
+User installation uses COPILOT_HOME (default: ~/.copilot). All projects' CLI sessions that load it
+automatically connect to this host, including earlier visible history. Paired phones have host-wide access.
+Install never hot-reloads, changes CLI permission settings, starts a new session, or initializes Git.`);
     return;
   }
   switch (command) {
@@ -101,8 +106,18 @@ Install is opt-in and never hot-reloads, changes the global CLI, starts a new se
     }
     case "install": {
       if (!values["confirm-install"]) throw new Fault("OPT_IN_REQUIRED", "Inspect the target and rerun with --confirm-install. No files changed.");
-      if (!!values.project === !!values["plugin-dir"]) throw new Fault("TARGET_REQUIRED", "Specify either --project or --plugin-dir, not both.");
+      if ([values.user, values.project, values["plugin-dir"]].filter(Boolean).length !== 1)
+        throw new Fault("TARGET_REQUIRED", "Specify exactly one of --user, --project or --plugin-dir.");
       const configPath = path.resolve(required(values.config, "config"));
+      const source = path.join(path.dirname(fileURLToPath(import.meta.url)), "extension");
+      if (values.user) {
+        const result = await installUserExtension(source, configPath);
+        console.log(`${result.updated ? "Updated" : "Installed"} user extension at ${result.target}. Nothing was reloaded.`);
+        console.log("All projects' CLI sessions that load this extension will connect automatically, including earlier visible history. Paired phones can access every registered session on this host.");
+        console.log("New CLI sessions discover it at startup, subject to normal CLI trust/permission prompts. For an existing session, explicitly invoke its built-in extensions_reload tool; do not restart it.");
+        console.log("A project extension named devpocket takes precedence over this user extension. No project extension or CLI setting was changed.");
+        break;
+      }
       await loadHost();
       let target: string;
       if (values.project) {
@@ -117,7 +132,6 @@ Install is opt-in and never hot-reloads, changes the global CLI, starts a new se
         }, null, 2), { flag: "wx" });
         target = path.join(pluginRoot, "extensions", "devpocket");
       }
-      const source = path.join(path.dirname(fileURLToPath(import.meta.url)), "extension");
       await mkdir(target, { recursive: true });
       for (const name of ["extension.mjs", "bridge.mjs"]) await copyFile(path.join(source, name), path.join(target, name), 1);
       await writeFile(path.join(target, "connection.local.json"), JSON.stringify({ hostConfigPath: configPath }, null, 2), { flag: "wx", mode: 0o600 });

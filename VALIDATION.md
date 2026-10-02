@@ -214,3 +214,52 @@ debug APK assembly, **65 tests** with zero failures/errors/skips, and lint with
 zero errors. The original reproduction now passes on both platform models.
 No backend or wire changes, device installation, real-CLI operation or cloud
 deployment were performed. Earlier acceptance and sealed artifacts are unchanged.
+
+## User extension distribution checkpoint (2026-10-02)
+
+This source-worktree change adds user-wide installation and a standalone extension
+distribution. It does not alter the original runtime adapter, wire protocol,
+Android sources, sealed build 002 or the frozen cloud release.
+
+The following checks passed with Node 24.18.0 and PowerShell 7:
+
+```powershell
+npm run typecheck
+node --import tsx --test backend\tests\install-user.test.ts
+npm run build
+node --test scripts\tests\extension-package.test.mjs
+npm test
+npm run package:extension
+```
+
+The backend suite passed **29 tests**, including **9 installer checks**. These
+cover credential pointers without credential copies, isolated user directories,
+managed updates, unrelated-file preservation, incomplete bundles, absolute private
+paths, linked/unmanaged targets, installation locks, rollback and retained recovery
+files when rollback itself fails.
+
+The standalone package check passed outside the source checkout in a fresh
+temporary directory. It verified the ZIP checksum, per-file manifest and exact
+archive allowlist, refused package overwrites, ran the bundled CLI with no npm
+installation, checked explicit install consent and scope conflicts, and exercised
+user installation/update plus the existing project/plugin modes.
+
+After deleting the extracted distribution, two processes launched the installed
+extension from different project directories without project extension files.
+Both original fixture session IDs registered with a real loopback relay, one
+paired fixture phone could see both, earlier history was projected, and a phone
+message completed only in the intended session. **The SDK boundary was simulated**:
+this demonstrates packaged bridge/relay operation, not actual CLI discovery,
+extension trust prompts or live attachment to a user's session.
+
+The generated development artifacts are:
+
+- `dist\packages\DevPocket-extension-0.1.0.zip`
+- `dist\packages\DevPocket-extension-0.1.0.zip.sha256`
+
+No user's global extension directory, running CLI or private host configuration
+was changed. No real host/device was enrolled, no extension was hot-loaded, and no
+cloud or Android operation occurred. Temporary fixture processes and data were
+cleaned up. The new GitHub Actions workflow has not been run remotely and no tag
+or GitHub release was created; its tag-triggered publication target is a draft
+extension release, separate from APK distribution.
