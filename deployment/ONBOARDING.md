@@ -52,9 +52,13 @@ Keep `host.local.json` and `bridge` there. Configure `COPILOT_HOME` before setup
 the intended CLI uses a custom user directory. Old project extensions still
 shadow a same-named user extension and are never removed automatically.
 
-Each management phase is journaled and synced **before** its single POST, with
+Each management phase is journaled and synced **before** dispatch, with
 the exact body, scope and hash. Rerunning the same package resumes saved responses
 or polls the already-recorded ARM operation; it never repeats an uncertain POST.
+Pre-dispatch failures and definitive HTTP 401/403 rejections are recorded as
+`not-admitted`, allowing a subsequent run to retry the same body and scope after
+the cause is corrected. Transport failures, other HTTP errors and unreadable
+responses do not establish non-admission and remain blocked against replay.
 The authorization window is four hours, guest execution is bounded by the
 existing timeout, request bytes stay under 36,369, and output must match the
 scoped result schema. Changed helper files, identity or targets stop recovery.

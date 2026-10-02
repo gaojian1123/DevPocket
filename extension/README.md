@@ -144,9 +144,13 @@ the version already loaded until an explicit reload or a future CLI session.
 
 Run `setup` again from the same package. It uses the same saved target, Azure
 principal, recipient and request bodies. Accepted operations resume by polling
-their saved Azure URLs; a submitted operation is never posted again. A locally
-saved response can be completed without any cloud retry. Installation failures
-after registration reuse the saved host configuration.
+their saved Azure URLs; an accepted or uncertain operation is never posted again.
+Failures before dispatch and definitive Azure HTTP 401/403 rejections are saved
+as `not-admitted`. After correcting the login or authorization problem, rerun
+setup to retry that same immutable request. Transport errors, server failures
+and unreadable responses remain uncertain, not safe retries. A locally saved
+response can be completed without any cloud retry. Installation failures after
+registration reuse the saved host configuration.
 
 If Azure accepted a command but its result/polling URL was lost, setup reports
 an uncertain outcome and stops. Expired approval (four hours), failed guest

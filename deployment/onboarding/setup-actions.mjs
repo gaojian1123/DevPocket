@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { canonical, requireValue, sha } from "./handoff.mjs";
+import { AzureRequestNotAdmittedError } from "./setup-azure.mjs";
 
 export const MAX_SETUP_REQUEST = 36369;
 const marker = "DEVPOCKET_HOST_RESULT=";
@@ -91,10 +92,11 @@ export async function runSetupAction(context, action, scope, acknowledgement) {
     await save();
   }
   let response;
-  if (operation.status === "prepared") {
+  if (operation.status === "prepared" || operation.status === "not-admitted") {
     requireValue(now() < scope.expiresAt, "SETUP_APPROVAL_EXPIRED");
     await azure.verify(state.target);
     operation.status = "submitting";
+    delete operation.error;
     await save();
     try {
       response = await azure.arm(`${scope.vmId}/runCommand?api-version=2024-07-01`, { method: "POST", body: operation.body });
@@ -105,6 +107,12 @@ export async function runSetupAction(context, action, scope, acknowledgement) {
       operation.httpStatus = response.status;
       await save();
     } catch (error) {
+      if (error instanceof AzureRequestNotAdmittedError) {
+        operation.status = "not-admitted";
+        operation.error = error.message;
+        await save();
+        throw new Error(`SETUP_ACTION_NOT_ADMITTED: ${action} was not admitted (${error.message}). Correct the cause and rerun setup to retry the same request.`);
+      }
       const code = error instanceof Error && /^[A-Z][A-Z0-9_]{0,100}$/.test(error.message)
         ? error.message : "MANAGEMENT_OR_CHECKPOINT_FAILURE";
       throw new Error(`SETUP_ACTION_UNCERTAIN: ${action} may still be running (${code}). Rerun setup to read its saved Azure operation; no POST will be repeated.`);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { azdToken, AzureSetupClient, vmParts } from "../setup-azure.mjs";
+import { azdToken, AzureRequestNotAdmittedError, AzureSetupClient, vmParts } from "../setup-azure.mjs";
 
 const tenantId = "11111111-1111-4111-8111-111111111111";
 const principalId = "22222222-2222-4222-8222-222222222222";
@@ -39,12 +39,18 @@ function fixture() {
   const state = { token: { token: "PRIVATE_ARM_TOKEN", tenantId, principalId }, vm: structuredClone(vm),
     group: { tags }, subscription: { state: "Enabled", tenantId }, tenants: { value: [{ tenantId, displayName: "Directory" }] } };
   const client = new AzureSetupClient({
-    getToken: async (tenant) => { tokenRequests.push(tenant); return state.token; },
+    getToken: async (tenant) => {
+      tokenRequests.push(tenant);
+      if (state.tokenFailure) throw new Error(state.tokenFailure);
+      return state.token;
+    },
     fetcher: async (url, options) => {
       calls.push({ url: String(url), options });
       const target = new URL(url);
       assert.equal(options.redirect, "error");
       assert.equal(options.headers.Authorization, `Bearer ${state.token.token}`);
+      if (options.method === "POST" && state.postStatus)
+        return new Response("", { status: state.postStatus });
       const value = target.pathname === "/tenants" ? state.tenants :
         target.pathname === "/subscriptions" ? { value: [{ subscriptionId, displayName: "Subscription", state: "Enabled" }] } :
         target.pathname === `/subscriptions/${subscriptionId}` ? state.subscription :
@@ -56,6 +62,38 @@ function fixture() {
   });
   return { client, state, calls, tokenRequests };
 }
+
+test("pre-dispatch POST failures have explicit non-admission evidence and never reach fetch", async () => {
+  for (const failure of ["login", "principal", "serialization"]) {
+    const f = fixture();
+    await f.client.selectTenant(tenantId);
+    await f.client.target(vmId);
+    const before = f.calls.length;
+    const body = { commandId: "RunShellScript", script: [] };
+    if (failure === "login") f.state.tokenFailure = "AZURE_LOGIN_REQUIRED: private diagnostic details must not escape";
+    else if (failure === "principal") f.state.token.principalId = "88888888-8888-4888-8888-888888888888";
+    else body.circular = body;
+    await assert.rejects(f.client.arm(`${vmId}/runCommand?api-version=2024-07-01`, { method: "POST", body }),
+      (error) => error instanceof AzureRequestNotAdmittedError &&
+        /^[A-Z][A-Z0-9_]+$/.test(error.message) && !error.message.includes("private"));
+    assert.equal(f.calls.length, before);
+  }
+});
+
+test("only definitive POST authentication rejections are classified as not admitted", async () => {
+  for (const status of [401, 403, 500, 503]) {
+    const f = fixture();
+    await f.client.selectTenant(tenantId);
+    await f.client.target(vmId);
+    const before = f.calls.length;
+    f.state.postStatus = status;
+    await assert.rejects(f.client.arm(`${vmId}/runCommand?api-version=2024-07-01`,
+      { method: "POST", body: { commandId: "RunShellScript", script: [] } }),
+    (error) => error.message === `AZURE_REQUEST_REJECTED_${status}` &&
+      (error instanceof AzureRequestNotAdmittedError) === [401, 403].includes(status));
+    assert.equal(f.calls.length, before + 1);
+  }
+});
 
 test("setup discovers enabled subscriptions and tagged VMs with an explicitly bound Azure identity", async () => {
   const f = fixture();

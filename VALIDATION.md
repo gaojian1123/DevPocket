@@ -331,3 +331,18 @@ re-entry. The standalone distribution check and all **29 backend tests** also
 passed. The azd command adapter was simulated; a local `azd auth token --output
 json --help` check did not request a token. No Azure credential retrieval,
 real enrollment, device pairing or live extension loading occurred.
+
+The next review identified that failures before dispatch and definitive Azure
+401/403 rejections were incorrectly retained as uncertain submissions. The ARM
+adapter now supplies typed non-admission evidence for those cases. The journal
+records `not-admitted` and allows a subsequent run to retry the same body, scope
+and hash after the cause is corrected. Transport/5xx failures, unreadable
+responses and uncertain checkpoints still cannot authorize a replay.
+
+The new regressions reproduced the lockout before the fix and now pass for
+login failure, changed principal, request serialization and HTTP 401/403.
+They verify no pre-dispatch fetch, no prematurely created host, and exactly one
+host after a permitted retry. `npm run test:setup` now passes **28 JavaScript
+tests** and **3 Python tests**; standalone distribution, **29 backend tests**
+and **5 selected legacy onboarding checks** also pass. Azure responses remain
+simulated, with no real management or credential operations performed.

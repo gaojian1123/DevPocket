@@ -8,6 +8,13 @@ const uuid = z.string().uuid();
 const armOrigin = "https://management.azure.com";
 const vmPattern = /^\/subscriptions\/([a-f0-9-]{36})\/resourceGroups\/([A-Za-z0-9_.()-]+)\/providers\/Microsoft\.Compute\/virtualMachines\/([A-Za-z0-9_.-]+)$/i;
 
+export class AzureRequestNotAdmittedError extends Error {
+  constructor(code) {
+    super(code);
+    this.name = "AzureRequestNotAdmittedError";
+  }
+}
+
 export function vmParts(id) {
   const match = vmPattern.exec(id);
   requireValue(match && uuid.safeParse(match[1]).success, "INVALID_AZURE_VM_ID");
@@ -68,17 +75,28 @@ export class AzureSetupClient {
   }
 
   async arm(input, { method = "GET", body } = {}) {
-    const url = this.url(input);
-    requireValue(method === "GET" || (method === "POST" && this.vmId &&
-      url.pathname.toLowerCase() === `${this.vmId}/runCommand`.toLowerCase()), "ARM_METHOD_REJECTED");
-    const identity = await this.getToken(this.identity?.tenantId);
-    if (this.identity) requireValue(identity.tenantId === this.identity.tenantId &&
-      identity.principalId === this.identity.principalId, "AZURE_PRINCIPAL_CHANGED");
-    const response = await this.fetcher(url, {
-      method, ...(body ? { body: JSON.stringify(body) } : {}),
-      headers: { Authorization: `Bearer ${identity.token}`, "Content-Type": "application/json" },
-      redirect: "error", signal: AbortSignal.timeout(45_000),
-    });
+    let url, request;
+    try {
+      url = this.url(input);
+      requireValue(method === "GET" || (method === "POST" && this.vmId &&
+        url.pathname.toLowerCase() === `${this.vmId}/runCommand`.toLowerCase()), "ARM_METHOD_REJECTED");
+      const identity = await this.getToken(this.identity?.tenantId);
+      if (this.identity) requireValue(identity.tenantId === this.identity.tenantId &&
+        identity.principalId === this.identity.principalId, "AZURE_PRINCIPAL_CHANGED");
+      request = {
+        method, ...(body ? { body: JSON.stringify(body) } : {}),
+        headers: { Authorization: `Bearer ${identity.token}`, "Content-Type": "application/json" },
+        redirect: "error", signal: AbortSignal.timeout(45_000),
+      };
+    } catch (error) {
+      if (method !== "POST") throw error;
+      const code = error instanceof Error ? error.message.match(/^([A-Z][A-Z0-9_]{0,99})(?::|$)/)?.[1] : undefined;
+      throw new AzureRequestNotAdmittedError(code ?? "AZURE_REQUEST_PREPARATION_FAILED");
+    }
+    // Transport and response-reading failures may occur after Azure has admitted the request.
+    const response = await this.fetcher(url, request);
+    if (method === "POST" && [401, 403].includes(response.status))
+      throw new AzureRequestNotAdmittedError(`AZURE_REQUEST_REJECTED_${response.status}`);
     requireValue(response.ok, `AZURE_REQUEST_REJECTED_${response.status}`);
     let value;
     try {

@@ -11,6 +11,7 @@ import { runSetup } from "../setup.mjs";
 import { registerHost, finalizeHost } from "../cloud-host.mjs";
 import { exists, protectDirectory } from "../setup-state.mjs";
 import { parseSetupResult, renderSetupAction, MAX_SETUP_REQUEST } from "../setup-actions.mjs";
+import { AzureRequestNotAdmittedError } from "../setup-azure.mjs";
 import { RelayStore } from "../../../backend/src/store.js";
 import { startRelay } from "../../../backend/src/relay.js";
 
@@ -75,6 +76,8 @@ async function fixture(t) {
       const { scope, action } = payload;
       posts.push({ action, scope, body: request.body });
       assert.ok(Buffer.byteLength(JSON.stringify(request.body)) <= MAX_SETUP_REQUEST);
+      if (action === "register" && controls.notAdmitted)
+        throw new AzureRequestNotAdmittedError(controls.notAdmitted);
       let result;
       const journal = path.join(root, "handoff", scope.operationId);
       if (action === "discover") result = {
@@ -234,6 +237,29 @@ test("an execution followed by a lost ARM response stays uncertain and is never 
   assert.deepEqual(f.posts.map((item) => item.action), ["discover", "register"]);
   assert.ok(await exists(path.join(f.directory, "receiver.private.pem")));
   assert.equal(await exists(path.join(f.home, "extensions", "devpocket")), undefined);
+});
+
+test("confirmed non-admission permits a later same-request retry without duplicating a host", async (t) => {
+  for (const code of ["AZURE_LOGIN_REQUIRED", "AZURE_PRINCIPAL_CHANGED", "AZURE_REQUEST_REJECTED_401", "AZURE_REQUEST_REJECTED_403"])
+    await t.test(code, async (t) => {
+      const f = await fixture(t);
+      f.controls.notAdmitted = code;
+      await assert.rejects(runSetup(options, f.adapters), /SETUP_ACTION_NOT_ADMITTED/);
+      const failed = (await f.state()).operations.register;
+      assert.equal(failed.status, "not-admitted");
+      assert.equal(failed.error, code);
+      assert.equal(f.store.db.prepare("SELECT COUNT(*) AS n FROM hosts").get().n, 0);
+      assert.ok(await exists(path.join(f.directory, "receiver.private.pem")));
+      f.controls.notAdmitted = undefined;
+      await runSetup({}, f.adapters);
+      const completed = (await f.state()).operations.register;
+      assert.deepEqual(completed.body, failed.body);
+      assert.equal(completed.requestHash, failed.requestHash);
+      assert.equal(completed.scopeHash, failed.scopeHash);
+      assert.equal(completed.status, "settled");
+      assert.equal(f.store.db.prepare("SELECT COUNT(*) AS n FROM hosts").get().n, 1);
+      assert.deepEqual(f.posts.filter((item) => item.action === "register").map((item) => item.body), [failed.body, failed.body]);
+    });
 });
 
 test("saved asynchronous registration resumes with GET only after interruption", async (t) => {
