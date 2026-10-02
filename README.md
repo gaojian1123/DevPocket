@@ -133,6 +133,9 @@ Installation targets `%USERPROFILE%\.copilot\extensions\devpocket`, or
 `COPILOT_HOME\extensions\devpocket` when the CLI's custom configuration directory
 is set. Host configuration and its absolute private `dataDir` remain outside
 that directory. The extracted package is not needed to run the installed bridge.
+It is still needed by the printed pairing/device-management commands: keep it
+through pairing, or verify and re-extract the ZIP before later `pair`, `devices`
+or `revoke` use, retaining the existing host configuration.
 Repeat the install command from a newer package to update a managed installation.
 
 **There are no per-project allowlists or runtime enable switches.** New CLI

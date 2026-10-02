@@ -98,9 +98,14 @@ Keep `host.local.json` protected by a Windows ACL for the intended user and
 SYSTEM. Its `dataDir` must be absolute and outside the extension directory.
 The installer writes an absolute path pointer, not a copy of the host credential.
 Keep the original configuration and private bridge data after installation.
-The installed bridge does not depend on the extracted distribution. Keep the
-original package until setup finishes, because interrupted setup is bound to its
-exact helper files.
+The installed bridge does not depend on the extracted distribution, but the
+printed `pair`, `devices` and `revoke` commands do. Keep the extraction at the
+same path through phone pairing and for later device management. If you remove
+it afterward, verify and re-extract the ZIP before using those commands again:
+restore the printed path, or use the new absolute `devpocket.mjs` path with the
+retained host configuration. Do not register another host just to restore these
+commands. Keep the original package for any interrupted setup, which is bound
+to its exact helper files.
 
 New CLI sessions discover the user extension automatically, subject to the CLI's
 normal trust and permission-handler consent. The installer does not bypass these
