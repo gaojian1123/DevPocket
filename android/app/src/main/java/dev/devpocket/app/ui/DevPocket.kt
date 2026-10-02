@@ -43,6 +43,12 @@ fun DevPocket(model: PocketViewModel, requestNotifications: () -> Unit) {
     LaunchedEffect(state.error) {
         state.error?.let { snackbar.showSnackbar(it, actionLabel = "知道了", duration = SnackbarDuration.Long); model.clearError() }
     }
+    LaunchedEffect(state.navigateToSession) {
+        if (state.navigateToSession) {
+            destination = "sessions"
+            model.navigationHandled()
+        }
+    }
     BackHandler(enabled = !pairing && (destination != "sessions" || state.selected != null)) {
         if (destination != "sessions") destination = "sessions" else model.closeSession()
     }
@@ -261,12 +267,26 @@ private fun SettingsPane(state: PocketUi, model: PocketViewModel, notifications:
                 for ((id, title) in listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色"))
                     FilterChip(selected = state.theme == id, onClick = { model.setTheme(id) }, label = { Text(title) })
             } }
-            item { SettingsCard("原生通知", Icons.Default.Notifications) {
+            item { SettingsCard("后台模式", Icons.Default.NotificationsActive) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("接收后台提醒", modifier = Modifier.weight(1f))
+                    Switch(checked = state.background.enabled, onCheckedChange = model::setBackgroundMode,
+                        enabled = !state.loading && (state.background.enabled || state.accounts.isNotEmpty()),
+                        modifier = Modifier.testTag("background_toggle"))
+                }
+                Text(state.background.message, modifier = Modifier.testTag("background_status"))
+                state.background.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                Text("监听所有已配对主机的未归档会话，不需要 FCM。开启后显示常驻通知，可随时停止，不影响原始 CLI。",
+                    style = MaterialTheme.typography.bodySmall)
+                Text("需保持联网并允许通知。系统清理、Doze、车机休眠或断电仍可能中断接收；不会开机自启或自动重启。审批和问题请停车后处理。",
+                    style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = notifications) { Text("通知权限") }
+            } }
+            item { SettingsCard("Google FCM（可选）", Icons.Default.Notifications) {
                 Text(state.pushStatus)
-                Text("前台实时连接会在应用进入后台时暂停。没有配置 FCM 时，不保证后台、Doze 或锁屏送达。",
+                Text("未开启后台模式时，界面实时连接会在应用进入后台时暂停。FCM 另需 Google 服务及可达网络，也不承诺必达。",
                     style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = notifications) { Text("通知权限") }
                     TextButton(onClick = model::syncPush) { Text("重新注册") }
                 }
                 if (state.catalogs.values.any { !it.pushConfigured })

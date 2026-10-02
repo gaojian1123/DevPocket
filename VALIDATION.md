@@ -109,3 +109,43 @@ This does not qualify a physical phone, cellular network, background/lock-screen
 After the user finished testing, the dedicated ordinary CLI exited normally, the identified emulator shut down without a wipe, and only its dedicated ADB server was stopped. The recorded processes and local listening ports were confirmed gone. App/Keystore/AVD data, host configuration, grants, source and private historical evidence were retained. The user explicitly chose to leave the existing cloud VM/relay and retained resources running; no cloud shutdown or deletion was performed.
 
 Git initialization and the initial source commit were authorized only afterward. Build 002 and the frozen cloud business archive remain the original byte-identical artifacts, with their original no-Git provenance; their metadata is not rewritten to claim the new repository commit. Private parameters, credentials, user-session identifiers and runtime evidence are excluded from the source index.
+
+## Background mode development checkpoint (2026-10-02)
+
+This is a separate source-worktree check, **not** an extension of build 002's
+installed acceptance. No sealed APK, installed device, existing CLI session or
+cloud relay was changed.
+
+The following command passed using the existing isolated JDK and Android SDK:
+
+```powershell
+.\scripts\build-android.ps1 -Jdk C:\Projects\DevPocket\.tools\jdk-21 -Sdk C:\Projects\DevPocket\.tools\android-sdk -Lint
+```
+
+Observed result: debug APK assembly, **42 JVM tests** (zero failures, errors or
+skips), and Android lint passed. The current development output is
+`android\app\build\outputs\apk\debug\app-debug.apk`; it has not been installed,
+sealed, assigned a new accepted-build number or distributed.
+
+The added checks cover:
+
+- Initial paged-history suppression, outstanding requests, idle transitions,
+  independent reminder cursors, reconnect coalescing, duplicate events,
+  retention resets and rejection of events belonging to another session.
+- All authorized unarchived sessions across multiple hosts/relays, discovery
+  and removal, scoped revocation, cancellation, storage failures and retry of
+  interrupted notification delivery or checkpoint cleanup.
+- A real loopback HTTP/WebSocket exchange through the existing OkHttp client:
+  authenticated, scope-specific subscriptions, reconnect and replay, with only
+  GET requests and no CLI commands.
+- Robolectric Android API 26 and 35 checks for explicit opt-in, non-sticky
+  foreground lifetime, Stop notification action, stale service destruction,
+  notification/channel denial, generic scoped notification cards and private
+  checkpoint persistence. The `specialUse` manifest declaration is checked on
+  API 35. Robolectric is test-only; it is not a hardware acceptance substitute.
+
+Real BYD/DiLink notification presentation, OEM background policy, screen-off
+or Doze operation, vehicle power transitions, mobile networking and sustained
+background delivery remain **unverified**. No emulator/instrumentation or
+real-CLI check was run for this change, and no Google Play policy approval is
+claimed. FCM configuration and its earlier delivery gaps are unchanged.

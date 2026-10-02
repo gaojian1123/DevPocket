@@ -4,6 +4,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <application
         android:name=".DevPocketApplication"
         android:allowBackup="false"
@@ -27,6 +29,15 @@
         </activity>
         <service android:name=".push.DevPocketMessagingService" android:exported="false">
             <intent-filter><action android:name="com.google.firebase.MESSAGING_EVENT" /></intent-filter>
+        </service>
+        <service
+            android:name=".background.BackgroundService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-started ongoing monitoring of paired remote CLI sessions for pending human decisions and runtime updates. A visible connection notification provides Stop. This is continuous interactive-session monitoring, not a finite data transfer; no boot or automatic restart." />
         </service>
         <provider
             android:name="com.google.firebase.provider.FirebaseInitProvider"

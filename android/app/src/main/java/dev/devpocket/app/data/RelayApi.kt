@@ -1,6 +1,7 @@
 package dev.devpocket.app.data
 
 import dev.devpocket.app.BuildConfig
+import dev.devpocket.app.background.SessionEventSource
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.URLEncoder
@@ -34,7 +35,7 @@ class ApiFailure(val status: Int, val detail: WireError) : IOException("${detail
 private data class Payload(val status: Int, val headers: Headers, val bytes: ByteArray)
 data class Download(val name: String, val mime: String, val bytes: ByteArray)
 
-class RelayApi(val account: Account) {
+class RelayApi(val account: Account) : SessionEventSource {
     private val base = RelayAddress.validate(account.relayUrl, BuildConfig.ALLOW_EMULATOR_HTTP).toHttpUrl()
     private fun path(vararg segments: String): HttpUrl = base.newBuilder().apply { segments.forEach(::addPathSegment) }.build()
     private fun sessionPath(scope: Scope, vararg segments: String): HttpUrl {
@@ -45,13 +46,13 @@ class RelayApi(val account: Account) {
         Request.Builder().url(url).header("Authorization", "Bearer ${account.token}")
             .method(method, json?.toString()?.toRequestBody(JSON_MEDIA)).build()
 
-    suspend fun catalog(): Catalog {
+    override suspend fun catalog(): Catalog {
         val catalog = WireJson.decodeFromJsonElement<Catalog>(json(request(path("v1", "catalog"))))
         if (catalog.protocol != 1) throw ApiFailure(409, WireError("PROTOCOL_VERSION", "请升级 DevPocket：中转协议版本不兼容。"))
         return catalog
     }
 
-    suspend fun events(scope: Scope, after: Long): EventPage =
+    override suspend fun events(scope: Scope, after: Long): EventPage =
         WireJson.decodeFromJsonElement(json(request(sessionPath(scope, "events").newBuilder()
             .addQueryParameter("after", after.toString()).build())))
 
@@ -100,7 +101,7 @@ class RelayApi(val account: Account) {
         return Download(attachment.name, attachment.mime, result.bytes)
     }
 
-    fun stream(scope: Scope, after: Long, onOpen: () -> Unit): Flow<EventPage> = callbackFlow {
+    override fun stream(scope: Scope, after: Long, onOpen: () -> Unit): Flow<EventPage> = callbackFlow {
         require(scope.accountId == account.id)
         val url = path("v1", "events").newBuilder()
             .addQueryParameter("hostId", scope.hostId).addQueryParameter("sessionId", scope.sessionId)
