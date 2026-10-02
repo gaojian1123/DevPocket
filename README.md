@@ -1,19 +1,17 @@
 # DevPocket 0.1.0 (development)
 
-DevPocket is a **native Android app written in Kotlin and Jetpack Compose** for a GitHub Copilot CLI terminal on a Windows Dev Box. It is an independent project, not MobileTalk, a WebView, a PWA, React Native, Flutter, VS Code Chat, Codex, or a Copilot desktop session controller.
+DevPocket is a **native Android app written in Kotlin and Jetpack Compose** for a GitHub Copilot CLI terminal on a Windows Dev Box.
 
-The phone joins a **registered, already-running CLI runtime** through an opt-in extension calling the CLI's bundled `joinSession()`. There is no `CopilotClient` spawn/resume path in the production bridge, no copied-session substitute, no local HTTP control port, and no modification of CLI session-store files.
+The phone joins a **registered, already-running CLI runtime** through an opt-in extension calling the CLI's bundled `joinSession()`, preserving the original terminal and session identity.
 
 ```text
 Native Android (Kotlin / Compose / OkHttp / Keystore)
         | HTTPS commands + WSS user-facing events
-Independent DevPocket relay (Node 24 / TypeScript / SQLite)
+DevPocket relay (Node 24 / TypeScript / SQLite)
         ^
         | outbound authenticated WSS only
 Dev Box extension -> joinSession() -> original Copilot terminal
 ```
-
-TypeScript is used **only on the relay/Dev Box**, not to implement the Android interface or client business state.
 
 ## What is implemented
 
@@ -30,7 +28,7 @@ TypeScript is used **only on the relay/Dev Box**, not to implement the Android i
 | Git | Read-only status, branch, staged/unstaged per-path diffs; no commit, staging, checkout or push; no shell interpolation |
 | Notifications | Android notification channel + Android 13 permission flow + optional native FCM registration/relay integration; **unconfigured** is shown until provisioned |
 
-Known limits are deliberate and visible, not fake implementations:
+Current limitations:
 
 - Only registered live sessions can be controlled. No automatic scan/resume of unregistered CLI history; no "create CLI session" command.
 - CLI **1.0.90-0** is the validated adapter target. Recorded session version **and live capability probes** gate actions; unknown versions are read-only. The recorded version is not presented as proof that an upgraded/resumed process has the same build.
@@ -152,7 +150,7 @@ These tests use a **new disposable ordinary terminal**, not the SDK's create/res
 5. Run `npm run test:cli:cancel` to run a bounded in-workspace Node helper through the real built-in PowerShell tool. It observes actual parent/child PIDs, queues another message, requests abort, requires runtime idle and both process exits, checks the cleared queue's delivery state, and sends a new prompt to the **same** runtime afterward.
 6. End the disposable CLI with `/exit` and stop the dedicated relay with Ctrl+C. Remove its raw test credentials; preserve only the ignored diagnostic evidence you need. Do not restart or modify unrelated CLI sessions.
 
-The tested terminal host was the app's native **Terminal canvas** (only a terminal display/PTY, not an app-agent runtime). Direct terminal input works too. A generic piped-stdin/raw-PTY harness is not shipped as a claimed replacement; it did not reliably drive this machine's startup/trust UI. Tests fail rather than fabricating an attachment.
+The tested terminal host was the app's native **Terminal canvas**, used as a terminal display/PTY for an ordinary Copilot CLI. Direct terminal input works too. A generic piped-stdin/raw-PTY harness is not shipped as a claimed replacement; it did not reliably drive this machine's startup/trust UI. Tests fail rather than fabricating an attachment.
 
 ## Notifications and human setup
 
@@ -165,7 +163,7 @@ The app builds **without** `google-services.json` and without a private Google a
 
 Push payloads contain opaque routing IDs and a generic update/attention notice, not chat, tool commands, approvals or GitHub secrets. Push is best-effort, is not proof of task success, and opening the app re-authorizes/synchronizes from the relay. Stale tokens are removed when FCM reports `UNREGISTERED`. Revoked devices are not selected for later notifications.
 
-## Independent deployment
+## Deployment
 
 **Azure with azd/Bicep:** see [`deployment\AZURE.md`](deployment/AZURE.md). `azure.yaml` and `infra\main.bicep` preserve the single-Linux-VM/Compose/Caddy/local-SQLite architecture using official project hooks compatible with azd 1.25.5. After separately authorized infrastructure provisioning, staged DNS recovery and encrypted frozen-release import, the relay is running and public HTTPS/health/unauthenticated HTTP-WSS checks passed. Private Blob upload remains failed with its retry budget exhausted; it was not opened broadly or represented as successful. The accepted Android build 002 and app/relay version remain unchanged.
 
@@ -196,4 +194,4 @@ A later user-selected visible emulator installed the exact sealed build 002, pai
 - One-time decisions use the runtime's atomic `success` result. Terminal-first/phone-first races have one winner; a stale response is not success.
 - Approvals whose safe display is incomplete, redacted or unknown route back to the terminal. Do not approve model-generated command text without reviewing it.
 - Project file/Git operations are local and read-only, deny sensitive paths and links, bound output/time, and consult the CLI's content-exclusion evaluator on each operation.
-- Android renders untrusted text as selectable native text, not HTML. No JavaScript, automatic link navigation, WebView, arbitrary URI intents or executable attachment previews are used.
+- Android renders untrusted content as selectable native text. Links and attachment previews remain non-executable; opening a saved document in a trusted external app is an explicit user action.
