@@ -1,0 +1,21 @@
+{
+  "name": "devpocket-azure-operations",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0.0 <25" },
+  "scripts": {
+    "test": "node --test --test-timeout=15000 tests/*.test.mjs",
+    "plan": "node cli.mjs plan",
+    "package": "node cli.mjs package",
+    "validate": "node validate.mjs"
+  },
+  "dependencies": {
+    "@azure/arm-compute": "25.1.1",
+    "@azure/identity": "4.13.3",
+    "@azure/storage-blob": "12.34.0",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "tar": "7.5.22",
+    "yaml": "2.9.1"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "devpocket",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "scripts": {
+    "build": "tsc -p backend/tsconfig.json && node scripts/bundle-extension.mjs",
+    "typecheck": "tsc -p backend/tsconfig.json --noEmit",
+    "test": "node --import tsx --test backend/tests/*.test.ts",
+    "relay": "node dist/cli.js relay",
+    "host": "node dist/cli.js host",
+    "pair": "node dist/cli.js pair",
+    "devices": "node dist/cli.js devices",
+    "revoke": "node dist/cli.js revoke",
+    "schema": "node --import tsx scripts/export-schema.ts",
+    "test:cli:start": "node --import tsx backend/integration/canvas-proof.ts start",
+    "test:cli": "node --import tsx backend/integration/live-checks.ts",
+    "test:cli:cancel": "node --import tsx backend/integration/cancel-check.ts"
+  },
+  "dependencies": {
+    "ws": "8.21.3",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.10",
+    "@types/ws": "8.18.1",
+    "esbuild": "0.25.5",
+    "tsx": "4.20.3",
+    "typescript": "5.8.3",
+    "zod-to-json-schema": "3.24.6"
+  },
+  "allowScripts": {
+    "esbuild": true
+  }
+}

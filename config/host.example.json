@@ -1,0 +1,7 @@
+{
+  "hostId": "REPLACE_WITH_OFFLINE_PROVISIONED_HOST_UUID",
+  "token": "REPLACE_WITH_INDEPENDENT_RANDOM_HOST_TOKEN",
+  "relayUrl": "https://devpocket-relay.example.com",
+  "dataDir": "C:\\DevPocketPrivate\\bridge",
+  "allowInsecureLoopback": false
+}

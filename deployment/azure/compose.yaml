@@ -1,0 +1,57 @@
+name: devpocket-azure
+services:
+  relay:
+    image: devpocket-relay:${DEVPOCKET_RELEASE_ID:?Release digest is required}
+    command:
+      - node
+      - dist/cli.js
+      - relay
+      - --data
+      - /data
+      - --url
+      - https://${DEVPOCKET_DOMAIN:?Public domain is required}
+      - --trusted-proxy
+      - 127.0.0.1
+    user: "1000:1000"
+    volumes:
+      - /srv/devpocket/relay:/data
+    ports:
+      - "80:80"
+      - "443:443"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8787/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+  tls:
+    image: ${DEVPOCKET_CADDY_IMAGE:?Prepared immutable Caddy digest is required}
+    network_mode: service:relay
+    environment:
+      DEVPOCKET_DOMAIN: ${DEVPOCKET_DOMAIN}
+      DEVPOCKET_ACME_EMAIL: ${DEVPOCKET_TLS_EMAIL:?ACME email is required}
+    volumes:
+      - ${DEVPOCKET_RELEASE_DIR:?Release path is required}/deployment/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /srv/devpocket/caddy-data:/data
+      - /srv/devpocket/caddy-config:/config
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+    depends_on:
+      relay: { condition: service_healthy }
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }

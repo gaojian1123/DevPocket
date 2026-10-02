@@ -1,0 +1,957 @@
+{
+  "$ref": "#/definitions/DevPocketProtocolV1",
+  "definitions": {
+    "DevPocketProtocolV1": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "message"
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32000
+                },
+                "attachmentIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "maxItems": 4,
+                  "default": []
+                }
+              },
+              "required": [
+                "type",
+                "text"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "abort"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "permission"
+                },
+                "requestId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "decision": {
+                  "type": "string",
+                  "enum": [
+                    "approve-once",
+                    "reject"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "requestId",
+                "decision"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "answer"
+                },
+                "requestId": {
+                  "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                },
+                "answer": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 8000
+                }
+              },
+              "required": [
+                "type",
+                "requestId",
+                "answer"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "models"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "model.set"
+                },
+                "modelId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "reasoningEffort": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 60
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "modelId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "files.list"
+                },
+                "path": {
+                  "type": "string",
+                  "maxLength": 1000
+                }
+              },
+              "required": [
+                "type",
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "files.read"
+                },
+                "path": {
+                  "type": "string",
+                  "maxLength": 1000,
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "type",
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "git.status"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "git.diff"
+                },
+                "path": {
+                  "type": "string",
+                  "maxLength": 1000,
+                  "minLength": 1
+                },
+                "staged": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "type",
+                "path",
+                "staged"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "refresh"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "command": {
+          "type": "object",
+          "properties": {
+            "commandId": {
+              "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/attachmentIds/items"
+            },
+            "action": {
+              "$ref": "#/definitions/DevPocketProtocolV1/properties/action"
+            }
+          },
+          "required": [
+            "commandId",
+            "action"
+          ],
+          "additionalProperties": false
+        },
+        "hostFrame": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "hello"
+                },
+                "protocol": {
+                  "type": "number",
+                  "const": 1
+                },
+                "summary": {
+                  "type": "object",
+                  "properties": {
+                    "sessionId": {
+                      "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/attachmentIds/items"
+                    },
+                    "projectId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    },
+                    "projectName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 160
+                    },
+                    "cliVersion": {
+                      "type": "string",
+                      "maxLength": 80
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "idle",
+                        "running",
+                        "waiting",
+                        "cancel_requested",
+                        "unsupported",
+                        "offline"
+                      ]
+                    },
+                    "permissionMode": {
+                      "type": "string",
+                      "maxLength": 80
+                    },
+                    "modelId": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "reasoningEffort": {
+                      "type": "string",
+                      "maxLength": 60
+                    },
+                    "capabilities": {
+                      "type": "object",
+                      "properties": {
+                        "messages": {
+                          "type": "boolean"
+                        },
+                        "abort": {
+                          "type": "boolean"
+                        },
+                        "permissions": {
+                          "type": "boolean"
+                        },
+                        "questions": {
+                          "type": "boolean"
+                        },
+                        "models": {
+                          "type": "boolean"
+                        },
+                        "files": {
+                          "type": "boolean"
+                        },
+                        "git": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "messages",
+                        "abort",
+                        "permissions",
+                        "questions",
+                        "models",
+                        "files",
+                        "git"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 500
+                      },
+                      "maxItems": 20
+                    },
+                    "registeredAt": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "sessionId",
+                    "projectId",
+                    "projectName",
+                    "title",
+                    "cliVersion",
+                    "state",
+                    "permissionMode",
+                    "modelId",
+                    "reasoningEffort",
+                    "capabilities",
+                    "warnings",
+                    "registeredAt"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "type",
+                "protocol",
+                "summary"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "summary"
+                },
+                "summary": {
+                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/0/properties/summary"
+                }
+              },
+              "required": [
+                "type",
+                "summary"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "events"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                          },
+                          "at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "const": "user.message"
+                          },
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "messageId": {
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                              },
+                              "content": {
+                                "type": "string",
+                                "maxLength": 64000
+                              },
+                              "attachments": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 200
+                                },
+                                "maxItems": 20
+                              }
+                            },
+                            "required": [
+                              "messageId",
+                              "content",
+                              "attachments"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "at",
+                          "kind",
+                          "data"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                          },
+                          "at": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "const": "assistant.message"
+                          },
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "messageId": {
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                              },
+                              "content": {
+                                "type": "string",
+                                "maxLength": 64000
+                              },
+                              "originatingMessageId": {
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                              }
+                            },
+                            "required": [
+                              "messageId",
+                              "content"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "at",
+                          "kind",
+                          "data"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                          },
+                          "at": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "const": "assistant.delta"
+                          },
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "messageId": {
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                              },
+                              "content": {
+                                "type": "string",
+                                "maxLength": 16000
+                              }
+                            },
+                            "required": [
+                              "messageId",
+                              "content"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "at",
+                          "kind",
+                          "data"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                          },
+                          "at": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "const": "tool.start"
+                          },
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "toolCallId": {
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                              },
+                              "name": {
+                                "type": "string",
+                                "maxLength": 200
+                              },
+                              "text": {
+                                "type": "string",
+                                "maxLength": 12000
+                              }
+                            },
+                            "required": [
+                              "toolCallId",
+                              "name",
+                              "text"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "at",
+                          "kind",
+                          "data"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                          },
+                          "at": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "const": "tool.output"
+                          },
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "toolCallId": {
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                              },
+                              "text": {
+                                "type": "string",
+                                "maxLength": 32000
+                              },
+                              "complete": {
+                                "type": "boolean"
+                              },
+                              "success": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "toolCallId",
+                              "text",
+                              "complete"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "at",
+                          "kind",
+                          "data"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                          },
+                          "at": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "const": "requests"
+                          },
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "items": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "requestId": {
+                                      "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                    },
+                                    "type": {
+                                      "type": "string",
+                                      "enum": [
+                                        "permission",
+                                        "question",
+                                        "terminal"
+                                      ]
+                                    },
+                                    "title": {
+                                      "type": "string",
+                                      "maxLength": 500
+                                    },
+                                    "detail": {
+                                      "type": "string",
+                                      "maxLength": 12000
+                                    },
+                                    "permissionKind": {
+                                      "type": "string",
+                                      "maxLength": 80
+                                    },
+                                    "choices": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string",
+                                        "maxLength": 1000
+                                      },
+                                      "maxItems": 50
+                                    },
+                                    "allowFreeform": {
+                                      "type": "boolean"
+                                    },
+                                    "supported": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "requestId",
+                                    "type",
+                                    "title",
+                                    "detail",
+                                    "choices",
+                                    "allowFreeform",
+                                    "supported"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "maxItems": 100
+                              }
+                            },
+                            "required": [
+                              "items"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "at",
+                          "kind",
+                          "data"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                          },
+                          "at": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "const": "runtime.state"
+                          },
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "state": {
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/0/properties/summary/properties/state"
+                              },
+                              "aborted": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "state"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "at",
+                          "kind",
+                          "data"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                          },
+                          "at": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "const": "delivery"
+                          },
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "commandId": {
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/attachmentIds/items"
+                              },
+                              "status": {
+                                "type": "string",
+                                "enum": [
+                                  "dispatched",
+                                  "admitted",
+                                  "queued",
+                                  "processing",
+                                  "cancel_requested",
+                                  "completed",
+                                  "failed",
+                                  "uncertain",
+                                  "cancelled"
+                                ]
+                              },
+                              "result": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "boolean"
+                                    },
+                                    {
+                                      "type": "null"
+                                    },
+                                    {
+                                      "type": "array",
+                                      "items": {
+                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/7/properties/data/properties/result/additionalProperties"
+                                      }
+                                    },
+                                    {
+                                      "type": "object",
+                                      "additionalProperties": {
+                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/7/properties/data/properties/result/additionalProperties"
+                                      }
+                                    }
+                                  ]
+                                }
+                              },
+                              "error": {
+                                "type": "object",
+                                "properties": {
+                                  "code": {
+                                    "type": "string",
+                                    "maxLength": 80
+                                  },
+                                  "message": {
+                                    "type": "string",
+                                    "maxLength": 2000
+                                  }
+                                },
+                                "required": [
+                                  "code",
+                                  "message"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "commandId",
+                              "status"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "at",
+                          "kind",
+                          "data"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                          },
+                          "at": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "const": "notice"
+                          },
+                          "data": {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "type": "string",
+                                "maxLength": 80
+                              },
+                              "message": {
+                                "type": "string",
+                                "maxLength": 2000
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "at",
+                          "kind",
+                          "data"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "maxItems": 200
+                }
+              },
+              "required": [
+                "type",
+                "items"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "result"
+                },
+                "commandId": {
+                  "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/attachmentIds/items"
+                },
+                "status": {
+                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/7/properties/data/properties/status"
+                },
+                "result": {
+                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/7/properties/data/properties/result"
+                },
+                "error": {
+                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/7/properties/data/properties/error"
+                }
+              },
+              "required": [
+                "type",
+                "commandId",
+                "status"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "pendingRequest": {
+          "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/5/properties/data/properties/items/items"
+        },
+        "receipt": {
+          "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/7/properties/data"
+        },
+        "sessionSummary": {
+          "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/0/properties/summary"
+        },
+        "userEvent": {
+          "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items"
+        }
+      },
+      "required": [
+        "action",
+        "command",
+        "hostFrame",
+        "pendingRequest",
+        "receipt",
+        "sessionSummary",
+        "userEvent"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

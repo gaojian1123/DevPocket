@@ -1,0 +1,8 @@
+# Copy only the public Firebase Android application settings into your private
+# Gradle user properties or pass -P arguments when building. No Google plugin or
+# google-services.json is required.
+# Register dev.devpocket.app.debug for debug and dev.devpocket.app for release.
+devpocket.fcm.applicationId=REPLACE_WITH_FIREBASE_ANDROID_APP_ID
+devpocket.fcm.apiKey=REPLACE_WITH_PUBLIC_FIREBASE_ANDROID_API_KEY
+devpocket.fcm.projectId=REPLACE_WITH_YOUR_INDEPENDENT_PROJECT_ID
+devpocket.fcm.senderId=REPLACE_WITH_NUMERIC_SENDER_ID

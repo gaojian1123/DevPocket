@@ -1,0 +1,46 @@
+name: devpocket
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    command:
+      - node
+      - dist/cli.js
+      - relay
+      - --data
+      - /data
+      - --url
+      - https://${DEVPOCKET_DOMAIN:?Set an independent DevPocket domain}
+      - --trusted-proxy
+      - 127.0.0.1
+    volumes:
+      - relay-data:/data
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+  tls:
+    image: caddy:2-alpine
+    network_mode: service:relay
+    environment:
+      DEVPOCKET_DOMAIN: ${DEVPOCKET_DOMAIN}
+      DEVPOCKET_ACME_EMAIL: ${DEVPOCKET_ACME_EMAIL:?Set the operator email}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: "no"
+    depends_on:
+      - relay
+volumes:
+  relay-data:
+  caddy-data:
+  caddy-config:

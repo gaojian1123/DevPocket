@@ -1,0 +1,55 @@
+# yaml-language-server: $schema=https://aka.ms/azure-dev/v1.0/azure.yaml.json
+name: devpocket
+requiredVersions:
+  azd: ">= 1.25.5"
+infra:
+  provider: bicep
+  path: infra
+  module: main
+# No services/host: vm. Deployment is performed by supported project hooks.
+hooks:
+  preprovision:
+    windows:
+      shell: pwsh
+      run: node .\deployment\azure\cli.mjs preprovision
+      continueOnError: false
+    posix:
+      shell: sh
+      run: node deployment/azure/cli.mjs preprovision
+      continueOnError: false
+  postprovision:
+    windows:
+      shell: pwsh
+      run: node .\deployment\azure\cli.mjs postprovision
+      continueOnError: false
+    posix:
+      shell: sh
+      run: node deployment/azure/cli.mjs postprovision
+      continueOnError: false
+  predeploy:
+    windows:
+      shell: pwsh
+      run: node .\deployment\azure\cli.mjs predeploy
+      continueOnError: false
+    posix:
+      shell: sh
+      run: node deployment/azure/cli.mjs predeploy
+      continueOnError: false
+  postdeploy:
+    windows:
+      shell: pwsh
+      run: node .\deployment\azure\cli.mjs postdeploy
+      continueOnError: false
+    posix:
+      shell: sh
+      run: node deployment/azure/cli.mjs postdeploy
+      continueOnError: false
+  predown:
+    windows:
+      shell: pwsh
+      run: node .\deployment\azure\cli.mjs predown
+      continueOnError: false
+    posix:
+      shell: sh
+      run: node deployment/azure/cli.mjs predown
+      continueOnError: false
