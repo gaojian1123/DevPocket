@@ -263,3 +263,106 @@ cloud or Android operation occurred. Temporary fixture processes and data were
 cleaned up. The new GitHub Actions workflow has not been run remotely and no tag
 or GitHub release was created; its tag-triggered publication target is a draft
 extension release, separate from APK distribution.
+
+## Standalone Azure setup checkpoint (2026-10-03, UTC+08:00)
+
+This checkpoint and its review follow-ups use local UTC+08:00 dates. The
+overnight October 3 runs occurred on October 2 in UTC.
+
+This fork was fast-forwarded to the merged user-extension change before adding
+setup. The inherited files matched that merged source byte-for-byte; no duplicate
+installation change is included in the new work.
+
+The following local checks passed with Node 24.18.0, PowerShell 7 and Python 3.12:
+
+```powershell
+npm run test:setup
+node --test scripts\tests\extension-package.test.mjs
+npm test
+node --test deployment\onboarding\tests\action.test.mjs deployment\onboarding\tests\handoff.test.mjs deployment\onboarding\tests\registration.test.mjs deployment\onboarding\tests\acl.test.mjs deployment\azure\tests\package.test.mjs
+```
+
+`test:setup` includes the production TypeScript build and standalone bundles,
+**20 JavaScript tests** and **3 Python guest-discovery tests**. The backend suite
+passed **29 tests**, standalone extension distribution passed its integration
+check, and the selected legacy onboarding/deployment packaging checks passed
+**7 tests**.
+
+Setup checks exercise target selection and scoping, confirmation refusal,
+host-name collisions, private Windows ACLs, encrypted handoff, authentication
+against a real loopback relay, installation under an isolated `COPILOT_HOME`,
+and repeated setup without a second host identity. The actual extracted ZIP
+also completed setup outside the source checkout using its own bundled command
+and helper assets. The distribution still supports the prior project/plugin
+installations and multiple original fixture sessions.
+
+Failure coverage includes execution followed by a lost ARM response, GET-only
+reconciliation of an accepted asynchronous operation, mutated immutable request
+bodies, expired approval, changed Azure identity/VM/helper files, local host
+authentication failure, install failure after finalization, and changed saved
+credentials or installed files. A lost response without a saved Azure operation
+URL remains visibly uncertain and blocks replay. The original encryption,
+pre-commit registration recovery and legacy request-size checks still pass.
+
+**Azure management responses and Linux guest environment discovery were
+simulated.** Encryption, SQLite, the loopback relay, filesystem operations,
+Windows ACL checks, archive construction and user installation were real but
+isolated. These checks are not live Azure Run Command, public HTTPS, actual CLI
+discovery/consent, or new phone acceptance. The new interactive enrollment still
+needs a separately authorized real-target acceptance.
+
+No Azure login/token retrieval, resource mutation, real host/device enrollment,
+public endpoint request, global extension installation or existing-session reload
+was performed. Setup does not change the relay wire contract or Android sources.
+The previously sealed APK and running/frozen cloud release remain unchanged.
+Temporary fixture processes and directories were cleaned up; no tag or extension
+release was published by these local checks.
+
+### Setup review follow-up (2026-10-03, UTC+08:00)
+
+Focused regressions first reproduced both review findings: the token adapter
+rejected azd's default raw-token output, and setup printed a pairing command
+relative to the caller instead of the extracted package. Token acquisition now
+explicitly requests JSON. Pairing instructions use absolute, PowerShell
+literal-quoted paths for both the package CLI and the private configuration.
+
+`npm run test:setup` passed **21 JavaScript tests** and **3 Python tests** after
+the fixes. The extracted-ZIP check uses a directory containing spaces, an
+apostrophe and a dollar sign, executes the printed command with `--help` from
+its parent directory, and verifies the same command after completed-setup
+re-entry. The standalone distribution check and all **29 backend tests** also
+passed. The azd command adapter was simulated; a local `azd auth token --output
+json --help` check did not request a token. No Azure credential retrieval,
+real enrollment, device pairing or live extension loading occurred.
+
+The next review identified that failures before dispatch and definitive Azure
+401/403 rejections were incorrectly retained as uncertain submissions. The ARM
+adapter now supplies typed non-admission evidence for those cases. The journal
+records `not-admitted` and allows a subsequent run to retry the same body, scope
+and hash after the cause is corrected. Transport/5xx failures, unreadable
+responses and uncertain checkpoints still cannot authorize a replay.
+
+The new regressions reproduced the lockout before the fix and now pass for
+login failure, changed principal, request serialization and HTTP 401/403.
+They verify no pre-dispatch fetch, no prematurely created host, and exactly one
+host after a permitted retry. `npm run test:setup` now passes **28 JavaScript
+tests** and **3 Python tests**; standalone distribution, **29 backend tests**
+and **5 selected legacy onboarding checks** also pass. Azure responses remain
+simulated, with no real management or credential operations performed.
+
+A later review found that a partial configuration write could strand local
+recovery, and that invoking the relay store constructor could create schema
+objects before rejecting an incompatible database. Configuration publication
+now uses the atomic JSON writer in exclusive mode: incomplete writes never
+appear at the final path and concurrently created files are preserved. Host
+registration opens the existing database without any schema-creation path,
+validates the host-table contract, and shares only host-record insertion with
+the relay.
+
+Both configuration regressions failed before the fix and pass afterward.
+Database checks verify missing files are not created, incompatible schemas retain
+identical bytes, and a compatible host-only database gains no tables/indexes or
+schema-version change when registering a host. `npm run test:setup` passes
+**33 JavaScript tests** and **3 Python tests**; all **29 backend tests** and the
+**5 selected legacy onboarding checks**, including the actual guest-bundle byte
+limit, pass. These remain isolated local checks, not live Azure acceptance.

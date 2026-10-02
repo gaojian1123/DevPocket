@@ -2,6 +2,88 @@
 
 Onboarding registers a host in the **running cloud relay's existing database**, then gives only that Dev Box its private host configuration. Creating a local relay database is not cloud registration. The Android app needs its own revocable device grant, not a GitHub login or the host's long-term credential.
 
+## One-command setup for the existing Azure relay
+
+The standalone extension package now includes `setup`. It is separate from the
+historical trial commands below and does not require their `.data` release records
+or a checkout whose source matches the frozen deployment.
+
+On the **new Windows Dev Box**, verify/extract the ZIP using its included README,
+have Node 24 and Azure Developer CLI installed, and sign in to the intended Azure
+directory if needed. From the extracted package:
+
+```powershell
+node .\devpocket.mjs setup
+```
+
+The interactive flow lists Azure directories, enabled subscriptions and tagged
+DevPocket VMs, then asks for a unique Dev Box name. Optional `--tenant-id`,
+`--vm-id` (full ARM ID) and `--name` hints skip those selections, not the final
+confirmation. The selected identity needs subscription/resource-group/VM reads
+and VM Run Command authority. No login, global account selection or permission
+grant is performed by setup. Non-interactive execution is refused rather than
+assuming consent.
+
+After one target-specific confirmation, it:
+
+- Records the Azure tenant/principal, VM resource and immutable instance IDs,
+  deployment-owner tag and data disk identity; rechecks them before each command.
+- Discovers the live release/image, HTTPS origin and exact healthy relay
+  container through Azure Run Command. IMDS, both owner markers, the mounted data
+  disk, Compose labels, non-root relay command and existing database must match.
+- Reuses encrypted, crash-recoverable host registration through a non-migrating
+  connection to the existing `hosts` table. Read-only compatibility checks precede
+  writable access; host-record insertion is shared with the relay, but its
+  schema-creating `RelayStore` constructor is never invoked. Schema, service,
+  image, network and other host/device records are unchanged.
+- Saves a protected local configuration, authenticates it over public HTTPS,
+  removes the one-time recipient key and finalizes the encrypted cloud handoff.
+- Installs the user extension with no per-project switches and prints the relay
+  origin, the exact phone-pairing command and existing-session hot-load guidance.
+
+The supported target is this project's public-Azure Linux VM deployment:
+`DevPocket` ownership tags, `devpocket-azure` Compose project and owned
+`/srv/devpocket` data mount. Other topologies, sovereign clouds and altered relay
+commands are rejected; there is no heuristic fallback to a different container or
+database. No SSH port, Blob upload, deployment approval or additional public relay
+endpoint is involved.
+
+Setup's private files live at `%LOCALAPPDATA%\DevPocket\setup`, independently of
+the package/checkouts. Only the current Windows user and SYSTEM receive access.
+The host configuration is synced to a sibling temporary file and published
+atomically without replacing an existing file. An interrupted write therefore
+retains the encrypted handoff and key for recovery instead of exposing a partial
+configuration. Keep `host.local.json` and `bridge` there. Configure `COPILOT_HOME` before setup if
+the intended CLI uses a custom user directory. Old project extensions still
+shadow a same-named user extension and are never removed automatically.
+
+Each management phase is journaled and synced **before** dispatch, with
+the exact body, scope and hash. Rerunning the same package resumes saved responses
+or polls the already-recorded ARM operation; it never repeats an uncertain POST.
+Pre-dispatch failures and definitive HTTP 401/403 rejections are recorded as
+`not-admitted`, allowing a subsequent run to retry the same body and scope after
+the cause is corrected. Transport failures, other HTTP errors and unreadable
+responses do not establish non-admission and remain blocked against replay.
+The authorization window is four hours, guest execution is bounded by the
+existing timeout, request bytes stay under 36,369, and output must match the
+scoped result schema. Changed helper files, identity or targets stop recovery.
+An unknown result without a saved polling URL, an expired handoff or a definite
+failed guest phase needs operator inspection, not a new enrollment attempt.
+
+If a process is forcibly terminated, inspect its `setup.lock` and verify the
+recorded process is not running before removing only that lock. Do not delete
+the state, key or configuration to get past an uncertain operation. This first
+version has one persistent setup target per Windows user; host replacement/reset
+remains an explicit operator task. For a completed enrollment, use the regular
+`install --user --config ... --confirm-install` command to upgrade the extension,
+not another registration.
+
+No pairing code is generated before the phone is ready. Use the printed `pair`
+command at that time. An existing CLI is never restarted or silently reloaded:
+explicitly invoke its `extensions_reload` tool and retain normal CLI consent.
+
+## Historical scoped trial
+
 The dedicated folder-only trial completed cloud registration, protected credential handoff and an authenticated public HTTPS/WSS roundtrip using a named temporary simulated device. That device's host grant and local credential were removed. The permanent test host and ordinary CLI were initially left available; after the user finished testing, the dedicated local processes were stopped normally while host configuration and history were retained. A physical Android phone and its pairing remain separate.
 
 The subsequent user-selected **visible native Android emulator** installed byte-identical sealed build 002, paired through the actual app form, and completed a public message roundtrip to the same CLI/session/PIDs. Its device grant, app login and Keystore are deliberately retained for the user even though its local process and dedicated ADB server were subsequently stopped. It is not the temporary API controller above and must not be revoked during ordinary process cleanup. Its isolated AVD, dedicated ADB port/serial, process handles and credential-free screenshots remain in ignored local evidence.
@@ -13,7 +95,7 @@ The subsequent user-selected **visible native Android emulator** installed byte-
 Only these management phases exist:
 
 - `host-inspect`: check the VM via IMDS, owned mounted data, current immutable release, exact healthy relay container/image/command, and existing `/srv/devpocket/relay/relay.sqlite`. Report a same-name collision rather than overwriting it.
-- `host-register`: use the frozen relay's existing `RelayStore.createHost` administrator contract. No database schema or running service change is made.
+- `host-register`: use the existing host-record administrator contract through a non-migrating database connection. No database schema or running service change is made.
 - `host-finalize`: require successful local public-HTTPS host authentication, remove only that operation's encrypted handoff journal, retain the permanent host and a non-sensitive closing receipt, and audit bounded visible guest logs.
 
 The Dev Box creates a one-time RSA-3072 recipient key under a new `%LOCALAPPDATA%\DevPocket\trial-<operation-id>` directory. Inheritance is disabled; only the current user and SYSTEM have access. Windows PowerShell's ACL helper receives its own default module search path, avoiding incompatible PowerShell 7 module-path inheritance. No global environment setting is changed.

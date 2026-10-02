@@ -18,6 +18,10 @@ if ((Test-Path -LiteralPath $archive) -or (Test-Path -LiteralPath $checksum)) {
 }
 $sources = [ordered]@{
     'devpocket.mjs' = 'dist\devpocket.mjs'
+    'setup.mjs' = 'dist\setup.mjs'
+    'setup-assets\cloud-host.mjs' = 'dist\setup-assets\cloud-host.mjs'
+    'setup-assets\guest.py' = 'dist\setup-assets\guest.py'
+    'setup-assets\private-directory.ps1' = 'dist\setup-assets\private-directory.ps1'
     'extension\extension.mjs' = 'dist\extension\extension.mjs'
     'extension\bridge.mjs' = 'dist\extension\bridge.mjs'
     'README.md' = 'extension\README.md'
@@ -60,7 +64,7 @@ try {
     }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'manifest.json') -Encoding utf8NoBOM
     $temporaryArchive = Join-Path $stage 'package.zip'
-    $items = @('devpocket.mjs', 'extension', 'README.md', 'THIRD-PARTY-NOTICES.txt', 'manifest.json') |
+    $items = @('devpocket.mjs', 'setup.mjs', 'setup-assets', 'extension', 'README.md', 'THIRD-PARTY-NOTICES.txt', 'manifest.json') |
         ForEach-Object { Join-Path $stage $_ }
     Compress-Archive -LiteralPath $items -DestinationPath $temporaryArchive -CompressionLevel Optimal
     $digest = (Get-FileHash -LiteralPath $temporaryArchive -Algorithm SHA256).Hash.ToLowerInvariant()

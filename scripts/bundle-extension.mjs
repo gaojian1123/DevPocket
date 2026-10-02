@@ -16,4 +16,17 @@ await build({
   bundle: true, platform: "node", format: "esm", target: "node24", sourcemap: false,
   banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
 });
+await mkdir("dist/setup-assets", { recursive: true });
+await build({
+  entryPoints: ["deployment/onboarding/setup.mjs"], outfile: "dist/setup.mjs",
+  bundle: true, platform: "node", format: "esm", target: "node24", sourcemap: false,
+  banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
+});
+await build({
+  entryPoints: ["deployment/onboarding/cloud-host.mjs"], outfile: "dist/setup-assets/cloud-host.mjs",
+  bundle: true, platform: "node", format: "esm", target: "node24",
+  minifyWhitespace: true, minifySyntax: true,
+});
+for (const name of ["guest.py", "private-directory.ps1"])
+  await copyFile(`deployment/onboarding/${name}`, `dist/setup-assets/${name}`);
 console.log("Built the DevPocket bridge and standalone command; neither has been installed or reloaded.");

@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { Fault, hash, secret } from "./security.js";
+import { createHostRecord } from "./host-record.js";
 import {
   Receipt, SessionSummary, UserEvent, finalStatus,
   type Command, type EventPage, type SessionInfo, type WireEvent,
@@ -67,11 +68,8 @@ export class RelayStore {
   close(): void { this.db.close(); }
 
   createHost(name: string): { hostId: string; token: string; name: string } {
-    const hostId = randomUUID();
-    const token = secret("dph");
     const cleanName = z.string().trim().min(1).max(80).parse(name);
-    this.db.prepare("INSERT INTO hosts (id,name,token_hash) VALUES (?,?,?)").run(hostId, cleanName, hash(token));
-    return { hostId, token, name: cleanName };
+    return createHostRecord(this.db, cleanName);
   }
 
   host(token: string): { id: string; name: string } {

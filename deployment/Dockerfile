@@ -5,6 +5,7 @@ RUN npm ci --ignore-scripts
 COPY backend/tsconfig.json backend/tsconfig.json
 COPY backend/src backend/src
 COPY extension extension
+COPY deployment/onboarding deployment/onboarding
 COPY scripts/bundle-extension.mjs scripts/bundle-extension.mjs
 RUN npm run build && npm prune --omit=dev --ignore-scripts
 

@@ -12,7 +12,10 @@ test("private release packaging is an allowlist snapshot, never the whole worksp
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const name of ["package.json", "package-lock.json", ".dockerignore", "backend/tsconfig.json",
     "backend/src/relay.ts", "extension/extension.mjs", "scripts/bundle-extension.mjs",
-    "deployment/Dockerfile", "deployment/Caddyfile", "deployment/azure/compose.yaml", "deployment/azure/vm/control.sh"]) {
+    "deployment/Dockerfile", "deployment/Caddyfile", "deployment/azure/compose.yaml", "deployment/azure/vm/control.sh",
+    "deployment/onboarding/setup.mjs", "deployment/onboarding/setup-azure.mjs", "deployment/onboarding/setup-actions.mjs",
+    "deployment/onboarding/setup-state.mjs", "deployment/onboarding/handoff.mjs", "deployment/onboarding/cloud-host.mjs",
+    "deployment/onboarding/guest.py", "deployment/onboarding/private-directory.ps1"]) {
     const file = path.join(root, ...name.split("/"));
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, name.endsWith(".json") ? "{}" : "test");
