@@ -109,3 +109,108 @@ This does not qualify a physical phone, cellular network, background/lock-screen
 After the user finished testing, the dedicated ordinary CLI exited normally, the identified emulator shut down without a wipe, and only its dedicated ADB server was stopped. The recorded processes and local listening ports were confirmed gone. App/Keystore/AVD data, host configuration, grants, source and private historical evidence were retained. The user explicitly chose to leave the existing cloud VM/relay and retained resources running; no cloud shutdown or deletion was performed.
 
 Git initialization and the initial source commit were authorized only afterward. Build 002 and the frozen cloud business archive remain the original byte-identical artifacts, with their original no-Git provenance; their metadata is not rewritten to claim the new repository commit. Private parameters, credentials, user-session identifiers and runtime evidence are excluded from the source index.
+
+## Background mode development checkpoint (2026-10-02)
+
+This is a separate source-worktree check, **not** an extension of build 002's
+installed acceptance. No sealed APK, installed device, existing CLI session or
+cloud relay was changed.
+
+The following command passed using the existing isolated JDK and Android SDK:
+
+```powershell
+.\scripts\build-android.ps1 -Jdk C:\Projects\DevPocket\.tools\jdk-21 -Sdk C:\Projects\DevPocket\.tools\android-sdk -Lint
+```
+
+Observed result: debug APK assembly, **42 JVM tests** (zero failures, errors or
+skips), and Android lint passed. The current development output is
+`android\app\build\outputs\apk\debug\app-debug.apk`; it has not been installed,
+sealed, assigned a new accepted-build number or distributed.
+
+The added checks cover:
+
+- Initial paged-history suppression, outstanding requests, idle transitions,
+  independent reminder cursors, reconnect coalescing, duplicate events,
+  retention resets and rejection of events belonging to another session.
+- All authorized unarchived sessions across multiple hosts/relays, discovery
+  and removal, scoped revocation, cancellation, storage failures and retry of
+  interrupted notification delivery or checkpoint cleanup.
+- A real loopback HTTP/WebSocket exchange through the existing OkHttp client:
+  authenticated, scope-specific subscriptions, reconnect and replay, with only
+  GET requests and no CLI commands.
+- Robolectric Android API 26 and 35 checks for explicit opt-in, non-sticky
+  foreground lifetime, Stop notification action, stale service destruction,
+  notification/channel denial, generic scoped notification cards and private
+  checkpoint persistence. The `specialUse` manifest declaration is checked on
+  API 35. Robolectric is test-only; it is not a hardware acceptance substitute.
+
+Real BYD/DiLink notification presentation, OEM background policy, screen-off
+or Doze operation, vehicle power transitions, mobile networking and sustained
+background delivery remain **unverified**. No emulator/instrumentation or
+real-CLI check was run for this change, and no Google Play policy approval is
+claimed. FCM configuration and its earlier delivery gaps are unchanged.
+
+## Background viewer-budget review checkpoint (2026-10-02)
+
+Review identified that background subscriptions shared the relay's existing
+eight-viewer device quota with the foreground UI. The original monitor opened
+one stream per session without reserving a UI viewer.
+
+The targeted regression command, run from `android` with the same isolated
+JDK/SDK and Gradle cache, reproduced the boundary before the fix:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :app:testDebugUnitTest --tests 'dev.devpocket.app.BackgroundMonitorTest.foregroundViewer*'
+```
+
+Seven background sessions allowed the foreground viewer to connect; eight and
+twelve produced `TOO_MANY_STREAMS` instead. Those cases now pass. Background
+subscriptions share seven realtime slots per relay/device, leaving one for the
+foreground UI. Overflow uses bounded, authorized paged HTTP replay with an
+explicit periodic-sync status, without raising the relay limit or changing the
+wire protocol.
+
+The full `scripts\build-android.ps1` command from the preceding checkpoint
+passed again: debug APK assembly, **57 tests** with zero failures/errors/skips,
+and lint with zero errors (24 warnings). Additional coverage includes:
+
+- Foreground-before-background and background-before-foreground startup,
+  shared device budgets, independent devices, and notifications/deduplication
+  for overflow sessions.
+- Reusing a released stream permit, scoped polling revocation, bounded replay
+  concurrency, HTTP 429 polling/cooldown/recovery, and visible periodic status.
+- Real OkHttp HTTP/WebSocket connections against a loopback fixture enforcing
+  the relay's eight-viewer rule: twelve background sessions still receive
+  reminders while a foreground viewer connects, with no rejected upgrades.
+
+This remains local development evidence, not real relay deployment, device
+installation, or BYD/DiLink acceptance. The earlier checkpoints and sealed
+artifacts remain unchanged.
+
+## Unread-reminder preservation checkpoint (2026-10-02)
+
+A follow-up review identified that `configurationChanged()` canceled every
+background reminder card even though posted notices already had their pending
+delivery cleared from the checkpoint. Restarting subscriptions therefore did
+not restore unrelated unread cards.
+
+The following targeted regression reproduced that loss on both Robolectric
+API 26 and 35 before the fix, using posted notifications and durable checkpoints
+with `pending = null`:
+
+```powershell
+.\gradlew.bat --no-daemon --console=plain :app:testDebugUnitTest --tests 'dev.devpocket.app.BackgroundModeTest.configurationRefreshPreservesUnreadCardsAfterDeliveryWasCheckpointed*'
+```
+
+Ordinary configuration refresh now preserves notification cards. Successful
+archive, revoke and forget operations invalidate only the corresponding
+session, host/account or account. Added checks verify that unrelated sessions,
+hosts and relays retain their original unread cards, similar identifier
+prefixes do not broaden cleanup, and the ongoing connection notification
+remains present.
+
+The full `scripts\build-android.ps1` command recorded above passed again:
+debug APK assembly, **65 tests** with zero failures/errors/skips, and lint with
+zero errors. The original reproduction now passes on both platform models.
+No backend or wire changes, device installation, real-CLI operation or cloud
+deployment were performed. Earlier acceptance and sealed artifacts are unchanged.

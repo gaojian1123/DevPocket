@@ -6,6 +6,8 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.devpocket.app.background.BackgroundCheckpoints
+import dev.devpocket.app.background.BackgroundState
 import dev.devpocket.app.data.*
 import dev.devpocket.app.push.Notifications
 import dev.devpocket.app.push.PushSetup
@@ -17,6 +19,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -45,6 +48,8 @@ data class PocketUi(
     val error: String? = null,
     val theme: String = "system",
     val pushStatus: String = "未配置原生推送",
+    val background: BackgroundState = BackgroundState(),
+    val navigateToSession: Boolean = false,
     val files: List<FileEntry> = emptyList(),
     val filePath: String = "",
     val fileTruncated: Boolean = false,
@@ -70,16 +75,22 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     private val local = LocalStore(application)
     private val vault = Vault(application)
     private val prefs = application.getSharedPreferences("devpocket_settings", 0)
-    private val mutable = MutableStateFlow(PocketUi(theme = prefs.getString("theme", "system") ?: "system"))
+    private val background = (application as DevPocketApplication).background
+    private val mutable = MutableStateFlow(PocketUi(theme = prefs.getString("theme", "system") ?: "system",
+        background = background.state.value))
     val ui = mutable.asStateFlow()
     private var active = false
     private var streamJob: Job? = null
     private var refreshJob: Job? = null
+    private var notificationJob: Job? = null
     private val staging = mutableSetOf<Pair<String, Long>>()
     private val api: RelayApi get() = apiFor(mutable.value.selected ?: error("没有选择会话。"))
     private fun apiFor(scope: Scope) = RelayApi(mutable.value.accounts.first { it.id == scope.accountId })
 
     init {
+        viewModelScope.launch {
+            background.state.collect { status -> mutable.update { it.copy(background = status) } }
+        }
         viewModelScope.launch {
             attempt {
                 val accounts = withContext(Dispatchers.IO) { vault.accounts() }
@@ -113,9 +124,11 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         active = value
         if (!value) {
             streamJob?.cancel(); refreshJob?.cancel()
-            mutable.update { it.copy(connection = "后台已暂停实时连接") }
+            mutable.update { it.copy(connection = if (background.state.value.enabled)
+                "界面同步已暂停；后台模式继续监听未归档会话" else "后台已暂停实时连接") }
             return
         }
+        background.checkPermissions()
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
             while (isActive) { refresh(); delay(15_000) }
@@ -124,6 +137,41 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun refreshNow() { viewModelScope.launch { refresh() } }
+
+    fun setBackgroundMode(enabled: Boolean) {
+        if (!enabled) {
+            background.stop()
+            return
+        }
+        viewModelScope.launch { attempt {
+            check(active) { "请在应用可见时手动开启后台模式。" }
+            check(mutable.value.accounts.isNotEmpty()) { "请先配对 Dev Box。" }
+            background.start()
+        } }
+    }
+
+    fun openNotification(serializedScope: String) {
+        notificationJob?.cancel()
+        notificationJob = viewModelScope.launch { attempt {
+            ui.first { !it.loading }
+            val scope = WireJson.decodeFromString<Scope>(serializedScope)
+            val account = mutable.value.accounts.find { it.id == scope.accountId } ?: error("通知对应的中转已移除。")
+            val catalog = RelayApi(account).catalog()
+            check(account in mutable.value.accounts) { "通知对应的配对已发生变化，请重新打开。" }
+            val session = catalog.sessions.find {
+                it.hostId == scope.hostId && it.sessionId == scope.sessionId && !it.archived &&
+                    catalog.hosts.any { host -> host.id == it.hostId }
+            } ?: error("通知对应的会话已归档或授权已失效。")
+            withContext(Dispatchers.IO) { local.saveCatalog(scope.accountId, catalog) }
+            check(account in mutable.value.accounts) { "通知对应的配对已发生变化，请重新打开。" }
+            mutable.update { it.copy(catalogs = it.catalogs + (scope.accountId to catalog),
+                reachable = it.reachable + scope.accountId) }
+            open(scope, session)
+            mutable.update { it.copy(navigateToSession = true) }
+        } }
+    }
+
+    fun navigationHandled() = mutable.update { it.copy(navigateToSession = false) }
 
     private suspend fun refresh() {
         for (account in mutable.value.accounts) {
@@ -158,6 +206,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
                 val account = RelayApi.pair(normalized, code.trim(), name, existing)
                 val accounts = mutable.value.accounts.filterNot { it.id == account.id } + account
                 withContext(Dispatchers.IO) { vault.saveAccounts(accounts) }
+                background.configurationChanged()
                 mutable.update { it.copy(accounts = accounts) }
                 refresh()
                 syncPush()
@@ -389,11 +438,14 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun metadata(session: SessionInfo, accountId: String, title: String? = null, pinned: Boolean? = null, archived: Boolean? = null) {
+        if (archived == true) notificationJob?.cancel()
         viewModelScope.launch { attempt {
             val scope = Scope(accountId, session.hostId, session.sessionId)
             apiFor(scope).metadata(scope, buildJsonObject {
                 title?.let { put("title", it) }; pinned?.let { put("pinned", it) }; archived?.let { put("archived", it) }
             })
+            if (archived == true) background.sessionArchived(scope)
+            else if (archived == false) background.configurationChanged()
             refresh()
         } }
     }
@@ -501,17 +553,22 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun revoke(accountId: String, hostId: String) {
+        notificationJob?.cancel()
         viewModelScope.launch { attempt {
             val account = mutable.value.accounts.first { it.id == accountId }
             RelayApi(account).revoke(hostId)
+            background.accessRemoved(accountId, hostId)
             if (mutable.value.selected?.let { it.accountId == accountId && it.hostId == hostId } == true) closeSession()
             refresh()
         } }
     }
     fun forget(accountId: String) {
+        notificationJob?.cancel()
         viewModelScope.launch { attempt {
             val accounts = mutable.value.accounts.filterNot { it.id == accountId }
             withContext(Dispatchers.IO) { vault.saveAccounts(accounts); local.forgetAccount(accountId) }
+            background.accessRemoved(accountId)
+            BackgroundCheckpoints(getApplication()).retainAccounts(accounts.map { it.id }.toSet())
             if (mutable.value.selected?.accountId == accountId) closeSession()
             mutable.update { it.copy(accounts = accounts, catalogs = it.catalogs - accountId, reachable = it.reachable - accountId) }
         } }
@@ -524,6 +581,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     }
     fun notifyPermissionChanged() {
         Notifications.createChannels(getApplication())
+        background.checkPermissions()
         syncPush()
     }
     override fun onCleared() {

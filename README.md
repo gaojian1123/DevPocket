@@ -26,7 +26,7 @@ Dev Box extension -> joinSession() -> original Copilot terminal
 | Models | Lists the current CLI's models/reasoning levels; validates the selection; does not override organization policies or automatically approve model-switch compaction |
 | Files/attachments | Policy-aware project browsing; text/image previews, bounded downloads, PDF save/open through a trusted external app; <=2 MiB upload, <=4 per message, session-scoped IDs/checksums |
 | Git | Read-only status, branch, staged/unstaged per-path diffs; no commit, staging, checkout or push; no shell interpolation |
-| Notifications | Android notification channel + Android 13 permission flow + optional native FCM registration/relay integration; **unconfigured** is shown until provisioned |
+| Notifications | Opt-in foreground-service background monitoring of all paired hosts' unarchived sessions, generic local reminders and a Stop notification; optional FCM remains separate and **unconfigured** until provisioned |
 
 Current limitations:
 
@@ -39,7 +39,7 @@ Current limitations:
 - Some CLI model catalogs do not enumerate reasoning levels. The app then offers explicit text entry **validated by the original runtime** rather than inventing a supported list; rejected values remain errors.
 - History imports the latest 15,000 runtime events; relay keeps the latest 20,000 visible events per session. Replay pages are byte-bounded (512 KiB). Android stores the latest 6,000 events and bounds decoded history text to 8 MiB. Cursor reset is shown when retention changes. Original history remains in the terminal.
 - Attachments expire after seven days, with a 20 MiB per-session relay quota. Private Dev Box attachment staging remains until the operator removes its isolated bridge data; do not remove attachments while the CLI is using them.
-- The separately authorized Azure relay is running with publicly trusted HTTPS. Public checks, a temporary simulated controller, and the sealed native Android build's actual pairing/message roundtrip on a visible isolated emulator passed against the same ordinary CLI. The emulator login is retained for user trial; physical-phone/cellular acceptance is still pending. FCM, release signing and store distribution remain unprovisioned. Foreground WebSockets are **not** a substitute for Android Doze/background push.
+- The separately authorized Azure relay is running with publicly trusted HTTPS. Public checks, a temporary simulated controller, and the sealed native Android build's actual pairing/message roundtrip on a visible isolated emulator passed against the same ordinary CLI. The emulator login is retained for user trial; physical-phone/cellular acceptance is still pending. FCM, release signing and store distribution remain unprovisioned. Opt-in background monitoring is best-effort, **not** a system-push or vehicle-wake guarantee, and is not part of sealed build 002's acceptance.
 
 ## Layout
 
@@ -155,6 +155,69 @@ The tested terminal host was the app's native **Terminal canvas**, used as a ter
 ## Notifications and human setup
 
 The app builds **without** `google-services.json` and without a private Google account file.
+
+### Background mode without Google services
+
+In Settings, grant notification permission and enable **background mode** while
+the app is visible. This starts an ongoing connection notification with a Stop
+action. It monitors every authorized, unarchived session on every paired relay,
+even when no session is selected or the Activity moves to the background.
+The relay must be reachable from the device's actual network; no Firebase setup
+or new relay endpoint is needed.
+
+- The default is off. The mode does not start at boot or automatically restart
+  after process loss, force-stop or a device restart. Reopening the app reports
+  an interrupted previous run rather than claiming it is connected; enable it
+  again explicitly. Stopping the mode never aborts or restarts the original CLI.
+- Catalog refresh discovers new sessions and removes archived or unauthorized
+  ones. Local pairing, archive, revoke and forget actions refresh subscriptions
+  immediately. Invalid credentials stop the affected subscriptions and remain
+  visible as errors; another relay or host can continue independently.
+- Refreshing subscriptions, pairing another relay or unarchiving a session
+  preserves existing unread reminders. Archiving clears only that session's
+  card; revoking a host clears only its cards in the paired account; removing a
+  relay clears only that account's cards. Unrelated unread cards are retained
+  even when their notification delivery has already been checkpointed.
+- The existing relay permits eight concurrent viewers per device. Background
+  monitoring shares a budget of seven realtime streams across that relay/device,
+  reserving a viewer for the foreground UI. Other sessions remain monitored by
+  paged HTTP replay every 15 seconds, with at most two replay requests in flight
+  per relay/device. Settings and the ongoing notification distinguish realtime
+  connections from periodic synchronization; periodic reminders can be delayed.
+  Polling sessions can take a freed stream slot. If the relay rejects a stream
+  with HTTP 429, that session polls during a cooldown before retrying realtime
+  reception. No viewer limit is raised and no relay upgrade is required.
+- The first paged history import does not announce old completions. It can
+  announce a request that is still pending at the end of that import. Later
+  pending decisions and transitions to idle generate generic reminders.
+  Idle is a runtime update, not proof that a task succeeded.
+- Background reminder checkpoints are independent of the UI's history cursor
+  and command outbox. Reconnect uses paged replay, coalesces catch-up reminders
+  per session and deduplicates already-consumed events. Interrupted notification
+  delivery remains pending for retry. A retention reset is surfaced because
+  events outside the relay's retention window cannot be recovered.
+- Notifications contain no chat, command or approval details. Opening a
+  reminder rechecks the account's current catalog authorization before opening
+  that session. Each session has its own notification card; replay of the same
+  notice does not alert again while that card is still present. FCM is a separate,
+  optional channel; enabling both can produce reminders from both channels.
+
+The Android foreground service declares `specialUse` for ongoing, user-started
+remote CLI monitoring that waits for human decisions and runtime updates, with
+an explicit manifest subtype explanation. It does not misuse `dataSync` as an
+unlimited keepalive, request a system exemption, take a wake lock or silently
+change battery settings. Future store distribution still requires the applicable
+foreground-service policy review; declaring a type is not approval.
+See the [Android foreground-service type requirements](https://developer.android.com/about/versions/14/changes/fgs-types-required#special-use).
+
+Notification permission and both notification channels must remain enabled.
+Network loss, Doze, OEM process management, vehicle sleep and power loss can
+interrupt reception even with a foreground service. Real BYD/DiLink behavior,
+notification presentation and unattended runtime have not been accepted.
+This mode targets a powered-on, connected head unit, not waking a parked vehicle.
+Only interact with approvals or terminal controls while safely parked.
+
+### Optional FCM
 
 1. An authorized operator must create/select an **independent** Firebase project, enable the HTTP v1 FCM API, and register the Android package (`dev.devpocket.app.debug` for debug; `dev.devpocket.app` for release). Cloud/account actions are not performed by this project.
 2. Populate the public Android Firebase fields shown in `config\push.properties.example` through private Gradle properties or `-P` arguments. These are not GitHub credentials and not a server service-account private key.
