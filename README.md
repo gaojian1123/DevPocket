@@ -19,6 +19,7 @@ Dev Box extension -> joinSession() -> original Copilot terminal
 | --- | --- |
 | Native adaptive UI | Material 3; compact single-pane list/detail and bottom navigation; medium navigation rail; expanded list/detail panes; light/dark/system theme, dynamic color, edge-to-edge/IME insets, system Back, preserved drafts and reading position |
 | Pairing | Offline administrator-provisioned hosts; five-minute, 256-bit, one-use pairing; independent phone credentials; multiple hosts/relays; host-specific device revocation |
+| Extension installation | Install once for the OS user; all projects' CLI sessions that load the extension register automatically, without per-project switches; standalone ZIP distribution, no source checkout or npm dependencies on the target |
 | Sessions | Registered original runtime only; project grouping, search, pin/rename/archive metadata; explicit offline/unsupported state |
 | Chat | Earlier visible history, live assistant/tool output, terminal-to-phone and phone-to-terminal messages, durable command IDs, queued/admitted/processing/completed/uncertain delivery, offline drafts and replay |
 | Human decisions | Known permission forms: approve once or reject; actual permission mode is read-only; questions with exact choices/free text; stale results are errors; unsupported forms visibly require the terminal |
@@ -48,8 +49,8 @@ android\             Native app, Kotlin state/storage/network, Compose UI, tests
 backend\src\         Protocol, independent relay, Copilot adapter and outbound bridge
 backend\tests\       Real HTTP/WSS contract tests and focused runtime-adapter tests
 backend\integration\ New ordinary CLI integration harness (opt-in, local only)
-extension\           Bundled-SDK joinSession entry, never loaded automatically here
-scripts\             Build, opt-in install preparation and isolated validation
+extension\           Bundled-SDK joinSession entry and standalone installation guide
+scripts\             Build, extension packaging and isolated validation
 deployment\          Independent Caddy TLS, containers and guarded Azure operations
 config\              Placeholder-only host/push examples
 ```
@@ -85,11 +86,68 @@ node .\dist\cli.js host create --data .data\relay --name "My Dev Box" `
 node .\dist\cli.js pair --config .data\my-box.local.json
 ```
 
-For a real installation use an independent **HTTPS** origin, omit `--dev-loopback`, transfer the host configuration **privately** to the Dev Box and restrict its Windows ACL to the authorized user. Do not store a host secret on the phone. One offline host credential can register that Dev Box's explicitly opted-in sessions; do not share it among unrelated users.
+For a real installation use an independent **HTTPS** origin, omit `--dev-loopback`, transfer the host configuration **privately** to the Dev Box and restrict its Windows ACL to the authorized user. Do not store a host secret on the phone. A user-level extension installation opts in all CLI sessions that load it; keep a separate host identity per Dev Box/user.
 
 On the Android pairing screen enter the independent relay origin, one-time code and device name. A debug emulator reaches the loopback relay as `http://10.0.2.2:8787`. This is an explicit **debug-only** exception; release builds reject HTTP. No trust-all certificate code is used.
 
-## Opt in an existing terminal
+## Install once for all projects
+
+Use the standalone ZIP and checksum from an extension release; follow
+[`extension\README.md`](extension/README.md) to verify and extract them. The target
+needs Node 24.x, a compatible Copilot CLI, and its own administrator-provisioned
+private host configuration. It does not need this repository, npm dependencies,
+the Android toolchain or a local relay.
+
+From the extracted package:
+
+```powershell
+node .\devpocket.mjs install --user --config C:\DevPocketPrivate\host.local.json --confirm-install
+node .\devpocket.mjs pair --config C:\DevPocketPrivate\host.local.json
+```
+
+Installation targets `%USERPROFILE%\.copilot\extensions\devpocket`, or
+`COPILOT_HOME\extensions\devpocket` when the CLI's custom configuration directory
+is set. Host configuration and its absolute private `dataDir` remain outside
+that directory. The extracted package is not needed to run the installed bridge.
+Repeat the install command from a newer package to update a managed installation.
+
+**There are no per-project allowlists or runtime enable switches.** New CLI
+sessions that load the extension automatically register and synchronize visible
+history, including earlier messages. Every phone paired with that host can access
+all registered sessions. This does not scan the disk or resume closed sessions.
+Normal CLI trust/permission-handler consent, permission mode, organization policy,
+version/capability gates and file-content exclusion remain in effect.
+
+Installation and updates never reload existing sessions. Explicitly ask each
+already-running session's built-in `extensions_reload` tool to attach the
+extension, preserving its original identity. Project extensions named
+`devpocket` shadow the user installation; they are not removed automatically.
+
+### Build and distribute the extension
+
+On the development machine, with dependencies restored:
+
+```powershell
+npm run test:extension-package
+npm run package:extension
+```
+
+The package command creates `dist\packages\DevPocket-extension-0.1.0.zip` and
+its `.zip.sha256` file. It refuses to overwrite an existing package. For a separate
+development artifact, use
+`npm run package:extension -- -OutputDirectory .data\extension-candidate`.
+The archive is an explicit file allowlist: bundled command and bridge, entry,
+installation guide, dependency licenses and a per-file manifest; never a copy of
+the workspace, SDK or private host configuration.
+
+The **Extension distribution** GitHub Actions workflow can build downloadable
+artifacts manually. Pushing an `extension-vVERSION` tag matching `package.json`
+builds and checks the package, then creates a **draft** GitHub release with the ZIP
+and checksum. Review and publish that draft to make it available through Releases.
+The workflow does not install extensions, enroll hosts, deploy the relay or change
+APK releases. No release is created merely by building locally.
+
+## Project-scoped installation (compatibility)
 
 1. Build this project's bridge with `npm run build`.
 2. Inspect the existing CLI's version/capabilities. `--no-auto-update` may select an older bundled executable; do not use its banner as the only evidence. This machine's isolated check used `$env:COPILOT_AUTO_UPDATE='false'` plus `--prefer-version 1.0.90-0`.

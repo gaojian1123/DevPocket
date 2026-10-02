@@ -8,6 +8,8 @@
   },
   "scripts": {
     "build": "tsc -p backend/tsconfig.json && node scripts/bundle-extension.mjs",
+    "package:extension": "npm run build && pwsh -NoProfile -File scripts\\package-extension.ps1",
+    "test:extension-package": "npm run build && node --test scripts\\tests\\extension-package.test.mjs",
     "typecheck": "tsc -p backend/tsconfig.json --noEmit",
     "test": "node --import tsx --test backend/tests/*.test.ts",
     "relay": "node dist/cli.js relay",
