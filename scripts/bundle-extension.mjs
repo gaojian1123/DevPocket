@@ -25,7 +25,7 @@ await build({
 await build({
   entryPoints: ["deployment/onboarding/cloud-host.mjs"], outfile: "dist/setup-assets/cloud-host.mjs",
   bundle: true, platform: "node", format: "esm", target: "node24",
-  minifyWhitespace: true, minifySyntax: true, external: ["/app/dist/store.js"],
+  minifyWhitespace: true, minifySyntax: true,
 });
 for (const name of ["guest.py", "private-directory.ps1"])
   await copyFile(`deployment/onboarding/${name}`, `dist/setup-assets/${name}`);

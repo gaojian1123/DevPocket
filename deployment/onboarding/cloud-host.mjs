@@ -1,5 +1,7 @@
 import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { createHostRecord } from "../../dist/host-record.js";
 import { canonical, publicFingerprint, requireValue, sealHost, sha } from "./handoff.mjs";
 
 async function exists(file) {
@@ -79,25 +81,51 @@ export async function finalizeHost(scope, store, journal, acknowledgement) {
   return { status: "handoff_cleaned", hostId: entry.hostId, handoffRemoved: true, hostRetained: true };
 }
 
+export async function openExistingHostStore(database, { readOnly = false } = {}) {
+  const info = await lstat(database);
+  requireValue(info.isFile() && !info.isSymbolicLink(), "EXISTING_RELAY_DATABASE_REQUIRED");
+  const db = new DatabaseSync(database, { readOnly });
+  try {
+    const table = db.prepare("SELECT type FROM sqlite_master WHERE name='hosts'").get();
+    const columns = db.prepare("PRAGMA table_info(hosts)").all()
+      .map(({ name, type, notnull, dflt_value, pk }) => [name, type, notnull, dflt_value, pk]);
+    requireValue(table?.type === "table" && canonical(columns) === canonical([
+      ["id", "TEXT", 0, null, 1], ["name", "TEXT", 1, null, 0], ["token_hash", "TEXT", 1, null, 0],
+      ["last_seen", "INTEGER", 1, "0", 0], ["revoked", "INTEGER", 1, "0", 0],
+    ]), "EXISTING_HOST_SCHEMA");
+    const uniqueToken = db.prepare("PRAGMA index_list(hosts)").all().some((index) =>
+      index.unique === 1 && index.partial === 0 &&
+      canonical(db.prepare("SELECT name FROM pragma_index_info(?) ORDER BY seqno").all(index.name)) ===
+        canonical([{ name: "token_hash" }]));
+    requireValue(uniqueToken && db.prepare("PRAGMA foreign_key_list(hosts)").all().length === 0 &&
+      !db.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND tbl_name='hosts'").get(), "EXISTING_HOST_SCHEMA");
+    if (!readOnly) db.exec("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
+    return {
+      db,
+      createHost(name) {
+        requireValue(typeof name === "string" && name.trim().length > 0 && name.trim().length <= 80, "HOST_NAME");
+        return createHostRecord(db, name.trim());
+      },
+      close: () => db.close(),
+    };
+  } catch (error) { db.close(); throw error; }
+}
+
 export async function guestMain(input) {
   const { scope, publicKeyPem, action, acknowledgement } = input;
   requireValue(process.getuid?.() === 1000 && /^[a-f0-9-]{36}$/.test(scope.operationId), "RELAY_USER_OPERATION_SCOPE");
   const database = "/data/relay.sqlite";
-  requireValue((await lstat(database)).isFile(), "EXISTING_RELAY_DATABASE_REQUIRED");
-  const { DatabaseSync } = await import("node:sqlite");
-  const check = new DatabaseSync(database, { readOnly: true });
+  const check = await openExistingHostStore(database, { readOnly: true });
   let schemaVersion;
   try {
-    schemaVersion = check.prepare("PRAGMA schema_version").get().schema_version;
-    requireValue(check.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='hosts'").get(), "EXISTING_HOST_SCHEMA");
+    schemaVersion = check.db.prepare("PRAGMA schema_version").get().schema_version;
     if (action === "inspect") {
-      const count = check.prepare("SELECT COUNT(*) AS n FROM hosts WHERE name=?").get(scope.hostName).n;
+      const count = check.db.prepare("SELECT COUNT(*) AS n FROM hosts WHERE name=?").get(scope.hostName).n;
       return { status: "registration_ready", sameNameCount: count, schemaVersion };
     }
   } finally { check.close(); }
   requireValue(["register", "finalize"].includes(action), "HOST_ACTION_DENIED");
-  const { RelayStore } = await import("/app/dist/store.js");
-  const store = new RelayStore("/data");
+  const store = await openExistingHostStore(database);
   try {
     requireValue(store.db.prepare("PRAGMA schema_version").get().schema_version === schemaVersion, "SCHEMA_CHANGED");
     const journal = path.join("/data", ".devpocket-onboarding", scope.operationId);

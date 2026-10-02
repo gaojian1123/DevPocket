@@ -66,7 +66,10 @@ is required, and the running relay is not rebuilt or restarted.
 
 Setup creates `%LOCALAPPDATA%\DevPocket\setup\host.local.json` with Windows access
 limited to the current user and SYSTEM, verifies host authentication over HTTPS,
-then installs the user extension. The host token and recipient private key never
+then installs the user extension. Configuration publication is atomic and refuses
+to replace an existing file. Registration validates the existing host schema
+without running the relay's schema-creating constructor.
+The host token and recipient private key never
 appear in Azure requests or ordinary output. The one-time private key is removed
 after local authentication; the private host configuration and bridge data remain.
 

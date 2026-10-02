@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
@@ -18,15 +18,20 @@ export async function readJson(file) {
   return JSON.parse(await readFile(file, "utf8"));
 }
 
-export async function saveJson(file, value) {
+export async function saveJson(file, value, { exclusive = false } = {}) {
   const temporary = `${file}.${randomUUID()}.pending`;
   const handle = await open(temporary, "wx", 0o600);
   try {
     try { await handle.writeFile(JSON.stringify(value, null, 2) + "\n"); await handle.sync(); }
     finally { await handle.close(); }
   } catch (error) { await unlink(temporary); throw error; }
-  try { await rename(temporary, file); }
+  try {
+    // Publish a complete file without replacing concurrently created credentials.
+    if (exclusive) await link(temporary, file);
+    else await rename(temporary, file);
+  }
   catch (error) { await unlink(temporary); throw error; }
+  if (exclusive) await unlink(temporary);
 }
 
 export async function savePrivate(file, content) {

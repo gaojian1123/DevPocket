@@ -349,3 +349,20 @@ host after a permitted retry. `npm run test:setup` now passes **28 JavaScript
 tests** and **3 Python tests**; standalone distribution, **29 backend tests**
 and **5 selected legacy onboarding checks** also pass. Azure responses remain
 simulated, with no real management or credential operations performed.
+
+A later review found that a partial configuration write could strand local
+recovery, and that invoking the relay store constructor could create schema
+objects before rejecting an incompatible database. Configuration publication
+now uses the atomic JSON writer in exclusive mode: incomplete writes never
+appear at the final path and concurrently created files are preserved. Host
+registration opens the existing database without any schema-creation path,
+validates the host-table contract, and shares only host-record insertion with
+the relay.
+
+Both configuration regressions failed before the fix and pass afterward.
+Database checks verify missing files are not created, incompatible schemas retain
+identical bytes, and a compatible host-only database gains no tables/indexes or
+schema-version change when registering a host. `npm run test:setup` passes
+**33 JavaScript tests** and **3 Python tests**; all **29 backend tests** and the
+**5 selected legacy onboarding checks**, including the actual guest-bundle byte
+limit, pass. These remain isolated local checks, not live Azure acceptance.

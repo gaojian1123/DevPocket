@@ -208,7 +208,7 @@ export async function runSetup(input = {}, adapters = {}) {
       const key = await readFile(keyPath);
       try { config = openHost(registered.envelope, state.scope, key); }
       finally { key.fill(0); }
-      await savePrivate(configPath, JSON.stringify(config, null, 2) + "\n");
+      await saveJson(configPath, config, { exclusive: true });
     }
     await authenticate(config);
     state.authenticated = true;

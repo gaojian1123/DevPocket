@@ -17,7 +17,7 @@ export async function renderAction(root, scope, action, acknowledgement) {
   requireValue(actions.includes(action), "HOST_ACTION_DENIED");
   const built = await build({ entryPoints: [path.join(root, "deployment", "onboarding", "cloud-host.mjs")],
     bundle: true, platform: "node", format: "esm", write: false, minifyWhitespace: true, minifySyntax: true,
-    external: ["/app/dist/store.js"], logLevel: "silent" });
+    logLevel: "silent" });
   const nodeBundle = built.outputFiles[0].text;
   const payload = { scope, publicKeyPem: scope.publicKeyPem, action, nodeBundle, acknowledgement };
   const template = await readFile(path.join(root, "deployment", "onboarding", "guest.py"), "utf8");

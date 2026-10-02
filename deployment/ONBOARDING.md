@@ -31,9 +31,11 @@ After one target-specific confirmation, it:
 - Discovers the live release/image, HTTPS origin and exact healthy relay
   container through Azure Run Command. IMDS, both owner markers, the mounted data
   disk, Compose labels, non-root relay command and existing database must match.
-- Reuses the existing encrypted, crash-recoverable host registration helper
-  against the running relay's existing `RelayStore`; it does not alter its schema,
-  service, image, network or other host/device records.
+- Reuses encrypted, crash-recoverable host registration through a non-migrating
+  connection to the existing `hosts` table. Read-only compatibility checks precede
+  writable access; host-record insertion is shared with the relay, but its
+  schema-creating `RelayStore` constructor is never invoked. Schema, service,
+  image, network and other host/device records are unchanged.
 - Saves a protected local configuration, authenticates it over public HTTPS,
   removes the one-time recipient key and finalizes the encrypted cloud handoff.
 - Installs the user extension with no per-project switches and prints the relay
@@ -48,7 +50,10 @@ endpoint is involved.
 
 Setup's private files live at `%LOCALAPPDATA%\DevPocket\setup`, independently of
 the package/checkouts. Only the current Windows user and SYSTEM receive access.
-Keep `host.local.json` and `bridge` there. Configure `COPILOT_HOME` before setup if
+The host configuration is synced to a sibling temporary file and published
+atomically without replacing an existing file. An interrupted write therefore
+retains the encrypted handoff and key for recovery instead of exposing a partial
+configuration. Keep `host.local.json` and `bridge` there. Configure `COPILOT_HOME` before setup if
 the intended CLI uses a custom user directory. Old project extensions still
 shadow a same-named user extension and are never removed automatically.
 
@@ -90,7 +95,7 @@ The subsequent user-selected **visible native Android emulator** installed byte-
 Only these management phases exist:
 
 - `host-inspect`: check the VM via IMDS, owned mounted data, current immutable release, exact healthy relay container/image/command, and existing `/srv/devpocket/relay/relay.sqlite`. Report a same-name collision rather than overwriting it.
-- `host-register`: use the frozen relay's existing `RelayStore.createHost` administrator contract. No database schema or running service change is made.
+- `host-register`: use the existing host-record administrator contract through a non-migrating database connection. No database schema or running service change is made.
 - `host-finalize`: require successful local public-HTTPS host authentication, remove only that operation's encrypted handoff journal, retain the permanent host and a non-sensitive closing receipt, and audit bounded visible guest logs.
 
 The Dev Box creates a one-time RSA-3072 recipient key under a new `%LOCALAPPDATA%\DevPocket\trial-<operation-id>` directory. Inheritance is disabled; only the current user and SYSTEM have access. Windows PowerShell's ACL helper receives its own default module search path, avoiding incompatible PowerShell 7 module-path inheritance. No global environment setting is changed.

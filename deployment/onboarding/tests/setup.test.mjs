@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
 import { cp, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { runSetup } from "../setup.mjs";
-import { registerHost, finalizeHost } from "../cloud-host.mjs";
-import { exists, protectDirectory } from "../setup-state.mjs";
+import { registerHost, finalizeHost, openExistingHostStore } from "../cloud-host.mjs";
+import { exists, protectDirectory, saveJson } from "../setup-state.mjs";
 import { parseSetupResult, renderSetupAction, MAX_SETUP_REQUEST } from "../setup-actions.mjs";
 import { AzureRequestNotAdmittedError } from "../setup-azure.mjs";
 import { RelayStore } from "../../../backend/src/store.js";
@@ -84,11 +86,16 @@ async function fixture(t) {
         status: "relay_discovered", sameNameCount: store.db.prepare("SELECT COUNT(*) AS n FROM hosts WHERE name=?").get(scope.hostName).n,
         schemaVersion: 1, relayUrl: "https://relay.example.test",
       };
-      else if (action === "register") result = await registerHost(scope, payload.publicKeyPem, store, journal);
       else {
-        assert.equal(action, "finalize");
-        result = await finalizeHost(scope, store, journal, payload.acknowledgement);
-        result.logAudit = { files: 1, bytes: 0, skipped: 0, hostTokenMatches: 0, privateKeyMatches: 0, complete: true };
+        const existing = await openExistingHostStore(path.join(root, "relay", "relay.sqlite"));
+        try {
+          if (action === "register") result = await registerHost(scope, payload.publicKeyPem, existing, journal);
+          else {
+            assert.equal(action, "finalize");
+            result = await finalizeHost(scope, existing, journal, payload.acknowledgement);
+            result.logAudit = { files: 1, bytes: 0, skipped: 0, hostTokenMatches: 0, privateKeyMatches: 0, complete: true };
+          }
+        } finally { existing.close(); }
       }
       result = { ...result, scopeHash: scope.scopeHash, target: relayTarget };
       const value = rawResult(result);
@@ -311,6 +318,44 @@ test("local authentication failure retains recoverable config and never issues a
   await runSetup({}, f.adapters);
   assert.equal(await readFile(path.join(f.directory, "host.local.json"), "utf8"), previous);
   assert.deepEqual(f.posts.map((item) => item.action), ["discover", "register", "finalize"]);
+});
+
+test("an interrupted configuration write leaves the encrypted handoff recoverable", async (t) => {
+  const f = await fixture(t);
+  const configPath = path.join(f.directory, "host.local.json");
+  const originalOpen = fs.open;
+  t.mock.method(fs, "open", async (...args) => {
+    const handle = await originalOpen(...args);
+    if (String(args[0]) === configPath || String(args[0]).startsWith(configPath + ".")) {
+      t.mock.method(handle, "writeFile", async (value) => {
+        await handle.write(String(value).slice(0, 12));
+        throw new Error("SIMULATED_HOST_CONFIG_WRITE_FAILURE");
+      });
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(runSetup(options, f.adapters), /SIMULATED_HOST_CONFIG_WRITE_FAILURE/);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+  assert.equal(await exists(configPath), undefined);
+  assert.ok(await exists(path.join(f.directory, "receiver.private.pem")));
+  assert.equal(f.store.db.prepare("SELECT COUNT(*) AS n FROM hosts").get().n, 1);
+  const result = await runSetup({}, f.adapters);
+  assert.equal(result.hostId, f.store.db.prepare("SELECT id FROM hosts").get().id);
+  assert.deepEqual(f.posts.map((item) => item.action), ["discover", "register", "finalize"]);
+});
+
+test("exclusive atomic JSON publication preserves a configuration created concurrently", async (t) => {
+  const f = await fixture(t);
+  const configPath = path.join(f.root, "existing.local.json");
+  await writeFile(configPath, "existing private configuration");
+  await assert.rejects(saveJson(configPath, { replacement: true }, { exclusive: true }), { code: "EEXIST" });
+  assert.equal(await readFile(configPath, "utf8"), "existing private configuration");
+  assert.ok((await readdir(f.root)).every((name) => !name.endsWith(".pending")));
 });
 
 test("an installer failure can be retried after handoff finalization without repeating cloud actions", async (t) => {
