@@ -447,3 +447,32 @@ and long answers now report that they are outside the supported length range.
 choices, free text, explicit form mode and legacy forms without a mode field.
 The wire contract and Android sources are unchanged. No installed extension,
 emulator app, original runtime or Azure deployment was updated for this follow-up.
+
+### Mutation, live permission and Unicode review follow-up (2026-10-07)
+
+The targeted command
+`node --import tsx --test --test-name-pattern 'unknown mutation fields|unknown live permission envelope|competing live permission|limits count Unicode' backend\tests\runtime.test.ts backend\tests\bridge.test.ts`
+failed before the fix: extra mutation fields produced completed receipts,
+unknown/competing live permission envelopes remained approvable, and a valid
+one-code-point supplementary character was rejected by a one-character form.
+All four regressions now pass.
+
+Mutation acknowledgements and model-switch confirmations now reject unknown
+fields. The real relay/bridge journal tests cover native answers, elicitation,
+permissions and model switches, keeping incompatible results uncertain and
+immutable retries non-repeating. Known supported acknowledgement variants remain
+accepted; this does not claim compatibility with unmodeled runtime result fields.
+
+Complete live permission envelopes are validated before payload selection.
+The documented original-request/prompt pair remains supported when both describe
+the same operation, with both sets of details visible. Unknown outer constraints,
+unsupported risk metadata, conflicting aliases and hook-resolved requests cannot
+be approved remotely. Snapshot refreshes preserve stricter live evidence, including
+late responses and reattachment from history; invalid IDs never poison wire
+frames. Primary and alternate form lengths use Unicode code points while the
+existing protocol-v1 answer size ceiling remains unchanged.
+
+`npm test` passes **129 tests**. `npm run typecheck` and
+`npm run test:extension-package` also pass. Android, the serialized protocol and
+deployment sources are unchanged. These are source/isolated-fixture checks; no
+installed extension, original runtime, emulator app or Azure service was changed.

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
   actionCapability, Json, PendingRequest, RequestId, SessionSummary, UserEvent,
@@ -77,7 +78,7 @@ const messageQueue = z.object({
   items: z.array(z.object({ messageId: RequestId.optional() })),
   withdrawableTurnMessageId: RequestId.nullish(),
 });
-const requestResolution = z.object({ success: z.boolean() });
+const requestResolution = z.object({ success: z.boolean() }).strict();
 const userQuestion = z.object({
   requestId: RequestId, toolCallId: RequestId.optional(),
   question: z.string().trim().min(1).max(12_000),
@@ -105,8 +106,12 @@ const elicitationRequest = z.object({
 }).strict();
 const modelSelection = z.object({
   modelId: z.string().min(1).max(200).optional(), deferred: z.boolean().optional(),
-  confirmation: z.unknown().optional(), message: z.string().optional(),
-}).refine((value) => !!value.modelId || value.deferred === true || !!value.confirmation);
+  confirmation: z.object({
+    targetModelDisplayName: z.string().min(1), currentTokens: z.number().int().nonnegative(),
+    targetLimit: z.number().int().nonnegative(),
+  }).strict().optional(),
+  message: z.string().optional(),
+}).strict().refine((value) => !!value.modelId || value.deferred === true || !!value.confirmation);
 
 const permissionFields = {
   toolCallId: RequestId.optional(), toolName: z.string().optional(), intention: z.string().optional(),
@@ -161,6 +166,64 @@ const permissionRequest = z.discriminatedUnion("kind", [
 ]);
 // SDK correlation/canonicalization metadata is not part of the user-facing approval.
 const permissionMetadata = new Set(["toolCallId", "resolvedPath", "resolvedPaths", "resolvedWorkingDirectory"]);
+const livePermissionEnvelope = z.object({
+  requestId: RequestId, recoveryEpisodeId: RequestId.optional(),
+  agentMode: z.enum(["interactive", "plan", "autopilot"]).optional(),
+  permissionMode: z.enum(["manual", "assisted", "allow-all"]).optional(),
+  resolvedByHook: z.boolean().optional(),
+  permissionRequest: permissionRequest.optional(), promptRequest: permissionRequest.optional(),
+  request: permissionRequest.optional(),
+}).strict().refine((value) => value.request !== undefined
+  ? value.permissionRequest === undefined && value.promptRequest === undefined
+  : value.permissionRequest !== undefined || value.promptRequest !== undefined);
+
+function permissionSubject(value: unknown): unknown {
+  const request = record(value), args = record(request.args ?? request.arguments);
+  switch (request.kind) {
+    case "shell":
+    case "commands":
+      return { kind: "commands", command: request.fullCommandText ?? args.command ?? request.command };
+    case "read":
+      return { kind: "read", path: request.fileName ?? request.path ?? args.path };
+    case "write":
+      return { kind: "write", path: request.fileName ?? request.path ?? args.path, diff: request.diff, contents: request.newFileContents };
+    case "url":
+      return { kind: "url", url: request.url ?? args.url, redirectedFrom: request.redirectedFrom };
+    case "mcp":
+    case "custom-tool":
+      return { kind: request.kind, server: request.serverName ?? request.mcpServerName, tool: request.toolName,
+        arguments: request.args ?? request.arguments };
+    default: return undefined;
+  }
+}
+
+function livePermission(value: unknown): { request: PendingRequest; subject: unknown } {
+  const requestId = RequestId.parse(record(value).requestId);
+  const parsed = livePermissionEnvelope.safeParse(value);
+  const terminal: PendingRequest = {
+    requestId, type: "terminal", title: "Review permission in the original client",
+    detail: "This permission envelope is unsupported or already handled. Review it in the original client.",
+    choices: [], allowFreeform: false, supported: false,
+  };
+  if (!parsed.success || parsed.data.resolvedByHook === true) return { request: terminal, subject: undefined };
+  const envelope = parsed.data;
+  const original = envelope.permissionRequest ?? envelope.request ?? envelope.promptRequest;
+  const projected = permission({ requestId, request: original });
+  const subject = permissionSubject(original);
+  const prompt = envelope.permissionRequest && envelope.promptRequest
+    ? permission({ requestId, request: envelope.promptRequest }) : undefined;
+  if (prompt && !isDeepStrictEqual(subject, permissionSubject(envelope.promptRequest)))
+    return { request: terminal, subject: undefined };
+  const detail = [
+    envelope.agentMode === undefined ? undefined : `Agent mode: ${envelope.agentMode}`,
+    envelope.permissionMode === undefined ? undefined : `Permission mode: ${envelope.permissionMode}`,
+    projected.detail, prompt ? `Prompt details:\n${prompt.detail}` : undefined,
+  ].filter((item) => item !== undefined).join("\n");
+  return { subject, request: {
+    ...projected, detail: redact(detail, 12_000),
+    supported: projected.supported && (!prompt || prompt.supported) && detail.length <= 12_000,
+  } };
+}
 
 function permission(item: unknown): PendingRequest {
   const raw = record(item), parsed = permissionRequest.safeParse(raw.request ?? raw.permissionRequest);
@@ -202,6 +265,7 @@ const capabilityGroup = {
 export class CopilotRuntime {
   private readonly requests = new Map<string, PendingRequest>();
   private readonly permissionIds = new Set<string>();
+  private readonly livePermissions = new Map<string, ReturnType<typeof livePermission>>();
   private readonly elicitationFields = new Map<string, {
     field: string; minLength: number; maxLength: number;
     alternateField?: string; alternateChoice?: string; alternateMinLength?: number; alternateMaxLength?: number;
@@ -350,7 +414,11 @@ export class CopilotRuntime {
           for (const item of pending.items) {
             try {
               const projected = permission(item);
-              this.requests.set(projected.requestId, projected);
+              const live = this.livePermissions.get(projected.requestId);
+              this.requests.set(projected.requestId, live ? {
+                ...live.request, supported: live.request.supported && projected.supported &&
+                  isDeepStrictEqual(live.subject, permissionSubject(item.request ?? item.permissionRequest)),
+              } : projected);
               this.permissionIds.add(projected.requestId);
             } catch {
               this.warnings.set("Permission projection", "A permission request could not be projected safely; review the terminal.");
@@ -498,9 +566,10 @@ export class CopilotRuntime {
           break;
         }
         case "permission.requested": {
-          const projected = permission({ requestId: data.requestId, request: data.promptRequest ?? data.permissionRequest ?? data.request });
-          this.requests.set(projected.requestId, projected);
-          this.permissionIds.add(projected.requestId);
+          const projected = livePermission(data);
+          this.livePermissions.set(projected.request.requestId, projected);
+          this.requests.set(projected.request.requestId, projected.request);
+          this.permissionIds.add(projected.request.requestId);
           if (!historical) this.emitRequests(event.id, event.timestamp);
           break;
         }
@@ -509,6 +578,7 @@ export class CopilotRuntime {
         case "elicitation.completed":
           this.requests.delete(text(data.requestId));
           this.permissionIds.delete(text(data.requestId));
+          this.livePermissions.delete(text(data.requestId));
           this.elicitationFields.delete(text(data.requestId));
           if (!historical) this.emitRequests(event.id, event.timestamp);
           break;
@@ -661,7 +731,10 @@ export class CopilotRuntime {
           requestId: action.requestId, result: { kind: action.decision },
         }));
         if (result.success !== true) throw new Fault("REQUEST_STALE", "Another client already resolved this request.", 409);
-        this.requests.delete(action.requestId); this.emitRequests();
+        this.requests.delete(action.requestId);
+        this.permissionIds.delete(action.requestId);
+        this.livePermissions.delete(action.requestId);
+        this.emitRequests();
         return { status: "completed", result: { resolved: true } };
       }
       case "answer": {
@@ -679,7 +752,8 @@ export class CopilotRuntime {
           const alternate = !item.choices.includes(action.answer) && form.alternateField && form.alternateChoice;
           const minLength = alternate ? form.alternateMinLength ?? 0 : form.minLength;
           const maxLength = alternate ? form.alternateMaxLength ?? 8000 : form.maxLength;
-          if (action.answer.length < minLength || action.answer.length > maxLength)
+          const answerLength = Array.from(action.answer).length;
+          if (answerLength < minLength || answerLength > maxLength)
             throw new Fault("INVALID_ANSWER", "The answer is outside this form's supported length range.");
           const content = alternate && form.alternateField && form.alternateChoice
             ? { [form.field]: form.alternateChoice, [form.alternateField]: action.answer } : { [form.field]: action.answer };

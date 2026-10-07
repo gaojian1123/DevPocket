@@ -213,15 +213,22 @@ their required probe group; each group updates only its own evidence:
   handler. Questions require live activity and a corresponding response handler;
   individual controls also require a supported, complete live request. Permission
   forms use per-kind allowlisted shapes, including nested shell/path/URL fields;
-  unknown semantic fields require the original client. All accepted semantic
-  fields are displayed, while known SDK correlation/canonicalization metadata is
-  omitted. Arbitrary MCP/custom-tool arguments are displayed in full or denied
+  live envelopes are validated before any payload is selected. A documented
+  original-request/prompt pair must describe the same operation, and both are
+  displayed. Unknown outer constraints, unsupported risk metadata, competing
+  payload aliases and hook-resolved requests cannot be approved remotely.
+  Snapshot refresh cannot discard stricter live evidence or change the approved
+  subject. All accepted semantic fields are displayed, while known SDK
+  correlation/canonicalization metadata is omitted. Arbitrary MCP/custom-tool
+  arguments are displayed in full or denied
   when they exceed the display budget or require redaction. Question and
   elicitation payloads also validate their complete outer fields, not just the
   question text or nested form schema. Documented tool-call correlation IDs are
   typed but not exported; a declared elicitation source is shown with the form.
   Unknown outer fields, URL forms, historical questions and incomplete details
-  remain in the original client.
+  remain in the original client. Form length constraints count Unicode code
+  points, including supplementary characters, without changing protocol-v1 size
+  limits.
 - Models require valid current-model and nonempty catalogue responses plus a
   callable switch handler. Missing model evidence does not disable chat or files.
 - File/Git views require a live absolute working directory and a complete,
@@ -233,8 +240,10 @@ Capabilities and their warnings recover when valid evidence returns. The existin
 wire booleans are unchanged; neither the relay nor Android infers support from
 `cliVersion` or treats `messages` as a master control switch. Shape validation
 accepts additive probe metadata but does not guess new request forms or acknowledge
-unknown mutation results as successful. An incompatible response after a mutation
-is reported as **uncertain**, without automatically repeating the operation.
+unknown mutation results as successful. Mutation acknowledgement schemas reject
+additional fields instead of stripping them. An incompatible response after a
+mutation is reported as **uncertain**, without automatically repeating the
+operation.
 
 These checks establish adapter support, not end-to-end acceptance of an arbitrary
 runtime build. Real mutation/cancellation compatibility checks still require an

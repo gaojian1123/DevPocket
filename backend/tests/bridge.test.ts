@@ -130,7 +130,7 @@ test("retry after execution and loss of the HTTP response executes the original 
   assert.deepEqual(forwarded, [{ route, body }, { route, body }]);
 });
 
-test("unknown mutation acknowledgements remain uncertain and retries never repeat them", async (t) => {
+for (const extraFields of [false, true]) test(`unknown mutation ${extraFields ? "fields" : "acknowledgements"} remain uncertain and retries never repeat them`, async (t) => {
   let bridge: Awaited<ReturnType<typeof startBridge>> | undefined;
   t.after(async () => { await bridge?.close(); });
   const f = await fixture(t), host = f.host(), phone = await f.pair(host.token), sid = newId();
@@ -149,13 +149,24 @@ test("unknown mutation acknowledgements remain uncertain and retries never repea
         pendingRequests: async () => ({ items: [{ requestId: "approval", request: {
           kind: "commands", fullCommandText: "echo harmless",
         } }] }),
-        handlePendingPermissionRequest: async () => { calls.push("permission"); return { resolved: true }; },
+        handlePendingPermissionRequest: async () => {
+          calls.push("permission"); return extraFields ? { success: true, pending: true } : { resolved: true };
+        },
       },
-      ui: { handlePendingUserInput: async () => { calls.push("answer"); return { accepted: true }; } },
+      ui: {
+        handlePendingUserInput: async (input) => {
+          calls.push(`answer:${input.requestId}`); return extraFields ? { success: true, pending: true } : { accepted: true };
+        },
+        handlePendingElicitation: async (input) => {
+          calls.push(`answer:${input.requestId}`); return extraFields ? { success: true, pending: true } : { accepted: true };
+        },
+      },
       model: {
         getCurrent: async () => ({ modelId: "test-model" }),
         list: async () => ({ list: [{ id: "test-model" }] }),
-        switchTo: async () => { calls.push("model.set"); return {}; },
+        switchTo: async () => {
+          calls.push("model.set"); return extraFields ? { modelId: "test-model", pending: true } : {};
+        },
       },
     },
   };
@@ -167,12 +178,18 @@ test("unknown mutation acknowledgements remain uncertain and retries never repea
   assert.equal(summary.capabilities.messages, true);
   assert.equal(summary.capabilities.abort, false);
   emit(event("user_input.requested", { requestId: "question", question: "Choose", choices: ["One", "Two"] }));
+  emit(event("elicitation.requested", {
+    requestId: "form", message: "Choose",
+    requestedSchema: { type: "object", properties: { choice: { type: "string", enum: ["One", "Two"] } } },
+  }));
   const actions: Action[] = [
     { type: "message", text: "Preserve an uncertain send", attachmentIds: [] },
     { type: "permission", requestId: "approval", decision: "reject" },
     { type: "answer", requestId: "question", answer: "One" },
+    { type: "answer", requestId: "form", answer: "One" },
     { type: "model.set", modelId: "test-model" },
   ];
+  const key = (action: Action) => action.type === "answer" ? `answer:${action.requestId}` : action.type;
   const route = sessionPath(host.hostId, sid) + "/commands";
   for (const action of actions) {
     const command = { commandId: newId(), action };
@@ -186,7 +203,7 @@ test("unknown mutation acknowledgements remain uncertain and retries never repea
     assert.equal(receipt.error?.code, "DELIVERY_UNCERTAIN");
     const retry = Receipt.parse(await (await f.request(route, phone.token, command)).json());
     assert.equal(retry.status, "uncertain");
-    assert.equal(calls.filter((type) => type === action.type).length, 1);
+    assert.equal(calls.filter((type) => type === key(action)).length, 1);
   }
-  assert.deepEqual(calls, actions.map((action) => action.type));
+  assert.deepEqual(calls, actions.map(key));
 });

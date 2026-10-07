@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { CopilotRuntime, type JoinedSession } from "../src/runtime.js";
-import { PendingRequest, SessionSummary, UserEvent, type Action } from "../src/protocol.js";
+import { Action, PendingRequest, SessionSummary, UserEvent } from "../src/protocol.js";
 
 export function runtimePeer(root: string, version: string | null = "1.0.90-0") {
   let listener: (event: unknown) => void = () => {};
@@ -829,4 +829,240 @@ test("overlapping activity consumers share only the required in-flight probe", a
   await refresh;
   assert.equal(f.runtime.summary.capabilities.messages, false);
   assert.equal(sends, 0);
+});
+
+test("unknown live permission envelope semantics cannot be approved after a snapshot refresh", async (t) => {
+  const f = await capabilityFixture(t, "future-build");
+  let decisions = 0;
+  f.session.rpc.permissions!.handlePendingPermissionRequest = async () => { decisions++; return { success: true }; };
+  await f.runtime.connect();
+  f.emit("permission.requested", {
+    requestId: "approval-1", executionScope: "PRIVATE_FUTURE_SCOPE",
+    permissionRequest: { kind: "commands", fullCommandText: "echo harmless" },
+  });
+  const request = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === "approval-1");
+  assert.equal(request?.supported, false);
+  assert.ok(!JSON.stringify(request).includes("PRIVATE_FUTURE_SCOPE"));
+  await assert.rejects(f.runtime.execute({ type: "permission", requestId: "approval-1", decision: "approve-once" }), { code: "TERMINAL_REQUIRED" });
+  assert.equal(decisions, 0);
+});
+
+test("competing live permission payload aliases are not selected by precedence", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  f.emit("permission.requested", {
+    requestId: "approval-1",
+    permissionRequest: { kind: "commands", fullCommandText: "echo safe" },
+    request: { kind: "commands", fullCommandText: "echo different" },
+  });
+  const request = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === "approval-1");
+  assert.equal(request?.supported, false);
+  await assert.rejects(f.runtime.execute({ type: "permission", requestId: "approval-1", decision: "approve-once" }), { code: "TERMINAL_REQUIRED" });
+});
+
+test("elicitation form limits count Unicode code points rather than UTF-16 units", async (t) => {
+  const f = await capabilityFixture(t), answers: unknown[] = [];
+  f.session.rpc.ui = { handlePendingElicitation: async (input) => { answers.push(input); return { success: true }; } };
+  await f.runtime.connect();
+  f.emit("elicitation.requested", {
+    requestId: "single-character", message: "Enter one character",
+    requestedSchema: { type: "object", properties: { label: { type: "string", minLength: 1, maxLength: 1 } }, required: ["label"] },
+  });
+  const answer = "\u{1F600}";
+  assert.equal((await f.runtime.execute({ type: "answer", requestId: "single-character", answer })).status, "completed");
+  assert.deepEqual(answers, [{ requestId: "single-character", result: { action: "accept", content: { label: answer } } }]);
+});
+
+test("documented paired live permission payloads preserve all approval evidence through refresh", async (t) => {
+  const forms: { original: Record<string, unknown>; prompt: Record<string, unknown> }[] = [
+    {
+      original: { kind: "shell", fullCommandText: "echo safe", commands: [{ identifier: "echo", readOnly: true }],
+        possiblePaths: ["example.txt"], possibleUrls: [{ url: "https://example.test" }], hasWriteFileRedirection: false },
+      prompt: { kind: "commands", fullCommandText: "echo safe", commandIdentifiers: ["echo"], warning: "Review the command" },
+    },
+    { original: { kind: "read", path: "example.txt" }, prompt: { kind: "read", path: "example.txt" } },
+    {
+      original: { kind: "write", fileName: "example.txt", diff: "-old\n+new", newFileContents: "new" },
+      prompt: { kind: "write", fileName: "example.txt", diff: "-old\n+new", newFileContents: "new" },
+    },
+    { original: { kind: "url", url: "https://example.test" }, prompt: { kind: "url", url: "https://example.test" } },
+    {
+      original: { kind: "mcp", serverName: "example", toolName: "lookup", args: { first: "one", second: "two" }, readOnly: true },
+      prompt: { kind: "mcp", serverName: "example", toolName: "lookup", args: { second: "two", first: "one" }, canOfferServerWideApproval: false },
+    },
+    { original: { kind: "custom-tool", toolName: "example", args: {} }, prompt: { kind: "custom-tool", toolName: "example", args: {} } },
+  ];
+  for (const { original, prompt } of forms) {
+    await t.test(String(original.kind), async (t) => {
+      const f = await capabilityFixture(t);
+      let decisions = 0;
+      f.session.rpc.permissions!.pendingRequests = async () => ({ items: [{ requestId: "paired", request: prompt }] });
+      f.session.rpc.permissions!.handlePendingPermissionRequest = async () => { decisions++; return { success: true }; };
+      await f.runtime.connect();
+      f.emit("permission.requested", {
+        requestId: "paired", permissionRequest: { ...original, toolCallId: "PRIVATE_CORRELATION" }, promptRequest: prompt,
+        agentMode: "interactive", permissionMode: "manual", resolvedByHook: false, recoveryEpisodeId: "PRIVATE_RECOVERY",
+      });
+      await f.runtime.refresh();
+      const item = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === "paired");
+      assert.equal(item?.supported, true);
+      assert.ok(item.detail.includes("Agent mode: interactive"));
+      assert.ok(item.detail.includes("Permission mode: manual"));
+      const [originalDetails, promptDetails] = item.detail.split("\nPrompt details:\n");
+      assert.deepEqual(JSON.parse(originalDetails!.split("\n").slice(2).join("\n")), original);
+      assert.deepEqual(JSON.parse(promptDetails!), prompt);
+      assert.ok(!JSON.stringify(item).includes("PRIVATE_"));
+      assert.equal((await f.runtime.execute({ type: "permission", requestId: "paired", decision: "reject" })).status, "completed");
+      assert.equal(decisions, 1);
+      UserEvent.array().parse(f.events);
+    });
+  }
+});
+
+test("single-payload live permission dialects remain supported", async (t) => {
+  const f = await capabilityFixture(t);
+  const request = { kind: "read", path: "example.txt" };
+  const requests = ["request", "permissionRequest", "promptRequest"].map((field) => ({ requestId: field, request }));
+  f.session.rpc.permissions!.pendingRequests = async () => ({ items: requests });
+  f.session.rpc.permissions!.handlePendingPermissionRequest = async () => ({ success: true });
+  await f.runtime.connect();
+  for (const { requestId } of requests) {
+    f.emit("permission.requested", { requestId, [requestId]: request });
+    assert.equal((await f.runtime.execute({ type: "permission", requestId, decision: "reject" })).status, "completed");
+  }
+});
+
+test("unsupported live permission metadata and conflicting paired content stay terminal-only", async (t) => {
+  const f = await capabilityFixture(t);
+  const request = { kind: "commands", fullCommandText: "echo safe" };
+  const invalid: Record<string, unknown>[] = [
+    { permissionRequest: request, resolvedByHook: true },
+    { permissionRequest: request, resolvedByHook: "false" },
+    { permissionRequest: request, agentMode: "future-mode" },
+    { permissionRequest: request, permissionMode: "future-policy" },
+    { permissionRequest: request, recoveryEpisodeId: 42 },
+    { permissionRequest: request, riskAssessment: { rawInternalState: "PRIVATE_RISK" } },
+    { permissionRequest: request, request, promptRequest: request },
+    { permissionRequest: { kind: "shell", fullCommandText: "echo original" }, promptRequest: request },
+    { permissionRequest: { kind: "write", fileName: "original.txt", diff: "+one" },
+      promptRequest: { kind: "write", fileName: "different.txt", diff: "+two" } },
+    { permissionRequest: { kind: "mcp", serverName: "example", toolName: "read", args: {} },
+      promptRequest: { kind: "mcp", serverName: "example", toolName: "write", args: {} } },
+    { permissionRequest: { kind: "shell", fullCommandText: "echo safe", requestSandboxBypass: true }, promptRequest: request },
+    { permissionRequest: request, promptRequest: { ...request, futureConstraint: true } },
+    { permissionRequest: request, promptRequest: null },
+    {},
+  ];
+  let decisions = 0;
+  f.session.rpc.permissions!.pendingRequests = async () => ({
+    items: invalid.map((_item, index) => ({ requestId: `invalid-${index}`, request })),
+  });
+  f.session.rpc.permissions!.handlePendingPermissionRequest = async () => { decisions++; return { success: true }; };
+  await f.runtime.connect();
+  for (const [index, envelope] of invalid.entries()) {
+    const requestId = `invalid-${index}`;
+    f.emit("permission.requested", { requestId, ...envelope });
+    await assert.rejects(f.runtime.execute({ type: "permission", requestId, decision: "approve-once" }), { code: "TERMINAL_REQUIRED" });
+  }
+  assert.equal(decisions, 0);
+  const projected = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items;
+  assert.ok(projected?.every((item) => !item.supported));
+  assert.ok(!JSON.stringify(projected).includes("PRIVATE_RISK"));
+  UserEvent.array().parse(f.events);
+});
+
+test("late permission snapshots do not erase live restrictions or change the approved subject", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  let finish!: (value: unknown) => void;
+  const snapshot = new Promise<unknown>((resolve) => { finish = resolve; });
+  f.session.rpc.permissions!.pendingRequests = () => snapshot;
+  const refreshing = f.runtime.refresh();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  f.emit("permission.requested", {
+    requestId: "approval-1", permissionRequest: { kind: "commands", fullCommandText: "echo safe" }, futureConstraint: true,
+  });
+  finish({ items: [{ requestId: "approval-1", request: { kind: "commands", fullCommandText: "echo safe" } }] });
+  await refreshing;
+  await assert.rejects(f.runtime.execute({ type: "permission", requestId: "approval-1", decision: "approve-once" }), { code: "TERMINAL_REQUIRED" });
+
+  f.emit("permission.completed", { requestId: "approval-1" });
+  f.emit("permission.requested", {
+    requestId: "approval-1", permissionRequest: { kind: "commands", fullCommandText: "echo changed" },
+  });
+  await assert.rejects(f.runtime.execute({ type: "permission", requestId: "approval-1", decision: "approve-once" }), { code: "TERMINAL_REQUIRED" });
+  f.session.rpc.permissions!.pendingRequests = async () => ({ items: [] });
+  f.emit("permission.completed", { requestId: "approval-1" });
+  await f.runtime.refresh();
+  assert.deepEqual(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items, []);
+});
+
+test("invalid live permission identifiers never poison projected request frames", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  for (const requestId of [undefined, null, "", 42, "x".repeat(201)]) {
+    f.emit("permission.requested", { requestId, permissionRequest: { kind: "read", path: "example.txt" } });
+    assert.equal(f.events.at(-1)?.kind, "notice");
+  }
+  UserEvent.array().parse(f.events);
+});
+
+test("unsupported historical permission envelopes stay unavailable after reattachment", async (t) => {
+  const f = await capabilityFixture(t);
+  const history = f.session.getEvents;
+  f.session.getEvents = async () => [...await history(), {
+    id: randomUUID(), timestamp: new Date().toISOString(), type: "permission.requested",
+    data: { requestId: "approval-1", permissionRequest: { kind: "commands", fullCommandText: "echo safe" }, futureConstraint: true },
+  }];
+  await f.runtime.connect();
+  await assert.rejects(f.runtime.execute({ type: "permission", requestId: "approval-1", decision: "approve-once" }), { code: "TERMINAL_REQUIRED" });
+  assert.equal(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items[0]?.supported, false);
+});
+
+test("Unicode min and max constraints apply to primary and alternate answers without changing wire limits", async (t) => {
+  const f = await capabilityFixture(t), answered: unknown[] = [];
+  f.session.rpc.ui = { handlePendingElicitation: async (input) => { answered.push(input); return { success: true }; } };
+  await f.runtime.connect();
+  const emoji = "\u{1F600}";
+  for (const alternate of [false, true]) {
+    for (const length of [1, 2]) {
+      const requestId = `${alternate ? "alternate" : "primary"}-${length}`;
+      const field = { type: "string", minLength: length, maxLength: length };
+      const properties = alternate
+        ? { choice: { type: "string", enum: ["One", "Other"] }, answer: field }
+        : { answer: field };
+      f.emit("elicitation.requested", {
+        requestId, message: "Enter characters",
+        requestedSchema: { type: "object", properties, required: [alternate ? "choice" : "answer"] },
+      });
+      if (length === 2)
+        await assert.rejects(f.runtime.execute({ type: "answer", requestId, answer: emoji }), { code: "INVALID_ANSWER" });
+      await assert.rejects(f.runtime.execute({ type: "answer", requestId, answer: "e\u0301".repeat(length) }), { code: "INVALID_ANSWER" });
+      const answer = emoji.repeat(length);
+      assert.equal((await f.runtime.execute({ type: "answer", requestId, answer })).status, "completed");
+      assert.deepEqual(answered.at(-1), {
+        requestId, result: { action: "accept", content: alternate ? { choice: "Other", answer } : { answer } },
+      });
+    }
+  }
+  assert.equal(Action.safeParse({ type: "answer", requestId: "wire-limit", answer: emoji.repeat(4000) }).success, true);
+  assert.equal(Action.safeParse({ type: "answer", requestId: "wire-limit", answer: emoji.repeat(4001) }).success, false);
+});
+
+test("known mutation result variants remain supported and unknown nested confirmations are rejected", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  f.session.rpc.model!.switchTo = async () => ({ modelId: "test-model", message: "Selected" });
+  assert.equal((await f.runtime.execute({ type: "model.set", modelId: "test-model" })).status, "completed");
+  f.session.rpc.model!.switchTo = async () => ({ deferred: true, message: "Queued" });
+  assert.equal((await f.runtime.execute({ type: "model.set", modelId: "test-model" })).result?.deferred, true);
+  const confirmation = { targetModelDisplayName: "Test", currentTokens: 100, targetLimit: 50 };
+  f.session.rpc.model!.switchTo = async () => ({ confirmation });
+  await assert.rejects(f.runtime.execute({ type: "model.set", modelId: "test-model" }), { code: "TERMINAL_REQUIRED" });
+  for (const unknown of [false, {}, { ...confirmation, skipApproval: true }]) {
+    f.session.rpc.model!.switchTo = async () => ({ modelId: "test-model", confirmation: unknown });
+    await assert.rejects(f.runtime.execute({ type: "model.set", modelId: "test-model" }), { name: "ZodError" });
+  }
+  f.session.rpc.permissions!.handlePendingPermissionRequest = async () => ({ success: false });
+  await assert.rejects(f.runtime.execute({ type: "permission", requestId: "approval-1", decision: "approve-once" }), { code: "REQUEST_STALE" });
 });
