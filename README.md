@@ -198,8 +198,11 @@ The extension imports `@github/copilot-sdk/extension` supplied by the CLI. It do
 Attachment and refresh use read-only probes with a five-second deadline per probe;
 discovery never sends a test message,
 aborts work, answers a request or switches a model. Before executing a command the
-bridge refreshes its evidence and checks that command's capability, independently
-of the relay's last advertised snapshot:
+bridge refreshes only that command's prerequisite evidence and checks its
+capability, independently of the relay's last advertised snapshot. Unrelated
+model, permission, file-policy and display probes cannot delay a message or
+answer, even during a periodic full refresh. Concurrent consumers share only
+their required probe group; each group updates only its own evidence:
 
 - Messages require a callable bundled-SDK `send` and a valid live activity response.
   Cancellation additionally requires the activity response's boolean `abortable`
@@ -208,8 +211,13 @@ of the relay's last advertised snapshot:
   snapshot, sending is only **admitted**, never assumed queued or processing.
 - Permissions require a valid live pending-permission snapshot and its response
   handler. Questions require live activity and a corresponding response handler;
-  individual controls also require a supported, complete live request. Historical
-  questions, unknown forms and incomplete details remain in the original client.
+  individual controls also require a supported, complete live request. Permission
+  forms use per-kind allowlisted shapes, including nested shell/path/URL fields;
+  unknown semantic fields require the original client. All accepted semantic
+  fields are displayed, while known SDK correlation/canonicalization metadata is
+  omitted. Arbitrary MCP/custom-tool arguments are displayed in full or denied
+  when they exceed the display budget or require redaction. Historical questions,
+  unknown forms and incomplete details remain in the original client.
 - Models require valid current-model and nonempty catalogue responses plus a
   callable switch handler. Missing model evidence does not disable chat or files.
 - File/Git views require a live absolute working directory and a complete,

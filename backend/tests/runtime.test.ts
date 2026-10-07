@@ -447,3 +447,237 @@ test("malformed optional queue evidence cannot claim that a message is queued or
   assert.equal(stop.status, "cancel_requested");
   assert.deepEqual(stop.result?.cancelledMessageIds, []);
 });
+
+test("unknown semantic fields in a known permission form require the terminal", async (t) => {
+  const f = await capabilityFixture(t, "future-build");
+  let decisions = 0;
+  f.session.rpc.permissions!.pendingRequests = async () => ({ items: [{
+    requestId: "future-permission",
+    request: { kind: "commands", fullCommandText: "echo harmless", executionScope: "all-sessions" },
+  }] });
+  f.session.rpc.permissions!.handlePendingPermissionRequest = async () => { decisions++; return { success: true }; };
+  await f.runtime.connect();
+  const request = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items[0];
+  assert.equal(request?.supported, false);
+  await assert.rejects(f.runtime.execute({
+    type: "permission", requestId: "future-permission", decision: "approve-once",
+  }), { code: "TERMINAL_REQUIRED" });
+  assert.equal(decisions, 0);
+});
+
+test("sending does not wait for an unrelated stalled model catalogue", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  let finish!: (value: unknown) => void;
+  const catalogue = new Promise<unknown>((resolve) => { finish = resolve; });
+  f.session.rpc.model!.list = () => catalogue;
+  let completed = false;
+  const command = f.runtime.execute({ type: "message", text: "Continue without model discovery", attachmentIds: [] })
+    .then((receipt) => { completed = true; return receipt; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const completedBeforeCatalogue = completed;
+  finish({ list: [{ id: "test-model" }] });
+  assert.equal((await command).status, "admitted");
+  assert.equal(completedBeforeCatalogue, true, "Sending must not wait for an unrelated capability probe.");
+});
+
+test("supported permission dialects expose every semantic field and reject unknown ones", async (t) => {
+  const forms = [
+    {
+      kind: "shell", fullCommandText: "echo harmless", intention: "Display output", canOfferSessionApproval: true,
+      commands: [{ identifier: "echo", readOnly: true }], commandSegments: [{ identifier: "echo", fullCommandText: "echo harmless" }],
+      hasWriteFileRedirection: false, possiblePaths: ["example.txt"], possibleUrls: [{ url: "https://example.test" }],
+      resolvedPaths: { "example.txt": "PRIVATE_CANONICAL_PATH" }, resolvedWorkingDirectory: "PRIVATE_CANONICAL_DIRECTORY",
+    },
+    {
+      kind: "commands", fullCommandText: "echo harmless", commandIdentifiers: ["echo"],
+      canOfferSessionApproval: false, warning: "Review the command", managedApprovalRequired: true,
+    },
+    { kind: "read", path: "example.txt", intention: "Read a file", resolvedPath: "PRIVATE_CANONICAL_PATH" },
+    { kind: "write", fileName: "example.txt", diff: "-old\n+new", newFileContents: "new", canOfferSessionApproval: false },
+    { kind: "url", url: "https://example.test/final", redirectedFrom: "https://example.test/start", intention: "Read a page" },
+    {
+      kind: "mcp", serverName: "example", toolName: "lookup", toolTitle: "Look up an item", readOnly: true,
+      canOfferServerWideApproval: false, args: { query: "example", nested: { executionScope: "visible tool argument" } },
+    },
+    { kind: "custom-tool", toolName: "example", toolDescription: "A custom tool", skipPermission: false, args: { mode: "preview" } },
+    { kind: "shell", args: { command: "echo legacy" } },
+    { kind: "read", arguments: { path: "example.txt" } },
+    { kind: "write", args: { path: "example.txt" }, newFileContents: "new" },
+    { kind: "url", arguments: { url: "https://example.test" } },
+    { kind: "mcp", mcpServerName: "example", toolName: "lookup", arguments: { query: "example" } },
+    { kind: "custom-tool", toolName: "example", arguments: { mode: "preview" } },
+  ];
+  for (const [index, form] of forms.entries()) {
+    await t.test(`${form.kind}-${index}`, async (t) => {
+      const f = await capabilityFixture(t, "future-build"), requestId = `known-${index}`;
+      const request = { ...form, toolCallId: "PRIVATE_CORRELATION_ID" };
+      let current: Record<string, unknown> = request;
+      let decisions = 0;
+      f.session.rpc.permissions!.pendingRequests = async () => ({
+        items: [{ requestId, request: current, recoveryEpisodeId: "PRIVATE_RECOVERY_ID" }],
+      });
+      f.session.rpc.permissions!.handlePendingPermissionRequest = async () => { decisions++; return { success: true }; };
+      await f.runtime.connect();
+      const item = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === requestId);
+      assert.equal(item?.supported, true);
+      const visible = Object.fromEntries(Object.entries(request).filter(([key]) =>
+        !["toolCallId", "resolvedPath", "resolvedPaths", "resolvedWorkingDirectory"].includes(key)));
+      assert.deepEqual(JSON.parse(item.detail), visible);
+      assert.ok(!JSON.stringify(item).includes("PRIVATE_"));
+      assert.equal((await f.runtime.execute({ type: "permission", requestId, decision: "reject" })).status, "completed");
+      assert.equal(decisions, 1);
+
+      current = { ...request, executionScope: "all-sessions" };
+      await f.runtime.refresh();
+      f.emit("permission.requested", { requestId: `live-${index}`, permissionRequest: current });
+      const projected = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items;
+      assert.ok(projected?.every((item) => item.type === "terminal" && !item.supported));
+      assert.ok(!JSON.stringify(projected).includes("all-sessions"));
+      await assert.rejects(f.runtime.execute({ type: "permission", requestId, decision: "approve-once" }), { code: "TERMINAL_REQUIRED" });
+      assert.equal(decisions, 1);
+    });
+  }
+});
+
+test("permission schemas reject malformed or unknown nested semantic fields", async (t) => {
+  const requests = [
+    { kind: "shell", fullCommandText: "echo safe", commands: [{ identifier: "echo", readOnly: true, elevated: true }] },
+    { kind: "shell", fullCommandText: "echo safe", commandSegments: [{ identifier: "echo", fullCommandText: "echo safe", elevated: true }] },
+    { kind: "shell", fullCommandText: "echo safe", possibleUrls: [{ url: "https://example.test", trustRedirects: true }] },
+    { kind: "shell", args: { command: "echo safe", runAs: "administrator" } },
+    { kind: "read", args: { path: "example.txt", recursive: true } },
+    { kind: "write", args: { path: "example.txt", recursive: true }, diff: "+new" },
+    { kind: "url", args: { url: "https://example.test", trustRedirects: true } },
+    { kind: "mcp", serverName: "example", toolName: "lookup", args: {}, readOnly: "true" },
+    { kind: "custom-tool", toolName: "lookup", args: {}, skipPermission: "true" },
+    { kind: "commands", fullCommandText: "echo safe", commandIdentifiers: [42] },
+    { kind: "read", path: "example.txt", resolvedPath: { unknownIdentity: true } },
+    { kind: "commands", fullCommandText: "echo safe", assistedApproval: { approval: "skip-confirmation" } },
+    { kind: "shell", fullCommandText: "echo safe", requestSandboxBypass: true },
+    { kind: "commands", fullCommandText: "echo safe", requestSandboxPermissive: true },
+    { kind: "write", path: "example.txt", diff: "[REDACTED]" },
+  ];
+  const f = await capabilityFixture(t);
+  let decisions = 0;
+  f.session.rpc.permissions!.pendingRequests = async () => ({ items: requests.map((request, index) => ({ requestId: `invalid-${index}`, request })) });
+  f.session.rpc.permissions!.handlePendingPermissionRequest = async () => { decisions++; return { success: true }; };
+  await f.runtime.connect();
+  for (const index of requests.keys())
+    await assert.rejects(f.runtime.execute({ type: "permission", requestId: `invalid-${index}`, decision: "approve-once" }), { code: "TERMINAL_REQUIRED" });
+  assert.equal(decisions, 0);
+  assert.ok(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.every((item) => !item.supported));
+});
+
+test("each command refreshes only its prerequisite evidence", async (t) => {
+  const cases: { action: Action; reads: string[]; error?: string }[] = [
+    { action: { type: "message", text: "Only activity", attachmentIds: [] }, reads: ["activity", "queue"] },
+    { action: { type: "abort" }, reads: ["activity", "queue"] },
+    { action: { type: "permission", requestId: "approval-1", decision: "reject" }, reads: ["permissions"] },
+    { action: { type: "answer", requestId: "question", answer: "Yes" }, reads: ["activity"] },
+    { action: { type: "models" }, reads: ["current-model", "catalogue"] },
+    { action: { type: "model.set", modelId: "test-model" }, reads: ["current-model", "catalogue", "current-model", "catalogue"] },
+    { action: { type: "files.list", path: "" }, reads: ["directory", "policy", "policy"] },
+    { action: { type: "files.read", path: "..\\outside.txt" }, reads: ["directory", "policy"], error: "INVALID_PATH" },
+    { action: { type: "git.status" }, reads: ["directory", "policy", "policy"] },
+    { action: { type: "git.diff", path: "..\\outside.txt", staged: false }, reads: ["directory", "policy"], error: "INVALID_PATH" },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.action.type, async (t) => {
+      const f = await capabilityFixture(t);
+      await f.runtime.connect();
+      f.emit("user_input.requested", { requestId: "question", question: "Continue?", choices: ["Yes", "No"] });
+      const reads: string[] = [], rpc = f.session.rpc;
+      const tracked = (name: string, read: () => Promise<unknown>) => async () => { reads.push(name); return await read(); };
+      rpc.metadata!.activity = tracked("activity", rpc.metadata!.activity!);
+      rpc.permissions!.pendingRequests = tracked("permissions", rpc.permissions!.pendingRequests!);
+      rpc.permissions!.getMode = tracked("permission-mode", rpc.permissions!.getMode!);
+      rpc.permissions!.paths!.list = tracked("directory", rpc.permissions!.paths!.list!);
+      rpc.model!.getCurrent = tracked("current-model", rpc.model!.getCurrent!);
+      rpc.model!.list = tracked("catalogue", rpc.model!.list!);
+      rpc.name!.get = tracked("name", rpc.name!.get!);
+      rpc.queue = { pendingItems: tracked("queue", async () => ({ items: [] })) };
+      const policy = rpc.contentExclusion!.checkPaths!;
+      rpc.contentExclusion!.checkPaths = async (input) => { reads.push("policy"); return await policy(input); };
+      if (scenario.error) await assert.rejects(f.runtime.execute(scenario.action), { code: scenario.error });
+      else await f.runtime.execute(scenario.action);
+      assert.deepEqual(reads, scenario.reads);
+    });
+  }
+});
+
+test("messages and answers do not wait for unrelated probes in an ongoing full refresh", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  f.emit("user_input.requested", { requestId: "question", question: "Continue?", choices: ["Yes", "No"] });
+  const rpc = f.session.rpc;
+  let release!: () => void;
+  const stalled = new Promise<void>((resolve) => { release = resolve; });
+  const block = (read: () => Promise<unknown>) => async () => { await stalled; return await read(); };
+  rpc.model!.list = block(rpc.model!.list!);
+  rpc.permissions!.pendingRequests = block(rpc.permissions!.pendingRequests!);
+  rpc.name!.get = block(rpc.name!.get!);
+  const policy = rpc.contentExclusion!.checkPaths!;
+  rpc.contentExclusion!.checkPaths = async (input) => { await stalled; return await policy(input); };
+  const refresh = f.runtime.refresh();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  let completed = 0;
+  const commands = Promise.all([
+    f.runtime.execute({ type: "message", text: "No unrelated waits", attachmentIds: [] }),
+    f.runtime.execute({ type: "answer", requestId: "question", answer: "Yes" }),
+  ].map((command) => command.then((receipt) => { completed++; return receipt; })));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const completedBeforeRelease = completed;
+  release();
+  await commands;
+  await refresh;
+  assert.equal(completedBeforeRelease, 2);
+});
+
+test("a late unrelated refresh cannot restore a capability rejected by a newer action probe", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  let finish!: (value: unknown) => void, sends = 0;
+  const catalogue = new Promise<unknown>((resolve) => { finish = resolve; });
+  f.session.rpc.model!.list = () => catalogue;
+  f.session.send = async () => { sends++; return "must-not-send"; };
+  const refresh = f.runtime.refresh();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  f.session.rpc.metadata!.activity = async () => ({ hasActiveWork: "unknown" });
+  let rejected = false;
+  const command = assert.rejects(
+    f.runtime.execute({ type: "message", text: "Do not trust old activity", attachmentIds: [] }),
+    { code: "UNSUPPORTED" },
+  ).then(() => { rejected = true; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const rejectedBeforeCatalogue = rejected;
+  finish({ list: [{ id: "test-model" }] });
+  await command;
+  await refresh;
+  assert.equal(rejectedBeforeCatalogue, true);
+  assert.equal(sends, 0);
+  assert.equal(f.runtime.summary.capabilities.messages, false);
+  assert.equal(f.runtime.summary.capabilities.models, true);
+  assert.ok(f.runtime.summary.warnings.some((warning) => warning.includes("Runtime activity returned an unsupported response shape")));
+});
+
+test("overlapping activity consumers share only the required in-flight probe", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  let finish!: (value: unknown) => void, reads = 0, sends = 0;
+  const activity = new Promise<unknown>((resolve) => { finish = resolve; });
+  f.session.rpc.metadata!.activity = () => { reads++; return activity; };
+  f.session.send = async () => { sends++; return "must-not-send"; };
+  const refresh = f.runtime.refresh();
+  const command = assert.rejects(f.runtime.execute({
+    type: "message", text: "Await required evidence", attachmentIds: [],
+  }), { code: "UNSUPPORTED" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(reads, 1);
+  assert.equal(sends, 0);
+  finish({});
+  await command;
+  await refresh;
+  assert.equal(f.runtime.summary.capabilities.messages, false);
+  assert.equal(sends, 0);
+});

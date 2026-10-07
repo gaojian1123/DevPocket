@@ -51,7 +51,8 @@ const runtimeActivity = z.object({ hasActiveWork: z.boolean(), abortable: z.unkn
 const permissionMode = z.object({ mode: z.string().min(1).max(80) });
 const pendingPermissions = z.object({ items: z.array(z.object({
   requestId: RequestId, request: z.record(z.unknown()).optional(), permissionRequest: z.record(z.unknown()).optional(),
-}).refine((item) => item.request !== undefined || item.permissionRequest !== undefined)) });
+  recoveryEpisodeId: RequestId.optional(),
+}).strict().refine((item) => (item.request !== undefined) !== (item.permissionRequest !== undefined))) });
 const currentModel = z.object({
   modelId: z.string().min(1).max(200), reasoningEffort: z.string().max(60).nullish(),
 });
@@ -99,11 +100,65 @@ const modelSelection = z.object({
   confirmation: z.unknown().optional(), message: z.string().optional(),
 }).refine((value) => !!value.modelId || value.deferred === true || !!value.confirmation);
 
+const permissionFields = {
+  toolCallId: RequestId.optional(), toolName: z.string().optional(), intention: z.string().optional(),
+  warning: z.string().optional(), managedApprovalRequired: z.boolean().optional(),
+};
+const sandboxFields = {
+  requestSandboxBypass: z.boolean().optional(), requestSandboxBypassReason: z.string().optional(),
+};
+const commandArguments = z.object({ command: z.string().optional() }).strict();
+const pathArguments = z.object({ path: z.string().optional() }).strict();
+const urlArguments = z.object({ url: z.string().optional() }).strict();
+const commandFields = {
+  ...permissionFields, ...sandboxFields,
+  fullCommandText: z.string().optional(), command: z.string().optional(),
+  args: commandArguments.optional(), arguments: commandArguments.optional(),
+  canOfferSessionApproval: z.boolean().optional(), requestSandboxPermissive: z.boolean().optional(),
+};
+const pathFields = {
+  ...permissionFields, ...sandboxFields,
+  path: z.string().optional(), fileName: z.string().optional(), resolvedPath: z.string().optional(),
+  args: pathArguments.optional(), arguments: pathArguments.optional(),
+};
+const toolFields = {
+  ...permissionFields, args: z.record(Json).optional(), arguments: z.record(Json).optional(),
+};
+const permissionRequest = z.discriminatedUnion("kind", [
+  z.object({
+    ...commandFields, kind: z.literal("shell"),
+    commands: z.array(z.object({ identifier: z.string(), readOnly: z.boolean() }).strict()).optional(),
+    commandSegments: z.array(z.object({ identifier: z.string(), fullCommandText: z.string() }).strict()).optional(),
+    hasWriteFileRedirection: z.boolean().optional(), possiblePaths: z.array(z.string()).optional(),
+    possibleUrls: z.array(z.object({ url: z.string() }).strict()).optional(),
+    resolvedPaths: z.record(z.string()).optional(), resolvedWorkingDirectory: z.string().optional(),
+  }).strict(),
+  z.object({ ...commandFields, kind: z.literal("commands"), commandIdentifiers: z.array(z.string()).optional() }).strict(),
+  z.object({ ...pathFields, kind: z.literal("read") }).strict(),
+  z.object({
+    ...pathFields, kind: z.literal("write"), diff: z.string().optional(), newFileContents: z.string().optional(),
+    canOfferSessionApproval: z.boolean().optional(),
+  }).strict(),
+  z.object({
+    ...permissionFields, ...sandboxFields, kind: z.literal("url"), url: z.string().optional(), redirectedFrom: z.string().optional(),
+    args: urlArguments.optional(), arguments: urlArguments.optional(),
+  }).strict(),
+  z.object({
+    ...toolFields, kind: z.literal("mcp"), serverName: z.string().optional(), mcpServerName: z.string().optional(),
+    toolTitle: z.string().optional(), readOnly: z.boolean().optional(), canOfferServerWideApproval: z.boolean().optional(),
+  }).strict(),
+  z.object({
+    ...toolFields, kind: z.literal("custom-tool"), toolDescription: z.string().optional(), skipPermission: z.boolean().optional(),
+  }).strict(),
+]);
+// SDK correlation/canonicalization metadata is not part of the user-facing approval.
+const permissionMetadata = new Set(["toolCallId", "resolvedPath", "resolvedPaths", "resolvedWorkingDirectory"]);
+
 function permission(item: unknown): PendingRequest {
-  const raw = record(item), request = record(raw.request ?? raw.permissionRequest);
+  const raw = record(item), parsed = permissionRequest.safeParse(raw.request ?? raw.permissionRequest);
+  const request = record(parsed.success ? parsed.data : raw.request ?? raw.permissionRequest);
   const args = record(request.args ?? request.arguments);
   const kind = text(request.kind);
-  const known = ["shell", "commands", "read", "write", "mcp", "url", "custom-tool"].includes(kind);
   const command = request.fullCommandText ?? args.command ?? request.command;
   const file = request.fileName ?? request.path ?? args.path;
   const url = request.url ?? args.url;
@@ -114,30 +169,28 @@ function permission(item: unknown): PendingRequest {
         kind === "url" ? !!text(url).trim() :
           ["mcp", "custom-tool"].includes(kind) && !!text(request.toolName).trim() &&
           (kind !== "mcp" || !!text(server).trim()) && z.record(z.unknown()).safeParse(request.args ?? request.arguments).success;
-  const knownFlags = ["requestSandboxBypass", "requestSandboxPermissive", "managedApprovalRequired"]
-    .every((key) => request[key] === undefined || typeof request[key] === "boolean");
-  const detail = JSON.stringify({
-    kind, tool: request.toolName, intention: request.intention,
-    command, path: file, url, server,
-    diff: request.diff, newFileContents: request.newFileContents, warning: request.warning,
-    redirectedFrom: request.redirectedFrom, managedApprovalRequired: request.managedApprovalRequired,
-    requestSandboxBypass: request.requestSandboxBypass, requestSandboxBypassReason: request.requestSandboxBypassReason,
-    requestSandboxPermissive: request.requestSandboxPermissive,
-    arguments: ["mcp", "custom-tool"].includes(kind) ? request.args ?? request.arguments : undefined,
-  }, null, 2);
+  const detail = parsed.success
+    ? JSON.stringify(Object.fromEntries(Object.entries(request).filter(([key]) => !permissionMetadata.has(key))), null, 2)
+    : "This permission form is unsupported. Review and answer it in the original terminal.";
   const projected = redact(detail, 12_000);
   return PendingRequest.parse({
     requestId: raw.requestId,
-    type: known ? "permission" : "terminal",
+    type: parsed.success ? "permission" : "terminal",
     title: redact(text(request.intention) || text(request.toolName) || `Permission: ${kind || "unknown"}`, 500),
-    detail: known ? projected : "This permission form is unsupported. Review and answer it in the original terminal.",
+    detail: projected,
     permissionKind: kind, choices: [], allowFreeform: false,
-    supported: known && complete && knownFlags && detail.length <= 12_000 && !projected.includes("[REDACTED]") &&
+    supported: parsed.success && complete && detail.length <= 12_000 && projected === detail && !projected.includes("[REDACTED]") &&
       request.requestSandboxBypass !== true && request.requestSandboxPermissive !== true,
   });
 }
 
 type ModelItem = z.infer<typeof modelCatalogue>[number];
+type Capability = keyof SessionSummary["capabilities"];
+type ProbeGroup = "activity" | "permissions" | "models" | "files" | "metadata";
+const capabilityGroup = {
+  messages: "activity", abort: "activity", questions: "activity", permissions: "permissions",
+  models: "models", files: "files", git: "files",
+} as const satisfies Record<Capability, ProbeGroup>;
 export class CopilotRuntime {
   private readonly requests = new Map<string, PendingRequest>();
   private readonly permissionIds = new Set<string>();
@@ -156,7 +209,8 @@ export class CopilotRuntime {
   private modelItems: ModelItem[] = [];
   private files?: ProjectFiles;
   private closed = false;
-  private refreshInFlight?: Promise<SessionSummary>;
+  private activity?: z.infer<typeof runtimeActivity>;
+  private readonly refreshInFlight = new Map<ProbeGroup, Promise<void>>();
   private readonly warnings = new Map<string, string>();
 
   constructor(readonly session: JoinedSession, private readonly emit: (event: UserEvent) => void) {}
@@ -246,78 +300,107 @@ export class CopilotRuntime {
   }
 
   async refresh(): Promise<SessionSummary> {
-    if (this.refreshInFlight) return this.refreshInFlight;
-    const pending = this.refreshNow();
-    this.refreshInFlight = pending;
-    try { return await pending; } finally { this.refreshInFlight = undefined; }
+    await Promise.all((["activity", "permissions", "models", "files", "metadata"] as const)
+      .map((group) => this.refreshGroup(group)));
+    return this.summary;
   }
 
-  private async refreshNow(): Promise<SessionSummary> {
+  private async refreshGroup(group: ProbeGroup): Promise<void> {
+    const existing = this.refreshInFlight.get(group);
+    if (existing) return existing;
+    const pending = this.refreshNow(group);
+    this.refreshInFlight.set(group, pending);
+    try { await pending; } finally { this.refreshInFlight.delete(group); }
+  }
+
+  private async refreshNow(group: ProbeGroup): Promise<void> {
     const rpc = this.session.rpc ?? {};
-    const [paths, activity, mode, pending, model, catalogue, name] = await Promise.all([
-      this.probe("Working directory", () => rpc.permissions?.paths?.list?.(), workingDirectory.parse),
-      this.probe("Runtime activity", () => rpc.metadata?.activity?.(), runtimeActivity.parse),
-      this.probe("Permission mode", () => rpc.permissions?.getMode?.(), permissionMode.parse),
-      this.probe("Pending permissions", () => rpc.permissions?.pendingRequests?.(), pendingPermissions.parse),
-      this.probe("Current model", () => rpc.model?.getCurrent?.(), currentModel.parse),
-      this.probe("Model catalogue", () => rpc.model?.list?.(), modelCatalogue.parse),
-      this.probe("Session name", () => rpc.name?.get?.(), sessionName.parse),
-    ]);
-    const primary = paths?.primary;
-    if (primary) this.root = primary;
-    const checkPaths = rpc.contentExclusion?.checkPaths;
-    const policy = primary
-      ? await this.probe("Content exclusion", () => rpc.contentExclusion?.checkPaths?.({ paths: [primary] }),
-        (value) => contentExclusionDecisions(value, [primary])) : undefined;
-    if (!primary) this.warnings.delete("Content exclusion");
-    this.files = primary && policy?.[0] === true && typeof checkPaths === "function"
-      ? new ProjectFiles(primary, (paths) => checkPaths.call(rpc.contentExclusion, { paths })) : undefined;
-    if (this.files) this.warnings.delete("File views");
-    else this.warnings.set("File views", "File and Git views require explicit content-exclusion allowance for the live working directory.");
-    if (pending) {
-      for (const id of this.permissionIds) this.requests.delete(id);
-      this.permissionIds.clear();
-      this.warnings.delete("Permission projection");
-      for (const item of pending.items) {
-        try {
-          const projected = permission(item);
-          this.requests.set(projected.requestId, projected);
-          this.permissionIds.add(projected.requestId);
-        } catch {
-          this.warnings.set("Permission projection", "A permission request could not be projected safely; review the terminal.");
+    let changes: Partial<SessionSummary> = {};
+    let capabilities: Partial<SessionSummary["capabilities"]> = {};
+    switch (group) {
+      case "activity": {
+        this.activity = await this.probe("Runtime activity", () => rpc.metadata?.activity?.(), runtimeActivity.parse);
+        const send = this.hasMethod("Message sending", this.session.send);
+        const abort = this.hasMethod("Cancellation", this.session.abort);
+        const questions = this.hasMethod("Question responses", rpc.ui?.handlePendingUserInput, rpc.ui?.handlePendingElicitation);
+        if (this.activity && typeof this.activity.abortable !== "boolean")
+          this.warnings.set("Abort evidence", "Runtime activity does not expose a supported cancellation shape; use the terminal.");
+        else this.warnings.delete("Abort evidence");
+        capabilities = {
+          messages: this.activity !== undefined && send,
+          abort: typeof this.activity?.abortable === "boolean" && abort,
+          questions: this.activity !== undefined && questions,
+        };
+        break;
+      }
+      case "permissions": {
+        const pending = await this.probe("Pending permissions", () => rpc.permissions?.pendingRequests?.(), pendingPermissions.parse);
+        if (pending) {
+          for (const id of this.permissionIds) this.requests.delete(id);
+          this.permissionIds.clear();
+          this.warnings.delete("Permission projection");
+          for (const item of pending.items) {
+            try {
+              const projected = permission(item);
+              this.requests.set(projected.requestId, projected);
+              this.permissionIds.add(projected.requestId);
+            } catch {
+              this.warnings.set("Permission projection", "A permission request could not be projected safely; review the terminal.");
+            }
+          }
         }
+        const handler = this.hasMethod("Permission responses", rpc.permissions?.handlePendingPermissionRequest);
+        capabilities = { permissions: pending !== undefined && handler };
+        break;
+      }
+      case "models": {
+        const [model, catalogue] = await Promise.all([
+          this.probe("Current model", () => rpc.model?.getCurrent?.(), currentModel.parse),
+          this.probe("Model catalogue", () => rpc.model?.list?.(), modelCatalogue.parse),
+        ]);
+        const handler = this.hasMethod("Model selection", rpc.model?.switchTo);
+        this.modelItems = catalogue ?? [];
+        changes = { modelId: model?.modelId ?? "", reasoningEffort: model?.reasoningEffort ?? "" };
+        capabilities = { models: model !== undefined && catalogue !== undefined && handler };
+        break;
+      }
+      case "files": {
+        const paths = await this.probe("Working directory", () => rpc.permissions?.paths?.list?.(), workingDirectory.parse);
+        const primary = paths?.primary;
+        if (primary) this.root = primary;
+        const checkPaths = rpc.contentExclusion?.checkPaths;
+        const policy = primary
+          ? await this.probe("Content exclusion", () => rpc.contentExclusion?.checkPaths?.({ paths: [primary] }),
+            (value) => contentExclusionDecisions(value, [primary])) : undefined;
+        if (!primary) this.warnings.delete("Content exclusion");
+        this.files = primary && policy?.[0] === true && typeof checkPaths === "function"
+          ? new ProjectFiles(primary, (paths) => checkPaths.call(rpc.contentExclusion, { paths })) : undefined;
+        if (this.files) this.warnings.delete("File views");
+        else this.warnings.set("File views", "File and Git views require explicit content-exclusion allowance for the live working directory.");
+        changes = {
+          projectId: this.root ? hash(process.platform === "win32" ? this.root.toLowerCase() : this.root) : "unavailable",
+          projectName: this.root ? path.basename(this.root) || this.root : "Unknown project",
+        };
+        capabilities = { files: this.files !== undefined, git: this.files !== undefined };
+        break;
+      }
+      case "metadata": {
+        const [mode, name] = await Promise.all([
+          this.probe("Permission mode", () => rpc.permissions?.getMode?.(), permissionMode.parse),
+          this.probe("Session name", () => rpc.name?.get?.(), sessionName.parse),
+        ]);
+        changes = { permissionMode: mode?.mode ?? "unknown", title: redact(name?.name || this.summary.title, 160) };
+        break;
       }
     }
-    const send = this.hasMethod("Message sending", this.session.send);
-    const abort = this.hasMethod("Cancellation", this.session.abort);
-    const permissions = this.hasMethod("Permission responses", rpc.permissions?.handlePendingPermissionRequest);
-    const questions = this.hasMethod("Question responses", rpc.ui?.handlePendingUserInput, rpc.ui?.handlePendingElicitation);
-    const models = this.hasMethod("Model selection", rpc.model?.switchTo);
-    if (activity && typeof activity.abortable !== "boolean")
-      this.warnings.set("Abort evidence", "Runtime activity does not expose a supported cancellation shape; use the terminal.");
-    else this.warnings.delete("Abort evidence");
-    this.modelItems = catalogue ?? [];
     this.current = SessionSummary.parse({
-      ...this.summary,
-      projectId: this.root ? hash(process.platform === "win32" ? this.root.toLowerCase() : this.root) : "unavailable",
-      projectName: this.root ? path.basename(this.root) || this.root : "Unknown project",
-      title: redact(name?.name || this.summary.title, 160),
-      state: this.cancelRequested ? "cancel_requested" : !activity ? "unsupported" :
-        this.requests.size ? "waiting" : activity.hasActiveWork ? "running" : "idle",
-      permissionMode: mode?.mode ?? "unknown",
-      modelId: model?.modelId ?? "", reasoningEffort: model?.reasoningEffort ?? "",
-      capabilities: {
-        messages: activity !== undefined && send,
-        abort: typeof activity?.abortable === "boolean" && abort,
-        permissions: pending !== undefined && permissions,
-        questions: activity !== undefined && questions,
-        models: model !== undefined && catalogue !== undefined && models,
-        files: this.files !== undefined, git: this.files !== undefined,
-      },
+      ...this.summary, ...changes,
+      state: this.cancelRequested ? "cancel_requested" : !this.activity ? "unsupported" :
+        this.requests.size ? "waiting" : this.activity.hasActiveWork ? "running" : "idle",
+      capabilities: { ...this.summary.capabilities, ...capabilities },
       warnings: [...this.warnings.values()].slice(0, 20),
     });
     this.emitRequests();
-    return this.summary;
   }
 
   private visibleRequests(): PendingRequest[] {
@@ -522,7 +605,7 @@ export class CopilotRuntime {
   }
 
   async models(): Promise<ModelItem[]> {
-    await this.refresh();
+    await this.refreshGroup("models");
     if (!this.summary.capabilities.models)
       throw new Fault("UNSUPPORTED", "Model controls require a supported live model state and catalogue. Use the terminal.", 409);
     return this.modelItems;
@@ -532,7 +615,7 @@ export class CopilotRuntime {
     const rpc = this.session.rpc ?? {};
     const capability = actionCapability[action.type];
     if (capability) {
-      await this.refresh();
+      await this.refreshGroup(capabilityGroup[capability]);
       if (!this.summary.capabilities[capability])
         throw new Fault("UNSUPPORTED", `This runtime does not expose the required ${capability} capability. Use the original terminal.`, 409);
     }
@@ -620,7 +703,7 @@ export class CopilotRuntime {
         }
         const result = modelSelection.parse(raw);
         if (result.confirmation) throw new Fault("TERMINAL_REQUIRED", "Model switch needs compaction confirmation in the terminal.", 409);
-        await this.refresh();
+        await this.refreshGroup("models");
         return { status: "completed", result: {
           modelId: text(result.modelId) || this.summary.modelId, deferred: result.deferred === true,
           message: redact(text(result.message), 2000), reasoningEffort: this.summary.reasoningEffort,

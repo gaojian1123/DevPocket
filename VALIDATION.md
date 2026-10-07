@@ -402,3 +402,27 @@ fixtures. No real CLI was started, attached, reloaded or mutated; no real user
 extension installation, host/device enrollment or cloud operation was performed.
 The Android output was not installed, sealed or distributed. Real compatibility
 checks still require separate opt-in for a disposable terminal.
+
+## Runtime capability review follow-up (2026-10-07)
+
+Two minimal regressions reproduced the review findings before the fix:
+`node --import tsx --test --test-name-pattern 'unknown semantic fields|sending does not wait' backend\tests\runtime.test.ts`.
+A known permission kind with an unknown execution-scope field was still
+approvable, and sending waited for an unrelated stalled model catalogue.
+Both regressions now pass.
+
+Permission payloads use strict per-kind and nested schemas, preserving supported
+live/snapshot dialects while rejecting unknown semantics. Every accepted
+semantic field is displayed; documented SDK correlation/canonicalization
+metadata is typed but not exported. Commands refresh only their prerequisite
+probe group, sharing that group's in-flight read rather than a whole refresh.
+Concurrent regressions verify unrelated model/policy/request probes cannot hold
+up messages or answers, and a late unrelated response cannot restore a capability
+rejected by a newer action probe.
+
+`npm test` passes **105 tests**. `npm run typecheck` and
+`npm run test:extension-package` also pass, including the production bundle and
+standalone unfamiliar-version fixture. No wire, Android or deployment code
+changed in this follow-up. No real runtime control, extension installation/reload,
+emulator reinstall or Azure operation was performed for these review fixes;
+earlier installed-build acceptance does not cover this new source revision.
