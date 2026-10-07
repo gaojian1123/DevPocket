@@ -479,6 +479,7 @@ test("supported question envelopes preserve their semantics without exporting co
   };
   await f.runtime.connect();
   const requestedSchema = { type: "object", properties: { label: { type: "string", description: "A short label" } }, required: ["label"] };
+  const formDefinition = `Form definition (defaults are informational):\n${JSON.stringify(requestedSchema, null, 2)}`;
   const requests = [
     { type: "user_input.requested", data: {
       requestId: "choice", question: "Choose", choices: ["Yes", "No"], allowFreeform: false, toolCallId: "PRIVATE_CORRELATION",
@@ -489,10 +490,10 @@ test("supported question envelopes preserve their semantics without exporting co
     { type: "elicitation.requested", data: {
       requestId: "form", message: "Enter a label", mode: "form", requestedSchema,
       toolCallId: "PRIVATE_CORRELATION", elicitationSource: "Example MCP",
-    }, detail: "Source: Example MCP\nEnter a label\nA short label", answer: "Test" },
+    }, detail: `Source: Example MCP\nEnter a label\n${formDefinition}`, answer: "Test" },
     { type: "elicitation.requested", data: {
       requestId: "legacy-form", message: "Enter a label", requestedSchema,
-    }, detail: "Enter a label\nA short label", answer: "Legacy" },
+    }, detail: `Enter a label\n${formDefinition}`, answer: "Legacy" },
   ];
   for (const request of requests) {
     f.emit(request.type, request.data);
@@ -1365,4 +1366,129 @@ test("queue failures cannot suppress abort or hide an invalid abort acknowledgem
   f.session.abort = async () => { aborts++; return { confirmationRequired: true }; };
   await assert.rejects(f.runtime.execute({ type: "abort" }), { name: "ZodError" });
   assert.equal(aborts, 2);
+});
+
+test("conflicting target aliases cannot disguise a different paired permission subject", async (t) => {
+  const f = await capabilityFixture(t);
+  const original = { kind: "read", fileName: "safe.txt", path: "first.txt" };
+  const prompt = { kind: "read", fileName: "safe.txt", path: "second.txt" };
+  f.session.rpc.permissions!.pendingRequests = async () => ({ items: [{ requestId: "conflict", request: prompt }] });
+  let decisions = 0;
+  f.session.rpc.permissions!.handlePendingPermissionRequest = async () => { decisions++; return { success: true }; };
+  await f.runtime.connect();
+  f.emit("permission.requested", { requestId: "conflict", permissionRequest: original, promptRequest: prompt });
+  const request = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === "conflict");
+  assert.equal(request?.supported, false);
+  await assert.rejects(f.runtime.execute({ type: "permission", requestId: "conflict", decision: "approve-once" }), { code: "TERMINAL_REQUIRED" });
+  assert.equal(decisions, 0);
+});
+
+test("every accepted elicitation schema field is present in the displayed form definition", async (t) => {
+  const f = await capabilityFixture(t), answers: unknown[] = [];
+  f.session.rpc.ui = { handlePendingElicitation: async (input) => { answers.push(input); return { success: true }; } };
+  await f.runtime.connect();
+  const schema = {
+    type: "object", title: "Form-level title", description: "Important form-level description",
+    properties: {
+      choice: { type: "string", title: "Choice", description: "Choose or enter a value", enum: ["One", "Other"], default: "One" },
+      detail: { type: "string", title: "Custom detail", description: "Explain this choice", default: "Suggested value", minLength: 2, maxLength: 40 },
+    }, required: ["choice"], additionalProperties: false,
+  };
+  f.emit("elicitation.requested", { requestId: "described-form", message: "Choose an option", requestedSchema: schema });
+  const request = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === "described-form");
+  assert.equal(request?.supported, true);
+  const rendered = request.detail.split("Form definition (defaults are informational):\n")[1];
+  assert.ok(rendered, "Accepted schema-level and alternate-field semantics must not disappear.");
+  assert.deepEqual(JSON.parse(rendered), schema);
+  assert.deepEqual(answers, []);
+  assert.equal((await f.runtime.execute({ type: "answer", requestId: "described-form", answer: "My value" })).status, "completed");
+  assert.deepEqual(answers, [{ requestId: "described-form", result: { action: "accept", content: { choice: "Other", detail: "My value" } } }]);
+});
+
+test("non-equivalent permission aliases fail closed in snapshots and live envelopes", async (t) => {
+  const requests = [
+    { kind: "shell", fullCommandText: "echo safe", command: "echo different" },
+    { kind: "commands", fullCommandText: "echo safe", args: { command: "echo different" } },
+    { kind: "commands", command: "echo safe", arguments: { command: "echo different" } },
+    { kind: "shell", fullCommandText: "echo safe", args: { command: "echo safe" }, arguments: { command: "echo different" } },
+    { kind: "read", fileName: "safe.txt", path: "different.txt" },
+    { kind: "read", path: "safe.txt", args: { path: "different.txt" } },
+    { kind: "write", fileName: "safe.txt", arguments: { path: "different.txt" }, diff: "+change" },
+    { kind: "write", fileName: "safe.txt", args: { path: "safe.txt" }, arguments: { path: "different.txt" }, diff: "+change" },
+    { kind: "url", url: "https://safe.test", args: { url: "https://different.test" } },
+    { kind: "url", args: { url: "https://safe.test" }, arguments: { url: "https://different.test" } },
+    { kind: "mcp", serverName: "safe", mcpServerName: "different", toolName: "read", args: {} },
+    { kind: "mcp", serverName: "safe", toolName: "read", args: { value: "safe" }, arguments: { value: "different" } },
+    { kind: "custom-tool", toolName: "read", args: { nested: { value: ["safe"] } }, arguments: { nested: { value: ["different"] } } },
+    { kind: "read", fileName: "safe.txt", args: {}, arguments: { path: "different.txt" } },
+  ];
+  const f = await capabilityFixture(t);
+  let decisions = 0;
+  f.session.rpc.permissions!.pendingRequests = async () => ({
+    items: requests.map((request, index) => ({ requestId: `conflict-${index}`, request })),
+  });
+  f.session.rpc.permissions!.handlePendingPermissionRequest = async () => { decisions++; return { success: true }; };
+  await f.runtime.connect();
+  assert.ok(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.every((item) => !item.supported));
+  for (const [index, request] of requests.entries()) {
+    const requestId = `conflict-${index}`;
+    await assert.rejects(f.runtime.execute({ type: "permission", requestId, decision: "approve-once" }), { code: "TERMINAL_REQUIRED" });
+    f.emit("permission.requested", { requestId, permissionRequest: request, promptRequest: request });
+    await assert.rejects(f.runtime.execute({ type: "permission", requestId, decision: "approve-once" }), { code: "TERMINAL_REQUIRED" });
+  }
+  assert.equal(decisions, 0);
+  UserEvent.array().parse(f.events);
+});
+
+test("equivalent permission aliases preserve known dialect compatibility", async (t) => {
+  const requests = [
+    { kind: "shell", fullCommandText: "echo safe", command: "echo safe", args: { command: "echo safe" }, arguments: { command: "echo safe" } },
+    { kind: "commands", fullCommandText: "echo safe", command: "echo safe", arguments: { command: "echo safe" } },
+    { kind: "read", fileName: "safe.txt", path: "safe.txt", args: { path: "safe.txt" }, arguments: { path: "safe.txt" } },
+    { kind: "write", fileName: "safe.txt", path: "safe.txt", args: { path: "safe.txt" }, diff: "+change" },
+    { kind: "url", url: "https://safe.test", args: { url: "https://safe.test" }, arguments: { url: "https://safe.test" } },
+    { kind: "mcp", serverName: "safe", mcpServerName: "safe", toolName: "read",
+      args: { first: "one", nested: { second: [1, null, true] } }, arguments: { nested: { second: [1, null, true] }, first: "one" } },
+    { kind: "custom-tool", toolName: "read", args: { value: "same" }, arguments: { value: "same" } },
+  ];
+  const f = await capabilityFixture(t);
+  let decisions = 0;
+  f.session.rpc.permissions!.pendingRequests = async () => ({
+    items: requests.map((request, index) => ({ requestId: `equivalent-${index}`, request })),
+  });
+  f.session.rpc.permissions!.handlePendingPermissionRequest = async () => { decisions++; return { success: true }; };
+  await f.runtime.connect();
+  for (const [index, request] of requests.entries()) {
+    const requestId = `equivalent-${index}`;
+    f.emit("permission.requested", { requestId, permissionRequest: request, promptRequest: request });
+    assert.equal((await f.runtime.execute({ type: "permission", requestId, decision: "reject" })).status, "completed");
+  }
+  assert.equal(decisions, requests.length);
+});
+
+test("unrenderable form metadata cannot be hidden to make a request answerable", async (t) => {
+  const f = await capabilityFixture(t);
+  let answers = 0;
+  f.session.rpc.ui = { handlePendingElicitation: async () => { answers++; return { success: true }; } };
+  await f.runtime.connect();
+  const schemas = [
+    { type: "object", description: "x".repeat(12_000), properties: { label: { type: "string" } } },
+    { type: "object", title: "ghp_SYNTHETIC_FIXTURE", properties: { label: { type: "string" } } },
+    { type: "object", properties: { label: { type: "string", default: "ghp_SYNTHETIC_FIXTURE" } } },
+    { type: "object", properties: {
+      choice: { type: "string", enum: ["One", "Other"] },
+      detail: { type: "string", description: "ghp_SYNTHETIC_FIXTURE" },
+    } },
+  ];
+  for (const [index, schema] of schemas.entries()) {
+    const requestId = `hidden-metadata-${index}`;
+    f.emit("elicitation.requested", { requestId, message: "Choose", requestedSchema: schema });
+    const request = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === requestId);
+    assert.equal(request?.type, "terminal");
+    assert.equal(request.supported, false);
+    assert.ok(!JSON.stringify(request).includes("SYNTHETIC_FIXTURE"));
+    assert.ok(request.detail.length <= 12_000);
+    await assert.rejects(f.runtime.execute({ type: "answer", requestId, answer: "One" }), { code: "TERMINAL_REQUIRED" });
+  }
+  assert.equal(answers, 0);
 });

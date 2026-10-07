@@ -522,3 +522,23 @@ fixture. Tests cover ordinary enums and unsupported labelled layouts, dispatch o
 SDK method binding, queue timeout/failure and unknown abort results. No wire,
 Android or deployment sources changed, and no real runtime/extension reload,
 emulator reinstall or Azure operation was performed.
+
+### Permission aliases and complete form definitions (2026-10-07)
+
+`node --import tsx --test --test-name-pattern 'conflicting target aliases|every accepted elicitation schema field' backend\tests\runtime.test.ts`
+reproduced contradictory aliases comparing as the same permission subject and
+accepted form metadata disappearing from the display. Both regressions now pass.
+
+Command, path, URL, server and argument aliases must agree before either a
+snapshot or a live permission payload can be approved. Equivalent aliases,
+including reordered object arguments, remain supported. Forms now display their
+complete validated definition, including schema-level and alternate-field
+titles/descriptions/defaults and constraints. Defaults do not supply automatic
+answers. Definitions that exceed the display budget or require redaction remain
+in the original client, as do unsupported `enumNames` forms.
+
+`npm test` passes **149 tests**. `npm run test:extension-package` passes,
+including production TypeScript compilation, bundling and the standalone
+fixture. The PR evidence is updated to the commit containing these results.
+No serialized protocol, Android or deployment sources changed; this validation
+does not extend earlier installed-extension or emulator acceptance.

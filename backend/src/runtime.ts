@@ -137,6 +137,10 @@ const pathFields = {
 const toolFields = {
   ...permissionFields, args: z.record(Json).optional(), arguments: z.record(Json).optional(),
 };
+const aliasesAgree = (...values: unknown[]): boolean => {
+  const present = values.filter((value) => value !== undefined);
+  return present.every((value) => isDeepStrictEqual(value, present[0]));
+};
 const permissionRequest = z.discriminatedUnion("kind", [
   z.object({
     ...commandFields, kind: z.literal("shell"),
@@ -163,7 +167,19 @@ const permissionRequest = z.discriminatedUnion("kind", [
   z.object({
     ...toolFields, kind: z.literal("custom-tool"), toolDescription: z.string().optional(), skipPermission: z.boolean().optional(),
   }).strict(),
-]);
+]).refine((request) => {
+  if (!aliasesAgree(request.args, request.arguments)) return false;
+  const args = record(request.args ?? request.arguments);
+  switch (request.kind) {
+    case "shell":
+    case "commands": return aliasesAgree(request.fullCommandText, request.command, args.command);
+    case "read":
+    case "write": return aliasesAgree(request.fileName, request.path, args.path);
+    case "url": return aliasesAgree(request.url, args.url);
+    case "mcp": return aliasesAgree(request.serverName, request.mcpServerName);
+    case "custom-tool": return true;
+  }
+}, "Permission aliases must describe the same value.");
 // SDK correlation/canonicalization metadata is not part of the user-facing approval.
 const permissionMetadata = new Set(["toolCallId", "resolvedPath", "resolvedPaths", "resolvedWorkingDirectory"]);
 const livePermissionEnvelope = z.object({
@@ -635,7 +651,8 @@ export class CopilotRuntime {
           const alternate = primary ? fields.find(([name, value]) => name !== primary[0] && !value.enum) : undefined;
           const alternateChoice = choices.find((choice) => /^(other|other \(.*\)|其他|其它)$/i.test(choice));
           const detail = [form?.elicitationSource ? `Source: ${form.elicitationSource}` : undefined,
-            form?.message, field?.description].filter(Boolean).join("\n");
+            form?.message, schema ? `Form definition (defaults are informational):\n${JSON.stringify(schema, null, 2)}` : undefined]
+            .filter(Boolean).join("\n");
           const simple = form && schema && primary && field && (fields.length === 1 ||
             (fields.length === 2 && alternate && alternateChoice && !required.includes(alternate[0]))) &&
             required.every((name) => name === primary[0]) && detail.length <= 12_000 &&

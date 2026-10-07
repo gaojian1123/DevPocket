@@ -223,6 +223,8 @@ their required probe group; each group updates only its own evidence:
   original-request/prompt pair must describe the same operation, and both are
   displayed. Unknown outer constraints, unsupported risk metadata, competing
   payload aliases and hook-resolved requests cannot be approved remotely.
+  Multiple command/path/URL/server/argument aliases must have equivalent values
+  before any paired-subject comparison; precedence never hides a contradiction.
   Snapshot refresh cannot discard stricter live evidence or change the approved
   subject. Request IDs changed by a live event or confirmed response after a
   snapshot read started are not overwritten or removed by that late snapshot.
@@ -236,7 +238,11 @@ their required probe group; each group updates only its own evidence:
   Unknown outer fields, URL forms, historical questions and incomplete details
   remain in the original client. Forms with `enumNames` labels also remain there
   until label/value mapping is supported end to end; labels are never silently
-  replaced by opaque values. Form length constraints count Unicode code
+  replaced by opaque values. Supported forms display their complete validated
+  schema, including form-level and alternate-field descriptions, defaults and
+  constraints. Defaults are informational, not automatic answers. If the full
+  definition cannot fit safely without redaction, the form is terminal-only.
+  Form length constraints count Unicode code
   points, including supplementary characters, without changing protocol-v1 size
   limits.
 - Models require valid current-model and nonempty catalogue responses plus a
