@@ -562,3 +562,29 @@ Additional regressions cover evidence recovery, invalid versus authoritative
 snapshots, concurrent live requests, and localized literal enum choices. The PR
 Evidence section is refreshed for this revision. Wire, Android and deployment
 sources are unchanged, and no installed runtime or application was updated.
+
+### Relay capability recovery follow-up (2026-10-07)
+
+`node --import tsx --test --test-name-pattern 'cached relay capabilities' backend\tests\bridge.test.ts`
+reproduced the relay returning HTTP 409 from its cached false capability while
+the original runtime had recovered and an unrelated model probe was stalled.
+The real local relay/bridge/SQLite regression now passes: the authorized command
+reaches the bridge's action-specific check and completes once. A subsequent
+currently unsupported action gets a failed receipt without invoking the runtime.
+
+Relay capability booleans now advertise UI state rather than veto fresh commands.
+Authentication, device/host/session ownership, immutable retry handling and
+offline refusal remain enforced. Readiness additionally requires an open socket:
+the existing disconnect regression exposed the closing-socket race, and now
+passes without changing its assertions or timing.
+
+`npm test` passes **158 tests**. `npm run typecheck` and
+`npm run test:extension-package` pass, covering production compilation/bundling
+and the isolated installed-package fixture. The wire and database formats and
+Android sources are unchanged.
+
+Unlike the earlier extension-only version-gate removal, this follow-up changes
+relay behavior. Existing protocol-v1 relays remain compatible but retain their
+cached veto until upgraded. Deploy the updated relay to obtain this recovery
+improvement; no Azure deployment, installed extension reload, device enrollment
+or emulator reinstall was performed here.

@@ -209,3 +209,82 @@ for (const extraFields of [false, true]) test(`unknown mutation ${extraFields ? 
   }
   assert.deepEqual(calls, actions.map(key));
 });
+
+test("cached relay capabilities cannot veto live recovery while unrelated probes are stalled", async (t) => {
+  let bridge: Awaited<ReturnType<typeof startBridge>> | undefined;
+  let finishCatalogue = () => {};
+  let refreshing: Promise<SessionSummary> | undefined;
+  t.after(async () => {
+    finishCatalogue();
+    await refreshing;
+    await bridge?.close();
+  });
+  const f = await fixture(t), host = f.host(), phone = await f.pair(host.token), sid = newId();
+  let available = false, sends = 0;
+  let emit: (event: unknown) => void = () => {};
+  const event = (type: string, data: object) => ({ id: newId(), timestamp: new Date().toISOString(), type, data });
+  const session: JoinedSession = {
+    sessionId: sid,
+    getEvents: async () => [event("session.start", { copilotVersion: "future-build", context: { cwd: f.dataDir } })],
+    on: (listener) => { emit = listener; return () => {}; },
+    send: async (options) => {
+      sends++;
+      assert.equal(options.mode, "enqueue");
+      assert.equal(options.source, "user");
+      emit(event("assistant.message", { messageId: "recovered-answer", originatingMessageId: "recovered-message", content: "Recovered" }));
+      emit(event("session.idle", {}));
+      return "recovered-message";
+    },
+    rpc: {
+      metadata: { activity: async () => available ? { hasActiveWork: false, abortable: false } : { hasActiveWork: "unknown" } },
+      permissions: {
+        paths: { list: async () => ({ primary: f.dataDir }) },
+        getMode: async () => ({ mode: "manual" }), pendingRequests: async () => ({ items: [] }),
+      },
+      model: { list: async () => ({ list: [{ id: "test-model" }] }), getCurrent: async () => ({ modelId: "test-model" }) },
+    },
+  };
+  bridge = await startBridge(session, {
+    hostId: host.hostId, token: host.token, relayUrl: f.url,
+    dataDir: path.join(f.dataDir, "bridge"), allowInsecureLoopback: true,
+  });
+  const catalogue = await (await f.request("/v1/catalog", phone.token)).json();
+  assert.equal(SessionSummary.strip().parse(catalogue.sessions[0]).capabilities.messages, false);
+  const stalled = new Promise<void>((resolve) => { finishCatalogue = resolve; });
+  session.rpc.model!.list = async () => { await stalled; return { list: [{ id: "test-model" }] }; };
+  available = true;
+  refreshing = bridge.runtime.refresh();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const cached = await (await f.request("/v1/catalog", phone.token)).json();
+  assert.equal(SessionSummary.strip().parse(cached.sessions[0]).capabilities.messages, false);
+  const route = sessionPath(host.hostId, sid) + "/commands";
+  const command = { commandId: newId(), action: { type: "message", text: "Recovered without a full refresh", attachmentIds: [] } };
+  assert.equal((await f.request(route, undefined, command)).status, 401);
+  assert.equal((await f.request(route, phone.token, command)).status, 202);
+  async function receipt(commandId: string): Promise<Receipt> {
+    for (let i = 0; i < 100; i++) {
+      const value = Receipt.parse(await (await f.request(`${route}/${commandId}`, phone.token)).json());
+      if (value.status !== "dispatched") return value;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.fail("The bridge did not return its action-specific result.");
+  }
+  assert.equal((await receipt(command.commandId)).status, "completed");
+  assert.equal(sends, 1);
+  assert.equal(Receipt.parse(await (await f.request(route, phone.token, command)).json()).status, "completed");
+  assert.equal(sends, 1);
+
+  available = false;
+  const unsupported = { ...command, commandId: newId() };
+  assert.equal((await f.request(route, phone.token, unsupported)).status, 202);
+  const rejected = await receipt(unsupported.commandId);
+  assert.equal(rejected.status, "failed");
+  assert.equal(rejected.error?.code, "UNSUPPORTED");
+  assert.equal(sends, 1);
+  finishCatalogue();
+  await refreshing;
+  await bridge.close();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal((await f.request(route, phone.token, { ...command, commandId: newId() })).status, 503);
+  assert.equal(Receipt.parse(await (await f.request(route, phone.token, command)).json()).status, "completed");
+});

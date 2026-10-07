@@ -199,7 +199,12 @@ Attachment and refresh use read-only probes with a five-second deadline per prob
 discovery never sends a test message,
 aborts work, answers a request or switches a model. Before executing a command the
 bridge refreshes only that command's prerequisite evidence and checks its
-capability, independently of the relay's last advertised snapshot. Unrelated
+capability, independently of the relay's last advertised snapshot. The relay
+authenticates/scopes commands and requires a registered host with an open socket,
+but cached capability booleans are UI advertisements, not a veto on forwarding
+fresh commands. A
+currently unsupported operation returns the bridge's failed receipt without
+invoking that runtime control. Unrelated
 model, permission, file-policy and display probes cannot delay a message or
 answer, even during a periodic full refresh. Concurrent consumers share only
 their required probe group; each group updates only its own evidence:
@@ -273,6 +278,15 @@ operation.
 These checks establish adapter support, not end-to-end acceptance of an arbitrary
 runtime build. Real mutation/cancellation compatibility checks still require an
 explicitly opted-in disposable terminal; discovery never performs them.
+
+Earlier protocol-v1 relays remain compatible with the updated extension and app,
+but their cached-capability veto can delay recovery until a new summary arrives.
+The final review follow-up changes relay command admission to remove that veto.
+Deploy the updated relay as well to obtain this recovery improvement; updating
+or reloading the user extension alone does not update an already-running Azure
+relay. No wire/database migration is required. UI capability advertisements
+continue to refresh periodically, and this source change does not authorize a
+cloud deployment.
 
 ### List and revoke phones
 
