@@ -1,21 +1,23 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
-  Json, PendingRequest, SessionSummary, UserEvent,
+  actionCapability, Json, PendingRequest, RequestId, SessionSummary, UserEvent,
   type Action, type Receipt,
 } from "./protocol.js";
 import { Fault, hash, redact } from "./security.js";
-import { ProjectFiles } from "./files.js";
+import { contentExclusionDecisions, ProjectFiles } from "./files.js";
 
 type RpcRead = () => Promise<unknown>;
+const PROBE_TIMEOUT_MS = 5000;
 export type LocalAttachment = { type: "file"; path: string; displayName: string };
 export interface JoinedSession {
   sessionId: string;
   getEvents(): Promise<unknown[]>;
   on(handler: (event: unknown) => void): () => void;
-  send(options: { prompt: string; mode: "enqueue"; source: "user"; attachments?: LocalAttachment[] }): Promise<string>;
-  abort(): Promise<void>;
+  send?(options: { prompt: string; mode: "enqueue"; source: "user"; attachments?: LocalAttachment[] }): Promise<unknown>;
+  abort?(): Promise<unknown>;
   rpc: {
     permissions?: {
       getMode?: RpcRead; pendingRequests?: RpcRead;
@@ -43,40 +45,251 @@ export const record = (value: unknown): Record<string, unknown> =>
 const text = (value: unknown): string => typeof value === "string" ? value : "";
 const runtimeEvent = z.object({ id: z.string(), type: z.string(), timestamp: z.string(),
   agentId: z.string().optional(), data: z.record(z.unknown()) });
+const workingDirectory = z.object({
+  primary: z.string().min(1).refine((value) => path.isAbsolute(value) && !value.includes("\0")),
+});
+const runtimeActivity = z.object({ hasActiveWork: z.boolean(), abortable: z.unknown().optional() });
+const permissionMode = z.object({ mode: z.string().min(1).max(80) });
+const pendingPermissions = z.object({ items: z.array(z.object({
+  requestId: RequestId, request: z.record(z.unknown()).optional(), permissionRequest: z.record(z.unknown()).optional(),
+  recoveryEpisodeId: RequestId.optional(),
+}).strict().refine((item) => (item.request !== undefined) !== (item.permissionRequest !== undefined))) })
+  .refine(({ items }) => new Set(items.map((item) => item.requestId)).size === items.length, "Permission request IDs must be unique.");
+const currentModel = z.object({
+  modelId: z.string().min(1).max(200), reasoningEffort: z.string().max(60).nullish(),
+});
+const sessionName = z.object({ name: z.string() });
+const reasoningEfforts = z.array(z.string().min(1).max(60));
+const modelCatalogue = z.object({ list: z.array(z.object({
+  id: z.string().min(1).max(200), name: z.string().optional(),
+  supportedReasoningEfforts: reasoningEfforts.optional(), supported_reasoning_efforts: reasoningEfforts.optional(),
+  capabilities: z.object({ supports: z.object({ reasoning_efforts: reasoningEfforts.optional() }).optional() }).optional(),
+  policy: z.object({ state: z.enum(["enabled", "disabled", "unconfigured"]) }).optional(),
+  disabled: z.boolean().optional(), isDisabled: z.boolean().optional(), model_picker_enabled: z.boolean().optional(),
+})).min(1) })
+  .refine(({ list }) => new Set(list.map((model) => model.id)).size === list.length, "Model IDs must be unique.")
+  .transform(({ list }) => list.map((model) => {
+  const efforts = model.supportedReasoningEfforts ?? model.supported_reasoning_efforts ??
+    model.capabilities?.supports?.reasoning_efforts ?? [];
+  return {
+    id: model.id, name: redact(model.name || model.id, 200), reasoningEfforts: efforts,
+    reasoningManual: efforts.length === 0,
+    enabled: (model.policy === undefined || model.policy.state === "enabled") &&
+      model.disabled !== true && model.isDisabled !== true && model.model_picker_enabled !== false,
+  };
+}));
+const messageQueue = z.object({
+  items: z.array(z.object({ messageId: RequestId.optional() })),
+  withdrawableTurnMessageId: RequestId.nullish(),
+});
+const requestResolution = z.object({ success: z.boolean() }).strict();
+const userQuestion = z.object({
+  requestId: RequestId, toolCallId: RequestId.optional(),
+  question: z.string().trim().min(1).max(12_000),
+  choices: z.array(z.string().min(1).max(1000)).max(50).optional(),
+  allowFreeform: z.boolean().optional(),
+}).strict();
+const elicitationField = z.object({
+  type: z.literal("string"), title: z.string().max(500).optional(), description: z.string().max(10_000).optional(),
+  enum: z.array(z.string().min(1).max(1000)).min(1).max(50).optional(),
+  minLength: z.number().int().min(0).max(8000).optional(),
+  maxLength: z.number().int().min(1).optional(), default: z.string().optional(),
+}).strict().refine((field) => (field.minLength ?? 0) <= (field.maxLength ?? 8000));
+const elicitationSchema = z.object({
+  type: z.literal("object"), properties: z.record(elicitationField),
+  required: z.array(z.string()).optional(), title: z.string().optional(), description: z.string().optional(),
+  additionalProperties: z.boolean().optional(),
+}).strict();
+const elicitationRequest = z.object({
+  requestId: RequestId, toolCallId: RequestId.optional(),
+  elicitationSource: z.string().min(1).max(200).optional(),
+  message: z.string().min(1).max(12_000).refine((value) => !!value.trim()),
+  mode: z.literal("form").optional(),
+  requestedSchema: elicitationSchema,
+}).strict();
+const modelSelection = z.object({
+  modelId: z.string().min(1).max(200).optional(), deferred: z.boolean().optional(),
+  confirmation: z.object({
+    targetModelDisplayName: z.string().min(1), currentTokens: z.number().int().nonnegative(),
+    targetLimit: z.number().int().nonnegative(),
+  }).strict().optional(),
+  message: z.string().optional(),
+}).strict().refine((value) => !!value.modelId || value.deferred === true || !!value.confirmation);
+
+const permissionFields = {
+  toolCallId: RequestId.optional(), toolName: z.string().optional(), intention: z.string().optional(),
+  warning: z.string().optional(), managedApprovalRequired: z.boolean().optional(),
+};
+const sandboxFields = {
+  requestSandboxBypass: z.boolean().optional(), requestSandboxBypassReason: z.string().optional(),
+};
+const commandArguments = z.object({ command: z.string().optional() }).strict();
+const pathArguments = z.object({ path: z.string().optional() }).strict();
+const urlArguments = z.object({ url: z.string().optional() }).strict();
+const commandFields = {
+  ...permissionFields, ...sandboxFields,
+  fullCommandText: z.string().optional(), command: z.string().optional(),
+  args: commandArguments.optional(), arguments: commandArguments.optional(),
+  canOfferSessionApproval: z.boolean().optional(), requestSandboxPermissive: z.boolean().optional(),
+};
+const pathFields = {
+  ...permissionFields, ...sandboxFields,
+  path: z.string().optional(), fileName: z.string().optional(), resolvedPath: z.string().optional(),
+  args: pathArguments.optional(), arguments: pathArguments.optional(),
+};
+const toolFields = {
+  ...permissionFields, args: z.record(Json).optional(), arguments: z.record(Json).optional(),
+};
+const aliasesAgree = (...values: unknown[]): boolean => {
+  const present = values.filter((value) => value !== undefined);
+  return present.every((value) => isDeepStrictEqual(value, present[0]));
+};
+const permissionRequest = z.discriminatedUnion("kind", [
+  z.object({
+    ...commandFields, kind: z.literal("shell"),
+    commands: z.array(z.object({ identifier: z.string(), readOnly: z.boolean() }).strict()).optional(),
+    commandSegments: z.array(z.object({ identifier: z.string(), fullCommandText: z.string() }).strict()).optional(),
+    hasWriteFileRedirection: z.boolean().optional(), possiblePaths: z.array(z.string()).optional(),
+    possibleUrls: z.array(z.object({ url: z.string() }).strict()).optional(),
+    resolvedPaths: z.record(z.string()).optional(), resolvedWorkingDirectory: z.string().optional(),
+  }).strict(),
+  z.object({ ...commandFields, kind: z.literal("commands"), commandIdentifiers: z.array(z.string()).optional() }).strict(),
+  z.object({ ...pathFields, kind: z.literal("read") }).strict(),
+  z.object({
+    ...pathFields, kind: z.literal("write"), diff: z.string().optional(), newFileContents: z.string().optional(),
+    canOfferSessionApproval: z.boolean().optional(),
+  }).strict(),
+  z.object({
+    ...permissionFields, ...sandboxFields, kind: z.literal("url"), url: z.string().optional(), redirectedFrom: z.string().optional(),
+    args: urlArguments.optional(), arguments: urlArguments.optional(),
+  }).strict(),
+  z.object({
+    ...toolFields, kind: z.literal("mcp"), serverName: z.string().optional(), mcpServerName: z.string().optional(),
+    toolTitle: z.string().optional(), readOnly: z.boolean().optional(), canOfferServerWideApproval: z.boolean().optional(),
+  }).strict(),
+  z.object({
+    ...toolFields, kind: z.literal("custom-tool"), toolDescription: z.string().optional(), skipPermission: z.boolean().optional(),
+  }).strict(),
+]).refine((request) => {
+  if (!aliasesAgree(request.args, request.arguments)) return false;
+  const args = record(request.args ?? request.arguments);
+  switch (request.kind) {
+    case "shell":
+    case "commands": return aliasesAgree(request.fullCommandText, request.command, args.command);
+    case "read":
+    case "write": return aliasesAgree(request.fileName, request.path, args.path);
+    case "url": return aliasesAgree(request.url, args.url);
+    case "mcp": return aliasesAgree(request.serverName, request.mcpServerName);
+    case "custom-tool": return true;
+  }
+}, "Permission aliases must describe the same value.");
+// SDK correlation/canonicalization metadata is not part of the user-facing approval.
+const permissionMetadata = new Set(["toolCallId", "resolvedPath", "resolvedPaths", "resolvedWorkingDirectory"]);
+const livePermissionEnvelope = z.object({
+  requestId: RequestId, recoveryEpisodeId: RequestId.optional(),
+  agentMode: z.enum(["interactive", "plan", "autopilot"]).optional(),
+  permissionMode: z.enum(["manual", "assisted", "allow-all"]).optional(),
+  resolvedByHook: z.boolean().optional(),
+  permissionRequest: permissionRequest.optional(), promptRequest: permissionRequest.optional(),
+  request: permissionRequest.optional(),
+}).strict().refine((value) => value.request !== undefined
+  ? value.permissionRequest === undefined && value.promptRequest === undefined
+  : value.permissionRequest !== undefined || value.promptRequest !== undefined);
+
+function permissionSubject(value: unknown): unknown {
+  const request = record(value), args = record(request.args ?? request.arguments);
+  switch (request.kind) {
+    case "shell":
+    case "commands":
+      return { kind: "commands", command: request.fullCommandText ?? args.command ?? request.command };
+    case "read":
+      return { kind: "read", path: request.fileName ?? request.path ?? args.path };
+    case "write":
+      return { kind: "write", path: request.fileName ?? request.path ?? args.path, diff: request.diff, contents: request.newFileContents };
+    case "url":
+      return { kind: "url", url: request.url ?? args.url, redirectedFrom: request.redirectedFrom };
+    case "mcp":
+    case "custom-tool":
+      return { kind: request.kind, server: request.serverName ?? request.mcpServerName, tool: request.toolName,
+        arguments: request.args ?? request.arguments };
+    default: return undefined;
+  }
+}
+
+function livePermission(value: unknown): { request: PendingRequest; subject: unknown } {
+  const requestId = RequestId.parse(record(value).requestId);
+  const parsed = livePermissionEnvelope.safeParse(value);
+  const terminal: PendingRequest = {
+    requestId, type: "terminal", title: "Review permission in the original client",
+    detail: "This permission envelope is unsupported or already handled. Review it in the original client.",
+    choices: [], allowFreeform: false, supported: false,
+  };
+  if (!parsed.success || parsed.data.resolvedByHook === true) return { request: terminal, subject: undefined };
+  const envelope = parsed.data;
+  const original = envelope.permissionRequest ?? envelope.request ?? envelope.promptRequest;
+  const projected = permission({ requestId, request: original });
+  const subject = permissionSubject(original);
+  const prompt = envelope.permissionRequest && envelope.promptRequest
+    ? permission({ requestId, request: envelope.promptRequest }) : undefined;
+  if (prompt && !isDeepStrictEqual(subject, permissionSubject(envelope.promptRequest)))
+    return { request: terminal, subject: undefined };
+  const detail = [
+    envelope.agentMode === undefined ? undefined : `Agent mode: ${envelope.agentMode}`,
+    envelope.permissionMode === undefined ? undefined : `Permission mode: ${envelope.permissionMode}`,
+    projected.detail, prompt ? `Prompt details:\n${prompt.detail}` : undefined,
+  ].filter((item) => item !== undefined).join("\n");
+  return { subject, request: {
+    ...projected, detail: redact(detail, 12_000),
+    supported: projected.supported && (!prompt || prompt.supported) && detail.length <= 12_000,
+  } };
+}
 
 function permission(item: unknown): PendingRequest {
-  const raw = record(item), request = record(raw.request ?? raw.permissionRequest);
+  const raw = record(item), parsed = permissionRequest.safeParse(raw.request ?? raw.permissionRequest);
+  const request = record(parsed.success ? parsed.data : raw.request ?? raw.permissionRequest);
   const args = record(request.args ?? request.arguments);
   const kind = text(request.kind);
-  const known = ["shell", "commands", "read", "write", "mcp", "url", "custom-tool"].includes(kind);
-  const detail = JSON.stringify({
-    kind, tool: request.toolName, intention: request.intention,
-    command: request.fullCommandText ?? args.command ?? request.command,
-    path: request.fileName ?? request.path ?? args.path,
-    url: request.url ?? args.url, server: request.serverName ?? request.mcpServerName,
-    diff: request.diff, newFileContents: request.newFileContents, warning: request.warning,
-    redirectedFrom: request.redirectedFrom, managedApprovalRequired: request.managedApprovalRequired,
-    requestSandboxBypass: request.requestSandboxBypass, requestSandboxBypassReason: request.requestSandboxBypassReason,
-    requestSandboxPermissive: request.requestSandboxPermissive,
-    arguments: ["mcp", "custom-tool"].includes(kind) ? request.args ?? request.arguments : undefined,
-  }, null, 2);
+  const command = request.fullCommandText ?? args.command ?? request.command;
+  const file = request.fileName ?? request.path ?? args.path;
+  const url = request.url ?? args.url;
+  const server = request.serverName ?? request.mcpServerName;
+  const complete = ["shell", "commands"].includes(kind) ? !!text(command).trim() :
+    kind === "read" ? !!text(file).trim() :
+      kind === "write" ? !!text(file).trim() && (typeof request.diff === "string" || typeof request.newFileContents === "string") :
+        kind === "url" ? !!text(url).trim() :
+          ["mcp", "custom-tool"].includes(kind) && !!text(request.toolName).trim() &&
+          (kind !== "mcp" || !!text(server).trim()) && z.record(z.unknown()).safeParse(request.args ?? request.arguments).success;
+  const detail = parsed.success
+    ? JSON.stringify(Object.fromEntries(Object.entries(request).filter(([key]) => !permissionMetadata.has(key))), null, 2)
+    : "This permission form is unsupported. Review and answer it in the original terminal.";
   const projected = redact(detail, 12_000);
   return PendingRequest.parse({
     requestId: raw.requestId,
-    type: known ? "permission" : "terminal",
+    type: parsed.success ? "permission" : "terminal",
     title: redact(text(request.intention) || text(request.toolName) || `Permission: ${kind || "unknown"}`, 500),
-    detail: known ? projected : "This permission form is unsupported. Review and answer it in the original terminal.",
+    detail: projected,
     permissionKind: kind, choices: [], allowFreeform: false,
-    supported: known && detail.length <= 12_000 && !projected.includes("[REDACTED]") &&
+    supported: parsed.success && complete && detail.length <= 12_000 && projected === detail && !projected.includes("[REDACTED]") &&
       request.requestSandboxBypass !== true && request.requestSandboxPermissive !== true,
   });
 }
 
-type ModelItem = { id: string; name: string; reasoningEfforts: string[]; reasoningManual: boolean; enabled: boolean };
+type ModelItem = z.infer<typeof modelCatalogue>[number];
+type Capability = keyof SessionSummary["capabilities"];
+type ProbeGroup = "activity" | "permissions" | "models" | "files" | "metadata";
+const capabilityGroup = {
+  messages: "activity", abort: "activity", questions: "activity", permissions: "permissions",
+  models: "models", files: "files", git: "files",
+} as const satisfies Record<Capability, ProbeGroup>;
 export class CopilotRuntime {
   private readonly requests = new Map<string, PendingRequest>();
   private readonly permissionIds = new Set<string>();
-  private readonly elicitationFields = new Map<string, { field: string; alternateField?: string; alternateChoice?: string; maxLength: number }>();
+  private readonly livePermissions = new Map<string, ReturnType<typeof livePermission>>();
+  private permissionSnapshotChanges?: Set<string>;
+  private readonly elicitationFields = new Map<string, {
+    field: string; minLength: number; maxLength: number;
+    alternateField?: string; alternateChoice?: string; alternateMinLength?: number; alternateMaxLength?: number;
+  }>();
   private readonly tools = new Map<string, string>();
   private readonly partialMessages = new Map<string, string>();
   private readonly partialTools = new Map<string, string>();
@@ -88,8 +301,9 @@ export class CopilotRuntime {
   private modelItems: ModelItem[] = [];
   private files?: ProjectFiles;
   private closed = false;
-  private refreshInFlight?: Promise<SessionSummary>;
-  private readonly warnings = new Set<string>();
+  private activity?: z.infer<typeof runtimeActivity>;
+  private readonly refreshInFlight = new Map<ProbeGroup, Promise<void>>();
+  private readonly warnings = new Map<string, string>();
 
   constructor(readonly session: JoinedSession, private readonly emit: (event: UserEvent) => void) {}
 
@@ -105,13 +319,44 @@ export class CopilotRuntime {
     this.emit({ id: randomUUID(), at: new Date().toISOString(), kind: "notice", data: { code, message: redact(message, 2000) } });
   }
 
-  private async probe(label: string, read: RpcRead | undefined): Promise<unknown> {
-    if (!read) { this.warnings.add(`${label} is unavailable; use the terminal.`); return undefined; }
-    try { return await read(); }
+  private async probe<T>(label: string, read: () => Promise<unknown> | undefined, parse: (value: unknown) => T): Promise<T | undefined> {
+    let response: unknown;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      response = await Promise.race([
+        Promise.resolve().then(read),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Fault("CAPABILITY_TIMEOUT", "Read-only capability probe timed out.")), PROBE_TIMEOUT_MS);
+        }),
+      ]);
+    }
     catch (error) {
-      this.warnings.add(`${label} probe failed (${error instanceof Error ? error.name : "runtime error"}); use the terminal.`);
+      this.warnings.set(label, error instanceof Fault && error.code === "CAPABILITY_TIMEOUT"
+        ? `${label} probe timed out; use the terminal.`
+        : `${label} probe failed (${redact(error instanceof Error ? error.name : "runtime error", 80)}); use the terminal.`);
+      return undefined;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    if (response === undefined) {
+      this.warnings.set(label, `${label} is unavailable; use the terminal.`);
       return undefined;
     }
+    try {
+      const result = parse(response);
+      this.warnings.delete(label);
+      return result;
+    } catch {
+      this.warnings.set(label, `${label} returned an unsupported response shape; use the terminal.`);
+      return undefined;
+    }
+  }
+
+  private hasMethod(label: string, ...methods: unknown[]): boolean {
+    const available = methods.some((method) => typeof method === "function");
+    if (available) this.warnings.delete(label);
+    else this.warnings.set(label, `${label} is unavailable in the bundled SDK; use the terminal.`);
+    return available;
   }
 
   async connect(): Promise<SessionSummary> {
@@ -127,7 +372,7 @@ export class CopilotRuntime {
     for (const raw of history) {
       const event = record(raw), data = record(event.data);
       if (event.type === "session.start") {
-        version = text(data.copilotVersion) || version;
+        version = redact(text(data.copilotVersion), 80) || version;
         this.root = text(record(data.context).cwd);
       }
     }
@@ -141,79 +386,149 @@ export class CopilotRuntime {
     for (const event of history.slice(-15_000)) this.consume(event, true);
     hydrating = false;
     for (const event of buffered) this.consume(event);
-    this.warnings.add("Version is recorded at session creation; controls also require live API probes. Unknown versions are read-only.");
-    this.warnings.add("Questions already open before first attachment may require the terminal; this CLI has no pending-question snapshot.");
+    this.warnings.set("Recorded version", "CLI version is recorded at session creation and is informational only; controls require live capability evidence.");
+    this.warnings.set("Pending questions", "Questions already open before first attachment may require the terminal; no pending-question snapshot is available.");
     return await this.refresh();
   }
 
   async refresh(): Promise<SessionSummary> {
-    if (this.refreshInFlight) return this.refreshInFlight;
-    const pending = this.refreshNow();
-    this.refreshInFlight = pending;
-    try { return await pending; } finally { this.refreshInFlight = undefined; }
+    await Promise.all((["activity", "permissions", "models", "files", "metadata"] as const)
+      .map((group) => this.refreshGroup(group)));
+    return this.summary;
   }
 
-  private async refreshNow(): Promise<SessionSummary> {
-    const rpc = this.session.rpc;
-    const [paths, activity, mode, pending, model, name] = await Promise.all([
-      this.probe("Working directory", rpc.permissions?.paths?.list),
-      this.probe("Runtime activity", rpc.metadata?.activity),
-      this.probe("Permission mode", rpc.permissions?.getMode),
-      this.probe("Pending permissions", rpc.permissions?.pendingRequests),
-      this.probe("Current model", rpc.model?.getCurrent),
-      this.probe("Session name", rpc.name?.get),
-    ]);
-    const primary = text(record(paths).primary);
-    if (primary) this.root = primary;
-    const knownVersion = this.summary.cliVersion === "1.0.90-0";
-    const active = record(activity);
-    const supported = knownVersion && typeof active.hasActiveWork === "boolean" && !!primary;
-    const checkPaths = rpc.contentExclusion?.checkPaths;
-    const policy = checkPaths && primary
-      ? await this.probe("Content exclusion", () => checkPaths({ paths: [primary] })) : undefined;
-    const fileAccess = supported && record(policy).available === true && !!checkPaths;
-    this.files = fileAccess ? new ProjectFiles(primary, (paths) => checkPaths({ paths })) : undefined;
-    if (!fileAccess) this.warnings.add("File and Git views are disabled until the runtime can evaluate content-exclusion policy.");
-    if (!knownVersion) this.warnings.add(`Unsupported recorded CLI version: ${this.summary.cliVersion}. Validated version: 1.0.90-0.`);
-    if (Array.isArray(record(pending).items)) {
-      for (const id of this.permissionIds) this.requests.delete(id);
-      this.permissionIds.clear();
-      for (const item of record(pending).items as unknown[]) {
+  private async refreshGroup(group: ProbeGroup): Promise<void> {
+    const existing = this.refreshInFlight.get(group);
+    if (existing) return existing;
+    const pending = this.refreshNow(group);
+    this.refreshInFlight.set(group, pending);
+    try { await pending; } finally { this.refreshInFlight.delete(group); }
+  }
+
+  private async refreshNow(group: ProbeGroup): Promise<void> {
+    const rpc = this.session.rpc ?? {};
+    let changes: Partial<SessionSummary> = {};
+    let capabilities: Partial<SessionSummary["capabilities"]> = {};
+    switch (group) {
+      case "activity": {
+        this.activity = await this.probe("Runtime activity", () => rpc.metadata?.activity?.(), runtimeActivity.parse);
+        const send = this.hasMethod("Message sending", this.session.send);
+        const abort = this.hasMethod("Cancellation", this.session.abort);
+        const questions = this.hasMethod("Question responses", rpc.ui?.handlePendingUserInput, rpc.ui?.handlePendingElicitation);
+        if (this.activity && typeof this.activity.abortable !== "boolean")
+          this.warnings.set("Abort evidence", "Runtime activity does not expose a supported cancellation shape; use the terminal.");
+        else if (this.activity?.hasActiveWork && !this.activity.abortable)
+          this.warnings.set("Abort evidence", "The runtime's current work is not abortable; use the original client.");
+        else this.warnings.delete("Abort evidence");
+        capabilities = {
+          messages: this.activity !== undefined && send,
+          abort: typeof this.activity?.abortable === "boolean" && abort &&
+            (!this.activity.hasActiveWork || this.activity.abortable),
+          questions: this.activity !== undefined && questions,
+        };
+        break;
+      }
+      case "permissions": {
+        const changed = new Set<string>();
+        this.permissionSnapshotChanges = changed;
+        let pending: z.infer<typeof pendingPermissions> | undefined;
         try {
-          const projected = permission(item);
-          this.requests.set(projected.requestId, projected);
-          this.permissionIds.add(projected.requestId);
-        } catch {
-          this.warnings.add("A permission request could not be projected safely; review the terminal.");
+          pending = await this.probe("Pending permissions", () => rpc.permissions?.pendingRequests?.(), pendingPermissions.parse);
+        } finally {
+          this.permissionSnapshotChanges = undefined;
         }
+        if (pending) {
+          const pendingIds = new Set(pending.items.map((item) => item.requestId));
+          // Live changes after this read started take precedence, including completions.
+          for (const id of new Set([...this.permissionIds, ...this.livePermissions.keys()])) {
+            if (changed.has(id)) continue;
+            this.requests.delete(id);
+            this.permissionIds.delete(id);
+            if (!pendingIds.has(id)) this.livePermissions.delete(id);
+          }
+          this.warnings.delete("Permission projection");
+          for (const item of pending.items) {
+            if (changed.has(item.requestId)) continue;
+            try {
+              const projected = permission(item);
+              const live = this.livePermissions.get(projected.requestId);
+              this.requests.set(projected.requestId, live ? {
+                ...live.request, supported: live.request.supported && projected.supported &&
+                  isDeepStrictEqual(live.subject, permissionSubject(item.request ?? item.permissionRequest)),
+              } : projected);
+              this.permissionIds.add(projected.requestId);
+            } catch {
+              this.warnings.set("Permission projection", "A permission request could not be projected safely; review the terminal.");
+            }
+          }
+        }
+        const handler = this.hasMethod("Permission responses", rpc.permissions?.handlePendingPermissionRequest);
+        capabilities = { permissions: pending !== undefined && handler };
+        break;
+      }
+      case "models": {
+        const [model, catalogue] = await Promise.all([
+          this.probe("Current model", () => rpc.model?.getCurrent?.(), currentModel.parse),
+          this.probe("Model catalogue", () => rpc.model?.list?.(), modelCatalogue.parse),
+        ]);
+        const handler = this.hasMethod("Model selection", rpc.model?.switchTo);
+        this.modelItems = catalogue ?? [];
+        changes = { modelId: model?.modelId ?? "", reasoningEffort: model?.reasoningEffort ?? "" };
+        capabilities = { models: model !== undefined && catalogue !== undefined && handler };
+        break;
+      }
+      case "files": {
+        const paths = await this.probe("Working directory", () => rpc.permissions?.paths?.list?.(), workingDirectory.parse);
+        const primary = paths?.primary;
+        if (primary) this.root = primary;
+        const checkPaths = rpc.contentExclusion?.checkPaths;
+        const policy = primary
+          ? await this.probe("Content exclusion", () => rpc.contentExclusion?.checkPaths?.({ paths: [primary] }),
+            (value) => contentExclusionDecisions(value, [primary])) : undefined;
+        if (!primary) this.warnings.delete("Content exclusion");
+        this.files = primary && policy?.[0] === true && typeof checkPaths === "function"
+          ? new ProjectFiles(primary, (paths) => checkPaths.call(rpc.contentExclusion, { paths })) : undefined;
+        if (this.files) this.warnings.delete("File views");
+        else this.warnings.set("File views", "File and Git views require explicit content-exclusion allowance for the live working directory.");
+        changes = {
+          projectId: this.root ? hash(process.platform === "win32" ? this.root.toLowerCase() : this.root) : "unavailable",
+          projectName: this.root ? path.basename(this.root) || this.root : "Unknown project",
+        };
+        capabilities = { files: this.files !== undefined, git: this.files !== undefined };
+        break;
+      }
+      case "metadata": {
+        const [mode, name] = await Promise.all([
+          this.probe("Permission mode", () => rpc.permissions?.getMode?.(), permissionMode.parse),
+          this.probe("Session name", () => rpc.name?.get?.(), sessionName.parse),
+        ]);
+        changes = { permissionMode: mode?.mode ?? "unknown", title: redact(name?.name || this.summary.title, 160) };
+        break;
       }
     }
-    const modelState = record(model), nameState = record(name);
     this.current = SessionSummary.parse({
-      ...this.summary,
-      projectId: this.root ? hash(process.platform === "win32" ? this.root.toLowerCase() : this.root) : "unavailable",
-      projectName: this.root ? path.basename(this.root) || this.root : "Unknown project",
-      title: redact(text(nameState.name) || this.summary.title, 160),
-      state: !supported ? "unsupported" : this.cancelRequested ? "cancel_requested" :
-        this.requests.size ? "waiting" : active.hasActiveWork ? "running" : "idle",
-      permissionMode: text(record(mode).mode) || "unknown",
-      modelId: text(modelState.modelId), reasoningEffort: text(modelState.reasoningEffort),
-      capabilities: {
-        messages: supported, abort: supported,
-        permissions: supported && Array.isArray(record(pending).items) && !!rpc.permissions?.handlePendingPermissionRequest,
-        questions: supported && (!!rpc.ui?.handlePendingUserInput || !!rpc.ui?.handlePendingElicitation),
-        models: supported && model !== undefined && !!rpc.model?.list && !!rpc.model?.switchTo,
-        files: fileAccess, git: fileAccess,
-      },
-      warnings: [...this.warnings].slice(0, 20),
+      ...this.summary, ...changes,
+      state: this.cancelRequested ? "cancel_requested" : !this.activity ? "unsupported" :
+        this.requests.size ? "waiting" : this.activity.hasActiveWork ? "running" : "idle",
+      capabilities: { ...this.summary.capabilities, ...capabilities },
+      warnings: [...this.warnings.values()].slice(0, 20),
     });
     this.emitRequests();
-    return this.summary;
+  }
+
+  private visibleRequests(): PendingRequest[] {
+    const capabilities = this.summary.capabilities, ui = this.session.rpc?.ui;
+    return [...this.requests.values()].map((item) => ({
+      ...item,
+      supported: item.supported && (item.type === "permission" ? capabilities.permissions :
+        item.type === "question" && capabilities.questions &&
+          typeof (this.elicitationFields.has(item.requestId) ? ui?.handlePendingElicitation : ui?.handlePendingUserInput) === "function"),
+    }));
   }
 
   private emitRequests(id: string = randomUUID(), at = new Date().toISOString()): void {
     if (this.closed) return;
-    let items = [...this.requests.values()].slice(0, 100);
+    let items = this.visibleRequests().slice(0, 100);
     if (Buffer.byteLength(JSON.stringify(items)) > 450 * 1024) items = [{
       requestId: "terminal-overflow", type: "terminal", title: "Review pending requests in the terminal",
       detail: "Pending request details exceed the mobile-safe display budget. No mobile approval is available.",
@@ -288,28 +603,38 @@ export class CopilotRuntime {
           break;
         }
         case "permission.requested": {
-          const projected = permission({ requestId: data.requestId, request: data.promptRequest ?? data.permissionRequest ?? data.request });
-          this.requests.set(projected.requestId, projected);
-          this.permissionIds.add(projected.requestId);
+          const projected = livePermission(data);
+          this.permissionSnapshotChanges?.add(projected.request.requestId);
+          this.livePermissions.set(projected.request.requestId, projected);
+          this.requests.set(projected.request.requestId, projected.request);
+          this.permissionIds.add(projected.request.requestId);
           if (!historical) this.emitRequests(event.id, event.timestamp);
           break;
         }
         case "permission.completed":
         case "user_input.completed":
         case "elicitation.completed":
+          this.permissionSnapshotChanges?.add(text(data.requestId));
           this.requests.delete(text(data.requestId));
           this.permissionIds.delete(text(data.requestId));
+          this.livePermissions.delete(text(data.requestId));
           this.elicitationFields.delete(text(data.requestId));
           if (!historical) this.emitRequests(event.id, event.timestamp);
           break;
         case "user_input.requested": {
           if (historical) break;
+          const requestId = RequestId.parse(data.requestId);
+          this.elicitationFields.delete(requestId);
+          const parsed = userQuestion.safeParse(data);
+          const question = parsed.success ? parsed.data : undefined;
+          const detail = question ? redact(question.question, 12_000) : "This unsupported or incomplete question requires the original terminal.";
+          const choices = (question?.choices ?? []).map((choice) => redact(choice, 1000));
+          const allowFreeform = question !== undefined && (question.allowFreeform ?? choices.length === 0);
           const item = PendingRequest.parse({
-            requestId: data.requestId, type: "question", title: "The CLI needs your answer",
-            detail: redact(text(data.question), 12_000),
-            choices: Array.isArray(data.choices) ? data.choices : [],
-            allowFreeform: data.allowFreeform === true || !Array.isArray(data.choices) || data.choices.length === 0,
-            supported: text(data.question).length <= 12_000,
+            requestId, type: question ? "question" : "terminal", title: "The CLI needs your answer",
+            detail, choices, allowFreeform,
+            supported: question !== undefined && detail === question.question && (allowFreeform || choices.length > 0) &&
+              choices.every((choice, index) => choice === question.choices?.[index]),
           });
           this.requests.set(item.requestId, item);
           if (!historical) this.emitRequests(event.id, event.timestamp);
@@ -317,35 +642,44 @@ export class CopilotRuntime {
         }
         case "elicitation.requested": {
           if (historical) break;
-          const schema = record(data.requestedSchema), properties = record(schema.properties);
-          const fields = Object.entries(properties);
-          const required = Array.isArray(schema.required) ? schema.required : [];
-          const candidates = fields.filter(([, value]) => record(value).type === "string" && Array.isArray(record(value).enum));
+          const requestId = RequestId.parse(data.requestId);
+          this.elicitationFields.delete(requestId);
+          const parsed = elicitationRequest.safeParse(data);
+          const form = parsed.success ? parsed.data : undefined;
+          const schema = form?.requestedSchema;
+          const fields = Object.entries(schema?.properties ?? {});
+          const required = schema?.required ?? [];
+          const candidates = fields.filter(([, value]) => value.enum !== undefined);
           const primary = fields.length === 1 ? fields[0] : candidates.length === 1 ? candidates[0] : undefined;
-          const field = primary ? record(primary[1]) : {};
-          const choices = Array.isArray(field.enum) && field.enum.every((item) => typeof item === "string") ? field.enum as string[] : [];
-          const alternate = primary ? fields.find(([name, value]) => name !== primary[0] && record(value).type === "string") : undefined;
-          const alternateChoice = choices.find((choice) => /^(other|other \(.*\)|其他|其它)$/i.test(choice));
-          const knownFieldKeys = new Set(["type", "title", "description", "enum", "enumNames", "oneOf", "minLength", "maxLength", "default"]);
-          const simple = primary && field.type === "string" && (fields.length === 1 ||
+          const field = primary?.[1];
+          const choices = field?.enum ?? [];
+          const alternate = primary ? fields.find(([name, value]) => name !== primary[0] && !value.enum) : undefined;
+          const alternateChoice = alternate ? choices.find((choice) => /^(other|other \(.*\)|其他|其它)$/i.test(choice)) : undefined;
+          const detail = [form?.elicitationSource ? `Source: ${form.elicitationSource}` : undefined,
+            form?.message, schema ? `Form definition (defaults are informational):\n${JSON.stringify(schema, null, 2)}` : undefined]
+            .filter(Boolean).join("\n");
+          const simple = form && schema && primary && field && (fields.length === 1 ||
             (fields.length === 2 && alternate && alternateChoice && !required.includes(alternate[0]))) &&
-            Object.keys(field).every((key) => knownFieldKeys.has(key)) && !field.oneOf &&
-            (!data.mode || data.mode === "form") && !data.url &&
-            required.every((name) => name === primary[0]) &&
-            text(data.message).length <= 10_000 && choices.length <= 50;
+            required.every((name) => name === primary[0]) && detail.length <= 12_000 &&
+            redact(detail, 12_000) === detail && choices.every((choice) => redact(choice, 1000) === choice);
           if (simple) {
-            const maxLength = typeof field.maxLength === "number" ? Math.min(8000, field.maxLength) : 8000;
-            this.elicitationFields.set(text(data.requestId), { field: primary[0], maxLength,
-              ...(alternate && alternateChoice ? { alternateField: alternate[0], alternateChoice } : {}) });
-            this.requests.set(text(data.requestId), PendingRequest.parse({
-              requestId: data.requestId, type: "question", title: text(field.title) || "The CLI needs your answer",
-              detail: redact([text(data.message), text(field.description)].filter(Boolean).join("\n"), 12_000),
+            const item = PendingRequest.parse({
+              requestId, type: "question", title: redact(field.title || "The CLI needs your answer", 500),
+              detail,
               choices: alternateChoice ? choices.filter((choice) => choice !== alternateChoice) : choices,
-              allowFreeform: choices.length === 0 || !!alternateChoice, supported: !!this.session.rpc.ui?.handlePendingElicitation,
-            }));
+              allowFreeform: choices.length === 0 || !!alternateChoice, supported: typeof this.session.rpc?.ui?.handlePendingElicitation === "function",
+            });
+            this.elicitationFields.set(requestId, {
+              field: primary[0], minLength: field.minLength ?? 0, maxLength: Math.min(8000, field.maxLength ?? 8000),
+              ...(alternate && alternateChoice ? {
+                alternateField: alternate[0], alternateChoice,
+                alternateMinLength: alternate[1].minLength ?? 0, alternateMaxLength: Math.min(8000, alternate[1].maxLength ?? 8000),
+              } : {}),
+            });
+            this.requests.set(requestId, item);
           } else {
-            this.requests.set(text(data.requestId), {
-              requestId: text(data.requestId), type: "terminal", title: "Structured request",
+            this.requests.set(requestId, {
+              requestId, type: "terminal", title: "Structured request",
               detail: "This form or URL request requires the original terminal. It will not be auto-accepted.",
               choices: [], allowFreeform: false, supported: false,
             });
@@ -394,94 +728,97 @@ export class CopilotRuntime {
   }
 
   async models(): Promise<ModelItem[]> {
-    const fn = this.session.rpc.model?.list;
-    if (!fn) throw new Fault("UNSUPPORTED", "Model listing is unavailable. Use the terminal.", 409);
-    const response = record(await fn());
-    if (!Array.isArray(response.list)) throw new Fault("UNSUPPORTED", "Unknown model catalogue format. Use the terminal.", 409);
-    this.modelItems = response.list.flatMap((raw) => {
-      const model = record(raw), policy = record(model.policy);
-      const id = text(model.id);
-      if (!id) return [];
-      const support = record(record(model.capabilities).supports);
-      const advertised = model.supportedReasoningEfforts ?? model.supported_reasoning_efforts ?? support.reasoning_efforts;
-      const efforts = Array.isArray(advertised)
-        ? advertised.filter((item): item is string => typeof item === "string") : [];
-      return [{ id, name: text(model.name) || id, reasoningEfforts: efforts,
-        reasoningManual: efforts.length === 0,
-        enabled: policy.state !== "disabled" && model.disabled !== true && model.isDisabled !== true && model.model_picker_enabled !== false }];
-    });
-    if (!this.modelItems.length) throw new Fault("MODEL_CATALOG_EMPTY", "No supported model choices were returned by this runtime.", 409);
+    await this.refreshGroup("models");
+    if (!this.summary.capabilities.models)
+      throw new Fault("UNSUPPORTED", "Model controls require a supported live model state and catalogue. Use the terminal.", 409);
     return this.modelItems;
   }
 
   async execute(action: Action, attachments: LocalAttachment[] = []): Promise<Omit<Receipt, "commandId">> {
-    const rpc = this.session.rpc;
-    if (!this.summary.capabilities.messages && action.type !== "refresh")
-      throw new Fault("UNSUPPORTED", "This runtime is read-only or unsupported. Use the original terminal.", 409);
+    const rpc = this.session.rpc ?? {};
+    const capability = actionCapability[action.type];
+    if (capability) {
+      await this.refreshGroup(capabilityGroup[capability]);
+      if (!this.summary.capabilities[capability])
+        throw new Fault("UNSUPPORTED", `This runtime does not expose the required ${capability} capability. Use the original terminal.`, 409);
+    }
     switch (action.type) {
       case "message": {
         if (!action.text.trim()) throw new Fault("EMPTY_MESSAGE", "Message cannot be blank.");
         if (attachments.length !== action.attachmentIds.length) throw new Fault("ATTACHMENT_MISSING", "Resolve every attachment before sending.");
-        const messageId = await this.session.send({ prompt: action.text, mode: "enqueue", source: "user", attachments });
-        const queue = record(await this.probe("Message queue", rpc.queue?.pendingItems));
-        const queued = Array.isArray(queue.items) && queue.items.some((item) => record(item).messageId === messageId);
-        const status = queued ? "queued" : queue.withdrawableTurnMessageId === messageId ? "processing" : "admitted";
+        if (typeof this.session.send !== "function") throw new Fault("UNSUPPORTED", "Message sending is unavailable.", 409);
+        const messageId = RequestId.parse(await this.session.send({ prompt: action.text, mode: "enqueue", source: "user", attachments }));
+        const queue = await this.probe("Message queue", () => rpc.queue?.pendingItems?.(), messageQueue.parse);
+        const queued = queue?.items.some((item) => item.messageId === messageId);
+        const status = queued ? "queued" : queue?.withdrawableTurnMessageId === messageId ? "processing" : "admitted";
         return { status, result: { messageId, delivery: "enqueue" } };
       }
       case "abort": {
-        const queue = record(await this.probe("Message queue", rpc.queue?.pendingItems));
-        const cancelledMessageIds = Array.isArray(queue.items)
-          ? queue.items.map((item) => text(record(item).messageId)).filter(Boolean) : [];
+        const abort = this.session.abort;
+        if (typeof abort !== "function") throw new Fault("UNSUPPORTED", "Cancellation is unavailable.", 409);
         this.cancelRequested = true;
         this.emit({ id: randomUUID(), at: new Date().toISOString(), kind: "runtime.state", data: { state: "cancel_requested" } });
-        await this.session.abort();
+        const [queue] = await Promise.all([
+          this.probe("Message queue", () => rpc.queue?.pendingItems?.(), messageQueue.parse),
+          Promise.resolve().then(() => abort.call(this.session)).then((result) => z.undefined().parse(result)),
+        ]);
+        const cancelledMessageIds = queue?.items.flatMap((item) => item.messageId ? [item.messageId] : []) ?? [];
         return { status: "cancel_requested", result: { acknowledged: true, stopped: false, cancelledMessageIds } };
       }
       case "permission": {
-        await this.refresh();
         const item = this.requests.get(action.requestId);
         if (!item) throw new Fault("REQUEST_STALE", "The request was already answered or is no longer pending.", 409);
-        if (!item.supported || item.type !== "permission" || !rpc.permissions?.handlePendingPermissionRequest)
+        if (!item.supported || item.type !== "permission" || typeof rpc.permissions?.handlePendingPermissionRequest !== "function")
           throw new Fault("TERMINAL_REQUIRED", "Review this permission in the original terminal.", 409);
-        const result = record(await rpc.permissions.handlePendingPermissionRequest({
+        const result = requestResolution.parse(await rpc.permissions.handlePendingPermissionRequest({
           requestId: action.requestId, result: { kind: action.decision },
         }));
         if (result.success !== true) throw new Fault("REQUEST_STALE", "Another client already resolved this request.", 409);
-        this.requests.delete(action.requestId); this.emitRequests();
+        this.permissionSnapshotChanges?.add(action.requestId);
+        this.requests.delete(action.requestId);
+        this.permissionIds.delete(action.requestId);
+        this.livePermissions.delete(action.requestId);
+        this.emitRequests();
         return { status: "completed", result: { resolved: true } };
       }
       case "answer": {
         const item = this.requests.get(action.requestId);
         if (!item) throw new Fault("REQUEST_STALE", "Question is no longer pending or predates attachment. Use the terminal.", 409);
         const form = this.elicitationFields.get(action.requestId);
-        if (item.type !== "question" || !item.supported || (!form && !rpc.ui?.handlePendingUserInput))
+        if (item.type !== "question" || !item.supported || (!form && typeof rpc.ui?.handlePendingUserInput !== "function"))
           throw new Fault("TERMINAL_REQUIRED", "This request must be answered in the terminal.", 409);
         if (!item.allowFreeform && !item.choices.includes(action.answer))
           throw new Fault("INVALID_CHOICE", "Choose an exact answer offered by the runtime.");
         let raw: unknown;
         if (form) {
-          if (!rpc.ui?.handlePendingElicitation || action.answer.length > form.maxLength)
-            throw new Fault("INVALID_ANSWER", "The answer exceeds this form's supported limits.");
-          const content = !item.choices.includes(action.answer) && form.alternateField && form.alternateChoice
+          if (typeof rpc.ui?.handlePendingElicitation !== "function")
+            throw new Fault("TERMINAL_REQUIRED", "This request must be answered in the terminal.", 409);
+          const alternate = !item.choices.includes(action.answer) && form.alternateField && form.alternateChoice;
+          const minLength = alternate ? form.alternateMinLength ?? 0 : form.minLength;
+          const maxLength = alternate ? form.alternateMaxLength ?? 8000 : form.maxLength;
+          const answerLength = Array.from(action.answer).length;
+          if (answerLength < minLength || answerLength > maxLength)
+            throw new Fault("INVALID_ANSWER", "The answer is outside this form's supported length range.");
+          const content = alternate && form.alternateField && form.alternateChoice
             ? { [form.field]: form.alternateChoice, [form.alternateField]: action.answer } : { [form.field]: action.answer };
           raw = await rpc.ui.handlePendingElicitation({ requestId: action.requestId, result: { action: "accept", content } });
         } else {
           raw = await rpc.ui!.handlePendingUserInput!({ requestId: action.requestId,
             response: { answer: action.answer, wasFreeform: !item.choices.includes(action.answer) } });
         }
-        const result = record(raw);
+        const result = requestResolution.parse(raw);
         if (result.success !== true) throw new Fault("REQUEST_STALE", "Another client already answered this question.", 409);
         this.requests.delete(action.requestId); this.emitRequests();
         this.elicitationFields.delete(action.requestId);
         return { status: "completed", result: { resolved: true } };
       }
       case "models":
-        return { status: "completed", result: { models: await this.models(), current: {
+        return { status: "completed", result: { models: this.modelItems, current: {
           modelId: this.summary.modelId, reasoningEffort: this.summary.reasoningEffort,
         } } };
       case "model.set": {
-        const model = (await this.models()).find((item) => item.id === action.modelId);
-        if (!model?.enabled || !rpc.model?.switchTo) throw new Fault("MODEL_UNAVAILABLE", "The CLI does not allow this model.", 409);
+        const model = this.modelItems.find((item) => item.id === action.modelId);
+        if (!model?.enabled || typeof rpc.model?.switchTo !== "function") throw new Fault("MODEL_UNAVAILABLE", "The CLI does not allow this model.", 409);
         if (action.reasoningEffort && model.reasoningEfforts.length && !model.reasoningEfforts.includes(action.reasoningEffort))
           throw new Fault("REASONING_UNSUPPORTED", "This reasoning level is not supported by the selected model.", 409);
         let raw: unknown;
@@ -495,9 +832,9 @@ export class CopilotRuntime {
             throw new Fault("MODEL_SELECTION_REJECTED", redact(error.message, 2000), 409);
           throw error;
         }
-        const result = record(raw);
+        const result = modelSelection.parse(raw);
         if (result.confirmation) throw new Fault("TERMINAL_REQUIRED", "Model switch needs compaction confirmation in the terminal.", 409);
-        await this.refresh();
+        await this.refreshGroup("models");
         return { status: "completed", result: {
           modelId: text(result.modelId) || this.summary.modelId, deferred: result.deferred === true,
           message: redact(text(result.message), 2000), reasoningEffort: this.summary.reasoningEffort,
@@ -507,20 +844,19 @@ export class CopilotRuntime {
         await this.refresh();
         this.requestsHash = "";
         this.emitRequests();
-        return { status: "completed", result: { summary: Json.parse(this.summary), requests: Json.parse([...this.requests.values()]) } };
+        return { status: "completed", result: { summary: Json.parse(this.summary), requests: Json.parse(this.visibleRequests()) } };
       case "files.list":
-        return { status: "completed", result: await (await this.projectFiles()).list(action.path) };
+        return { status: "completed", result: await this.projectFiles().list(action.path) };
       case "files.read":
-        return { status: "completed", result: await (await this.projectFiles()).read(action.path) };
+        return { status: "completed", result: await this.projectFiles().read(action.path) };
       case "git.status":
-        return { status: "completed", result: await (await this.projectFiles()).gitStatus() };
+        return { status: "completed", result: await this.projectFiles().gitStatus() };
       case "git.diff":
-        return { status: "completed", result: await (await this.projectFiles()).gitDiff(action.path, action.staged) };
+        return { status: "completed", result: await this.projectFiles().gitDiff(action.path, action.staged) };
     }
   }
 
-  private async projectFiles(): Promise<ProjectFiles> {
-    await this.refresh();
+  private projectFiles(): ProjectFiles {
     if (!this.files) throw new Fault("POLICY_UNAVAILABLE", "Project files require live content-exclusion policy evaluation.", 409);
     return this.files;
   }

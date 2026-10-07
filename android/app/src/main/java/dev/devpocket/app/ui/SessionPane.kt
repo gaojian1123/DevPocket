@@ -102,7 +102,9 @@ fun SessionPane(state: PocketUi, model: PocketViewModel, expanded: Boolean) {
     if (confirmStop) AlertDialog(
         onDismissRequest = { confirmStop = false }, title = { Text("停止当前工作？") },
         text = { Text("向当前原始 CLI 发送取消请求，不关闭终端。CLI 也会清空等待处理的消息队列；消息文本仍保留在本机，可手动恢复为草稿。仅收到请求确认不代表所有子进程已退出。") },
-        confirmButton = { TextButton(onClick = { confirmStop = false; model.action(Action.Abort) }) { Text("请求停止") } },
+        confirmButton = { TextButton(
+            enabled = session.online && session.capabilities.abort && session.state in setOf("running", "waiting", "cancel_requested"),
+            onClick = { confirmStop = false; model.action(Action.Abort) }) { Text("请求停止") } },
         dismissButton = { TextButton(onClick = { confirmStop = false }) { Text("继续运行") } },
     )
     confirmPermission?.let { (request, decision) ->
@@ -112,7 +114,9 @@ fun SessionPane(state: PocketUi, model: PocketViewModel, expanded: Boolean) {
                 SelectionContainer { Text(request.detail, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
                 Text("此内容由工具/模型产生，可能不可信。组织策略仍由原始 CLI 执行。")
             } } },
-            confirmButton = { TextButton(modifier = Modifier.testTag("confirm_permission"), onClick = {
+            confirmButton = { TextButton(modifier = Modifier.testTag("confirm_permission"),
+                enabled = !state.busy && session.online && state.requests.any { it == request && it.supportedBy(session.capabilities) },
+                onClick = {
                 confirmPermission = null
                 model.action(Action.Permission(request.requestId, decision))
             }) { Text(if (decision == "approve-once") "批准一次" else "拒绝") } },
@@ -212,7 +216,9 @@ private fun ChatHistory(state: PocketUi, model: PocketViewModel,
                 }
             }
             items(state.requests, key = { "request:${it.requestId}" }) { request ->
-                RequestCard(request, state.busy || state.session?.online != true, decide) { answer ->
+                val supported = state.session?.let { request.supportedBy(it.capabilities) } == true
+                RequestCard(request.copy(supported = supported),
+                    state.busy || state.session?.online != true, decide) { answer ->
                     model.action(Action.Answer(request.requestId, answer))
                 }
             }
@@ -412,6 +418,8 @@ private fun ModelDialog(state: PocketUi, onDismiss: () -> Unit, select: (ModelOp
                 }
             }
             if (state.models.isEmpty() && !state.busy) item { Text("模型目录未能加载，请在原始终端查看。") }
-        } }, confirmButton = { TextButton(enabled = selected != null && !state.busy, onClick = { selected?.let { select(it, effort) } }) { Text("应用") } },
+        } }, confirmButton = { TextButton(
+            enabled = selected != null && !state.busy && state.session?.online == true && state.session.capabilities.models,
+            onClick = { selected?.let { select(it, effort) } }) { Text("应用") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
 }

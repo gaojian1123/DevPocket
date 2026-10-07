@@ -8,13 +8,18 @@ visible history.
 
 This is not a disk-wide repository scan. Closed/unregistered sessions are not
 resumed. The original CLI's session identity, permission mode, organization
-policies, version checks and live capability checks are preserved.
+policies and live capability checks are preserved.
 
 ## Install on a new Dev Box
 
-You need Node.js **24.x** and a compatible Copilot CLI. The current
-runtime adapter supports CLI **1.0.90-0**; other recorded versions remain
-read-only. No npm install, source checkout, Android build or local relay is needed.
+You need Node.js **24.x** and a compatible Copilot CLI. The runtime adapter checks
+each capability through read-only live probes, the CLI-bundled SDK and supported
+protocol shapes, not a version allowlist. Missing evidence disables the affected
+controls; an unfamiliar or missing recorded version alone does not. CLI
+**1.0.90-0** is a historical acceptance target, not a compatibility guarantee for
+other builds. Discovery never sends a message, aborts work, answers a request or
+switches a model. No npm install, source checkout, Android build or local relay
+is needed.
 
 Download `DevPocket-extension-VERSION.zip` and its `.zip.sha256` file from the
 same trusted GitHub release. Repository access is still required for private

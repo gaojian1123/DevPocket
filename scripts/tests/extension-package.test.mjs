@@ -119,7 +119,7 @@ export async function joinSession(options) {
   return {
     sessionId: process.env.DP_TEST_SESSION_ID,
     getEvents: async () => [
-      event("session.start", { copilotVersion: "1.0.90-0", context: { cwd: process.cwd() } }),
+      event("session.start", { copilotVersion: "future-runtime-build", context: { cwd: process.cwd() } }),
       event("assistant.message", { messageId: randomUUID(), content: "Earlier history in " + path.basename(process.cwd()) }),
     ],
     on: (listener) => { emit = listener; return () => { emit = () => {}; }; },
@@ -166,6 +166,7 @@ export async function joinSession(options) {
   assert.deepEqual(catalog.sessions.map((session) => session.sessionId).sort(), [...sessionIds].sort());
   assert.deepEqual(catalog.sessions.map((session) => session.projectName).sort(), ["project-0", "project-1"]);
   assert.ok(catalog.sessions.every((session) => session.permissionMode === "manual"));
+  assert.ok(catalog.sessions.every((session) => session.cliVersion === "future-runtime-build" && session.capabilities.messages));
   const route = `/v1/hosts/${host.hostId}/sessions/${sessionIds[0]}`;
   await until(async () => (await request(`${route}/events`)).events.some((event) => event.data.content === "Earlier history in project-0"));
   const command = { commandId: randomUUID(), action: { type: "message", text: "Only project zero", attachmentIds: [] } };

@@ -33,7 +33,7 @@ Dev Box extension -> joinSession() -> original Copilot terminal
 Current limitations:
 
 - Only registered live sessions can be controlled. No automatic scan/resume of unregistered CLI history; no "create CLI session" command.
-- CLI **1.0.90-0** is the validated adapter target. Recorded session version **and live capability probes** gate actions; unknown versions are read-only. The recorded version is not presented as proof that an upgraded/resumed process has the same build.
+- The recorded CLI version is diagnostic only, not an allowlist. Each control requires its own live evidence and supported response/request shapes through the CLI-bundled SDK. Missing or incompatible evidence disables only the affected controls; an unfamiliar or missing version does not disable otherwise supported controls. CLI **1.0.90-0** remains a historical acceptance target, not proof of compatibility for every build.
 - Pending tool permissions can be reconstructed at attachment. The bundled CLI does not expose a pending-question snapshot; a question already open at *first* attachment may require the terminal. Live questions and simple string/choice elicitation forms are supported. Complex elicitation, URL redirects, sandbox-bypass, plan-exit, limit and unknown permission forms require the terminal.
 - Incoming messages use CLI `mode: "enqueue"`. Sending during a tool does **not** immediately change or kill that tool. `queued` is reported only when observed in the runtime's public queue; `admitted` alone means delivery is acknowledged but execution has not been confirmed. The CLI's plain abort also clears queued input; the confirmation dialog warns about this and known cleared messages become cancelled after runtime idle evidence. Text and attachment metadata can be manually restored as a new draft.
 - Renaming/pinning/archiving changes DevPocket metadata, not CLI storage or running work.
@@ -143,7 +143,7 @@ sessions that load the extension automatically register and synchronize visible
 history, including earlier messages. Every phone paired with that host can access
 all registered sessions. This does not scan the disk or resume closed sessions.
 Normal CLI trust/permission-handler consent, permission mode, organization policy,
-version/capability gates and file-content exclusion remain in effect.
+live capability gates and file-content exclusion remain in effect.
 
 Installation and updates never reload existing sessions. Explicitly ask each
 already-running session's built-in `extensions_reload` tool to attach the
@@ -192,6 +192,101 @@ node .\dist\cli.js install --config .data\my-box.local.json `
 For a folder-only disposable test, the installer can prepare a **local, uninstalled plugin** with `--plugin-dir C:\AnIsolatedPluginFolder --confirm-install`. An ordinary terminal started with `--plugin-dir` may discover extensions added to that directory later on an explicit hot-load. A running terminal that was not started with this flag cannot retroactively acquire it. This is not a reason to restart the user's working terminal.
 
 The extension imports `@github/copilot-sdk/extension` supplied by the CLI. It does **not** install an arbitrary newer SDK, request GitHub secrets, change permission mode, enable allow-all, or create a local control listener.
+
+### Runtime capability evidence
+
+Attachment and refresh use read-only probes with a five-second deadline per probe;
+discovery never sends a test message,
+aborts work, answers a request or switches a model. Before executing a command the
+bridge refreshes only that command's prerequisite evidence and checks its
+capability, independently of the relay's last advertised snapshot. The relay
+authenticates/scopes commands and requires a registered host with an open socket,
+but cached capability booleans are UI advertisements, not a veto on forwarding
+fresh commands. A
+currently unsupported operation returns the bridge's failed receipt without
+invoking that runtime control. Unrelated
+model, permission, file-policy and display probes cannot delay a message or
+answer, even during a periodic full refresh. Concurrent consumers share only
+their required probe group; each group updates only its own evidence:
+
+- Messages require a callable bundled-SDK `send` and a valid live activity response.
+  Cancellation additionally requires the activity response's boolean `abortable`
+  field and a callable `abort`; `abortable: false` while idle does not mean the
+  operation is unsupported, but active work must explicitly be abortable.
+  Only the bundled SDK's known `undefined` abort result acknowledges the request;
+  an unfamiliar result remains uncertain, and acknowledgement is not completion.
+  Queue evidence is optional: without a valid queue
+  snapshot, sending is only **admitted**, never assumed queued or processing.
+  Cancellation starts the queue read before dispatching `abort` without awaiting
+  that read; a slow or failed queue query cannot delay the cancellation request.
+  The bounded snapshot is used only to report known queued message IDs.
+- Permissions require a valid live pending-permission snapshot and its response
+  handler; duplicate request IDs invalidate the snapshot. Questions require live
+  activity and a corresponding response handler;
+  individual controls also require a supported, complete live request. Permission
+  forms use per-kind allowlisted shapes, including nested shell/path/URL fields;
+  live envelopes are validated before any payload is selected. A documented
+  original-request/prompt pair must describe the same operation, and both are
+  displayed. Unknown outer constraints, unsupported risk metadata, competing
+  payload aliases and hook-resolved requests cannot be approved remotely.
+  Multiple command/path/URL/server/argument aliases must have equivalent values
+  before any paired-subject comparison; precedence never hides a contradiction.
+  Snapshot refresh cannot discard stricter live evidence or change the approved
+  subject. Request IDs changed by a live event or confirmed response after a
+  snapshot read started are not overwritten or removed by that late snapshot.
+  Valid removals also retire cached live evidence; still-pending requests retain
+  their stricter live details.
+  All accepted semantic fields are displayed, while known SDK
+  correlation/canonicalization metadata is omitted. Arbitrary MCP/custom-tool
+  arguments are displayed in full or denied
+  when they exceed the display budget or require redaction. Question and
+  elicitation payloads also validate their complete outer fields, not just the
+  question text or nested form schema. Documented tool-call correlation IDs are
+  typed but not exported; a declared elicitation source is shown with the form.
+  Unknown outer fields, URL forms, historical questions and incomplete details
+  remain in the original client. Forms with `enumNames` labels also remain there
+  until label/value mapping is supported end to end; labels are never silently
+  replaced by opaque values. Supported forms display their complete validated
+  schema, including form-level and alternate-field descriptions, defaults and
+  constraints. Defaults are informational, not automatic answers. If the full
+  definition cannot fit safely without redaction, the form is terminal-only.
+  `Other` is a literal enum choice unless the form actually declares a supported
+  alternate field for custom text.
+  Form length constraints count Unicode code
+  points, including supplementary characters, without changing protocol-v1 size
+  limits.
+- Models require valid current-model and nonempty catalogue responses plus a
+  callable switch handler. Duplicate model IDs invalidate the catalogue instead
+  of selecting a policy by list order. Provided policy states must be `enabled`, `disabled`
+  or `unconfigured`; the latter two cannot be selected, and unknown/incomplete
+  policy shapes disable model controls. Missing model evidence does not disable
+  chat or files.
+- File/Git views require a live absolute working directory and a complete,
+  path-matched content-exclusion response explicitly allowing that directory.
+  Every subsequent path is still evaluated; recorded history is never a substitute
+  for live policy evidence.
+
+Capabilities and their warnings recover when valid evidence returns. The existing
+wire booleans are unchanged; neither the relay nor Android infers support from
+`cliVersion` or treats `messages` as a master control switch. Shape validation
+accepts additive probe metadata but does not guess new request forms or acknowledge
+unknown mutation results as successful. Mutation acknowledgement schemas reject
+additional fields instead of stripping them. An incompatible response after a
+mutation is reported as **uncertain**, without automatically repeating the
+operation.
+
+These checks establish adapter support, not end-to-end acceptance of an arbitrary
+runtime build. Real mutation/cancellation compatibility checks still require an
+explicitly opted-in disposable terminal; discovery never performs them.
+
+Earlier protocol-v1 relays remain compatible with the updated extension and app,
+but their cached-capability veto can delay recovery until a new summary arrives.
+The final review follow-up changes relay command admission to remove that veto.
+Deploy the updated relay as well to obtain this recovery improvement; updating
+or reloading the user extension alone does not update an already-running Azure
+relay. No wire/database migration is required. UI capability advertisements
+continue to refresh periodically, and this source change does not authorize a
+cloud deployment.
 
 ### List and revoke phones
 

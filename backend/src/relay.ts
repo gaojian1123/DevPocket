@@ -83,8 +83,10 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
   }
   let closing = false;
   const key = (hostId: string, sessionId: string) => `${hostId}/${sessionId}`;
+  const isReady = (connection: { socket: WebSocket; ready: boolean } | undefined): boolean =>
+    connection?.ready === true && connection.socket.readyState === WebSocket.OPEN;
   const present = (item: SessionInfo): SessionInfo => {
-    const online = hosts.get(key(item.hostId, item.sessionId))?.ready === true;
+    const online = isReady(hosts.get(key(item.hostId, item.sessionId)));
     return { ...item, online, state: online ? item.state : "offline" };
   };
 
@@ -324,7 +326,7 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
     const device = store.device(bearer(request.headers.authorization));
     if (url.pathname === "/v1/catalog" && method === "GET") {
       json(response, 200, { device, hosts: store.hosts(device.id).map((host) => ({
-        ...host, online: [...hosts.values()].some((conn) => conn.hostId === host.id && conn.ready),
+        ...host, online: [...hosts.values()].some((conn) => conn.hostId === host.id && isReady(conn)),
       })), sessions: store.sessions(device.id).map(present), pushConfigured: !!push, protocol: PROTOCOL });
       return;
     }
@@ -392,15 +394,8 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
         if (command.action.type === "message")
           for (const id of command.action.attachmentIds) store.attachment(hostId, sessionId, id);
         const previous = store.command(device.id, hostId, sessionId, command.commandId);
-        if (!previous) {
-          if (!connection?.ready) throw new Fault("HOST_OFFLINE", "The original runtime is offline. No command was queued.", 503);
-          const action = command.action.type;
-          const capability = action === "message" ? "messages" : action === "permission" ? "permissions" :
-            action === "answer" ? "questions" : action.startsWith("model") ? "models" :
-              action.startsWith("files.") ? "files" : action.startsWith("git.") ? "git" : action === "abort" ? "abort" : undefined;
-          if (capability && !session.capabilities[capability])
-            throw new Fault("UNSUPPORTED", "This runtime does not expose that capability. Use the terminal.", 409);
-        }
+        if (!previous && !isReady(connection))
+          throw new Fault("HOST_OFFLINE", "The original runtime is offline. No command was queued.", 503);
         const submitted = store.submit(device.id, hostId, sessionId, command);
         if (submitted.fresh && connection) send(connection.socket, { type: "command", ...command });
         json(response, 202, submitted.receipt);

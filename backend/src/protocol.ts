@@ -66,6 +66,12 @@ export const Action = z.discriminatedUnion("type", [
   z.object({ type: z.literal("refresh") }).strict(),
 ]);
 export type Action = z.infer<typeof Action>;
+export const actionCapability = {
+  message: "messages", abort: "abort", permission: "permissions", answer: "questions",
+  models: "models", "model.set": "models",
+  "files.list": "files", "files.read": "files", "git.status": "git", "git.diff": "git",
+  refresh: undefined,
+} as const satisfies Record<Action["type"], keyof z.infer<typeof Capabilities> | undefined>;
 export const Command = z.object({ commandId: Id, action: Action }).strict();
 export type Command = z.infer<typeof Command>;
 export const DeliveryStatus = z.enum([

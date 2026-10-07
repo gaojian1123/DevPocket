@@ -366,3 +366,225 @@ schema-version change when registering a host. `npm run test:setup` passes
 **33 JavaScript tests** and **3 Python tests**; all **29 backend tests** and the
 **5 selected legacy onboarding checks**, including the actual guest-bundle byte
 limit, pass. These remain isolated local checks, not live Azure acceptance.
+
+## Runtime capability evidence checkpoint (2026-10-06)
+
+This is a separate source-worktree check of capability discovery without a CLI
+version allowlist. The earlier real-CLI and sealed-build acceptance records are
+unchanged; they do not qualify this adapter against every runtime build.
+
+- `npm test`: **74 tests passed**, including recorded old, future, custom and
+  missing versions; read-only discovery; independently disabled controls;
+  missing SDK RPC trees, malformed and stalled probes; recovery; and rejection of stale capability
+  grants before execution.
+- `npm run typecheck` and `npm run test:extension-package`: backend compilation,
+  extension bundling and standalone-package checks passed. The final package
+  fixture was rerun with `node --test scripts\tests\extension-package.test.mjs`
+  using an unfamiliar recorded version. Both isolated projects retained their
+  original simulated SDK session identities and accepted scoped messages.
+- `npm run schema`: regenerated the same protocol-v1 schema, with no contract
+  diff. Backend and Android decoding preserve independent capability booleans
+  without interpreting the diagnostic version.
+- `scripts\build-android.ps1 -Jdk C:\Projects\DevPocket\.tools\jdk-21 -Sdk C:\Projects\DevPocket\.tools\android-sdk -Lint`:
+  debug assembly, **67 JVM tests** and lint passed, with zero test failures,
+  errors or skips and zero lint errors (**24 warnings**).
+
+Additional regressions keep incomplete permission/question forms and excluded
+or incompletely evaluated file paths unavailable. Unknown mutation
+acknowledgements produce durable **uncertain** receipts; retrying the same
+command does not repeat the operation. Cancellation still remains requested
+until runtime evidence arrives. Android request cards and open confirmation
+dialogs follow the relevant current capability rather than the messaging flag
+or recorded version.
+
+The SDK peers and standalone installation targets in these tests are isolated
+fixtures. No real CLI was started, attached, reloaded or mutated; no real user
+extension installation, host/device enrollment or cloud operation was performed.
+The Android output was not installed, sealed or distributed. Real compatibility
+checks still require separate opt-in for a disposable terminal.
+
+## Runtime capability review follow-up (2026-10-07)
+
+Two minimal regressions reproduced the review findings before the fix:
+`node --import tsx --test --test-name-pattern 'unknown semantic fields|sending does not wait' backend\tests\runtime.test.ts`.
+A known permission kind with an unknown execution-scope field was still
+approvable, and sending waited for an unrelated stalled model catalogue.
+Both regressions now pass.
+
+Permission payloads use strict per-kind and nested schemas, preserving supported
+live/snapshot dialects while rejecting unknown semantics. Every accepted
+semantic field is displayed; documented SDK correlation/canonicalization
+metadata is typed but not exported. Commands refresh only their prerequisite
+probe group, sharing that group's in-flight read rather than a whole refresh.
+Concurrent regressions verify unrelated model/policy/request probes cannot hold
+up messages or answers, and a late unrelated response cannot restore a capability
+rejected by a newer action probe.
+
+`npm test` passes **105 tests**. `npm run typecheck` and
+`npm run test:extension-package` also pass, including the production bundle and
+standalone unfamiliar-version fixture. No wire, Android or deployment code
+changed in this follow-up. No real runtime control, extension installation/reload,
+emulator reinstall or Azure operation was performed for these review fixes;
+earlier installed-build acceptance does not cover this new source revision.
+
+### Question-envelope review follow-up (2026-10-07)
+
+The targeted command
+`node --import tsx --test --test-name-pattern 'unknown top-level|simple elicitation forms enforce' backend\tests\runtime.test.ts`
+reproduced both unknown-envelope-field findings and the inaccurate short-answer
+error before the fix. All three cases now pass.
+
+Native questions and elicitation forms validate their complete payloads against
+strict schemas before becoming answerable. Documented tool-call correlation
+metadata remains typed and private; elicitation sources are shown to the user.
+Unknown semantics, unsupported modes and malformed metadata require the original
+client. Invalid request IDs produce a notice without poisoning pending wire
+state, and replacement requests cannot retain stale form routing. Both short
+and long answers now report that they are outside the supported length range.
+
+`npm test` passes **111 tests**. `npm run typecheck` and
+`npm run test:extension-package` pass as well. Positive regressions retain native
+choices, free text, explicit form mode and legacy forms without a mode field.
+The wire contract and Android sources are unchanged. No installed extension,
+emulator app, original runtime or Azure deployment was updated for this follow-up.
+
+### Mutation, live permission and Unicode review follow-up (2026-10-07)
+
+The targeted command
+`node --import tsx --test --test-name-pattern 'unknown mutation fields|unknown live permission envelope|competing live permission|limits count Unicode' backend\tests\runtime.test.ts backend\tests\bridge.test.ts`
+failed before the fix: extra mutation fields produced completed receipts,
+unknown/competing live permission envelopes remained approvable, and a valid
+one-code-point supplementary character was rejected by a one-character form.
+All four regressions now pass.
+
+Mutation acknowledgements and model-switch confirmations now reject unknown
+fields. The real relay/bridge journal tests cover native answers, elicitation,
+permissions and model switches, keeping incompatible results uncertain and
+immutable retries non-repeating. Known supported acknowledgement variants remain
+accepted; this does not claim compatibility with unmodeled runtime result fields.
+
+Complete live permission envelopes are validated before payload selection.
+The documented original-request/prompt pair remains supported when both describe
+the same operation, with both sets of details visible. Unknown outer constraints,
+unsupported risk metadata, conflicting aliases and hook-resolved requests cannot
+be approved remotely. Snapshot refreshes preserve stricter live evidence, including
+late responses and reattachment from history; invalid IDs never poison wire
+frames. Primary and alternate form lengths use Unicode code points while the
+existing protocol-v1 answer size ceiling remains unchanged.
+
+`npm test` passes **129 tests**. `npm run typecheck` and
+`npm run test:extension-package` also pass. Android, the serialized protocol and
+deployment sources are unchanged. These are source/isolated-fixture checks; no
+installed extension, original runtime, emulator app or Azure service was changed.
+
+### Live cancellation and snapshot-order review follow-up (2026-10-07)
+
+The focused runtime/bridge regressions reproduced active non-abortable work
+advertising Stop, discarded abort result objects being acknowledged, stale
+permission snapshots removing new requests or resurrecting completed ones, and
+unknown model policy states becoming enabled. These regressions now pass.
+
+Active work requires an explicit `abortable: true`; idle runtimes retain support
+when the field is a valid boolean. Only the known `undefined` SDK abort result
+acknowledges cancellation. Unknown result objects remain durable uncertain
+receipts and are not re-executed on immutable retries.
+
+Each permission read tracks the request IDs changed while it is in flight.
+Late snapshot entries/removals cannot override those events or confirmed
+responses, while untouched IDs still reconcile normally. The guard is released
+on failed reads. Provided model policy states are restricted to the SDK's
+documented `enabled`, `disabled` and `unconfigured` values; only `enabled` is
+selectable, and unknown/incomplete policy objects fail closed.
+
+`npm test` passes **138 tests**. `npm run typecheck` and
+`npm run test:extension-package` pass, including the production bundle and
+isolated unfamiliar-version fixture. Wire, Android and deployment sources are
+unchanged. No installed extension, real runtime, emulator or Azure service was
+updated for this review iteration.
+
+### Form labels and prompt cancellation review follow-up (2026-10-07)
+
+`node --import tsx --test --test-name-pattern 'unmapped enumNames|cancellation is invoked before' backend\tests\runtime.test.ts`
+reproduced discarded enum labels and a stalled queue read delaying the actual
+abort call. Both tests now pass.
+
+Forms containing `enumNames` are terminal-only until the wire/UI supports an
+explicit label/value mapping. Ordinary enum choices remain supported.
+Cancellation dispatches the optional queue read first, then calls the original
+runtime's abort without waiting for that read. The bounded result still supplies
+available queue evidence; timeout/failure cannot suppress cancellation or invent
+cleared message IDs. Strict abort-result validation and runtime-confirmed
+completion remain unchanged.
+
+`npm test` passes **144 tests**. `npm run test:extension-package` passes, including
+production TypeScript compilation, bundling and the isolated installed-package
+fixture. Tests cover ordinary enums and unsupported labelled layouts, dispatch ordering,
+SDK method binding, queue timeout/failure and unknown abort results. No wire,
+Android or deployment sources changed, and no real runtime/extension reload,
+emulator reinstall or Azure operation was performed.
+
+### Permission aliases and complete form definitions (2026-10-07)
+
+`node --import tsx --test --test-name-pattern 'conflicting target aliases|every accepted elicitation schema field' backend\tests\runtime.test.ts`
+reproduced contradictory aliases comparing as the same permission subject and
+accepted form metadata disappearing from the display. Both regressions now pass.
+
+Command, path, URL, server and argument aliases must agree before either a
+snapshot or a live permission payload can be approved. Equivalent aliases,
+including reordered object arguments, remain supported. Forms now display their
+complete validated definition, including schema-level and alternate-field
+titles/descriptions/defaults and constraints. Defaults do not supply automatic
+answers. Definitions that exceed the display budget or require redaction remain
+in the original client, as do unsupported `enumNames` forms.
+
+`npm test` passes **149 tests**. `npm run test:extension-package` passes,
+including production TypeScript compilation, bundling and the standalone
+fixture. The PR evidence is updated to the commit containing these results.
+No serialized protocol, Android or deployment sources changed; this validation
+does not extend earlier installed-extension or emulator acceptance.
+
+### Unique identities, retired requests and literal enum choices (2026-10-07)
+
+`node --import tsx --test --test-name-pattern 'duplicate permission IDs|duplicate model IDs|snapshot-removed permission ID|single-field Other' backend\tests\runtime.test.ts`
+reproduced ambiguous duplicate identities, cached evidence surviving a confirmed
+request removal, and `Other` being hidden from a single-field enum. All four
+regressions now pass.
+
+Snapshots/catalogues with duplicate IDs are rejected, even if duplicate entries
+look identical. Valid snapshots retire live evidence only for removed IDs that
+were not changed during the read; still-pending restrictions remain intact.
+Single-field enums preserve literal `Other` choices and do not accept arbitrary
+text. An alternate field is required before enabling the custom-answer route.
+
+`npm test` passes **157 tests**. `npm run test:extension-package` passes,
+including production TypeScript compilation and the isolated package fixture.
+Additional regressions cover evidence recovery, invalid versus authoritative
+snapshots, concurrent live requests, and localized literal enum choices. The PR
+Evidence section is refreshed for this revision. Wire, Android and deployment
+sources are unchanged, and no installed runtime or application was updated.
+
+### Relay capability recovery follow-up (2026-10-07)
+
+`node --import tsx --test --test-name-pattern 'cached relay capabilities' backend\tests\bridge.test.ts`
+reproduced the relay returning HTTP 409 from its cached false capability while
+the original runtime had recovered and an unrelated model probe was stalled.
+The real local relay/bridge/SQLite regression now passes: the authorized command
+reaches the bridge's action-specific check and completes once. A subsequent
+currently unsupported action gets a failed receipt without invoking the runtime.
+
+Relay capability booleans now advertise UI state rather than veto fresh commands.
+Authentication, device/host/session ownership, immutable retry handling and
+offline refusal remain enforced. Readiness additionally requires an open socket:
+the existing disconnect regression exposed the closing-socket race, and now
+passes without changing its assertions or timing.
+
+`npm test` passes **158 tests**. `npm run typecheck` and
+`npm run test:extension-package` pass, covering production compilation/bundling
+and the isolated installed-package fixture. The wire and database formats and
+Android sources are unchanged.
+
+Unlike the earlier extension-only version-gate removal, this follow-up changes
+relay behavior. Existing protocol-v1 relays remain compatible but retain their
+cached veto until upgraded. Deploy the updated relay to obtain this recovery
+improvement; no Azure deployment, installed extension reload, device enrollment
+or emulator reinstall was performed here.

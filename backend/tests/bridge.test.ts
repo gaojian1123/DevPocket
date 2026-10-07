@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { startBridge } from "../src/bridge.js";
 import type { JoinedSession } from "../src/runtime.js";
+import { Receipt, SessionSummary, type Action } from "../src/protocol.js";
 import { fixture, newId, sessionPath } from "./harness.js";
 
 test("bridge restart and duplicate submissions never send a task twice, including response-before-send-ack races", async (t) => {
@@ -127,4 +128,163 @@ test("retry after execution and loss of the HTTP response executes the original 
   assert.equal(retried.status, "completed");
   assert.equal(executions, 1);
   assert.deepEqual(forwarded, [{ route, body }, { route, body }]);
+});
+
+for (const extraFields of [false, true]) test(`unknown mutation ${extraFields ? "fields" : "acknowledgements"} remain uncertain and retries never repeat them`, async (t) => {
+  let bridge: Awaited<ReturnType<typeof startBridge>> | undefined;
+  t.after(async () => { await bridge?.close(); });
+  const f = await fixture(t), host = f.host(), phone = await f.pair(host.token), sid = newId();
+  let emit: (event: unknown) => void = () => {};
+  const calls: string[] = [];
+  const event = (type: string, data: object) => ({ id: newId(), timestamp: new Date().toISOString(), type, data });
+  const session: JoinedSession = {
+    sessionId: sid,
+    getEvents: async () => [event("session.start", { context: { cwd: f.dataDir } })],
+    on: (listener) => { emit = listener; return () => {}; },
+    send: async () => { calls.push("message"); return { newMessageId: "unknown-shape" }; },
+    abort: async () => { calls.push("abort"); return extraFields ? { confirmationRequired: true } : { success: false }; },
+    rpc: {
+      metadata: { activity: async () => ({ hasActiveWork: false, abortable: false }) },
+      permissions: {
+        paths: { list: async () => ({ primary: f.dataDir }) },
+        pendingRequests: async () => ({ items: [{ requestId: "approval", request: {
+          kind: "commands", fullCommandText: "echo harmless",
+        } }] }),
+        handlePendingPermissionRequest: async () => {
+          calls.push("permission"); return extraFields ? { success: true, pending: true } : { resolved: true };
+        },
+      },
+      ui: {
+        handlePendingUserInput: async (input) => {
+          calls.push(`answer:${input.requestId}`); return extraFields ? { success: true, pending: true } : { accepted: true };
+        },
+        handlePendingElicitation: async (input) => {
+          calls.push(`answer:${input.requestId}`); return extraFields ? { success: true, pending: true } : { accepted: true };
+        },
+      },
+      model: {
+        getCurrent: async () => ({ modelId: "test-model" }),
+        list: async () => ({ list: [{ id: "test-model" }] }),
+        switchTo: async () => {
+          calls.push("model.set"); return extraFields ? { modelId: "test-model", pending: true } : {};
+        },
+      },
+    },
+  };
+  bridge = await startBridge(session, { hostId: host.hostId, token: host.token, relayUrl: f.url,
+    dataDir: path.join(f.dataDir, "bridge"), allowInsecureLoopback: true });
+  const catalog = await (await f.request("/v1/catalog", phone.token)).json();
+  const summary = SessionSummary.strip().parse(catalog.sessions[0]);
+  assert.equal(summary.cliVersion, "unknown");
+  assert.equal(summary.capabilities.messages, true);
+  assert.equal(summary.capabilities.abort, true);
+  emit(event("user_input.requested", { requestId: "question", question: "Choose", choices: ["One", "Two"] }));
+  emit(event("elicitation.requested", {
+    requestId: "form", message: "Choose",
+    requestedSchema: { type: "object", properties: { choice: { type: "string", enum: ["One", "Two"] } } },
+  }));
+  const actions: Action[] = [
+    { type: "message", text: "Preserve an uncertain send", attachmentIds: [] },
+    { type: "abort" },
+    { type: "permission", requestId: "approval", decision: "reject" },
+    { type: "answer", requestId: "question", answer: "One" },
+    { type: "answer", requestId: "form", answer: "One" },
+    { type: "model.set", modelId: "test-model" },
+  ];
+  const key = (action: Action) => action.type === "answer" ? `answer:${action.requestId}` : action.type;
+  const route = sessionPath(host.hostId, sid) + "/commands";
+  for (const action of actions) {
+    const command = { commandId: newId(), action };
+    assert.equal((await f.request(route, phone.token, command)).status, 202);
+    let receipt = Receipt.parse(await (await f.request(`${route}/${command.commandId}`, phone.token)).json());
+    for (let i = 0; i < 100 && receipt.status === "dispatched"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      receipt = Receipt.parse(await (await f.request(`${route}/${command.commandId}`, phone.token)).json());
+    }
+    assert.equal(receipt.status, "uncertain", action.type);
+    assert.equal(receipt.error?.code, "DELIVERY_UNCERTAIN");
+    const retry = Receipt.parse(await (await f.request(route, phone.token, command)).json());
+    assert.equal(retry.status, "uncertain");
+    assert.equal(calls.filter((type) => type === key(action)).length, 1);
+  }
+  assert.deepEqual(calls, actions.map(key));
+});
+
+test("cached relay capabilities cannot veto live recovery while unrelated probes are stalled", async (t) => {
+  let bridge: Awaited<ReturnType<typeof startBridge>> | undefined;
+  let finishCatalogue = () => {};
+  let refreshing: Promise<SessionSummary> | undefined;
+  t.after(async () => {
+    finishCatalogue();
+    await refreshing;
+    await bridge?.close();
+  });
+  const f = await fixture(t), host = f.host(), phone = await f.pair(host.token), sid = newId();
+  let available = false, sends = 0;
+  let emit: (event: unknown) => void = () => {};
+  const event = (type: string, data: object) => ({ id: newId(), timestamp: new Date().toISOString(), type, data });
+  const session: JoinedSession = {
+    sessionId: sid,
+    getEvents: async () => [event("session.start", { copilotVersion: "future-build", context: { cwd: f.dataDir } })],
+    on: (listener) => { emit = listener; return () => {}; },
+    send: async (options) => {
+      sends++;
+      assert.equal(options.mode, "enqueue");
+      assert.equal(options.source, "user");
+      emit(event("assistant.message", { messageId: "recovered-answer", originatingMessageId: "recovered-message", content: "Recovered" }));
+      emit(event("session.idle", {}));
+      return "recovered-message";
+    },
+    rpc: {
+      metadata: { activity: async () => available ? { hasActiveWork: false, abortable: false } : { hasActiveWork: "unknown" } },
+      permissions: {
+        paths: { list: async () => ({ primary: f.dataDir }) },
+        getMode: async () => ({ mode: "manual" }), pendingRequests: async () => ({ items: [] }),
+      },
+      model: { list: async () => ({ list: [{ id: "test-model" }] }), getCurrent: async () => ({ modelId: "test-model" }) },
+    },
+  };
+  bridge = await startBridge(session, {
+    hostId: host.hostId, token: host.token, relayUrl: f.url,
+    dataDir: path.join(f.dataDir, "bridge"), allowInsecureLoopback: true,
+  });
+  const catalogue = await (await f.request("/v1/catalog", phone.token)).json();
+  assert.equal(SessionSummary.strip().parse(catalogue.sessions[0]).capabilities.messages, false);
+  const stalled = new Promise<void>((resolve) => { finishCatalogue = resolve; });
+  session.rpc.model!.list = async () => { await stalled; return { list: [{ id: "test-model" }] }; };
+  available = true;
+  refreshing = bridge.runtime.refresh();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const cached = await (await f.request("/v1/catalog", phone.token)).json();
+  assert.equal(SessionSummary.strip().parse(cached.sessions[0]).capabilities.messages, false);
+  const route = sessionPath(host.hostId, sid) + "/commands";
+  const command = { commandId: newId(), action: { type: "message", text: "Recovered without a full refresh", attachmentIds: [] } };
+  assert.equal((await f.request(route, undefined, command)).status, 401);
+  assert.equal((await f.request(route, phone.token, command)).status, 202);
+  async function receipt(commandId: string): Promise<Receipt> {
+    for (let i = 0; i < 100; i++) {
+      const value = Receipt.parse(await (await f.request(`${route}/${commandId}`, phone.token)).json());
+      if (value.status !== "dispatched") return value;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.fail("The bridge did not return its action-specific result.");
+  }
+  assert.equal((await receipt(command.commandId)).status, "completed");
+  assert.equal(sends, 1);
+  assert.equal(Receipt.parse(await (await f.request(route, phone.token, command)).json()).status, "completed");
+  assert.equal(sends, 1);
+
+  available = false;
+  const unsupported = { ...command, commandId: newId() };
+  assert.equal((await f.request(route, phone.token, unsupported)).status, 202);
+  const rejected = await receipt(unsupported.commandId);
+  assert.equal(rejected.status, "failed");
+  assert.equal(rejected.error?.code, "UNSUPPORTED");
+  assert.equal(sends, 1);
+  finishCatalogue();
+  await refreshing;
+  await bridge.close();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal((await f.request(route, phone.token, { ...command, commandId: newId() })).status, 503);
+  assert.equal(Receipt.parse(await (await f.request(route, phone.token, command)).json()).status, "completed");
 });
