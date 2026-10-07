@@ -216,7 +216,8 @@ their required probe group; each group updates only its own evidence:
   that read; a slow or failed queue query cannot delay the cancellation request.
   The bounded snapshot is used only to report known queued message IDs.
 - Permissions require a valid live pending-permission snapshot and its response
-  handler. Questions require live activity and a corresponding response handler;
+  handler; duplicate request IDs invalidate the snapshot. Questions require live
+  activity and a corresponding response handler;
   individual controls also require a supported, complete live request. Permission
   forms use per-kind allowlisted shapes, including nested shell/path/URL fields;
   live envelopes are validated before any payload is selected. A documented
@@ -228,6 +229,8 @@ their required probe group; each group updates only its own evidence:
   Snapshot refresh cannot discard stricter live evidence or change the approved
   subject. Request IDs changed by a live event or confirmed response after a
   snapshot read started are not overwritten or removed by that late snapshot.
+  Valid removals also retire cached live evidence; still-pending requests retain
+  their stricter live details.
   All accepted semantic fields are displayed, while known SDK
   correlation/canonicalization metadata is omitted. Arbitrary MCP/custom-tool
   arguments are displayed in full or denied
@@ -242,11 +245,14 @@ their required probe group; each group updates only its own evidence:
   schema, including form-level and alternate-field descriptions, defaults and
   constraints. Defaults are informational, not automatic answers. If the full
   definition cannot fit safely without redaction, the form is terminal-only.
+  `Other` is a literal enum choice unless the form actually declares a supported
+  alternate field for custom text.
   Form length constraints count Unicode code
   points, including supplementary characters, without changing protocol-v1 size
   limits.
 - Models require valid current-model and nonempty catalogue responses plus a
-  callable switch handler. Provided policy states must be `enabled`, `disabled`
+  callable switch handler. Duplicate model IDs invalidate the catalogue instead
+  of selecting a policy by list order. Provided policy states must be `enabled`, `disabled`
   or `unconfigured`; the latter two cannot be selected, and unknown/incomplete
   policy shapes disable model controls. Missing model evidence does not disable
   chat or files.

@@ -1492,3 +1492,157 @@ test("unrenderable form metadata cannot be hidden to make a request answerable",
   }
   assert.equal(answers, 0);
 });
+
+test("duplicate permission IDs disable ambiguous snapshots before any decision", async (t) => {
+  const f = await capabilityFixture(t);
+  let decisions = 0;
+  f.session.rpc.permissions!.pendingRequests = async () => ({ items: [
+    { requestId: "duplicate", request: { kind: "read", path: "first.txt" } },
+    { requestId: "duplicate", request: { kind: "read", path: "second.txt" } },
+  ] });
+  f.session.rpc.permissions!.handlePendingPermissionRequest = async () => { decisions++; return { success: true }; };
+  const summary = await f.runtime.connect();
+  assert.equal(summary.capabilities.permissions, false);
+  await assert.rejects(f.runtime.execute({ type: "permission", requestId: "duplicate", decision: "approve-once" }), { code: "UNSUPPORTED" });
+  assert.equal(decisions, 0);
+});
+
+test("duplicate model IDs disable ambiguous catalogues before selection", async (t) => {
+  const f = await capabilityFixture(t);
+  let switches = 0;
+  f.session.rpc.model!.list = async () => ({ list: [
+    { id: "duplicate", policy: { state: "enabled" } },
+    { id: "duplicate", policy: { state: "disabled" } },
+  ] });
+  f.session.rpc.model!.switchTo = async () => { switches++; return { modelId: "duplicate" }; };
+  const summary = await f.runtime.connect();
+  assert.equal(summary.capabilities.models, false);
+  await assert.rejects(f.runtime.execute({ type: "model.set", modelId: "duplicate" }), { code: "UNSUPPORTED" });
+  assert.equal(switches, 0);
+});
+
+test("a snapshot-removed permission ID cannot reuse cached live evidence", async (t) => {
+  const f = await capabilityFixture(t);
+  let pending: unknown[] = [{ requestId: "reused", request: { kind: "read", path: "old.txt" } }];
+  f.session.rpc.permissions!.pendingRequests = async () => ({ items: pending });
+  f.session.rpc.permissions!.handlePendingPermissionRequest = async () => ({ success: true });
+  await f.runtime.connect();
+  f.emit("permission.requested", {
+    requestId: "reused", permissionRequest: { kind: "read", path: "old.txt" }, unknownConstraint: true,
+  });
+  await f.runtime.refresh();
+  assert.equal(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items[0]?.supported, false);
+  pending = [];
+  await f.runtime.refresh();
+  assert.deepEqual(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items, []);
+  pending = [{ requestId: "reused", request: { kind: "read", path: "new.txt" } }];
+  await f.runtime.refresh();
+  const request = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items[0];
+  assert.equal(request?.supported, true);
+  assert.ok(request.detail.includes("new.txt"));
+  assert.equal((await f.runtime.execute({ type: "permission", requestId: "reused", decision: "reject" })).status, "completed");
+});
+
+test("a single-field Other enum remains an exact choice rather than free text", async (t) => {
+  const f = await capabilityFixture(t), answers: unknown[] = [];
+  f.session.rpc.ui = { handlePendingElicitation: async (input) => { answers.push(input); return { success: true }; } };
+  await f.runtime.connect();
+  f.emit("elicitation.requested", {
+    requestId: "literal-other", message: "Choose",
+    requestedSchema: { type: "object", properties: { choice: { type: "string", enum: ["One", "Other"] } }, required: ["choice"] },
+  });
+  const request = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === "literal-other");
+  assert.equal(request?.supported, true);
+  assert.deepEqual(request.choices, ["One", "Other"]);
+  assert.equal(request.allowFreeform, false);
+  await assert.rejects(f.runtime.execute({ type: "answer", requestId: "literal-other", answer: "not an enum value" }), { code: "INVALID_CHOICE" });
+  assert.equal((await f.runtime.execute({ type: "answer", requestId: "literal-other", answer: "Other" })).status, "completed");
+  assert.deepEqual(answers, [{ requestId: "literal-other", result: { action: "accept", content: { choice: "Other" } } }]);
+});
+
+test("identical duplicate request and model IDs remain unsupported until unique evidence returns", async (t) => {
+  const f = await capabilityFixture(t);
+  const permissions = f.session.rpc.permissions!, models = f.session.rpc.model!;
+  const pending = permissions.pendingRequests!, catalogue = models.list!;
+  await f.runtime.connect();
+  permissions.pendingRequests = async () => {
+    const request = { requestId: "duplicate", request: { kind: "read", path: "same.txt" } };
+    return { items: [request, request] };
+  };
+  models.list = async () => {
+    const model = { id: "duplicate", policy: { state: "enabled" } };
+    return { list: [model, model] };
+  };
+  const unavailable = await f.runtime.refresh();
+  assert.deepEqual(unavailable.capabilities, { ...allCapabilities, permissions: false, models: false });
+  assert.ok(unavailable.warnings.some((warning) => warning.includes("Pending permissions returned an unsupported response shape")));
+  assert.ok(unavailable.warnings.some((warning) => warning.includes("Model catalogue returned an unsupported response shape")));
+  await assert.rejects(f.runtime.execute({ type: "models" }), { code: "UNSUPPORTED" });
+  assert.ok(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.every((item) => !item.supported));
+  permissions.pendingRequests = pending;
+  models.list = catalogue;
+  const recovered = await f.runtime.refresh();
+  assert.deepEqual(recovered.capabilities, allCapabilities);
+  assert.ok(!recovered.warnings.some((warning) => warning.includes("unsupported response shape")));
+});
+
+test("invalid snapshots do not retire live restrictions but confirmed removals do", async (t) => {
+  const f = await capabilityFixture(t);
+  let pending: unknown = { items: [{ requestId: "tracked", request: { kind: "read", path: "example.txt" } }] };
+  f.session.rpc.permissions!.pendingRequests = async () => pending;
+  await f.runtime.connect();
+  f.emit("permission.requested", {
+    requestId: "tracked", permissionRequest: { kind: "read", path: "example.txt" }, unknownConstraint: true,
+  });
+  pending = { items: "not-a-snapshot" };
+  assert.equal((await f.runtime.refresh()).capabilities.permissions, false);
+  pending = { items: [{ requestId: "tracked", request: { kind: "read", path: "example.txt" } }] };
+  await f.runtime.refresh();
+  assert.equal(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items[0]?.supported, false);
+  pending = { items: [] };
+  await f.runtime.refresh();
+  pending = { items: [{ requestId: "tracked", request: { kind: "read", path: "example.txt" } }] };
+  await f.runtime.refresh();
+  assert.equal(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items[0]?.supported, true);
+});
+
+test("a newly received live permission survives snapshot removal with its full evidence", async (t) => {
+  const f = await capabilityFixture(t);
+  f.session.rpc.permissions!.pendingRequests = async () => ({ items: [] });
+  await f.runtime.connect();
+  let finish!: (value: unknown) => void;
+  const pending = new Promise<unknown>((resolve) => { finish = resolve; });
+  f.session.rpc.permissions!.pendingRequests = () => pending;
+  const refreshing = f.runtime.refresh();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  f.emit("permission.requested", {
+    requestId: "live-after-read", permissionRequest: { kind: "read", path: "example.txt" }, unknownConstraint: true,
+  });
+  finish({ items: [] });
+  await refreshing;
+  const request = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items[0];
+  assert.equal(request?.requestId, "live-after-read");
+  assert.equal(request.supported, false);
+  f.session.rpc.permissions!.pendingRequests = async () => ({
+    items: [{ requestId: "live-after-read", request: { kind: "read", path: "example.txt" } }],
+  });
+  await assert.rejects(f.runtime.execute({ type: "permission", requestId: "live-after-read", decision: "approve-once" }), { code: "TERMINAL_REQUIRED" });
+});
+
+test("single-field Other variants are literal and do not disable valid choices", async (t) => {
+  const f = await capabilityFixture(t), answers: unknown[] = [];
+  f.session.rpc.ui = { handlePendingElicitation: async (input) => { answers.push(input); return { success: true }; } };
+  await f.runtime.connect();
+  for (const [index, choice] of ["Other", "Other (specify)", "\u5176\u4ed6", "\u5176\u5b83"].entries()) {
+    const requestId = `literal-${index}`;
+    f.emit("elicitation.requested", {
+      requestId, message: "Choose",
+      requestedSchema: { type: "object", properties: { choice: { type: "string", enum: [choice] } }, required: ["choice"] },
+    });
+    const request = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === requestId);
+    assert.deepEqual(request?.choices, [choice]);
+    assert.equal(request.allowFreeform, false);
+    assert.equal((await f.runtime.execute({ type: "answer", requestId, answer: choice })).status, "completed");
+    assert.deepEqual(answers.at(-1), { requestId, result: { action: "accept", content: { choice } } });
+  }
+});

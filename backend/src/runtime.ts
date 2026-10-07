@@ -53,7 +53,8 @@ const permissionMode = z.object({ mode: z.string().min(1).max(80) });
 const pendingPermissions = z.object({ items: z.array(z.object({
   requestId: RequestId, request: z.record(z.unknown()).optional(), permissionRequest: z.record(z.unknown()).optional(),
   recoveryEpisodeId: RequestId.optional(),
-}).strict().refine((item) => (item.request !== undefined) !== (item.permissionRequest !== undefined))) });
+}).strict().refine((item) => (item.request !== undefined) !== (item.permissionRequest !== undefined))) })
+  .refine(({ items }) => new Set(items.map((item) => item.requestId)).size === items.length, "Permission request IDs must be unique.");
 const currentModel = z.object({
   modelId: z.string().min(1).max(200), reasoningEffort: z.string().max(60).nullish(),
 });
@@ -65,7 +66,9 @@ const modelCatalogue = z.object({ list: z.array(z.object({
   capabilities: z.object({ supports: z.object({ reasoning_efforts: reasoningEfforts.optional() }).optional() }).optional(),
   policy: z.object({ state: z.enum(["enabled", "disabled", "unconfigured"]) }).optional(),
   disabled: z.boolean().optional(), isDisabled: z.boolean().optional(), model_picker_enabled: z.boolean().optional(),
-})).min(1) }).transform(({ list }) => list.map((model) => {
+})).min(1) })
+  .refine(({ list }) => new Set(list.map((model) => model.id)).size === list.length, "Model IDs must be unique.")
+  .transform(({ list }) => list.map((model) => {
   const efforts = model.supportedReasoningEfforts ?? model.supported_reasoning_efforts ??
     model.capabilities?.supports?.reasoning_efforts ?? [];
   return {
@@ -435,11 +438,13 @@ export class CopilotRuntime {
           this.permissionSnapshotChanges = undefined;
         }
         if (pending) {
+          const pendingIds = new Set(pending.items.map((item) => item.requestId));
           // Live changes after this read started take precedence, including completions.
-          for (const id of this.permissionIds) {
+          for (const id of new Set([...this.permissionIds, ...this.livePermissions.keys()])) {
             if (changed.has(id)) continue;
             this.requests.delete(id);
             this.permissionIds.delete(id);
+            if (!pendingIds.has(id)) this.livePermissions.delete(id);
           }
           this.warnings.delete("Permission projection");
           for (const item of pending.items) {
@@ -649,7 +654,7 @@ export class CopilotRuntime {
           const field = primary?.[1];
           const choices = field?.enum ?? [];
           const alternate = primary ? fields.find(([name, value]) => name !== primary[0] && !value.enum) : undefined;
-          const alternateChoice = choices.find((choice) => /^(other|other \(.*\)|其他|其它)$/i.test(choice));
+          const alternateChoice = alternate ? choices.find((choice) => /^(other|other \(.*\)|其他|其它)$/i.test(choice)) : undefined;
           const detail = [form?.elicitationSource ? `Source: ${form.elicitationSource}` : undefined,
             form?.message, schema ? `Form definition (defaults are informational):\n${JSON.stringify(schema, null, 2)}` : undefined]
             .filter(Boolean).join("\n");

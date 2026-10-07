@@ -542,3 +542,23 @@ including production TypeScript compilation, bundling and the standalone
 fixture. The PR evidence is updated to the commit containing these results.
 No serialized protocol, Android or deployment sources changed; this validation
 does not extend earlier installed-extension or emulator acceptance.
+
+### Unique identities, retired requests and literal enum choices (2026-10-07)
+
+`node --import tsx --test --test-name-pattern 'duplicate permission IDs|duplicate model IDs|snapshot-removed permission ID|single-field Other' backend\tests\runtime.test.ts`
+reproduced ambiguous duplicate identities, cached evidence surviving a confirmed
+request removal, and `Other` being hidden from a single-field enum. All four
+regressions now pass.
+
+Snapshots/catalogues with duplicate IDs are rejected, even if duplicate entries
+look identical. Valid snapshots retire live evidence only for removed IDs that
+were not changed during the read; still-pending restrictions remain intact.
+Single-field enums preserve literal `Other` choices and do not accept arbitrary
+text. An alternate field is required before enabling the custom-answer route.
+
+`npm test` passes **157 tests**. `npm run test:extension-package` passes,
+including production TypeScript compilation and the isolated package fixture.
+Additional regressions cover evidence recovery, invalid versus authoritative
+snapshots, concurrent live requests, and localized literal enum choices. The PR
+Evidence section is refreshed for this revision. Wire, Android and deployment
+sources are unchanged, and no installed runtime or application was updated.
