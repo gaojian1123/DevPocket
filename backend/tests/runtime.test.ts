@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { CopilotRuntime, type JoinedSession } from "../src/runtime.js";
-import { PendingRequest, SessionSummary, type Action, type UserEvent } from "../src/protocol.js";
+import { PendingRequest, SessionSummary, UserEvent, type Action } from "../src/protocol.js";
 
 export function runtimePeer(root: string, version: string | null = "1.0.90-0") {
   let listener: (event: unknown) => void = () => {};
@@ -417,12 +417,13 @@ test("incomplete known permission and question forms cannot be approved on unfam
 test("simple elicitation forms enforce the actual primary and alternate string limits", async (t) => {
   const f = await capabilityFixture(t), answered: unknown[] = [];
   f.session.rpc.ui = { handlePendingElicitation: async (input) => { answered.push(input); return { success: true }; } };
+  const invalidLength = { code: "INVALID_ANSWER", message: "The answer is outside this form's supported length range." };
   await f.runtime.connect();
   f.emit("elicitation.requested", { requestId: "short-form", message: "Enter a label", requestedSchema: {
     type: "object", properties: { label: { type: "string", minLength: 3, maxLength: 5 } }, required: ["label"],
   } });
-  await assert.rejects(f.runtime.execute({ type: "answer", requestId: "short-form", answer: "a" }), { code: "INVALID_ANSWER" });
-  await assert.rejects(f.runtime.execute({ type: "answer", requestId: "short-form", answer: "abcdef" }), { code: "INVALID_ANSWER" });
+  await assert.rejects(f.runtime.execute({ type: "answer", requestId: "short-form", answer: "a" }), invalidLength);
+  await assert.rejects(f.runtime.execute({ type: "answer", requestId: "short-form", answer: "abcdef" }), invalidLength);
   assert.equal((await f.runtime.execute({ type: "answer", requestId: "short-form", answer: "abc" })).status, "completed");
   f.emit("elicitation.requested", { requestId: "other-form", message: "Choose or write", requestedSchema: {
     type: "object", properties: {
@@ -430,12 +431,160 @@ test("simple elicitation forms enforce the actual primary and alternate string l
       detail: { type: "string", minLength: 2, maxLength: 4 },
     }, required: ["choice"],
   } });
-  await assert.rejects(f.runtime.execute({ type: "answer", requestId: "other-form", answer: "too long" }), { code: "INVALID_ANSWER" });
+  await assert.rejects(f.runtime.execute({ type: "answer", requestId: "other-form", answer: "a" }), invalidLength);
+  await assert.rejects(f.runtime.execute({ type: "answer", requestId: "other-form", answer: "too long" }), invalidLength);
   assert.equal((await f.runtime.execute({ type: "answer", requestId: "other-form", answer: "Two" })).status, "completed");
   assert.deepEqual(answered, [
     { requestId: "short-form", result: { action: "accept", content: { label: "abc" } } },
     { requestId: "other-form", result: { action: "accept", content: { choice: "Other", detail: "Two" } } },
   ]);
+});
+
+test("unknown top-level question fields keep the request in the original client", async (t) => {
+  const f = await capabilityFixture(t, "future-build");
+  let answers = 0;
+  f.session.rpc.ui = { handlePendingUserInput: async () => { answers++; return { success: true }; } };
+  await f.runtime.connect();
+  f.emit("user_input.requested", {
+    requestId: "future-question", question: "Choose", choices: ["Yes", "No"], answerMode: "multiple",
+  });
+  const request = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === "future-question");
+  assert.equal(request?.type, "terminal");
+  assert.equal(request.supported, false);
+  await assert.rejects(f.runtime.execute({ type: "answer", requestId: "future-question", answer: "Yes" }), { code: "TERMINAL_REQUIRED" });
+  assert.equal(answers, 0);
+});
+
+test("unknown top-level elicitation fields keep the form in the original client", async (t) => {
+  const f = await capabilityFixture(t, "future-build");
+  let answers = 0;
+  f.session.rpc.ui = { handlePendingElicitation: async () => { answers++; return { success: true }; } };
+  await f.runtime.connect();
+  f.emit("elicitation.requested", {
+    requestId: "future-form", message: "Choose", mode: "form", responsePolicy: { confirmationRequired: true },
+    requestedSchema: { type: "object", properties: { choice: { type: "string", enum: ["Yes", "No"] } }, required: ["choice"] },
+  });
+  const request = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === "future-form");
+  assert.equal(request?.type, "terminal");
+  assert.equal(request.supported, false);
+  await assert.rejects(f.runtime.execute({ type: "answer", requestId: "future-form", answer: "Yes" }), { code: "TERMINAL_REQUIRED" });
+  assert.equal(answers, 0);
+});
+
+test("supported question envelopes preserve their semantics without exporting correlation metadata", async (t) => {
+  const f = await capabilityFixture(t), answers: unknown[] = [];
+  f.session.rpc.ui = {
+    handlePendingUserInput: async (input) => { answers.push(input); return { success: true }; },
+    handlePendingElicitation: async (input) => { answers.push(input); return { success: true }; },
+  };
+  await f.runtime.connect();
+  const requestedSchema = { type: "object", properties: { label: { type: "string", description: "A short label" } }, required: ["label"] };
+  const requests = [
+    { type: "user_input.requested", data: {
+      requestId: "choice", question: "Choose", choices: ["Yes", "No"], allowFreeform: false, toolCallId: "PRIVATE_CORRELATION",
+    }, detail: "Choose", answer: "Yes" },
+    { type: "user_input.requested", data: {
+      requestId: "freeform", question: "Enter a label", toolCallId: "PRIVATE_CORRELATION",
+    }, detail: "Enter a label", answer: "Test" },
+    { type: "elicitation.requested", data: {
+      requestId: "form", message: "Enter a label", mode: "form", requestedSchema,
+      toolCallId: "PRIVATE_CORRELATION", elicitationSource: "Example MCP",
+    }, detail: "Source: Example MCP\nEnter a label\nA short label", answer: "Test" },
+    { type: "elicitation.requested", data: {
+      requestId: "legacy-form", message: "Enter a label", requestedSchema,
+    }, detail: "Enter a label\nA short label", answer: "Legacy" },
+  ];
+  for (const request of requests) {
+    f.emit(request.type, request.data);
+    const item = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === request.data.requestId);
+    assert.equal(item?.supported, true);
+    assert.equal(item.detail, request.detail);
+    assert.equal((await f.runtime.execute({ type: "answer", requestId: request.data.requestId, answer: request.answer })).status, "completed");
+  }
+  assert.deepEqual(answers, [
+    { requestId: "choice", response: { answer: "Yes", wasFreeform: false } },
+    { requestId: "freeform", response: { answer: "Test", wasFreeform: true } },
+    { requestId: "form", result: { action: "accept", content: { label: "Test" } } },
+    { requestId: "legacy-form", result: { action: "accept", content: { label: "Legacy" } } },
+  ]);
+  assert.ok(!JSON.stringify(f.events).includes("PRIVATE_CORRELATION"));
+  UserEvent.array().parse(f.events);
+});
+
+test("question envelopes reject malformed metadata and unsupported response modes", async (t) => {
+  const f = await capabilityFixture(t);
+  let answers = 0;
+  f.session.rpc.ui = {
+    handlePendingUserInput: async () => { answers++; return { success: true }; },
+    handlePendingElicitation: async () => { answers++; return { success: true }; },
+  };
+  await f.runtime.connect();
+  const invalidMetadata = [
+    { toolCallId: 42 }, { toolCallId: "" }, { toolCallId: "x".repeat(201) },
+    { correlation: { toolCallId: "PRIVATE_CORRELATION" } },
+    { responsePolicy: { mode: "PRIVATE_UNKNOWN_MODE" } },
+  ];
+  for (const type of ["user_input.requested", "elicitation.requested"]) {
+    const envelope = type === "user_input.requested" ? { question: "Choose", choices: ["Yes", "No"] } : {
+      message: "Choose", requestedSchema: { type: "object", properties: { choice: { type: "string", enum: ["Yes", "No"] } } },
+    };
+    const invalid: object[] = type === "user_input.requested" ? invalidMetadata : [
+      ...invalidMetadata, { elicitationSource: 42 }, { elicitationSource: "" },
+      { mode: "url", url: "https://example.test" }, { mode: "new-form" }, { mode: "form", url: "https://example.test" },
+    ];
+    for (const [index, extra] of invalid.entries()) {
+      const requestId = `${type}-${index}`;
+      f.emit(type, { ...envelope, requestId, ...extra });
+      const item = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === requestId);
+      assert.equal(item?.type, "terminal");
+      assert.equal(item.supported, false);
+      await assert.rejects(f.runtime.execute({ type: "answer", requestId, answer: "Yes" }), { code: "TERMINAL_REQUIRED" });
+    }
+  }
+  assert.equal(answers, 0);
+  assert.ok(!JSON.stringify(f.events).includes("PRIVATE_"));
+  UserEvent.array().parse(f.events);
+});
+
+test("question envelopes with invalid request identities never enter projected pending state", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  for (const type of ["user_input.requested", "elicitation.requested"]) {
+    const envelope = type === "user_input.requested" ? { question: "Choose", choices: ["Yes", "No"] } : {
+      message: "Choose", requestedSchema: { type: "object", properties: { choice: { type: "string" } } },
+    };
+    for (const requestId of [undefined, null, "", 42, "x".repeat(201)]) {
+      const before = f.events.length;
+      f.emit(type, { ...envelope, ...(requestId !== undefined ? { requestId } : {}) });
+      assert.deepEqual(f.events.slice(before).map((event) => event.kind), ["notice"]);
+      const notice = f.events.at(-1);
+      assert.equal(notice?.kind === "notice" && notice.data.code, "EVENT_UNSUPPORTED");
+    }
+  }
+  const refresh = await f.runtime.execute({ type: "refresh" });
+  const requests = PendingRequest.array().parse(refresh.result?.requests);
+  assert.ok(requests.every((request) => request.type === "permission"));
+  UserEvent.array().parse(f.events);
+});
+
+test("unsupported replacement envelopes revoke cached form routing", async (t) => {
+  const f = await capabilityFixture(t), answers: unknown[] = [];
+  f.session.rpc.ui = {
+    handlePendingUserInput: async (input) => { answers.push(input); return { success: true }; },
+    handlePendingElicitation: async (input) => { answers.push(input); return { success: true }; },
+  };
+  await f.runtime.connect();
+  const form = {
+    requestId: "reused", message: "Choose",
+    requestedSchema: { type: "object", properties: { choice: { type: "string", enum: ["Yes", "No"] } } },
+  };
+  f.emit("elicitation.requested", form);
+  f.emit("elicitation.requested", { ...form, responsePolicy: { confirmationRequired: true } });
+  await assert.rejects(f.runtime.execute({ type: "answer", requestId: "reused", answer: "Yes" }), { code: "TERMINAL_REQUIRED" });
+  assert.deepEqual(answers, []);
+  f.emit("user_input.requested", { requestId: "reused", question: "Choose", choices: ["Yes", "No"] });
+  assert.equal((await f.runtime.execute({ type: "answer", requestId: "reused", answer: "Yes" })).status, "completed");
+  assert.deepEqual(answers, [{ requestId: "reused", response: { answer: "Yes", wasFreeform: false } }]);
 });
 
 test("malformed optional queue evidence cannot claim that a message is queued or cancelled", async (t) => {

@@ -216,8 +216,12 @@ their required probe group; each group updates only its own evidence:
   unknown semantic fields require the original client. All accepted semantic
   fields are displayed, while known SDK correlation/canonicalization metadata is
   omitted. Arbitrary MCP/custom-tool arguments are displayed in full or denied
-  when they exceed the display budget or require redaction. Historical questions,
-  unknown forms and incomplete details remain in the original client.
+  when they exceed the display budget or require redaction. Question and
+  elicitation payloads also validate their complete outer fields, not just the
+  question text or nested form schema. Documented tool-call correlation IDs are
+  typed but not exported; a declared elicitation source is shown with the form.
+  Unknown outer fields, URL forms, historical questions and incomplete details
+  remain in the original client.
 - Models require valid current-model and nonempty catalogue responses plus a
   callable switch handler. Missing model evidence does not disable chat or files.
 - File/Git views require a live absolute working directory and a complete,

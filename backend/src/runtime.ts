@@ -79,10 +79,11 @@ const messageQueue = z.object({
 });
 const requestResolution = z.object({ success: z.boolean() });
 const userQuestion = z.object({
+  requestId: RequestId, toolCallId: RequestId.optional(),
   question: z.string().trim().min(1).max(12_000),
   choices: z.array(z.string().min(1).max(1000)).max(50).optional(),
   allowFreeform: z.boolean().optional(),
-});
+}).strict();
 const elicitationField = z.object({
   type: z.literal("string"), title: z.string().max(500).optional(), description: z.string().max(10_000).optional(),
   enum: z.array(z.string().min(1).max(1000)).min(1).max(50).optional(),
@@ -94,6 +95,13 @@ const elicitationSchema = z.object({
   type: z.literal("object"), properties: z.record(elicitationField),
   required: z.array(z.string()).optional(), title: z.string().optional(), description: z.string().optional(),
   additionalProperties: z.boolean().optional(),
+}).strict();
+const elicitationRequest = z.object({
+  requestId: RequestId, toolCallId: RequestId.optional(),
+  elicitationSource: z.string().min(1).max(200).optional(),
+  message: z.string().min(1).max(12_000).refine((value) => !!value.trim()),
+  mode: z.literal("form").optional(),
+  requestedSchema: elicitationSchema,
 }).strict();
 const modelSelection = z.object({
   modelId: z.string().min(1).max(200).optional(), deferred: z.boolean().optional(),
@@ -506,13 +514,15 @@ export class CopilotRuntime {
           break;
         case "user_input.requested": {
           if (historical) break;
+          const requestId = RequestId.parse(data.requestId);
+          this.elicitationFields.delete(requestId);
           const parsed = userQuestion.safeParse(data);
           const question = parsed.success ? parsed.data : undefined;
-          const detail = question ? redact(question.question, 12_000) : "This incomplete question requires the original terminal.";
+          const detail = question ? redact(question.question, 12_000) : "This unsupported or incomplete question requires the original terminal.";
           const choices = (question?.choices ?? []).map((choice) => redact(choice, 1000));
           const allowFreeform = question !== undefined && (question.allowFreeform ?? choices.length === 0);
           const item = PendingRequest.parse({
-            requestId: data.requestId, type: question ? "question" : "terminal", title: "The CLI needs your answer",
+            requestId, type: question ? "question" : "terminal", title: "The CLI needs your answer",
             detail, choices, allowFreeform,
             supported: question !== undefined && detail === question.question && (allowFreeform || choices.length > 0) &&
               choices.every((choice, index) => choice === question.choices?.[index]),
@@ -523,8 +533,11 @@ export class CopilotRuntime {
         }
         case "elicitation.requested": {
           if (historical) break;
-          const parsed = elicitationSchema.safeParse(data.requestedSchema);
-          const schema = parsed.success ? parsed.data : undefined;
+          const requestId = RequestId.parse(data.requestId);
+          this.elicitationFields.delete(requestId);
+          const parsed = elicitationRequest.safeParse(data);
+          const form = parsed.success ? parsed.data : undefined;
+          const schema = form?.requestedSchema;
           const fields = Object.entries(schema?.properties ?? {});
           const required = schema?.required ?? [];
           const candidates = fields.filter(([, value]) => value.enum !== undefined);
@@ -533,30 +546,30 @@ export class CopilotRuntime {
           const choices = field?.enum ?? [];
           const alternate = primary ? fields.find(([name, value]) => name !== primary[0] && !value.enum) : undefined;
           const alternateChoice = choices.find((choice) => /^(other|other \(.*\)|其他|其它)$/i.test(choice));
-          const detail = [text(data.message), field?.description].filter(Boolean).join("\n");
-          const simple = schema && primary && field && (fields.length === 1 ||
+          const detail = [form?.elicitationSource ? `Source: ${form.elicitationSource}` : undefined,
+            form?.message, field?.description].filter(Boolean).join("\n");
+          const simple = form && schema && primary && field && (fields.length === 1 ||
             (fields.length === 2 && alternate && alternateChoice && !required.includes(alternate[0]))) &&
-            (data.mode === undefined || data.mode === "form") && data.url === undefined &&
-            required.every((name) => name === primary[0]) &&
-            typeof data.message === "string" && !!data.message.trim() && detail.length <= 12_000 &&
+            required.every((name) => name === primary[0]) && detail.length <= 12_000 &&
             redact(detail, 12_000) === detail && choices.every((choice) => redact(choice, 1000) === choice);
           if (simple) {
-            this.elicitationFields.set(text(data.requestId), {
+            const item = PendingRequest.parse({
+              requestId, type: "question", title: redact(field.title || "The CLI needs your answer", 500),
+              detail,
+              choices: alternateChoice ? choices.filter((choice) => choice !== alternateChoice) : choices,
+              allowFreeform: choices.length === 0 || !!alternateChoice, supported: typeof this.session.rpc?.ui?.handlePendingElicitation === "function",
+            });
+            this.elicitationFields.set(requestId, {
               field: primary[0], minLength: field.minLength ?? 0, maxLength: Math.min(8000, field.maxLength ?? 8000),
               ...(alternate && alternateChoice ? {
                 alternateField: alternate[0], alternateChoice,
                 alternateMinLength: alternate[1].minLength ?? 0, alternateMaxLength: Math.min(8000, alternate[1].maxLength ?? 8000),
               } : {}),
             });
-            this.requests.set(text(data.requestId), PendingRequest.parse({
-              requestId: data.requestId, type: "question", title: redact(field.title || "The CLI needs your answer", 500),
-              detail,
-              choices: alternateChoice ? choices.filter((choice) => choice !== alternateChoice) : choices,
-              allowFreeform: choices.length === 0 || !!alternateChoice, supported: typeof this.session.rpc?.ui?.handlePendingElicitation === "function",
-            }));
+            this.requests.set(requestId, item);
           } else {
-            this.requests.set(text(data.requestId), {
-              requestId: text(data.requestId), type: "terminal", title: "Structured request",
+            this.requests.set(requestId, {
+              requestId, type: "terminal", title: "Structured request",
               detail: "This form or URL request requires the original terminal. It will not be auto-accepted.",
               choices: [], allowFreeform: false, supported: false,
             });
@@ -667,7 +680,7 @@ export class CopilotRuntime {
           const minLength = alternate ? form.alternateMinLength ?? 0 : form.minLength;
           const maxLength = alternate ? form.alternateMaxLength ?? 8000 : form.maxLength;
           if (action.answer.length < minLength || action.answer.length > maxLength)
-            throw new Fault("INVALID_ANSWER", "The answer exceeds this form's supported limits.");
+            throw new Fault("INVALID_ANSWER", "The answer is outside this form's supported length range.");
           const content = alternate && form.alternateField && form.alternateChoice
             ? { [form.field]: form.alternateChoice, [form.alternateField]: action.answer } : { [form.field]: action.answer };
           raw = await rpc.ui.handlePendingElicitation({ requestId: action.requestId, result: { action: "accept", content } });

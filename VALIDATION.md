@@ -426,3 +426,24 @@ standalone unfamiliar-version fixture. No wire, Android or deployment code
 changed in this follow-up. No real runtime control, extension installation/reload,
 emulator reinstall or Azure operation was performed for these review fixes;
 earlier installed-build acceptance does not cover this new source revision.
+
+### Question-envelope review follow-up (2026-10-07)
+
+The targeted command
+`node --import tsx --test --test-name-pattern 'unknown top-level|simple elicitation forms enforce' backend\tests\runtime.test.ts`
+reproduced both unknown-envelope-field findings and the inaccurate short-answer
+error before the fix. All three cases now pass.
+
+Native questions and elicitation forms validate their complete payloads against
+strict schemas before becoming answerable. Documented tool-call correlation
+metadata remains typed and private; elicitation sources are shown to the user.
+Unknown semantics, unsupported modes and malformed metadata require the original
+client. Invalid request IDs produce a notice without poisoning pending wire
+state, and replacement requests cannot retain stale form routing. Both short
+and long answers now report that they are outside the supported length range.
+
+`npm test` passes **111 tests**. `npm run typecheck` and
+`npm run test:extension-package` pass as well. Positive regressions retain native
+choices, free text, explicit form mode and legacy forms without a mode field.
+The wire contract and Android sources are unchanged. No installed extension,
+emulator app, original runtime or Azure deployment was updated for this follow-up.
