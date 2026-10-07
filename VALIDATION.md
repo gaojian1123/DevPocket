@@ -476,3 +476,28 @@ existing protocol-v1 answer size ceiling remains unchanged.
 `npm run test:extension-package` also pass. Android, the serialized protocol and
 deployment sources are unchanged. These are source/isolated-fixture checks; no
 installed extension, original runtime, emulator app or Azure service was changed.
+
+### Live cancellation and snapshot-order review follow-up (2026-10-07)
+
+The focused runtime/bridge regressions reproduced active non-abortable work
+advertising Stop, discarded abort result objects being acknowledged, stale
+permission snapshots removing new requests or resurrecting completed ones, and
+unknown model policy states becoming enabled. These regressions now pass.
+
+Active work requires an explicit `abortable: true`; idle runtimes retain support
+when the field is a valid boolean. Only the known `undefined` SDK abort result
+acknowledges cancellation. Unknown result objects remain durable uncertain
+receipts and are not re-executed on immutable retries.
+
+Each permission read tracks the request IDs changed while it is in flight.
+Late snapshot entries/removals cannot override those events or confirmed
+responses, while untouched IDs still reconcile normally. The guard is released
+on failed reads. Provided model policy states are restricted to the SDK's
+documented `enabled`, `disabled` and `unconfigured` values; only `enabled` is
+selectable, and unknown/incomplete policy objects fail closed.
+
+`npm test` passes **138 tests**. `npm run typecheck` and
+`npm run test:extension-package` pass, including the production bundle and
+isolated unfamiliar-version fixture. Wire, Android and deployment sources are
+unchanged. No installed extension, real runtime, emulator or Azure service was
+updated for this review iteration.

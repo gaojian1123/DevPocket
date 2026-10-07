@@ -142,6 +142,7 @@ for (const extraFields of [false, true]) test(`unknown mutation ${extraFields ? 
     getEvents: async () => [event("session.start", { context: { cwd: f.dataDir } })],
     on: (listener) => { emit = listener; return () => {}; },
     send: async () => { calls.push("message"); return { newMessageId: "unknown-shape" }; },
+    abort: async () => { calls.push("abort"); return extraFields ? { confirmationRequired: true } : { success: false }; },
     rpc: {
       metadata: { activity: async () => ({ hasActiveWork: false, abortable: false }) },
       permissions: {
@@ -176,7 +177,7 @@ for (const extraFields of [false, true]) test(`unknown mutation ${extraFields ? 
   const summary = SessionSummary.strip().parse(catalog.sessions[0]);
   assert.equal(summary.cliVersion, "unknown");
   assert.equal(summary.capabilities.messages, true);
-  assert.equal(summary.capabilities.abort, false);
+  assert.equal(summary.capabilities.abort, true);
   emit(event("user_input.requested", { requestId: "question", question: "Choose", choices: ["One", "Two"] }));
   emit(event("elicitation.requested", {
     requestId: "form", message: "Choose",
@@ -184,6 +185,7 @@ for (const extraFields of [false, true]) test(`unknown mutation ${extraFields ? 
   }));
   const actions: Action[] = [
     { type: "message", text: "Preserve an uncertain send", attachmentIds: [] },
+    { type: "abort" },
     { type: "permission", requestId: "approval", decision: "reject" },
     { type: "answer", requestId: "question", answer: "One" },
     { type: "answer", requestId: "form", answer: "One" },

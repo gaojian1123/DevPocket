@@ -1066,3 +1066,188 @@ test("known mutation result variants remain supported and unknown nested confirm
   f.session.rpc.permissions!.handlePendingPermissionRequest = async () => ({ success: false });
   await assert.rejects(f.runtime.execute({ type: "permission", requestId: "approval-1", decision: "approve-once" }), { code: "REQUEST_STALE" });
 });
+
+test("active non-abortable work disables cancellation without disabling other controls", async (t) => {
+  const f = await capabilityFixture(t);
+  let aborted = 0;
+  f.session.abort = async () => { aborted++; };
+  f.session.rpc.metadata!.activity = async () => ({ hasActiveWork: true, abortable: false });
+  f.session.rpc.permissions!.pendingRequests = async () => ({ items: [] });
+  const summary = await f.runtime.connect();
+  assert.equal(summary.state, "running");
+  assert.deepEqual(summary.capabilities, { ...allCapabilities, abort: false });
+  await assert.rejects(f.runtime.execute({ type: "abort" }), { code: "UNSUPPORTED" });
+  assert.equal(aborted, 0);
+});
+
+test("a late empty permission snapshot cannot remove a newer live request", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  let finish!: (value: unknown) => void;
+  const snapshot = new Promise<unknown>((resolve) => { finish = resolve; });
+  f.session.rpc.permissions!.pendingRequests = () => snapshot;
+  const refreshing = f.runtime.refresh();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  f.emit("permission.requested", {
+    requestId: "new-live", permissionRequest: { kind: "commands", fullCommandText: "echo safe" },
+  });
+  finish({ items: [] });
+  await refreshing;
+  const requests = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items;
+  assert.deepEqual(requests?.map((item) => item.requestId), ["new-live"]);
+  assert.equal(requests?.[0]?.supported, true);
+});
+
+test("a late permission snapshot cannot resurrect a completed request", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  let finish!: (value: unknown) => void;
+  const snapshot = new Promise<unknown>((resolve) => { finish = resolve; });
+  f.session.rpc.permissions!.pendingRequests = () => snapshot;
+  const refreshing = f.runtime.refresh();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  f.emit("permission.completed", { requestId: "approval-1" });
+  finish({ items: [{ requestId: "approval-1", request: { kind: "commands", fullCommandText: "echo safe" } }] });
+  await refreshing;
+  assert.deepEqual(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items, []);
+});
+
+test("unknown model policy states do not become available", async (t) => {
+  const f = await capabilityFixture(t);
+  let switches = 0;
+  f.session.rpc.model!.list = async () => ({ list: [{ id: "test-model", policy: { state: "restricted-by-new-policy" } }] });
+  f.session.rpc.model!.switchTo = async () => { switches++; return { modelId: "test-model" }; };
+  const summary = await f.runtime.connect();
+  assert.equal(summary.capabilities.models, false);
+  assert.equal(summary.capabilities.messages, true);
+  await assert.rejects(f.runtime.execute({ type: "model.set", modelId: "test-model" }), { code: "UNSUPPORTED" });
+  assert.equal(switches, 0);
+});
+
+test("cancellation support recovers for abortable work and retains the idle false case", async (t) => {
+  const f = await capabilityFixture(t);
+  let activity = { hasActiveWork: true, abortable: false }, aborted = 0;
+  f.session.rpc.metadata!.activity = async () => activity;
+  f.session.abort = async () => { aborted++; };
+  await f.runtime.connect();
+  assert.equal(f.runtime.summary.capabilities.abort, false);
+  assert.ok(f.runtime.summary.warnings.some((warning) => warning.includes("current work is not abortable")));
+  for (const next of [
+    { hasActiveWork: true, abortable: true },
+    { hasActiveWork: false, abortable: false },
+    { hasActiveWork: false, abortable: true },
+  ]) {
+    activity = next;
+    const summary = await f.runtime.refresh();
+    assert.equal(summary.capabilities.abort, true);
+    assert.ok(!summary.warnings.some((warning) => warning.includes("current work is not abortable")));
+    const receipt = await f.runtime.execute({ type: "abort" });
+    assert.equal(receipt.status, "cancel_requested");
+    assert.equal(receipt.result?.acknowledged, true);
+    assert.equal(receipt.result?.stopped, false);
+    f.emit("session.idle", { aborted: true });
+  }
+  assert.equal(aborted, 3);
+  activity = { hasActiveWork: true, abortable: false };
+  await assert.rejects(f.runtime.execute({ type: "abort" }), { code: "UNSUPPORTED" });
+  assert.equal(aborted, 3);
+});
+
+test("permission snapshots still reconcile request IDs untouched by concurrent events", async (t) => {
+  const f = await capabilityFixture(t);
+  const item = (requestId: string, command: string) => ({
+    requestId, request: { kind: "commands", fullCommandText: command },
+  });
+  f.session.rpc.permissions!.pendingRequests = async () => ({
+    items: [item("completed", "echo old"), item("updated", "echo old"), item("untouched", "echo old"), item("removed", "echo old")],
+  });
+  await f.runtime.connect();
+  let finish!: (value: unknown) => void;
+  const snapshot = new Promise<unknown>((resolve) => { finish = resolve; });
+  f.session.rpc.permissions!.pendingRequests = () => snapshot;
+  const refreshing = f.runtime.refresh();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  f.emit("permission.completed", { requestId: "completed" });
+  f.emit("permission.requested", { requestId: "updated", request: item("updated", "echo live-update").request });
+  f.emit("permission.requested", { requestId: "new-live", request: item("new-live", "echo new-live").request });
+  finish({ items: [
+    item("completed", "echo old"), item("updated", "echo old"), item("untouched", "echo new-snapshot"), item("snapshot-only", "echo snapshot"),
+  ] });
+  await refreshing;
+  const requests = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items;
+  assert.deepEqual(requests?.map((request) => request.requestId).sort(), ["new-live", "snapshot-only", "untouched", "updated"]);
+  assert.ok(requests?.find((request) => request.requestId === "updated")?.detail.includes("echo live-update"));
+  assert.ok(requests?.find((request) => request.requestId === "untouched")?.detail.includes("echo new-snapshot"));
+  assert.ok(requests?.every((request) => request.supported));
+
+  f.session.rpc.permissions!.pendingRequests = async () => ({ items: [] });
+  await f.runtime.refresh();
+  assert.deepEqual(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items, []);
+});
+
+test("a confirmed permission response also supersedes an older in-flight snapshot", async (t) => {
+  const f = await capabilityFixture(t);
+  let invoked!: () => void, complete!: () => void;
+  const started = new Promise<void>((resolve) => { invoked = resolve; });
+  const acknowledgement = new Promise<void>((resolve) => { complete = resolve; });
+  f.session.rpc.permissions!.handlePendingPermissionRequest = async () => {
+    invoked();
+    await acknowledgement;
+    return { success: true };
+  };
+  await f.runtime.connect();
+  const command = f.runtime.execute({ type: "permission", requestId: "approval-1", decision: "reject" });
+  await started;
+  let finish!: (value: unknown) => void;
+  const snapshot = new Promise<unknown>((resolve) => { finish = resolve; });
+  f.session.rpc.permissions!.pendingRequests = () => snapshot;
+  const refreshing = f.runtime.refresh();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  complete();
+  assert.equal((await command).status, "completed");
+  finish({ items: [{ requestId: "approval-1", request: { kind: "commands", fullCommandText: "echo old" } }] });
+  await refreshing;
+  assert.deepEqual(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items, []);
+});
+
+test("failed permission snapshots release their event-ordering guard before the next read", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  f.session.rpc.permissions!.pendingRequests = async () => {
+    f.emit("permission.requested", { requestId: "during-failure", request: { kind: "read", path: "example.txt" } });
+    throw new Error("Simulated read failure");
+  };
+  assert.equal((await f.runtime.refresh()).capabilities.permissions, false);
+  assert.ok(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.some((item) => item.requestId === "during-failure"));
+  f.session.rpc.permissions!.pendingRequests = async () => ({ items: [] });
+  assert.equal((await f.runtime.refresh()).capabilities.permissions, true);
+  assert.deepEqual(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items, []);
+});
+
+test("model selection honors known policy states and rejects incomplete policy evidence", async (t) => {
+  const f = await capabilityFixture(t);
+  let policy: unknown, switches = 0;
+  f.session.rpc.model!.list = async () => ({ list: [{ id: "test-model", ...(policy === undefined ? {} : { policy }) }] });
+  f.session.rpc.model!.switchTo = async (input) => {
+    assert.equal(input.requireAvailable, true);
+    switches++;
+    return { modelId: "test-model" };
+  };
+  await f.runtime.connect();
+  for (const state of [undefined, "enabled", "disabled", "unconfigured"]) {
+    policy = state === undefined ? undefined : { state, terms: "Runtime-managed terms" };
+    const models = await f.runtime.models();
+    const enabled = state === undefined || state === "enabled";
+    assert.equal(models[0]?.enabled, enabled);
+    if (enabled)
+      assert.equal((await f.runtime.execute({ type: "model.set", modelId: "test-model" })).status, "completed");
+    else
+      await assert.rejects(f.runtime.execute({ type: "model.set", modelId: "test-model" }), { code: "MODEL_UNAVAILABLE" });
+  }
+  for (const invalid of [{}, { state: null }, { state: false }, { state: "unknown-restriction" }]) {
+    policy = invalid;
+    await assert.rejects(f.runtime.execute({ type: "model.set", modelId: "test-model" }), { code: "UNSUPPORTED" });
+    assert.equal(f.runtime.summary.capabilities.messages, true);
+  }
+  assert.equal(switches, 2);
+});

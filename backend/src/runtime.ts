@@ -17,7 +17,7 @@ export interface JoinedSession {
   getEvents(): Promise<unknown[]>;
   on(handler: (event: unknown) => void): () => void;
   send?(options: { prompt: string; mode: "enqueue"; source: "user"; attachments?: LocalAttachment[] }): Promise<unknown>;
-  abort?(): Promise<void>;
+  abort?(): Promise<unknown>;
   rpc: {
     permissions?: {
       getMode?: RpcRead; pendingRequests?: RpcRead;
@@ -63,7 +63,7 @@ const modelCatalogue = z.object({ list: z.array(z.object({
   id: z.string().min(1).max(200), name: z.string().optional(),
   supportedReasoningEfforts: reasoningEfforts.optional(), supported_reasoning_efforts: reasoningEfforts.optional(),
   capabilities: z.object({ supports: z.object({ reasoning_efforts: reasoningEfforts.optional() }).optional() }).optional(),
-  policy: z.object({ state: z.string().optional() }).optional(),
+  policy: z.object({ state: z.enum(["enabled", "disabled", "unconfigured"]) }).optional(),
   disabled: z.boolean().optional(), isDisabled: z.boolean().optional(), model_picker_enabled: z.boolean().optional(),
 })).min(1) }).transform(({ list }) => list.map((model) => {
   const efforts = model.supportedReasoningEfforts ?? model.supported_reasoning_efforts ??
@@ -71,7 +71,8 @@ const modelCatalogue = z.object({ list: z.array(z.object({
   return {
     id: model.id, name: redact(model.name || model.id, 200), reasoningEfforts: efforts,
     reasoningManual: efforts.length === 0,
-    enabled: model.policy?.state !== "disabled" && model.disabled !== true && model.isDisabled !== true && model.model_picker_enabled !== false,
+    enabled: (model.policy === undefined || model.policy.state === "enabled") &&
+      model.disabled !== true && model.isDisabled !== true && model.model_picker_enabled !== false,
   };
 }));
 const messageQueue = z.object({
@@ -266,6 +267,7 @@ export class CopilotRuntime {
   private readonly requests = new Map<string, PendingRequest>();
   private readonly permissionIds = new Set<string>();
   private readonly livePermissions = new Map<string, ReturnType<typeof livePermission>>();
+  private permissionSnapshotChanges?: Set<string>;
   private readonly elicitationFields = new Map<string, {
     field: string; minLength: number; maxLength: number;
     alternateField?: string; alternateChoice?: string; alternateMinLength?: number; alternateMaxLength?: number;
@@ -397,21 +399,36 @@ export class CopilotRuntime {
         const questions = this.hasMethod("Question responses", rpc.ui?.handlePendingUserInput, rpc.ui?.handlePendingElicitation);
         if (this.activity && typeof this.activity.abortable !== "boolean")
           this.warnings.set("Abort evidence", "Runtime activity does not expose a supported cancellation shape; use the terminal.");
+        else if (this.activity?.hasActiveWork && !this.activity.abortable)
+          this.warnings.set("Abort evidence", "The runtime's current work is not abortable; use the original client.");
         else this.warnings.delete("Abort evidence");
         capabilities = {
           messages: this.activity !== undefined && send,
-          abort: typeof this.activity?.abortable === "boolean" && abort,
+          abort: typeof this.activity?.abortable === "boolean" && abort &&
+            (!this.activity.hasActiveWork || this.activity.abortable),
           questions: this.activity !== undefined && questions,
         };
         break;
       }
       case "permissions": {
-        const pending = await this.probe("Pending permissions", () => rpc.permissions?.pendingRequests?.(), pendingPermissions.parse);
+        const changed = new Set<string>();
+        this.permissionSnapshotChanges = changed;
+        let pending: z.infer<typeof pendingPermissions> | undefined;
+        try {
+          pending = await this.probe("Pending permissions", () => rpc.permissions?.pendingRequests?.(), pendingPermissions.parse);
+        } finally {
+          this.permissionSnapshotChanges = undefined;
+        }
         if (pending) {
-          for (const id of this.permissionIds) this.requests.delete(id);
-          this.permissionIds.clear();
+          // Live changes after this read started take precedence, including completions.
+          for (const id of this.permissionIds) {
+            if (changed.has(id)) continue;
+            this.requests.delete(id);
+            this.permissionIds.delete(id);
+          }
           this.warnings.delete("Permission projection");
           for (const item of pending.items) {
+            if (changed.has(item.requestId)) continue;
             try {
               const projected = permission(item);
               const live = this.livePermissions.get(projected.requestId);
@@ -567,6 +584,7 @@ export class CopilotRuntime {
         }
         case "permission.requested": {
           const projected = livePermission(data);
+          this.permissionSnapshotChanges?.add(projected.request.requestId);
           this.livePermissions.set(projected.request.requestId, projected);
           this.requests.set(projected.request.requestId, projected.request);
           this.permissionIds.add(projected.request.requestId);
@@ -576,6 +594,7 @@ export class CopilotRuntime {
         case "permission.completed":
         case "user_input.completed":
         case "elicitation.completed":
+          this.permissionSnapshotChanges?.add(text(data.requestId));
           this.requests.delete(text(data.requestId));
           this.permissionIds.delete(text(data.requestId));
           this.livePermissions.delete(text(data.requestId));
@@ -719,7 +738,7 @@ export class CopilotRuntime {
         const cancelledMessageIds = queue?.items.flatMap((item) => item.messageId ? [item.messageId] : []) ?? [];
         this.cancelRequested = true;
         this.emit({ id: randomUUID(), at: new Date().toISOString(), kind: "runtime.state", data: { state: "cancel_requested" } });
-        await this.session.abort();
+        z.undefined().parse(await this.session.abort());
         return { status: "cancel_requested", result: { acknowledged: true, stopped: false, cancelledMessageIds } };
       }
       case "permission": {
@@ -731,6 +750,7 @@ export class CopilotRuntime {
           requestId: action.requestId, result: { kind: action.decision },
         }));
         if (result.success !== true) throw new Fault("REQUEST_STALE", "Another client already resolved this request.", 409);
+        this.permissionSnapshotChanges?.add(action.requestId);
         this.requests.delete(action.requestId);
         this.permissionIds.delete(action.requestId);
         this.livePermissions.delete(action.requestId);

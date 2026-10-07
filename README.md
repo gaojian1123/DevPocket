@@ -207,7 +207,10 @@ their required probe group; each group updates only its own evidence:
 - Messages require a callable bundled-SDK `send` and a valid live activity response.
   Cancellation additionally requires the activity response's boolean `abortable`
   field and a callable `abort`; `abortable: false` while idle does not mean the
-  operation is unsupported. Queue evidence is optional: without a valid queue
+  operation is unsupported, but active work must explicitly be abortable.
+  Only the bundled SDK's known `undefined` abort result acknowledges the request;
+  an unfamiliar result remains uncertain, and acknowledgement is not completion.
+  Queue evidence is optional: without a valid queue
   snapshot, sending is only **admitted**, never assumed queued or processing.
 - Permissions require a valid live pending-permission snapshot and its response
   handler. Questions require live activity and a corresponding response handler;
@@ -218,7 +221,9 @@ their required probe group; each group updates only its own evidence:
   displayed. Unknown outer constraints, unsupported risk metadata, competing
   payload aliases and hook-resolved requests cannot be approved remotely.
   Snapshot refresh cannot discard stricter live evidence or change the approved
-  subject. All accepted semantic fields are displayed, while known SDK
+  subject. Request IDs changed by a live event or confirmed response after a
+  snapshot read started are not overwritten or removed by that late snapshot.
+  All accepted semantic fields are displayed, while known SDK
   correlation/canonicalization metadata is omitted. Arbitrary MCP/custom-tool
   arguments are displayed in full or denied
   when they exceed the display budget or require redaction. Question and
@@ -230,7 +235,10 @@ their required probe group; each group updates only its own evidence:
   points, including supplementary characters, without changing protocol-v1 size
   limits.
 - Models require valid current-model and nonempty catalogue responses plus a
-  callable switch handler. Missing model evidence does not disable chat or files.
+  callable switch handler. Provided policy states must be `enabled`, `disabled`
+  or `unconfigured`; the latter two cannot be selected, and unknown/incomplete
+  policy shapes disable model controls. Missing model evidence does not disable
+  chat or files.
 - File/Git views require a live absolute working directory and a complete,
   path-matched content-exclusion response explicitly allowing that directory.
   Every subsequent path is still evaluated; recorded history is never a substitute
