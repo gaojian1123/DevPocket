@@ -355,7 +355,7 @@ fun StatusLabel(text: String, active: Boolean = false) {
 
 fun stateLabel(state: String): String = when (state) {
     "idle" -> "空闲"; "running" -> "处理中"; "waiting" -> "等待你"; "cancel_requested" -> "已请求停止，待确认"
-    "unsupported" -> "版本/能力不支持"; "offline" -> "原始会话离线"; else -> state
+    "unsupported" -> "运行时能力未确认"; "offline" -> "原始会话离线"; else -> state
 }
 
 fun deliveryLabel(status: String): String = when (status) {

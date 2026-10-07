@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { startBridge } from "../src/bridge.js";
 import type { JoinedSession } from "../src/runtime.js";
+import { Receipt, SessionSummary, type Action } from "../src/protocol.js";
 import { fixture, newId, sessionPath } from "./harness.js";
 
 test("bridge restart and duplicate submissions never send a task twice, including response-before-send-ack races", async (t) => {
@@ -127,4 +128,65 @@ test("retry after execution and loss of the HTTP response executes the original 
   assert.equal(retried.status, "completed");
   assert.equal(executions, 1);
   assert.deepEqual(forwarded, [{ route, body }, { route, body }]);
+});
+
+test("unknown mutation acknowledgements remain uncertain and retries never repeat them", async (t) => {
+  let bridge: Awaited<ReturnType<typeof startBridge>> | undefined;
+  t.after(async () => { await bridge?.close(); });
+  const f = await fixture(t), host = f.host(), phone = await f.pair(host.token), sid = newId();
+  let emit: (event: unknown) => void = () => {};
+  const calls: string[] = [];
+  const event = (type: string, data: object) => ({ id: newId(), timestamp: new Date().toISOString(), type, data });
+  const session: JoinedSession = {
+    sessionId: sid,
+    getEvents: async () => [event("session.start", { context: { cwd: f.dataDir } })],
+    on: (listener) => { emit = listener; return () => {}; },
+    send: async () => { calls.push("message"); return { newMessageId: "unknown-shape" }; },
+    rpc: {
+      metadata: { activity: async () => ({ hasActiveWork: false, abortable: false }) },
+      permissions: {
+        paths: { list: async () => ({ primary: f.dataDir }) },
+        pendingRequests: async () => ({ items: [{ requestId: "approval", request: {
+          kind: "commands", fullCommandText: "echo harmless",
+        } }] }),
+        handlePendingPermissionRequest: async () => { calls.push("permission"); return { resolved: true }; },
+      },
+      ui: { handlePendingUserInput: async () => { calls.push("answer"); return { accepted: true }; } },
+      model: {
+        getCurrent: async () => ({ modelId: "test-model" }),
+        list: async () => ({ list: [{ id: "test-model" }] }),
+        switchTo: async () => { calls.push("model.set"); return {}; },
+      },
+    },
+  };
+  bridge = await startBridge(session, { hostId: host.hostId, token: host.token, relayUrl: f.url,
+    dataDir: path.join(f.dataDir, "bridge"), allowInsecureLoopback: true });
+  const catalog = await (await f.request("/v1/catalog", phone.token)).json();
+  const summary = SessionSummary.strip().parse(catalog.sessions[0]);
+  assert.equal(summary.cliVersion, "unknown");
+  assert.equal(summary.capabilities.messages, true);
+  assert.equal(summary.capabilities.abort, false);
+  emit(event("user_input.requested", { requestId: "question", question: "Choose", choices: ["One", "Two"] }));
+  const actions: Action[] = [
+    { type: "message", text: "Preserve an uncertain send", attachmentIds: [] },
+    { type: "permission", requestId: "approval", decision: "reject" },
+    { type: "answer", requestId: "question", answer: "One" },
+    { type: "model.set", modelId: "test-model" },
+  ];
+  const route = sessionPath(host.hostId, sid) + "/commands";
+  for (const action of actions) {
+    const command = { commandId: newId(), action };
+    assert.equal((await f.request(route, phone.token, command)).status, 202);
+    let receipt = Receipt.parse(await (await f.request(`${route}/${command.commandId}`, phone.token)).json());
+    for (let i = 0; i < 100 && receipt.status === "dispatched"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      receipt = Receipt.parse(await (await f.request(`${route}/${command.commandId}`, phone.token)).json());
+    }
+    assert.equal(receipt.status, "uncertain", action.type);
+    assert.equal(receipt.error?.code, "DELIVERY_UNCERTAIN");
+    const retry = Receipt.parse(await (await f.request(route, phone.token, command)).json());
+    assert.equal(retry.status, "uncertain");
+    assert.equal(calls.filter((type) => type === action.type).length, 1);
+  }
+  assert.deepEqual(calls, actions.map((action) => action.type));
 });

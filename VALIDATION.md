@@ -366,3 +366,39 @@ schema-version change when registering a host. `npm run test:setup` passes
 **33 JavaScript tests** and **3 Python tests**; all **29 backend tests** and the
 **5 selected legacy onboarding checks**, including the actual guest-bundle byte
 limit, pass. These remain isolated local checks, not live Azure acceptance.
+
+## Runtime capability evidence checkpoint (2026-10-06)
+
+This is a separate source-worktree check of capability discovery without a CLI
+version allowlist. The earlier real-CLI and sealed-build acceptance records are
+unchanged; they do not qualify this adapter against every runtime build.
+
+- `npm test`: **74 tests passed**, including recorded old, future, custom and
+  missing versions; read-only discovery; independently disabled controls;
+  missing SDK RPC trees, malformed and stalled probes; recovery; and rejection of stale capability
+  grants before execution.
+- `npm run typecheck` and `npm run test:extension-package`: backend compilation,
+  extension bundling and standalone-package checks passed. The final package
+  fixture was rerun with `node --test scripts\tests\extension-package.test.mjs`
+  using an unfamiliar recorded version. Both isolated projects retained their
+  original simulated SDK session identities and accepted scoped messages.
+- `npm run schema`: regenerated the same protocol-v1 schema, with no contract
+  diff. Backend and Android decoding preserve independent capability booleans
+  without interpreting the diagnostic version.
+- `scripts\build-android.ps1 -Jdk C:\Projects\DevPocket\.tools\jdk-21 -Sdk C:\Projects\DevPocket\.tools\android-sdk -Lint`:
+  debug assembly, **67 JVM tests** and lint passed, with zero test failures,
+  errors or skips and zero lint errors (**24 warnings**).
+
+Additional regressions keep incomplete permission/question forms and excluded
+or incompletely evaluated file paths unavailable. Unknown mutation
+acknowledgements produce durable **uncertain** receipts; retrying the same
+command does not repeat the operation. Cancellation still remains requested
+until runtime evidence arrives. Android request cards and open confirmation
+dialogs follow the relevant current capability rather than the messaging flag
+or recorded version.
+
+The SDK peers and standalone installation targets in these tests are isolated
+fixtures. No real CLI was started, attached, reloaded or mutated; no real user
+extension installation, host/device enrollment or cloud operation was performed.
+The Android output was not installed, sealed or distributed. Real compatibility
+checks still require separate opt-in for a disposable terminal.

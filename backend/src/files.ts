@@ -13,6 +13,14 @@ const excludedName = (name: string) => /^(?:\.git|\.data|\.tools|\.copilot|\.ssh
   /\.(?:local\.json|pem|key|p12|pfx|jks|keystore)$/i.test(name) || /service-account.*\.json$/i.test(name);
 const isMissing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
 
+export function contentExclusionDecisions(response: unknown, paths: string[]): boolean[] {
+  const parsed = policySchema.safeParse(response);
+  if (!parsed.success || !parsed.data.available || parsed.data.checks.length !== paths.length ||
+    parsed.data.checks.some((check, i) => check.path !== paths[i]))
+    throw new Fault("POLICY_UNAVAILABLE", "Content-exclusion policy is unavailable or incomplete. Access was denied.", 409);
+  return parsed.data.checks.map((check) => !check.excluded);
+}
+
 export class ProjectFiles {
   constructor(private readonly root: string, private readonly check: (paths: string[]) => Promise<unknown>) {}
 
@@ -47,11 +55,7 @@ export class ProjectFiles {
     let response: unknown;
     try { response = await this.check(paths); }
     catch { throw new Fault("POLICY_UNAVAILABLE", "The runtime could not evaluate content-exclusion policy. Access was denied.", 409); }
-    const parsed = policySchema.safeParse(response);
-    if (!parsed.success || !parsed.data.available || parsed.data.checks.length !== paths.length ||
-      parsed.data.checks.some((check, i) => check.path !== paths[i]))
-      throw new Fault("POLICY_UNAVAILABLE", "Content-exclusion policy is unavailable or incomplete. Access was denied.", 409);
-    return parsed.data.checks.map((check) => !check.excluded);
+    return contentExclusionDecisions(response, paths);
   }
 
   private async allowed(input: string, allowMissing = false): Promise<string> {

@@ -75,7 +75,13 @@ data class PendingRequest(
     val requestId: String, val type: String, val title: String, val detail: String,
     val permissionKind: String? = null, val choices: List<String> = emptyList(),
     val allowFreeform: Boolean = false, val supported: Boolean = false,
-)
+) {
+    fun supportedBy(capabilities: Capabilities): Boolean = supported && when (type) {
+        "permission" -> capabilities.permissions
+        "question" -> capabilities.questions
+        else -> false
+    }
+}
 
 @Serializable
 data class Attachment(val id: String, val name: String, val mime: String, val size: Long, val sha256: String)

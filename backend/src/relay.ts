@@ -5,7 +5,7 @@ import { z } from "zod";
 import { Fault, RateLimiter, bearer, fileName, publicError, relayUrl } from "./security.js";
 import { RelayStore } from "./store.js";
 import {
-  Command, HostFrame, Id, MAX_UPLOAD, MetadataPatch, PROTOCOL, VERSION, allowedMime,
+  Command, HostFrame, Id, MAX_UPLOAD, MetadataPatch, PROTOCOL, VERSION, actionCapability, allowedMime,
   type Receipt, type SessionInfo, type UserEvent,
 } from "./protocol.js";
 import { FcmPush, type PushSender } from "./push.js";
@@ -394,10 +394,7 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
         const previous = store.command(device.id, hostId, sessionId, command.commandId);
         if (!previous) {
           if (!connection?.ready) throw new Fault("HOST_OFFLINE", "The original runtime is offline. No command was queued.", 503);
-          const action = command.action.type;
-          const capability = action === "message" ? "messages" : action === "permission" ? "permissions" :
-            action === "answer" ? "questions" : action.startsWith("model") ? "models" :
-              action.startsWith("files.") ? "files" : action.startsWith("git.") ? "git" : action === "abort" ? "abort" : undefined;
+          const capability = actionCapability[command.action.type];
           if (capability && !session.capabilities[capability])
             throw new Fault("UNSUPPORTED", "This runtime does not expose that capability. Use the terminal.", 409);
         }
