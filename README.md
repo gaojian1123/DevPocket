@@ -212,6 +212,9 @@ their required probe group; each group updates only its own evidence:
   an unfamiliar result remains uncertain, and acknowledgement is not completion.
   Queue evidence is optional: without a valid queue
   snapshot, sending is only **admitted**, never assumed queued or processing.
+  Cancellation starts the queue read before dispatching `abort` without awaiting
+  that read; a slow or failed queue query cannot delay the cancellation request.
+  The bounded snapshot is used only to report known queued message IDs.
 - Permissions require a valid live pending-permission snapshot and its response
   handler. Questions require live activity and a corresponding response handler;
   individual controls also require a supported, complete live request. Permission
@@ -231,7 +234,9 @@ their required probe group; each group updates only its own evidence:
   question text or nested form schema. Documented tool-call correlation IDs are
   typed but not exported; a declared elicitation source is shown with the form.
   Unknown outer fields, URL forms, historical questions and incomplete details
-  remain in the original client. Form length constraints count Unicode code
+  remain in the original client. Forms with `enumNames` labels also remain there
+  until label/value mapping is supported end to end; labels are never silently
+  replaced by opaque values. Form length constraints count Unicode code
   points, including supplementary characters, without changing protocol-v1 size
   limits.
 - Models require valid current-model and nonempty catalogue responses plus a

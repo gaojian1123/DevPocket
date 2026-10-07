@@ -501,3 +501,24 @@ selectable, and unknown/incomplete policy objects fail closed.
 isolated unfamiliar-version fixture. Wire, Android and deployment sources are
 unchanged. No installed extension, real runtime, emulator or Azure service was
 updated for this review iteration.
+
+### Form labels and prompt cancellation review follow-up (2026-10-07)
+
+`node --import tsx --test --test-name-pattern 'unmapped enumNames|cancellation is invoked before' backend\tests\runtime.test.ts`
+reproduced discarded enum labels and a stalled queue read delaying the actual
+abort call. Both tests now pass.
+
+Forms containing `enumNames` are terminal-only until the wire/UI supports an
+explicit label/value mapping. Ordinary enum choices remain supported.
+Cancellation dispatches the optional queue read first, then calls the original
+runtime's abort without waiting for that read. The bounded result still supplies
+available queue evidence; timeout/failure cannot suppress cancellation or invent
+cleared message IDs. Strict abort-result validation and runtime-confirmed
+completion remain unchanged.
+
+`npm test` passes **144 tests**. `npm run test:extension-package` passes, including
+production TypeScript compilation, bundling and the isolated installed-package
+fixture. Tests cover ordinary enums and unsupported labelled layouts, dispatch ordering,
+SDK method binding, queue timeout/failure and unknown abort results. No wire,
+Android or deployment sources changed, and no real runtime/extension reload,
+emulator reinstall or Azure operation was performed.

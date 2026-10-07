@@ -89,7 +89,6 @@ const userQuestion = z.object({
 const elicitationField = z.object({
   type: z.literal("string"), title: z.string().max(500).optional(), description: z.string().max(10_000).optional(),
   enum: z.array(z.string().min(1).max(1000)).min(1).max(50).optional(),
-  enumNames: z.array(z.string().max(1000)).max(50).optional(),
   minLength: z.number().int().min(0).max(8000).optional(),
   maxLength: z.number().int().min(1).optional(), default: z.string().optional(),
 }).strict().refine((field) => (field.minLength ?? 0) <= (field.maxLength ?? 8000));
@@ -733,12 +732,15 @@ export class CopilotRuntime {
         return { status, result: { messageId, delivery: "enqueue" } };
       }
       case "abort": {
-        if (typeof this.session.abort !== "function") throw new Fault("UNSUPPORTED", "Cancellation is unavailable.", 409);
-        const queue = await this.probe("Message queue", () => rpc.queue?.pendingItems?.(), messageQueue.parse);
-        const cancelledMessageIds = queue?.items.flatMap((item) => item.messageId ? [item.messageId] : []) ?? [];
+        const abort = this.session.abort;
+        if (typeof abort !== "function") throw new Fault("UNSUPPORTED", "Cancellation is unavailable.", 409);
         this.cancelRequested = true;
         this.emit({ id: randomUUID(), at: new Date().toISOString(), kind: "runtime.state", data: { state: "cancel_requested" } });
-        z.undefined().parse(await this.session.abort());
+        const [queue] = await Promise.all([
+          this.probe("Message queue", () => rpc.queue?.pendingItems?.(), messageQueue.parse),
+          Promise.resolve().then(() => abort.call(this.session)).then((result) => z.undefined().parse(result)),
+        ]);
+        const cancelledMessageIds = queue?.items.flatMap((item) => item.messageId ? [item.messageId] : []) ?? [];
         return { status: "cancel_requested", result: { acknowledged: true, stopped: false, cancelledMessageIds } };
       }
       case "permission": {

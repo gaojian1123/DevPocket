@@ -1251,3 +1251,118 @@ test("model selection honors known policy states and rejects incomplete policy e
   }
   assert.equal(switches, 2);
 });
+
+test("forms with unmapped enumNames labels require the original client", async (t) => {
+  const f = await capabilityFixture(t);
+  let answers = 0;
+  f.session.rpc.ui = { handlePendingElicitation: async () => { answers++; return { success: true }; } };
+  await f.runtime.connect();
+  f.emit("elicitation.requested", {
+    requestId: "labelled-choice", message: "Choose the operation",
+    requestedSchema: { type: "object", properties: {
+      choice: { type: "string", enum: ["a", "b"], enumNames: ["Preview the change", "Apply the change"] },
+    }, required: ["choice"] },
+  });
+  const item = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === "labelled-choice");
+  assert.equal(item?.supported, false);
+  assert.equal(item.type, "terminal");
+  await assert.rejects(f.runtime.execute({ type: "answer", requestId: "labelled-choice", answer: "a" }), { code: "TERMINAL_REQUIRED" });
+  assert.equal(answers, 0);
+});
+
+test("cancellation is invoked before a stalled optional queue read completes", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  let finish!: (value: unknown) => void, aborted = false;
+  const snapshot = new Promise<unknown>((resolve) => { finish = resolve; });
+  f.session.rpc.queue = { pendingItems: () => snapshot };
+  f.session.abort = async () => { aborted = true; };
+  const command = f.runtime.execute({ type: "abort" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const invokedBeforeSnapshot = aborted;
+  finish({ items: [{ messageId: "queued-before-abort" }] });
+  const receipt = await command;
+  assert.equal(invokedBeforeSnapshot, true);
+  assert.equal(receipt.status, "cancel_requested");
+  assert.equal(receipt.result?.stopped, false);
+  assert.deepEqual(receipt.result?.cancelledMessageIds, ["queued-before-abort"]);
+});
+
+test("enumNames remains terminal-only for all otherwise supported form layouts", async (t) => {
+  const f = await capabilityFixture(t);
+  f.session.rpc.ui = { handlePendingElicitation: async () => { assert.fail("Unmapped labels must never be submitted."); } };
+  await f.runtime.connect();
+  const fields = [
+    { choice: { type: "string", enum: ["a", "b"], enumNames: [] } },
+    { choice: { type: "string", enum: ["a", "b"], enumNames: ["One"] } },
+    { choice: { type: "string", enumNames: ["Meaningful label"] } },
+    {
+      choice: { type: "string", enum: ["One", "Other"] },
+      custom: { type: "string", enumNames: ["Meaningful label"] },
+    },
+  ];
+  for (const [index, properties] of fields.entries()) {
+    const requestId = `enum-names-${index}`;
+    f.emit("elicitation.requested", { requestId, message: "Choose", requestedSchema: { type: "object", properties, required: ["choice"] } });
+    const item = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === requestId);
+    assert.equal(item?.type, "terminal");
+    assert.equal(item.supported, false);
+    await assert.rejects(f.runtime.execute({ type: "answer", requestId, answer: "a" }), { code: "TERMINAL_REQUIRED" });
+  }
+});
+
+test("cancellation dispatches the queue read first without waiting and retains immediate snapshot evidence", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  let items = [{ messageId: "queued-before-cancel" }];
+  const calls: string[] = [];
+  f.session.rpc.queue = {
+    pendingItems: async () => { calls.push("queue"); return { items: [...items] }; },
+  };
+  f.session.abort = async function () {
+    assert.equal(this, f.session);
+    calls.push("abort");
+    items = [];
+    f.emit("session.idle", { aborted: true });
+  };
+  const result = await f.runtime.execute({ type: "abort" });
+  assert.deepEqual(calls, ["queue", "abort"]);
+  assert.deepEqual(result.result?.cancelledMessageIds, ["queued-before-cancel"]);
+  assert.equal(result.status, "cancel_requested");
+  assert.equal(result.result?.stopped, false);
+  assert.ok(f.events.some((event) => event.kind === "runtime.state" && event.data.state === "idle" && event.data.aborted));
+});
+
+test("a timed-out queue read does not postpone cancellation or invent cleared message IDs", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  let aborted = false, acknowledged = false;
+  const stalled = new Promise<unknown>(() => {});
+  f.session.rpc.queue = { pendingItems: () => stalled };
+  f.session.abort = async () => { aborted = true; };
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const command = f.runtime.execute({ type: "abort" }).then((result) => { acknowledged = true; return result; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(aborted, true);
+  assert.equal(acknowledged, false);
+  t.mock.timers.tick(5000);
+  const result = await command;
+  assert.equal(result.status, "cancel_requested");
+  assert.deepEqual(result.result?.cancelledMessageIds, []);
+  assert.equal(result.result?.acknowledged, true);
+});
+
+test("queue failures cannot suppress abort or hide an invalid abort acknowledgement", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  let aborts = 0;
+  f.session.rpc.queue = { pendingItems: async () => { throw new Error("Queue unavailable"); } };
+  f.session.abort = async () => { aborts++; };
+  const result = await f.runtime.execute({ type: "abort" });
+  assert.equal(aborts, 1);
+  assert.equal(result.result?.acknowledged, true);
+  assert.deepEqual(result.result?.cancelledMessageIds, []);
+  f.session.abort = async () => { aborts++; return { confirmationRequired: true }; };
+  await assert.rejects(f.runtime.execute({ type: "abort" }), { name: "ZodError" });
+  assert.equal(aborts, 2);
+});
