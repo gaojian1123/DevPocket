@@ -1,12 +1,525 @@
 import assert from "node:assert/strict";
 import path from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import WebSocket from "ws";
 import { startBridge } from "../src/bridge.js";
 import type { JoinedSession } from "../src/runtime.js";
-import { Receipt, SessionSummary, type Action } from "../src/protocol.js";
-import { fixture, newId, sessionPath } from "./harness.js";
+import { HostFrame, Receipt, SessionSummary, type Action, type EventPage } from "../src/protocol.js";
+import { fixture, newId, nextFrame, sessionPath } from "./harness.js";
+
+async function eventually(predicate: () => boolean, message: string): Promise<void> {
+  for (let i = 0; i < 100 && !predicate(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(predicate(), message);
+}
+
+async function modelBridgeFixture(t: TestContext) {
+  const transport: {
+    socket?: WebSocket; relaySocket?: WebSocket; bufferedBytes: number; greetings: number;
+    acknowledged: Set<string>; onSummary: () => void;
+    sent: ReturnType<typeof HostFrame.parse>[];
+    holdAcknowledgements: boolean; pendingAcknowledgements: (() => void)[];
+  } = {
+    bufferedBytes: 0, greetings: 0, acknowledged: new Set(), onSummary: () => {},
+    sent: [], holdAcknowledgements: false, pendingAcknowledgements: [],
+  };
+  const originalSend = WebSocket.prototype.send;
+  const bufferedAmount = Object.getOwnPropertyDescriptor(WebSocket.prototype, "bufferedAmount")!.get!;
+  t.mock.getter(WebSocket.prototype, "bufferedAmount", function (this: WebSocket) {
+    return this === transport.socket ? transport.bufferedBytes : bufferedAmount.call(this);
+  });
+  t.mock.method(WebSocket.prototype, "send", function (this: WebSocket, ...args: Parameters<typeof originalSend>) {
+    if (typeof args[0] === "string") {
+      const frame: { type: string } = JSON.parse(args[0]);
+      if (frame.type === "hello") {
+        transport.socket = this;
+        transport.greetings++;
+        this.on("message", (bytes) => {
+          const incoming: { type: string; ids?: string[] } = JSON.parse(bytes.toString());
+          if (incoming.type === "eventsAck") for (const id of incoming.ids ?? []) transport.acknowledged.add(id);
+        });
+      }
+      if (frame.type === "ready") transport.relaySocket = this;
+      if (frame.type === "eventsAck" && transport.holdAcknowledgements) {
+        transport.pendingAcknowledgements.push(() => originalSend.apply(this, args));
+        return;
+      }
+      if (this === transport.socket) transport.sent.push(HostFrame.parse(frame));
+      if (this === transport.socket && frame.type === "summary") transport.onSummary();
+    }
+    return originalSend.apply(this, args);
+  });
+  let bridge: Awaited<ReturnType<typeof startBridge>> | undefined;
+  t.after(async () => { await bridge?.close(); });
+  const f = await fixture(t), host = f.host(), phone = await f.pair(host.token), sid = newId();
+  let listener: (event: unknown) => void = () => {};
+  const event = (type: string, data: object) => ({ id: newId(), timestamp: new Date().toISOString(), type, data });
+  const session: JoinedSession = {
+    sessionId: sid,
+    getEvents: async () => [event("session.start", { context: { cwd: f.dataDir } })],
+    on: (handler) => { listener = handler; return () => {}; },
+    abort: async () => {},
+    rpc: {
+      metadata: { activity: async () => ({ hasActiveWork: false, abortable: false }) },
+      permissions: { pendingRequests: async () => ({ items: [] }) },
+      model: {
+        getCurrent: async () => ({ modelId: "test-model", reasoningEffort: "high" }),
+        list: async () => ({ list: [{ id: "test-model", supportedReasoningEfforts: ["low", "high"] }] }),
+        switchTo: async () => ({ modelId: "test-model" }),
+      },
+    },
+  };
+  bridge = await startBridge(session, {
+    hostId: host.hostId, token: host.token, relayUrl: f.url,
+    dataDir: path.join(f.dataDir, "bridge"), allowInsecureLoopback: true,
+  });
+  await eventually(() => transport.acknowledged.size > 0, "Initial events must be acknowledged before exercising flush.");
+  return {
+    ...f, host, phone, sid, session, bridge, transport,
+    emit: (type: string, data: object) => { const value = event(type, data); listener(value); return value.id; },
+    command: async (action: Action) => {
+      const route = sessionPath(host.hostId, sid) + "/commands", command = { commandId: newId(), action };
+      await f.request(route, phone.token, command);
+      let receipt: Receipt | undefined;
+      for (let i = 0; i < 100; i++) {
+        receipt = Receipt.parse(await (await f.request(`${route}/${command.commandId}`, phone.token)).json());
+        if (receipt.status === "completed") break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.ok(receipt);
+      assert.equal(receipt.status, "completed");
+      return receipt;
+    },
+    catalogSession: async () => {
+      const catalog: { sessions: SessionSummary[] } = await (await f.request("/v1/catalog", phone.token)).json();
+      return catalog.sessions.find((item) => item.sessionId === sid)!;
+    },
+  };
+}
+
+test("events resume without reconnecting after a summary crosses the socket backpressure threshold", async (t) => {
+  const f = await modelBridgeFixture(t), limit = 2 * 1024 * 1024;
+  let eventId = "", summarySent = false;
+  f.transport.bufferedBytes = limit - 1;
+  f.transport.onSummary = () => {
+    f.transport.bufferedBytes = limit;
+    eventId = f.emit("session.idle", { aborted: true });
+    summarySent = true;
+  };
+  const command = f.command({ type: "models" });
+  await eventually(() => summarySent, "The summary must be sent before event delivery is blocked.");
+  assert.ok(!f.transport.acknowledged.has(eventId), "An unsent event cannot have an acknowledgement.");
+  f.transport.onSummary = () => {};
+  f.transport.bufferedBytes = 0;
+  await command;
+  await eventually(() => f.transport.acknowledged.has(eventId), "Queued events must resume after backpressure clears.");
+  const page = await (await f.request(sessionPath(f.host.hostId, f.sid) + "/events", f.phone.token)).json();
+  assert.ok(page.events.some((item: { id: string; kind: string }) => item.id === eventId && item.kind === "runtime.state"));
+  assert.equal(f.transport.greetings, 1, "Recovery must not require reconnecting the original runtime.");
+});
+
+test("model summaries preserve a live turn start already delivered and acknowledged", async (t) => {
+  const f = await modelBridgeFixture(t);
+  assert.equal((await f.catalogSession()).state, "idle");
+  const eventId = f.emit("assistant.turn_start", {});
+  await eventually(() => f.transport.acknowledged.has(eventId), "The live turn start must be acknowledged first.");
+  assert.equal((await f.catalogSession()).state, "running");
+  await f.command({ type: "models" });
+  assert.equal((await f.catalogSession()).state, "running");
+});
+
+test("a fresh idle summary supersedes older queued turn-start events across all batches", async (t) => {
+  for (const scenario of [
+    { name: "one state event", count: 0, content: "" },
+    { name: "count-bounded batches", count: 160, content: "Queued message" },
+    { name: "byte-bounded batches", count: 20, content: "x".repeat(60_000) },
+  ]) {
+    await t.test(scenario.name, async (t) => {
+      const f = await modelBridgeFixture(t);
+      f.session.rpc.permissions!.paths = { list: async () => ({ primary: f.dataDir }) };
+      f.session.rpc.contentExclusion = { checkPaths: async ({ paths }) => ({
+        available: true, checks: paths.map((file) => ({ path: file, excluded: false })),
+      }) };
+      const refresh = f.bridge.runtime.refresh.bind(f.bridge.runtime);
+      let refreshed = false;
+      t.mock.method(f.bridge.runtime, "refresh", async () => {
+        const summary = await refresh();
+        refreshed = true;
+        return summary;
+      });
+      f.transport.bufferedBytes = 2 * 1024 * 1024;
+      for (let i = 0; i < scenario.count; i++)
+        f.emit("user.message", { messageId: `message-${i}`, content: scenario.content });
+      const eventId = f.emit("assistant.turn_start", {});
+      const command = f.command({ type: "refresh" });
+      await eventually(() => refreshed, "The later activity probe and full refresh must complete first.");
+      assert.equal(f.bridge.runtime.summary.state, "idle");
+      assert.ok(!f.transport.acknowledged.has(eventId), "The old turn start must still be queued.");
+      const beforeDrain = f.transport.sent.length;
+      f.transport.bufferedBytes = 0;
+      await command;
+      await eventually(() => f.transport.acknowledged.has(eventId), "Every queued event must reach the relay.");
+      assert.equal((await f.catalogSession()).state, "idle");
+      const frames = f.transport.sent.slice(beforeDrain);
+      const lastEvents = frames.findLastIndex((frame) => frame.type === "events");
+      const summary = frames.findIndex((frame) => frame.type === "summary");
+      const result = frames.findIndex((frame) => frame.type === "result");
+      assert.ok(summary > lastEvents, "The summary must follow all older event batches.");
+      assert.ok(result > summary, "Completion must follow the authoritative summary.");
+    });
+  }
+});
+
+test("summary-dependent receipts wait for every event acknowledgement and a drained socket", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const f = await modelBridgeFixture(t), limit = 2 * 1024 * 1024;
+  const before = f.transport.sent.length;
+  f.transport.bufferedBytes = limit;
+  const eventIds = Array.from({ length: 161 }, (_, i) =>
+    f.emit("user.message", { messageId: `message-${i}`, content: `Queued message ${i}` }));
+  f.transport.holdAcknowledgements = true;
+  const execute = f.bridge.runtime.execute.bind(f.bridge.runtime);
+  let executed = false;
+  t.mock.method(f.bridge.runtime, "execute", async (...args: Parameters<typeof execute>) => {
+    const receipt = await execute(...args);
+    executed = true;
+    return receipt;
+  });
+  const command = f.command({ type: "models" });
+  await eventually(() => executed, "The model command must execute while its transport remains blocked.");
+  const receiptsBeforeDrain = f.transport.sent.filter((frame) => frame.type === "result").length;
+  f.transport.bufferedBytes = 0;
+  t.mock.timers.tick(120);
+  for (let batch = 0; batch < 3; batch++) {
+    await eventually(() => f.transport.pendingAcknowledgements.length === 1, "Each event batch must reach the relay.");
+    t.mock.timers.tick(240);
+    assert.equal(f.transport.sent.filter((frame) => frame.type === "result").length, receiptsBeforeDrain);
+    assert.ok(!f.transport.sent.slice(before).some((frame) => frame.type === "summary"),
+      "No summary may pass an outstanding event acknowledgement.");
+    if (batch === 1) {
+      f.transport.bufferedBytes = limit;
+      f.transport.pendingAcknowledgements.shift()!();
+      await eventually(() => f.transport.acknowledged.has(eventIds[159]!), "The second batch must be acknowledged.");
+      t.mock.timers.tick(240);
+      assert.equal(f.transport.pendingAcknowledgements.length, 0, "A blocked batch must remain unsent.");
+      f.transport.bufferedBytes = 0;
+      t.mock.timers.tick(120);
+    } else f.transport.pendingAcknowledgements.shift()!();
+  }
+  await command;
+  assert.ok(eventIds.every((id) => f.transport.acknowledged.has(id)));
+  assert.equal(f.transport.greetings, 1);
+});
+
+test("periodic and reconnect summaries follow queued state events before claiming the current state", async (t) => {
+  for (const source of ["periodic", "reconnect"]) {
+    await t.test(source, async (t) => {
+      t.mock.timers.enable({ apis: ["setInterval"] });
+      t.mock.method(Math, "random", () => 0);
+      const f = await modelBridgeFixture(t);
+      f.transport.bufferedBytes = 2 * 1024 * 1024;
+      const eventId = f.emit("assistant.turn_start", {});
+      const before = f.transport.sent.length;
+      const refresh = f.bridge.runtime.refresh.bind(f.bridge.runtime);
+      let refreshed = false;
+      t.mock.method(f.bridge.runtime, "refresh", async () => {
+        const summary = await refresh();
+        refreshed = true;
+        return summary;
+      });
+      if (source === "periodic") t.mock.timers.tick(10_000);
+      else await f.bridge.runtime.refresh();
+      await eventually(() => refreshed, "A successful idle read must precede delivery of the older event.");
+      assert.equal(f.bridge.runtime.summary.state, "idle");
+      f.transport.bufferedBytes = 0;
+      if (source === "reconnect") f.transport.socket!.terminate();
+      else t.mock.timers.tick(120);
+      await eventually(() => f.transport.acknowledged.has(eventId), "Queued state must be acknowledged.");
+      await eventually(() => f.transport.sent.slice(before).some((frame) => frame.type === "summary"),
+        "The final summary must eventually be published.");
+      assert.equal((await f.catalogSession()).state, "idle");
+      const frames = f.transport.sent.slice(before);
+      assert.ok(frames.findLastIndex((frame) => frame.type === "summary") >
+        frames.findLastIndex((frame) => frame.type === "events"));
+    });
+  }
+});
+
+test("replayed model receipts cannot bypass pending event and summary delivery", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const f = await modelBridgeFixture(t);
+  const execute = t.mock.method(f.bridge.runtime, "execute");
+  const receipt = await f.command({ type: "models" });
+  const before = f.transport.sent.length;
+  f.transport.bufferedBytes = 2 * 1024 * 1024;
+  const eventId = f.emit("assistant.turn_start", {});
+  await f.bridge.runtime.refresh();
+  f.transport.holdAcknowledgements = true;
+  f.transport.bufferedBytes = 0;
+  f.transport.relaySocket!.send(JSON.stringify({
+    type: "command", commandId: receipt.commandId, action: { type: "models" },
+  }));
+  t.mock.timers.tick(120);
+  await eventually(() => f.transport.pendingAcknowledgements.length === 1, "The old state must be delivered first.");
+  assert.ok(!f.transport.sent.slice(before).some((frame) => frame.type === "result"));
+  f.transport.pendingAcknowledgements.shift()!();
+  await eventually(() => f.transport.sent.slice(before).some((frame) => frame.type === "result"),
+    "The immutable receipt must still be returned after draining events.");
+  assert.ok(f.transport.acknowledged.has(eventId));
+  assert.equal((await f.catalogSession()).state, "idle");
+  assert.equal(execute.mock.callCount(), 1, "Replay must not invoke the runtime operation again.");
+  assert.deepEqual(f.transport.sent.slice(before).findLast((frame) => frame.type === "result"),
+    { type: "result", ...receipt });
+});
+
+test("streaming after a snapshot cannot postpone its receipt or change its captured state", async (t) => {
+  for (const pauseReceipt of [false, true]) {
+    await t.test(pauseReceipt ? "backpressure after the snapshot" : "continuous production", async (t) => {
+      t.mock.timers.enable({ apis: ["setInterval"] });
+      const f = await modelBridgeFixture(t), limit = 2 * 1024 * 1024;
+      f.transport.bufferedBytes = limit;
+      f.transport.holdAcknowledgements = true;
+      const before = f.transport.sent.length;
+      const prefix = Array.from({ length: 160 }, (_, i) =>
+        f.emit("user.message", { messageId: `prefix-${i}`, content: "Before the snapshot" }));
+      prefix.push(f.emit("assistant.turn_start", {}));
+      const execute = f.bridge.runtime.execute.bind(f.bridge.runtime);
+      let executed = false, snapshotSent = false;
+      t.mock.method(f.bridge.runtime, "execute", async (...args: Parameters<typeof execute>) => {
+        const receipt = await execute(...args);
+        executed = true;
+        return receipt;
+      });
+      f.transport.onSummary = () => {
+        snapshotSent = true;
+        if (pauseReceipt) f.transport.bufferedBytes = limit;
+      };
+      const route = sessionPath(f.host.hostId, f.sid) + "/commands", commandId = newId();
+      await f.request(route, f.phone.token, { commandId, action: { type: "models" } });
+      await eventually(() => executed, "The command must finish while its event prefix is blocked.");
+      f.transport.bufferedBytes = 0;
+      t.mock.timers.tick(120);
+      const later: string[] = [];
+      for (let batch = 0; batch < 3; batch++) {
+        await eventually(() => f.transport.pendingAcknowledgements.length === 1, "Each prefix batch must reach the relay.");
+        later.push(f.emit(batch === 0 ? "session.idle" : "user.message",
+          batch === 0 ? {} : { messageId: `later-${batch}`, content: "After the snapshot" }));
+        f.transport.pendingAcknowledgements.shift()!();
+      }
+      await eventually(() => f.transport.acknowledged.has(prefix.at(-1)!), "The fixed prefix must be acknowledged.");
+      await eventually(() => snapshotSent, "New events must not extend the snapshot's event boundary.");
+      const snapshot = f.transport.sent.slice(before).find((frame) => frame.type === "summary");
+      assert.equal(snapshot?.summary.state, "running", "The snapshot must not absorb later lifecycle observations.");
+      if (pauseReceipt) {
+        assert.ok(!f.transport.sent.slice(before).some((frame) => frame.type === "result"));
+        later.push(f.emit("user.message", { messageId: "while-blocked", content: "Keep producing" }));
+        t.mock.timers.tick(240);
+        assert.ok(!f.transport.acknowledged.has(later[0]!));
+        f.transport.bufferedBytes = 0;
+        t.mock.timers.tick(120);
+      }
+      await eventually(() => f.transport.sent.slice(before).some((frame) =>
+        frame.type === "result" && frame.commandId === commandId), "The snapshot's receipt must not wait for newer events.");
+      assert.ok(later.every((id) => !f.transport.acknowledged.has(id)));
+      f.transport.holdAcknowledgements = false;
+      f.transport.onSummary = () => {};
+      t.mock.timers.tick(120);
+      await eventually(() => later.every((id) => f.transport.acknowledged.has(id)), "Later events must still be delivered.");
+      const frames = f.transport.sent.slice(before);
+      const resultIndex = frames.findIndex((frame) => frame.type === "result" && frame.commandId === commandId);
+      assert.ok(frames.findIndex((frame) => frame.type === "events" &&
+        frame.items.some((item) => later.includes(item.id))) > resultIndex);
+      const receipt = Receipt.parse(await (await f.request(`${route}/${commandId}`, f.phone.token)).json());
+      assert.equal(receipt.status, "completed");
+      assert.equal((await f.catalogSession()).state, "idle");
+    });
+  }
+});
+
+test("mobile page replay retains an idle correction after the catalogue has refreshed", async (t) => {
+  const f = await modelBridgeFixture(t);
+  const viewer = f.socket(`/v1/events?hostId=${f.host.hostId}&sessionId=${f.sid}&after=0`, f.phone.token);
+  const livePages: EventPage[] = [];
+  viewer.on("message", (bytes) => livePages.push(JSON.parse(bytes.toString()) as EventPage));
+  await nextFrame(viewer, "events");
+  f.transport.bufferedBytes = 2 * 1024 * 1024;
+  f.emit("assistant.turn_start", {});
+  await f.bridge.runtime.refresh();
+  const execute = f.bridge.runtime.execute.bind(f.bridge.runtime);
+  let executed = false;
+  t.mock.method(f.bridge.runtime, "execute", async (...args: Parameters<typeof execute>) => {
+    const receipt = await execute(...args);
+    executed = true;
+    return receipt;
+  });
+  const command = f.command({ type: "models" });
+  await eventually(() => executed, "The model snapshot must capture the corrected idle state.");
+  f.transport.bufferedBytes = 0;
+  await command;
+  const eventsRoute = sessionPath(f.host.hostId, f.sid) + "/events";
+  const firstPage: EventPage = await (await f.request(eventsRoute, f.phone.token)).json();
+  const catalog = await f.catalogSession();
+  assert.equal(catalog.state, "idle");
+  const message = f.emit("user.message", { messageId: "later-page", content: "A later page without a lifecycle event" });
+  await eventually(() => f.transport.acknowledged.has(message), "The unrelated later page must be available.");
+  const nextPage: EventPage = await (await f.request(`${eventsRoute}?after=${firstPage.cursor}`, f.phone.token)).json();
+  assert.ok(nextPage.events.some((event) => event.id === message));
+  const cachedEvents = [...firstPage.events, ...nextPage.events];
+  const replayedState = cachedEvents.findLast((event) => event.kind === "runtime.state");
+  assert.ok(replayedState);
+  assert.equal(replayedState?.data.state, catalog.state,
+    "Android reapplies the last cached runtime.state on every page, so the ordered correction must be present.");
+  assert.ok(livePages.flatMap((page) => page.events).some((event) =>
+    event.id === replayedState.id && event.kind === "runtime.state" && event.data.state === "idle"),
+  "The correction must reach already-connected viewers, not just HTTP replay.");
+  await f.command({ type: "models" });
+  const unchanged: EventPage = await (await f.request(`${eventsRoute}?after=${nextPage.cursor}`, f.phone.token)).json();
+  assert.ok(!unchanged.events.some((event) => event.kind === "runtime.state"),
+    "An unchanged summary must not repeat state events or idle notifications.");
+});
+
+test("new snapshots coalesce only behind the fixed active prefix and retain their receipts", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const f = await modelBridgeFixture(t), before = f.transport.sent.length;
+  f.transport.bufferedBytes = 2 * 1024 * 1024;
+  f.transport.holdAcknowledgements = true;
+  const prefix = Array.from({ length: 81 }, (_, i) =>
+    f.emit("user.message", { messageId: `initial-${i}`, content: "Initial prefix" }));
+  let current = "model-0", executions = 0;
+  f.session.rpc.model!.getCurrent = async () => ({ modelId: current });
+  f.session.rpc.model!.list = async () => ({ list: ["model-0", "model-1", "model-2"].map((id) => ({ id })) });
+  const execute = f.bridge.runtime.execute.bind(f.bridge.runtime);
+  t.mock.method(f.bridge.runtime, "execute", async (...args: Parameters<typeof execute>) => {
+    const receipt = await execute(...args);
+    executions++;
+    return receipt;
+  });
+  const route = sessionPath(f.host.hostId, f.sid) + "/commands";
+  const ids = [newId(), newId(), newId()];
+  for (let i = 0; i < ids.length; i++) {
+    current = `model-${i}`;
+    if (i) f.emit("user.message", { messageId: `successor-${i}`, content: "Before the successor" });
+    await f.request(route, f.phone.token, { commandId: ids[i], action: { type: "models" } });
+    await eventually(() => executions === i + 1, "Each command must execute before the next snapshot is requested.");
+  }
+  f.transport.bufferedBytes = 0;
+  t.mock.timers.tick(120);
+  const later: string[] = [];
+  for (let batch = 0; batch < 2; batch++) {
+    await eventually(() => f.transport.pendingAcknowledgements.length === 1, "The active prefix must drain.");
+    later.push(f.emit("user.message", { messageId: `stream-${batch}`, content: "Keep streaming" }));
+    f.transport.pendingAcknowledgements.shift()!();
+  }
+  await eventually(() => f.transport.sent.slice(before).some((frame) =>
+    frame.type === "result" && frame.commandId === ids[0]), "The first receipt cannot wait for successor snapshots.");
+  assert.ok(prefix.every((id) => f.transport.acknowledged.has(id)));
+  assert.deepEqual(f.transport.sent.slice(before).filter((frame) => frame.type === "summary")
+    .map((frame) => frame.summary.modelId), ["model-0"]);
+  assert.ok(!f.transport.sent.slice(before).some((frame) => frame.type === "result" && ids.slice(1).includes(frame.commandId)));
+  t.mock.timers.tick(120);
+  await eventually(() => f.transport.pendingAcknowledgements.length === 1, "The coalesced successor must drain only its prefix.");
+  f.transport.pendingAcknowledgements.shift()!();
+  await eventually(() => ids.slice(1).every((id) => f.transport.sent.slice(before)
+    .some((frame) => frame.type === "result" && frame.commandId === id)), "Coalescing must retain both pending receipts.");
+  assert.deepEqual(f.transport.sent.slice(before).filter((frame) => frame.type === "summary")
+    .map((frame) => frame.summary.modelId), ["model-0", "model-2"]);
+  assert.ok(later.every((id) => !f.transport.acknowledged.has(id)));
+  f.transport.holdAcknowledgements = false;
+  t.mock.timers.tick(120);
+  await eventually(() => later.every((id) => f.transport.acknowledged.has(id)), "Streaming must continue after publication.");
+  assert.equal((await f.catalogSession()).modelId, "model-2");
+});
+
+test("reconnecting during receipt backpressure replaces the old snapshot without repeating the command", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  t.mock.method(Math, "random", () => 0);
+  const f = await modelBridgeFixture(t);
+  const execute = t.mock.method(f.bridge.runtime, "execute");
+  f.emit("assistant.turn_start", {});
+  let snapshotSent = false;
+  f.transport.onSummary = () => {
+    snapshotSent = true;
+    f.transport.bufferedBytes = 2 * 1024 * 1024;
+  };
+  const route = sessionPath(f.host.hostId, f.sid) + "/commands", commandId = newId();
+  await f.request(route, f.phone.token, { commandId, action: { type: "models" } });
+  await eventually(() => snapshotSent, "The original snapshot must precede the interrupted receipt.");
+  f.emit("session.idle", {});
+  f.transport.onSummary = () => {};
+  f.transport.socket!.terminate();
+  f.transport.bufferedBytes = 0;
+  await eventually(() => f.transport.greetings === 2, "The original bridge must reconnect.");
+  await eventually(() => f.transport.sent.some((frame) => frame.type === "result" && frame.commandId === commandId),
+    "The durable receipt must be delivered after reconnect.");
+  assert.equal(execute.mock.callCount(), 1);
+  assert.equal((await f.catalogSession()).state, "idle");
+});
+
+test("confirmed model switch updates the phone catalogue before its completed receipt", async (t) => {
+  let bridge: Awaited<ReturnType<typeof startBridge>> | undefined;
+  t.after(async () => { await bridge?.close(); });
+  const f = await fixture(t), host = f.host(), phone = await f.pair(host.token), sid = newId();
+  let current = { modelId: "old-model", reasoningEffort: "low" };
+  let switches = 0;
+  const session: JoinedSession = {
+    sessionId: sid,
+    getEvents: async () => [{
+      id: newId(), timestamp: new Date().toISOString(), type: "session.start", data: { context: { cwd: f.dataDir } },
+    }],
+    on: () => () => {},
+    rpc: {
+      model: {
+        getCurrent: async () => current,
+        list: async () => ({ list: ["old-model", "new-model"].map((id) => ({
+          id, supportedReasoningEfforts: ["low", "high"],
+        })) }),
+        switchTo: async (input) => {
+          switches++;
+          current = { modelId: input.modelId, reasoningEffort: input.reasoningEffort ?? "" };
+          return { modelId: current.modelId };
+        },
+      },
+    },
+  };
+  bridge = await startBridge(session, {
+    hostId: host.hostId, token: host.token, relayUrl: f.url,
+    dataDir: path.join(f.dataDir, "bridge"), allowInsecureLoopback: true,
+  });
+  const route = sessionPath(host.hostId, sid) + "/commands";
+  const command = {
+    commandId: newId(), action: { type: "model.set", modelId: "new-model", reasoningEffort: "high" },
+  };
+  assert.equal((await f.request(route, phone.token, command)).status, 202);
+  let receipt: Receipt | undefined;
+  for (let i = 0; i < 100; i++) {
+    receipt = Receipt.parse(await (await f.request(`${route}/${command.commandId}`, phone.token)).json());
+    if (receipt.status === "completed") break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(receipt?.status, "completed");
+  assert.deepEqual(current, { modelId: "new-model", reasoningEffort: "high" });
+  const catalog = await (await f.request("/v1/catalog", phone.token)).json();
+  const visible = catalog.sessions.find((item: { sessionId: string }) => item.sessionId === sid);
+  assert.equal(visible.modelId, current.modelId);
+  assert.equal(visible.reasoningEffort, current.reasoningEffort);
+  const retry = Receipt.parse(await (await f.request(route, phone.token, command)).json());
+  assert.equal(retry.status, "completed");
+  assert.equal(switches, 1);
+
+  session.abort = async () => {};
+  session.rpc.metadata = { activity: async () => ({ hasActiveWork: true, abortable: true }) };
+  const stop = { commandId: newId(), action: { type: "abort" } };
+  await f.request(route, phone.token, stop);
+  for (let i = 0; i < 100; i++) {
+    receipt = Receipt.parse(await (await f.request(`${route}/${stop.commandId}`, phone.token)).json());
+    if (receipt.status === "cancel_requested") break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(receipt?.status, "cancel_requested");
+  const afterStop = await (await f.request("/v1/catalog", phone.token)).json();
+  assert.equal(afterStop.sessions.find((item: { sessionId: string }) => item.sessionId === sid).state, "cancel_requested");
+});
 
 test("bridge restart and duplicate submissions never send a task twice, including response-before-send-ack races", async (t) => {
   let bridge: Awaited<ReturnType<typeof startBridge>> | undefined;

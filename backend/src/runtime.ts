@@ -305,6 +305,8 @@ export class CopilotRuntime {
   private filePolicy?: { owner: ContentExclusion; check: NonNullable<ContentExclusion["checkPaths"]> };
   private closed = false;
   private activity?: z.infer<typeof runtimeActivity>;
+  private observedActiveWork?: boolean;
+  private activityRevision = 0;
   private projectAbort?: AbortController;
   private readonly refreshInFlight = new Map<ProbeGroup, Promise<void>>();
   private readonly warnings = new Map<string, string>();
@@ -313,7 +315,11 @@ export class CopilotRuntime {
 
   get summary(): SessionSummary {
     if (!this.current) throw new Fault("NOT_ATTACHED", "The original runtime has not finished registering.", 503);
-    return this.current;
+    return {
+      ...this.current,
+      state: this.cancelRequested ? "cancel_requested" : this.observedActiveWork === undefined ? "unsupported" :
+        this.requests.size ? "waiting" : this.observedActiveWork ? "running" : "idle",
+    };
   }
 
   get workingDirectory(): string { return this.root; }
@@ -432,7 +438,9 @@ export class CopilotRuntime {
     let capabilities: Partial<SessionSummary["capabilities"]> = {};
     switch (group) {
       case "activity": {
+        const revision = this.activityRevision;
         this.activity = await this.probe("Runtime activity", () => rpc.metadata?.activity?.(), runtimeActivity.parse);
+        if (this.activity && revision === this.activityRevision) this.observedActiveWork = this.activity.hasActiveWork;
         const send = this.hasMethod("Message sending", this.session.send);
         const abort = this.hasMethod("Cancellation", this.session.abort);
         const questions = this.hasMethod("Question responses", rpc.ui?.handlePendingUserInput, rpc.ui?.handlePendingElicitation);
@@ -553,8 +561,6 @@ export class CopilotRuntime {
     }
     this.current = SessionSummary.parse({
       ...this.summary, ...changes,
-      state: this.cancelRequested ? "cancel_requested" : !this.activity ? "unsupported" :
-        this.requests.size ? "waiting" : this.activity.hasActiveWork ? "running" : "idle",
       capabilities: { ...this.summary.capabilities, ...capabilities },
       warnings: [...this.warnings.values()].slice(0, 20),
     });
@@ -743,13 +749,24 @@ export class CopilotRuntime {
           if (!historical) this.emitRequests(event.id, event.timestamp);
           break;
         case "session.idle":
-          if (!historical) this.cancelRequested = false;
+          if (!historical) {
+            this.cancelRequested = false;
+            this.observedActiveWork = false;
+            this.activityRevision++;
+          }
           this.emit({ ...base, kind: "runtime.state", data: {
             state: "idle", ...(typeof data.aborted === "boolean" ? { aborted: data.aborted } : {}),
           } });
           break;
         case "assistant.turn_start":
-          this.emit({ ...base, kind: "runtime.state", data: { state: "running" } });
+          if (!historical) {
+            // Lifecycle events update display state, not probe-gated control capabilities.
+            this.observedActiveWork = true;
+            this.activityRevision++;
+          }
+          this.emit({ ...base, kind: "runtime.state", data: {
+            state: this.cancelRequested && !historical ? "cancel_requested" : "running",
+          } });
           break;
         case "session.error":
           this.notice("RUNTIME_ERROR", text(data.message) || "The CLI reported an error. Inspect the terminal.");
@@ -879,7 +896,11 @@ export class CopilotRuntime {
         }
         const result = modelSelection.parse(raw);
         if (result.confirmation) throw new Fault("TERMINAL_REQUIRED", "Model switch needs compaction confirmation in the terminal.", 409);
+        // A read started during switchTo may still contain the previous model.
+        await this.refreshInFlight.get("models");
         await this.refreshGroup("models");
+        if (result.deferred) this.notice("MODEL_SWITCH_DEFERRED",
+          "The original runtime queued this model switch. The displayed model changes only after a live read confirms it.");
         return { status: "completed", result: {
           modelId: text(result.modelId) || this.summary.modelId, deferred: result.deferred === true,
           message: redact(text(result.message), 2000), reasoningEffort: this.summary.reasoningEffort,

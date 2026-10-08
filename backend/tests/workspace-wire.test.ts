@@ -99,6 +99,8 @@ test("workspace negotiation resets on reconnect and a legacy relay never receive
   const git = await gitFixture(t), peer = workspacePeer(git.worktree), hostId = newId();
   await listening;
   let connections = 0, hellos = 0, first: SessionSummary | undefined;
+  const commandId = newId();
+  let commandSent = false, commandSummary: SessionSummary | undefined;
   const legacySummary = SessionSummary.omit({ workspace: true });
   const received = new Promise<SessionSummary>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Timed out waiting for the legacy reconnect")), 10_000);
@@ -120,9 +122,20 @@ test("workspace negotiation resets on reconnect and a legacy relay never receive
             if (supportsWorkspace) {
               first = frame.summary;
               socket.close(1001, "Simulated legacy relay");
-            } else resolve(legacySummary.parse(frame.summary));
+            } else {
+              const legacy = legacySummary.parse(frame.summary);
+              if (!commandSent) {
+                commandSent = true;
+                socket.send(JSON.stringify({ type: "command", commandId, action: { type: "refresh" } }));
+              } else commandSummary = legacy;
+            }
           } else if (frame.type === "events") {
             socket.send(JSON.stringify({ type: "eventsAck", ids: frame.items.map((item) => item.id) }));
+          } else if (frame.type === "result" && frame.commandId === commandId) {
+            assert.equal(frame.status, "completed");
+            assert.ok(commandSummary, "Command completion must follow a legacy-compatible summary.");
+            socket.send(JSON.stringify({ type: "resultAck", commandId, status: frame.status }));
+            resolve(commandSummary);
           }
         } catch (error) { reject(error); socket.terminate(); }
       });

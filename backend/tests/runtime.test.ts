@@ -856,6 +856,170 @@ test("permission schemas reject malformed or unknown nested semantic fields", as
   assert.ok(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.every((item) => !item.supported));
 });
 
+test("model switch confirmation does not reuse a current-model probe started before the switch", async (t) => {
+  const f = await capabilityFixture(t), rpc = f.session.rpc.model!;
+  let current = { modelId: "old-model", reasoningEffort: "low" };
+  rpc.list = async () => ({ list: ["old-model", "new-model"].map((id) => ({
+    id, supportedReasoningEfforts: ["low", "high"],
+  })) });
+  rpc.getCurrent = async () => ({ ...current });
+  await f.runtime.connect();
+  let switchStarted!: () => void, finishSwitch!: () => void;
+  const switching = new Promise<void>((resolve) => { switchStarted = resolve; });
+  const switched = new Promise<void>((resolve) => { finishSwitch = resolve; });
+  rpc.switchTo = async () => {
+    switchStarted();
+    await switched;
+    current = { modelId: "new-model", reasoningEffort: "high" };
+    return { modelId: current.modelId };
+  };
+  const command = f.runtime.execute({ type: "model.set", modelId: "new-model", reasoningEffort: "high" });
+  await switching;
+  let probeStarted!: () => void, finishProbe!: () => void;
+  const probing = new Promise<void>((resolve) => { probeStarted = resolve; });
+  const probed = new Promise<void>((resolve) => { finishProbe = resolve; });
+  rpc.getCurrent = async () => {
+    const snapshot = { ...current };
+    probeStarted();
+    await probed;
+    return snapshot;
+  };
+  const refresh = f.runtime.refresh();
+  await probing;
+  finishSwitch();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  finishProbe();
+  await refresh;
+  assert.equal((await command).status, "completed");
+  assert.equal(f.runtime.summary.modelId, current.modelId);
+  assert.equal(f.runtime.summary.reasoningEffort, current.reasoningEffort);
+});
+
+test("deferred model switches keep the active model until a live read confirms the change", async (t) => {
+  const f = await capabilityFixture(t), rpc = f.session.rpc.model!;
+  let current = { modelId: "old-model", reasoningEffort: "low" };
+  rpc.getCurrent = async () => ({ ...current });
+  rpc.list = async () => ({ list: ["old-model", "new-model"].map((id) => ({ id })) });
+  rpc.switchTo = async () => ({ modelId: "new-model", deferred: true, message: "Queued" });
+  await f.runtime.connect();
+  const receipt = await f.runtime.execute({ type: "model.set", modelId: "new-model", reasoningEffort: "high" });
+  assert.equal(receipt.result?.deferred, true);
+  assert.equal(f.runtime.summary.modelId, "old-model");
+  assert.equal(f.runtime.summary.reasoningEffort, "low");
+  assert.ok(f.events.some((event) => event.kind === "notice" && event.data.code === "MODEL_SWITCH_DEFERRED"));
+  current = { modelId: "new-model", reasoningEffort: "high" };
+  await f.runtime.models();
+  assert.equal(f.runtime.summary.modelId, current.modelId);
+  assert.equal(f.runtime.summary.reasoningEffort, current.reasoningEffort);
+});
+
+test("live activity observations survive model-only and older activity refreshes", async (t) => {
+  for (const wasActive of [false, true]) {
+    await t.test(wasActive ? "live idle" : "live turn start", async (t) => {
+      const f = await capabilityFixture(t);
+      const snapshot = { hasActiveWork: wasActive, abortable: wasActive };
+      f.session.rpc.permissions!.pendingRequests = async () => ({ items: [] });
+      f.session.rpc.metadata!.activity = async () => snapshot;
+      await f.runtime.connect();
+      let release!: (value: unknown) => void, started!: () => void;
+      const pending = new Promise<unknown>((resolve) => { release = resolve; });
+      const reading = new Promise<void>((resolve) => { started = resolve; });
+      f.session.rpc.metadata!.activity = () => { started(); return pending; };
+      const refresh = f.runtime.refresh();
+      await reading;
+      f.emit(wasActive ? "session.idle" : "assistant.turn_start", {});
+      release(snapshot);
+      await refresh;
+      const expected = wasActive ? "idle" : "running";
+      assert.equal(f.runtime.summary.state, expected);
+      await f.runtime.execute({ type: "models" });
+      assert.equal(f.runtime.summary.state, expected);
+      f.session.rpc.metadata!.activity = async () => snapshot;
+      await f.runtime.refresh();
+      assert.equal(f.runtime.summary.state, wasActive ? "running" : "idle", "A newer activity probe can reconcile the live observation.");
+    });
+  }
+});
+
+test("live activity state never invents missing runtime control capabilities", async (t) => {
+  const f = await capabilityFixture(t);
+  delete f.session.rpc.metadata;
+  f.session.rpc.permissions!.pendingRequests = async () => ({ items: [] });
+  await f.runtime.connect();
+  f.emit("assistant.turn_start", {});
+  await f.runtime.models();
+  assert.equal(f.runtime.summary.state, "running");
+  assert.equal(f.runtime.summary.capabilities.messages, false);
+  assert.equal(f.runtime.summary.capabilities.abort, false);
+  assert.equal(f.runtime.summary.capabilities.questions, false);
+  await assert.rejects(f.runtime.execute({ type: "abort" }), { code: "UNSUPPORTED" });
+  await f.runtime.refresh();
+  assert.equal(f.runtime.summary.state, "running", "A missing activity RPC cannot erase a known live state.");
+  assert.equal(f.runtime.summary.capabilities.messages, false);
+  assert.equal(f.runtime.summary.capabilities.abort, false);
+  assert.equal(f.runtime.summary.capabilities.questions, false);
+});
+
+test("live turn starts do not clear cancellation requested before runtime idle", async (t) => {
+  const f = await capabilityFixture(t);
+  f.session.rpc.permissions!.pendingRequests = async () => ({ items: [] });
+  await f.runtime.connect();
+  await f.runtime.execute({ type: "abort" });
+  f.emit("assistant.turn_start", {});
+  assert.equal(f.runtime.summary.state, "cancel_requested");
+  assert.equal(f.events.at(-1)?.kind === "runtime.state" && f.events.at(-1)?.data.state, "cancel_requested");
+  f.emit("session.idle", { aborted: true });
+  assert.equal(f.runtime.summary.state, "idle");
+});
+
+test("failed activity probes retain known lifecycle state without retaining control grants", async (t) => {
+  for (const state of ["running", "idle"] as const) {
+    for (const failure of ["unavailable", "rejected", "malformed", "timeout"]) {
+      await t.test(`${state}: ${failure}`, async (t) => {
+        const f = await capabilityFixture(t), metadata = f.session.rpc.metadata!;
+        delete f.session.rpc.permissions!.paths;
+        f.session.rpc.permissions!.pendingRequests = async () => ({ items: [] });
+        await f.runtime.connect();
+        f.emit(state === "running" ? "assistant.turn_start" : "session.idle", {});
+        let release: ((value: unknown) => void) | undefined;
+        let reading = false;
+        if (failure === "unavailable") delete metadata.activity;
+        else if (failure === "rejected") metadata.activity = async () => { throw new Error("TEST_ACTIVITY_UNAVAILABLE"); };
+        else if (failure === "malformed") metadata.activity = async () => ({ hasActiveWork: "unknown" });
+        else {
+          t.mock.timers.enable({ apis: ["setTimeout"] });
+          metadata.activity = () => {
+            reading = true;
+            return new Promise<unknown>((resolve) => { release = resolve; });
+          };
+        }
+        const refreshing = f.runtime.refresh();
+        if (failure === "timeout") {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          assert.ok(reading);
+          t.mock.timers.tick(5000);
+        }
+        const summary = await refreshing;
+        assert.equal(summary.state, state);
+        assert.equal(summary.capabilities.messages, false);
+        assert.equal(summary.capabilities.abort, false);
+        assert.equal(summary.capabilities.questions, false);
+        assert.ok(summary.warnings.some((warning) => warning.startsWith("Runtime activity")));
+        release?.({ hasActiveWork: state !== "running", abortable: true });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(f.runtime.summary.state, state, "An expired probe's late response is not new evidence.");
+        assert.equal(f.runtime.summary.capabilities.abort, false);
+        metadata.activity = async () => ({ hasActiveWork: state !== "running", abortable: true });
+        const recovered = await f.runtime.refresh();
+        assert.equal(recovered.state, state === "running" ? "idle" : "running");
+        assert.equal(recovered.capabilities.messages, true);
+        assert.equal(recovered.capabilities.abort, true);
+        assert.equal(recovered.capabilities.questions, true);
+      });
+    }
+  }
+});
+
 test("each command refreshes only its prerequisite evidence", async (t) => {
   const cases: { action: Action; reads: string[]; error?: string }[] = [
     { action: { type: "message", text: "Only activity", attachmentIds: [] }, reads: ["activity", "queue"] },

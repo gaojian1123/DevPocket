@@ -589,6 +589,94 @@ cached veto until upgraded. Deploy the updated relay to obtain this recovery
 improvement; no Azure deployment, installed extension reload, device enrollment
 or emulator reinstall was performed here.
 
+## Model picker and immediate model synchronization (2026-10-08)
+
+The following focused regressions reproduced the reported symptoms before the
+fix:
+
+- `node --import tsx --test --test-name-pattern 'confirmed model switch' .\backend\tests\bridge.test.ts`
+  observed a completed switch to `new-model` in the SDK peer while the phone's
+  real HTTP catalogue still returned `old-model`.
+- `node --import tsx --test --test-name-pattern 'model switch confirmation|deferred model switches' .\backend\tests\runtime.test.ts`
+  reproduced reuse of a model probe started before the switch, and the absence
+  of a visible queued-switch notice.
+- From `android`, `.\gradlew.bat --no-daemon --console=plain :app:testDebugUnitTest --tests 'dev.devpocket.app.ModelDialogTest'`
+  reproduced missing reasoning controls on opening the dialog and after model
+  selection with a long catalogue in a phone-sized Compose layout.
+
+The causes were the unselected initial model, reasoning controls placed after
+the entire model list, delayed bridge summary publication, and coalescing a
+post-switch read with older in-flight evidence. The picker now preselects the
+observed model/reasoning, uses a bounded model menu, and keeps reasoning controls
+in its independently scrollable form. Enumerated levels come only from live
+runtime evidence; manual entry remains runtime-validated. The editable form has
+an explicitly bounded adaptive dialog window: its regression also caught
+non-settling wrap-content measurement when the manual field became visible.
+
+Model and explicit-refresh commands publish their observed summary before
+receipts; pending summary delivery survives socket backpressure. This does not
+publish stale snapshots for unrelated controls. A coupled regression verifies
+that a later Stop still displays `cancel_requested`, not the preceding
+`running` snapshot. Post-switch probes cannot reuse a pre-switch read, and a
+deferred switch retains the active model with a queued notice until live
+evidence confirms the new state.
+
+`npm test` passes **161 tests**, and `npm run build` passes production TypeScript
+compilation and bridge/standalone-command bundling.
+
+```powershell
+.\scripts\build-android.ps1 -Jdk C:\Projects\DevPocket\.tools\jdk-21 -Sdk C:\Projects\DevPocket\.tools\android-sdk -Lint
+```
+
+The Android command passes debug APK assembly, **76 JVM tests** with no
+failures/errors/skips, and lint with zero errors (24 warnings). The nine new
+Compose regressions cover current-model preselection, reasoning visibility,
+exact selection callbacks, manual input/default reset, asynchronous catalogue
+loading, capability/policy changes, state restoration, and landscape with
+doubled font size. Temporary diagnostic tests were removed.
+
+These are isolated source-worktree checks using simulated SDK peers with real
+local HTTP/WSS/SQLite and Robolectric Compose UI. They are not acceptance of a
+physical phone or a live Copilot build. The development APK is
+`android\app\build\outputs\apk\debug\app-debug.apk`; no APK was installed,
+distributed or sealed, and no existing runtime, installed extension, device
+grant or cloud relay was changed. Both the APK and bridge need updating for the
+complete fix. Protocol-v1 shapes and persisted formats are unchanged; no relay
+or schema migration is required.
+
+### Model synchronization review follow-up (2026-10-08)
+
+The review identified two boundary failures in immediate summary publication:
+
+```powershell
+node --import tsx --test --test-name-pattern 'socket backpressure threshold|live turn start already' .\backend\tests\bridge.test.ts
+```
+
+Both tests failed before correction. A summary crossing the 2 MiB socket-buffer
+threshold marked the next unsent event batch in flight, so its nonexistent
+acknowledgement stranded subsequent delivery. Separately, a turn-start event
+already delivered and acknowledged changed the relay to `running`, but a model
+command published an `idle` summary derived from the older activity cache.
+
+The bridge now marks a batch in flight only after a successful send. Runtime
+summaries use live activity observations independently of probe-gated control
+capabilities. Activity reads remember the observation revision at their start,
+so a late read cannot erase a newer turn-start/idle event; a subsequent fresh
+read can still reconcile state. Cancellation remains requested across a
+turn-start event until live idle evidence confirms completion.
+
+The original real local HTTP/WSS/SQLite regressions now pass without reconnecting
+the bridge. Additional runtime regressions cover both live activity directions,
+newer versus older reads, absent control evidence, and cancellation ordering.
+`npm test` passes **168 tests**; `npm run typecheck`, `npm run build`, and
+`node --test .\scripts\tests\extension-package.test.mjs` also pass. The package
+test uses isolated simulated sessions, not an installed working CLI.
+
+Android and wire formats are unchanged by this follow-up; the earlier Android
+acceptance remains a separate record and was not rerun here. No live runtime,
+device installation/enrollment, extension reload or cloud operation was
+performed.
+
 ## Repository worktree grouping checkpoint (2026-10-08)
 
 The new `linked worktrees share project identity without changing the original
@@ -647,3 +735,96 @@ passes **141 tests**, including unchanged-directory overlap, changed-directory
 invalidation, replaced policy owners/handlers and legacy wire negotiation.
 `npm run build` also passes. Android and wire definitions are unchanged by this
 follow-up; no runtime installation, reload or deployment was performed.
+
+### Combined model/worktree integration checkpoint (2026-10-08)
+
+After the worktree-grouping change reached `main`, this branch integrated that
+base while retaining both independent runtime guards and both sets of acceptance
+records. The legacy-reconnect test was extended to issue a refresh command after
+negotiation; it reproduced an unsupported `workspace` field in the new immediate
+summary path. Immediate summaries now use the same negotiated projection as
+hello/periodic summaries, and the strengthened regression passes.
+
+On the combined tree, `npm test` passes **183 tests**. `npm run build`,
+`npm run schema` and `node --test .\scripts\tests\extension-package.test.mjs`
+pass; regenerating the schema introduces no changes beyond the base branch's
+contract. The same `scripts\build-android.ps1 -Lint` invocation recorded above
+passes APK assembly, **79 JVM tests** with no failures/errors/skips, and lint
+with zero errors (24 warnings).
+
+The merge preserves model selection, activity/backpressure safeguards,
+repository worktree grouping and legacy relay compatibility. No installed
+runtime, device, extension or cloud service was changed.
+
+### Queued lifecycle and failed-probe review follow-up (2026-10-08)
+
+```powershell
+node --import tsx --test --test-name-pattern 'fresh idle summary|live activity state' .\backend\tests\bridge.test.ts .\backend\tests\runtime.test.ts
+```
+
+The new reproductions failed before the fixes: an unsent turn-start event
+overwrote a newer idle snapshot after a completed refresh, including across
+multiple event batches. A full refresh with no activity RPC also erased an
+observed running state and displayed `unsupported`.
+
+All summary publication now goes through the same event-drain barrier, including
+command completion, periodic refresh and reconnect. It waits for every pending
+batch and acknowledgement before sending the current snapshot and dependent
+receipts. Replayed receipts are durably marked for delivery through that same
+path without changing their ID/body or re-executing the runtime operation.
+Backpressure preserves unsent events and pending summaries for a later flush.
+
+Failed, missing, malformed and timed-out activity reads still revoke the
+corresponding control capabilities and retain their warning, but no longer
+erase known lifecycle state. A valid newer read can reconcile the display;
+late responses from expired reads cannot.
+
+The original reproductions now pass. Additional coverage exercises count- and
+byte-bounded batches, withheld acknowledgements, backpressure between batches,
+periodic refresh, reconnect, immutable receipt replay, both lifecycle states,
+failed-probe variants and recovery. `npm test` passes **201 tests**;
+`npm run typecheck`, `npm run build` and
+`node --test .\scripts\tests\extension-package.test.mjs` also pass.
+
+Android, protocol and persisted formats are unchanged in this follow-up, so no
+Android rebuild or schema regeneration was required. The earlier Android
+acceptance remains separate. No installed runtime, extension, device or cloud
+service was changed.
+
+### Streaming publication and mobile replay review follow-up (2026-10-08)
+
+```powershell
+node --import tsx --test --test-name-pattern 'streaming after a snapshot|mobile page replay' .\backend\tests\bridge.test.ts
+```
+
+Both reproductions failed before correction. Continuous event production kept
+the previous whole-outbox drain from publishing a completed command's summary
+or receipt. Independently, Android-style replay of the last cached
+`runtime.state` restored `running` after the HTTP catalogue had been corrected
+to `idle`.
+
+Each publication now captures its summary, a fixed event-sequence boundary and
+pending receipt IDs. The bridge drains only that prefix, sends the frozen
+summary and receipts before later events, and resumes the receipt phase after
+backpressure instead of reopening the boundary. The active publication is
+never replaced; only its successor is coalesced, keeping periodic updates
+bounded without starving an in-progress publication. Reconnection rebuilds
+publications from the durable journal without re-executing commands.
+
+The relay now emits an ordered, scoped `runtime.state` correction when a
+summary changes display state. Real HTTP and WebSocket regressions cover
+Android-style cache replay after catalogue refresh and unrelated later pages.
+Unchanged summaries do not duplicate idle events or notifications. Additional
+coverage includes events produced between every acknowledgement, backpressure
+after summary delivery, coalesced successor snapshots retaining all receipts,
+and disconnection during the receipt phase.
+
+`npm test` passes **207 tests**. `npm run typecheck`, `npm run build` and
+`node --test .\scripts\tests\extension-package.test.mjs` pass. Android and wire
+definitions are unchanged, so the prior Android record remains separate and
+no schema regeneration was needed.
+
+Unlike the preceding bridge-only follow-up, mobile replay correction requires
+updating the relay as well as the bridge; both remain protocol-v1 compatible
+without a data migration. No live runtime, installed extension, device or cloud
+service was changed.

@@ -300,7 +300,38 @@ their required probe group; each group updates only its own evidence:
   of selecting a policy by list order. Provided policy states must be `enabled`, `disabled`
   or `unconfigured`; the latter two cannot be selected, and unknown/incomplete
   policy shapes disable model controls. Missing model evidence does not disable
-  chat or files.
+  chat or files. Android preselects the observed model and reasoning level; a
+  compact, scrollable model menu leaves the reasoning controls in the dialog
+  rather than below the entire catalogue. Changing models resets edited
+  reasoning, and unavailable selections cannot be applied.
+  After switching, the bridge reads current model state again without reusing a
+  probe started before the switch. It publishes the observed session summary
+  before returning model/refresh command receipts, so the phone's completion-triggered
+  catalogue refresh does not wait for the periodic bridge update. Deferred
+  switches produce a queued notice and retain the active model until confirmed
+  by a live read. Live turn-start/idle events also update the summary's display
+  state, including after delivery is acknowledged; older in-flight activity
+  reads cannot overwrite them. Missing, failed or invalid activity probes retain
+  the last known display state while disabling the controls that require that
+  evidence; only a successful newer read can reconcile it. Lifecycle events do
+  not grant control capabilities.
+  Socket backpressure leaves unsent event batches eligible for the next flush
+  instead of waiting for an acknowledgement that cannot arrive.
+  Command, periodic and reconnect summaries capture a snapshot, a fixed event
+  sequence boundary and the pending receipt IDs. Only that event prefix and its
+  acknowledgements must drain before the snapshot and receipts are sent; later
+  events cannot extend the wait. The active snapshot stays fixed while at most
+  one successor is coalesced. Receipt delivery resumes in place after
+  backpressure, and reconnect rebuilds the boundary from the durable journal
+  without repeating operations.
+  The relay publishes an ordered `runtime.state` correction when a summary
+  changes the stored display state. Existing mobile viewers and later page
+  replay receive the correction; unchanged summaries do not repeat idle events.
+  Immediate summaries use the same negotiated workspace projection as periodic
+  summaries, so legacy relays do not receive unsupported fields.
+  These changes reuse protocol-v1 frames and persisted formats. Update Android
+  for the picker, the installed bridge for snapshot delivery, and the relay for
+  mobile state corrections; no schema migration is needed.
 - File/Git views require a live absolute working directory and a complete,
   path-matched content-exclusion response explicitly allowing that directory.
   Every subsequent path is still evaluated; recorded history is never a substitute
