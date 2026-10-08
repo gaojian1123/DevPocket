@@ -4,7 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import WebSocket from "ws";
 import { z } from "zod";
-import { Command, Id, MAX_UPLOAD, PROTOCOL, Receipt, UserEvent, finalStatus, type DeliveryStatus } from "./protocol.js";
+import { Command, Id, MAX_UPLOAD, PROTOCOL, Receipt, RelayReady, UserEvent, finalStatus, type DeliveryStatus, type SessionSummary } from "./protocol.js";
 import { CopilotRuntime, type JoinedSession, type LocalAttachment } from "./runtime.js";
 import { Fault, fileName, hash, publicError, relayUrl } from "./security.js";
 
@@ -156,7 +156,7 @@ class Journal {
 }
 
 const RelayFrame = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("ready"), protocol: z.literal(PROTOCOL), hostId: Id, sessionId: Id }).strict(),
+  RelayReady,
   z.object({ type: z.literal("command"), ...Command.shape }).strict(),
   z.object({ type: z.literal("eventsAck"), ids: z.array(z.string()).max(200) }).strict(),
   z.object({ type: z.literal("resultAck"), commandId: Id, status: Receipt.shape.status }).strict(),
@@ -176,6 +176,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     recordedCliVersion: runtime.summary.cliVersion, capabilities: runtime.summary.capabilities,
   }, null, 2), { mode: 0o600 });
   let ws: WebSocket | undefined, stopped = false, ready = false, permanentFailure = false;
+  let workspaceMetadata: boolean | undefined;
   let retry: NodeJS.Timeout | undefined, attempts = 0, eventInFlight = false, closed = false;
   let summaryPending = false;
   const inFlight = new Map<string, Promise<void>>();
@@ -190,11 +191,20 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     ws.send(JSON.stringify(value));
     return true;
   }
+  function summaryForRelay(summary: SessionSummary): SessionSummary {
+    if (workspaceMetadata === true) return summary;
+    const { workspace, ...legacy } = summary;
+    if (workspace && workspaceMetadata === false) legacy.warnings = [
+      ...legacy.warnings.slice(0, 19),
+      "This relay does not support workspace labels. Update the relay to display branches and working trees.",
+    ];
+    return legacy;
+  }
   function flush(): void {
     if (!ready || stopped) return;
     // Publish refreshed model state before completion, without overwriting newer queued activity events.
     if (summaryPending) {
-      if (!send({ type: "summary", summary: runtime.summary })) return;
+      if (!send({ type: "summary", summary: summaryForRelay(runtime.summary) })) return;
       summaryPending = false;
     }
     if (!eventInFlight) {
@@ -259,19 +269,25 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
 
   function connect(): void {
     if (stopped || permanentFailure) return;
+    workspaceMetadata = undefined;
     const url = new URL("/v1/host/stream", origin);
     url.protocol = origin.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("sessionId", session.sessionId);
+    url.searchParams.set("workspaceMetadata", "1");
     ws = new WebSocket(url, { headers: { Authorization: `Bearer ${config.token}` },
       maxPayload: 4 * 1024 * 1024, perMessageDeflate: false, handshakeTimeout: 15_000 });
     const socket = ws;
-    socket.on("open", () => socket.send(JSON.stringify({ type: "hello", protocol: PROTOCOL, summary: runtime.summary })));
+    // Protocol-v1 peers validate fields strictly, so the first hello remains legacy-shaped.
+    socket.on("open", () => socket.send(JSON.stringify({ type: "hello", protocol: PROTOCOL, summary: summaryForRelay(runtime.summary) })));
     socket.on("message", (bytes) => {
       try {
         const frame = RelayFrame.parse(JSON.parse(bytes.toString()));
         if (frame.type === "ready") {
           if (frame.hostId !== config.hostId || frame.sessionId !== session.sessionId) throw new Fault("SCOPE_MISMATCH", "Relay registered a different session.");
-          ready = true; eventInFlight = false; attempts = 0; resolveReady(); flush();
+          workspaceMetadata = frame.workspaceMetadata === true;
+          ready = true; eventInFlight = false; attempts = 0;
+          send({ type: "summary", summary: summaryForRelay(runtime.summary) });
+          resolveReady(); flush();
         } else if (frame.type === "command") {
           if (!ready) throw new Fault("NOT_READY", "Relay issued a command before registration.");
           if (inFlight.has(frame.commandId)) return;
@@ -316,7 +332,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   const refreshTimer = setInterval(() => {
     if (stopped || refreshing) return;
     refreshing = true;
-    void runtime.refresh().then((summary) => send({ type: "summary", summary }))
+    void runtime.refresh().then((summary) => send({ type: "summary", summary: summaryForRelay(summary) }))
       .catch((error: unknown) => console.error("[DevPocket] Runtime refresh failed:", error instanceof Error ? error.name : "unknown"))
       .finally(() => { refreshing = false; });
   }, 10_000);

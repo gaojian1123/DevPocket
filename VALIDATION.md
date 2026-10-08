@@ -676,3 +676,82 @@ Android and wire formats are unchanged by this follow-up; the earlier Android
 acceptance remains a separate record and was not rerun here. No live runtime,
 device installation/enrollment, extension reload or cloud operation was
 performed.
+
+## Repository worktree grouping checkpoint (2026-10-08)
+
+The new `linked worktrees share project identity without changing the original
+runtime or working directory` regression first failed against the previous
+implementation: the two working directories produced different project IDs.
+It now passes with a shared repository identity, distinct branch/worktree
+labels, unchanged original session IDs and separate file-read results.
+
+`npm test` passes **171 tests**. `npm run typecheck`, `npm run build` and
+`npm run schema` pass. The additional disposable Git fixtures cover independent
+clones with identical names/remotes, subdirectory scope, canonical path aliases,
+an alias changed after policy evaluation, detached HEAD, unborn branches,
+separate Git directories, inherited Git environment overrides, redaction and
+unavailable/denied policy.
+
+The existing action-specific probe regression caught unnecessary project
+discovery on file commands. Project metadata now has its own refresh group:
+file controls do not wait for it, and late results cannot overwrite a newer
+working directory. Timeout coverage also exposed a still-running Git query
+during Windows fixture cleanup. Metadata cancellation now stops and drains its
+own Git subprocesses, rejects late policy responses and does not start a new
+metadata probe after runtime shutdown.
+
+Real loopback relay/bridge tests verify legacy ready frames, optional persisted
+summary decoding, pin/rename/archive preservation, negotiated catalog metadata
+and reconnecting to a legacy peer without sending unsupported summary fields.
+Protocol remains v1; the generated schema includes the optional workspace and
+ready-frame negotiation fields. README records the upgrade and strict-decoder
+downgrade boundary.
+
+`scripts\build-android.ps1 -Jdk C:\Projects\DevPocket\.tools\jdk-21 -Sdk C:\Projects\DevPocket\.tools\android-sdk -Lint`
+passes debug APK assembly, **70 JVM tests** (no failures, errors or skips), and
+Android lint. Native regressions cover old/new summary decoding, unchanged
+session scope, branch/detached-worktree labels and branch/worktree search.
+
+These are source-worktree checks with disposable Git repositories and simulated
+SDK peers, not installed-device or real-CLI acceptance. No existing runtime was
+reloaded, no extension or APK was installed, and no host enrollment, cloud
+deployment or sealed artifact was changed.
+
+### Concurrent worktree metadata review follow-up (2026-10-08)
+
+Copilot identified that an unchanged-directory file read recreated the
+`ProjectFiles` wrapper during project discovery, causing a valid branch refresh
+to be discarded. The new overlapping-read regression first reproduced the old
+branch remaining visible after refresh, then passed after the fix.
+
+The runtime now reuses its file view only while the live directory, positive
+policy allowance, policy owner and evaluator function remain unchanged.
+Directory changes, denial and replaced policy handlers still invalidate that
+view, so stale discovery cannot overwrite a new scope and file reads cannot
+keep using an old evaluator.
+
+`node --import tsx --test backend\tests\runtime.test.ts backend\tests\workspace-wire.test.ts`
+passes **141 tests**, including unchanged-directory overlap, changed-directory
+invalidation, replaced policy owners/handlers and legacy wire negotiation.
+`npm run build` also passes. Android and wire definitions are unchanged by this
+follow-up; no runtime installation, reload or deployment was performed.
+
+### Combined model/worktree integration checkpoint (2026-10-08)
+
+After the worktree-grouping change reached `main`, this branch integrated that
+base while retaining both independent runtime guards and both sets of acceptance
+records. The legacy-reconnect test was extended to issue a refresh command after
+negotiation; it reproduced an unsupported `workspace` field in the new immediate
+summary path. Immediate summaries now use the same negotiated projection as
+hello/periodic summaries, and the strengthened regression passes.
+
+On the combined tree, `npm test` passes **183 tests**. `npm run build`,
+`npm run schema` and `node --test .\scripts\tests\extension-package.test.mjs`
+pass; regenerating the schema introduces no changes beyond the base branch's
+contract. The same `scripts\build-android.ps1 -Lint` invocation recorded above
+passes APK assembly, **79 JVM tests** with no failures/errors/skips, and lint
+with zero errors (24 warnings).
+
+The merge preserves model selection, activity/backpressure safeguards,
+repository worktree grouping and legacy relay compatibility. No installed
+runtime, device, extension or cloud service was changed.

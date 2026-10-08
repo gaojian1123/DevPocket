@@ -129,7 +129,7 @@ private fun SessionList(state: PocketUi, model: PocketViewModel, pair: () -> Uni
             IconButton(onClick = pair) { Icon(Icons.Default.Add, contentDescription = "配对新的 Dev Box") }
         })
         OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }, label = { Text("搜索电脑、项目或会话") },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }, label = { Text("搜索电脑、项目、分支或会话") },
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(selected = !archived, onClick = { archived = false }, label = { Text("当前") })
@@ -147,8 +147,7 @@ private fun SessionList(state: PocketUi, model: PocketViewModel, pair: () -> Uni
         } else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
             for (box in state.boxes) {
                 val matches = box.sessions.filter { session ->
-                    session.archived == archived && (query.isBlank() ||
-                        listOf(box.host.name, session.projectName, session.title).any { it.contains(query, ignoreCase = true) })
+                    session.archived == archived && sessionMatchesQuery(session, box.host.name, query)
                 }.sortedWith(compareByDescending<SessionInfo> { it.pinned }.thenByDescending { it.lastSeen })
                 if (matches.isEmpty() && query.isNotBlank()) continue
                 item(key = "host:${box.accountId}:${box.host.id}") {
@@ -183,6 +182,11 @@ private fun SessionList(state: PocketUi, model: PocketViewModel, pair: () -> Uni
                                             modifier = Modifier.size(16.dp).padding(end = 2.dp))
                                         Text(session.title.ifBlank { "未命名会话" }, style = MaterialTheme.typography.titleSmall,
                                             maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    }
+                                    workspaceLabel(session)?.let { label ->
+                                        Text(label, style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(top = 5.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     }
                                     Text("${stateLabel(session.state)} · ${session.modelId.ifBlank { "模型未知" }}",
                                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -352,6 +356,18 @@ fun StatusLabel(text: String, active: Boolean = false) {
         Text(text, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
     }
 }
+
+fun workspaceLabel(session: SessionInfo): String? = session.workspace?.let { workspace ->
+    when {
+        workspace.branch.isBlank() -> "${workspace.name} · 分离 HEAD"
+        workspace.branch == workspace.name -> workspace.branch
+        else -> "${workspace.branch} · ${workspace.name}"
+    }
+}
+
+fun sessionMatchesQuery(session: SessionInfo, hostName: String, query: String): Boolean =
+    query.isBlank() || listOfNotNull(hostName, session.projectName, session.title, session.workspace?.name, session.workspace?.branch)
+        .any { it.contains(query, ignoreCase = true) }
 
 fun stateLabel(state: String): String = when (state) {
     "idle" -> "空闲"; "running" -> "处理中"; "waiting" -> "等待你"; "cancel_requested" -> "已请求停止，待确认"

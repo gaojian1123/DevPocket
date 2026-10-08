@@ -17,10 +17,15 @@ export const Capabilities = z.object({
   models: z.boolean(), files: z.boolean(), git: z.boolean(),
 }).strict();
 export const RuntimeState = z.enum(["idle", "running", "waiting", "cancel_requested", "unsupported", "offline"]);
+export const Workspace = z.object({
+  name: z.string().min(1).max(120),
+  branch: z.string().max(200),
+}).strict();
 export const SessionSummary = z.object({
   sessionId: Id,
   projectId: z.string().min(1).max(120),
   projectName: z.string().min(1).max(120),
+  workspace: Workspace.optional(),
   title: z.string().max(160),
   cliVersion: z.string().max(80),
   state: RuntimeState,
@@ -35,6 +40,10 @@ export type SessionSummary = z.infer<typeof SessionSummary>;
 export type SessionInfo = SessionSummary & {
   hostId: string; online: boolean; pinned: boolean; archived: boolean; lastSeen: number;
 };
+export const RelayReady = z.object({
+  type: z.literal("ready"), protocol: z.literal(PROTOCOL), hostId: Id, sessionId: Id,
+  workspaceMetadata: z.literal(true).optional(),
+}).strict();
 
 export const PendingRequest = z.object({
   requestId: RequestId,

@@ -3,8 +3,8 @@ import { lstat, open, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
-import { MAX_PREVIEW, MAX_UPLOAD } from "./protocol.js";
-import { Fault, fileName, redact } from "./security.js";
+import { MAX_PREVIEW, MAX_UPLOAD, type SessionSummary } from "./protocol.js";
+import { Fault, fileName, hash, redact } from "./security.js";
 
 const exec = promisify(execFile);
 const policySchema = z.object({ available: z.boolean(), checks: z.array(z.object({ path: z.string(), excluded: z.boolean() })) });
@@ -109,22 +109,75 @@ export class ProjectFiles {
     } finally { await handle.close(); }
   }
 
-  private async git(args: string[]): Promise<string> {
-    const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
+  private async git(args: string[], signal?: AbortSignal, root = this.root): Promise<string> {
+    const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^GIT_/i.test(name)));
     try {
-      const result = await exec("git", [
+      const operation = exec("git", [
         "--no-pager", "--no-optional-locks", "--literal-pathspecs",
-        "-c", "core.fsmonitor=false", "-c", "diff.external=", "-C", this.root, ...args,
+        "-c", "core.fsmonitor=false", "-c", "diff.external=", "-C", root, ...args,
       ], {
-        windowsHide: true, shell: false, timeout: 15_000, maxBuffer: MAX_PREVIEW,
+        windowsHide: true, shell: false, timeout: 15_000, maxBuffer: MAX_PREVIEW, signal,
         env: { ...environment, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
       });
-      return result.stdout;
+      const closed = new Promise<void>((resolve) => { operation.child.once("close", () => resolve()); });
+      try { return (await operation).stdout; } finally { await closed; }
     } catch (error) {
       const details = error instanceof Error && "stderr" in error && typeof error.stderr === "string" ? error.stderr : "";
       if (/not a git repository/i.test(details)) throw new Fault("NOT_GIT_PROJECT", "The registered directory is not a Git repository.", 409);
       if (isMissing(error)) throw new Fault("GIT_UNAVAILABLE", "Git is not installed on this Dev Box.", 409);
-      throw new Fault("GIT_READ_FAILED", "Read-only Git query failed or exceeded its 15-second/256-KiB limit. Check the terminal.", 409);
+      throw new Fault("GIT_READ_FAILED", "Read-only Git query failed or exceeded its time/output limit. Check the terminal.", 409);
+    }
+  }
+
+  async project(parentSignal?: AbortSignal): Promise<Pick<SessionSummary, "projectId" | "projectName" | "workspace"> | null> {
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(4000), ...(parentSignal ? [parentSignal] : [])]);
+    const queries: Promise<string>[] = [];
+    let onAbort = () => {};
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
+    });
+    try {
+      const directory = await Promise.race([this.allowed(""), aborted]);
+      const git = (args: string[]) => {
+        signal.throwIfAborted();
+        const query = this.git(args, signal, directory);
+        queries.push(query);
+        return query;
+      };
+      let location: string;
+      try {
+        location = await git(["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"]);
+      } catch (error) {
+        if (error instanceof Fault && error.code === "NOT_GIT_PROJECT") return null;
+        throw error;
+      }
+      const roots = location.replace(/\r?\n$/, "").split(/\r?\n/);
+      if (roots.length !== 2 || roots.some((root) => !path.isAbsolute(root) || root.includes("\0")))
+        throw new Fault("GIT_IDENTITY_INVALID", "Git did not return a supported repository identity.", 409);
+      const [worktreeRoot, common, listing, branch] = await Promise.race([Promise.all([
+        realpath(roots[0]!), realpath(roots[1]!),
+        git(["worktree", "list", "--porcelain", "-z"]), git(["branch", "--show-current"]),
+      ]), aborted]);
+      const first = listing.split("\0", 1)[0];
+      const mainRoot = first?.startsWith("worktree ") ? first.slice(9) : "";
+      if (!path.isAbsolute(mainRoot))
+        throw new Fault("GIT_IDENTITY_INVALID", "Git did not identify the repository's primary working tree.", 409);
+      const label = (value: string, limit: number) => redact(value, limit).replace(/\s+/g, " ").trim();
+      return {
+        projectId: hash(`git:${process.platform === "win32" ? common.toLowerCase() : common}`),
+        projectName: label(path.basename(mainRoot), 120) || "Git project",
+        workspace: {
+          name: label(path.basename(worktreeRoot), 120) || "Workspace",
+          branch: label(branch.replace(/\r?\n$/, ""), 200),
+        },
+      };
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      controller.abort();
+      await Promise.allSettled(queries);
     }
   }
 
