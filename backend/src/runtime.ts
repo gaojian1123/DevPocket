@@ -48,6 +48,7 @@ const runtimeEvent = z.object({ id: z.string(), type: z.string(), timestamp: z.s
 const workingDirectory = z.object({
   primary: z.string().min(1).refine((value) => path.isAbsolute(value) && !value.includes("\0")),
 });
+const projectIdentity = SessionSummary.pick({ projectId: true, projectName: true, workspace: true }).nullable();
 const runtimeActivity = z.object({ hasActiveWork: z.boolean(), abortable: z.unknown().optional() });
 const permissionMode = z.object({ mode: z.string().min(1).max(80) });
 const pendingPermissions = z.object({ items: z.array(z.object({
@@ -276,7 +277,7 @@ function permission(item: unknown): PendingRequest {
 
 type ModelItem = z.infer<typeof modelCatalogue>[number];
 type Capability = keyof SessionSummary["capabilities"];
-type ProbeGroup = "activity" | "permissions" | "models" | "files" | "metadata";
+type ProbeGroup = "activity" | "permissions" | "models" | "files" | "project" | "metadata";
 const capabilityGroup = {
   messages: "activity", abort: "activity", questions: "activity", permissions: "permissions",
   models: "models", files: "files", git: "files",
@@ -302,6 +303,7 @@ export class CopilotRuntime {
   private files?: ProjectFiles;
   private closed = false;
   private activity?: z.infer<typeof runtimeActivity>;
+  private projectAbort?: AbortController;
   private readonly refreshInFlight = new Map<ProbeGroup, Promise<void>>();
   private readonly warnings = new Map<string, string>();
 
@@ -319,18 +321,24 @@ export class CopilotRuntime {
     this.emit({ id: randomUUID(), at: new Date().toISOString(), kind: "notice", data: { code, message: redact(message, 2000) } });
   }
 
-  private async probe<T>(label: string, read: () => Promise<unknown> | undefined, parse: (value: unknown) => T): Promise<T | undefined> {
+  private async probe<T>(label: string, read: () => Promise<unknown> | undefined, parse: (value: unknown) => T,
+    cancel?: () => void): Promise<T | undefined> {
     let response: unknown;
     let timer: NodeJS.Timeout | undefined;
+    const operation = Promise.resolve().then(read);
     try {
       response = await Promise.race([
-        Promise.resolve().then(read),
+        operation,
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(() => reject(new Fault("CAPABILITY_TIMEOUT", "Read-only capability probe timed out.")), PROBE_TIMEOUT_MS);
         }),
       ]);
     }
     catch (error) {
+      if (cancel) {
+        cancel();
+        await operation.catch(() => undefined);
+      }
       this.warnings.set(label, error instanceof Fault && error.code === "CAPABILITY_TIMEOUT"
         ? `${label} probe timed out; use the terminal.`
         : `${label} probe failed (${redact(error instanceof Error ? error.name : "runtime error", 80)}); use the terminal.`);
@@ -393,8 +401,19 @@ export class CopilotRuntime {
 
   async refresh(): Promise<SessionSummary> {
     await Promise.all((["activity", "permissions", "models", "files", "metadata"] as const)
-      .map((group) => this.refreshGroup(group)));
+      .map(async (group) => {
+        await this.refreshGroup(group);
+        if (group === "files") await this.refreshGroup("project");
+      }));
     return this.summary;
+  }
+
+  private folderProject(): Pick<SessionSummary, "projectId" | "projectName" | "workspace"> {
+    return {
+      projectId: this.root ? hash(process.platform === "win32" ? this.root.toLowerCase() : this.root) : "unavailable",
+      projectName: this.root ? redact(path.basename(this.root), 120).replace(/\s+/g, " ").trim() || "Folder project" : "Unknown project",
+      workspace: undefined,
+    };
   }
 
   private async refreshGroup(group: ProbeGroup): Promise<void> {
@@ -478,6 +497,7 @@ export class CopilotRuntime {
         break;
       }
       case "files": {
+        const previousRoot = this.root;
         const paths = await this.probe("Working directory", () => rpc.permissions?.paths?.list?.(), workingDirectory.parse);
         const primary = paths?.primary;
         if (primary) this.root = primary;
@@ -490,11 +510,28 @@ export class CopilotRuntime {
           ? new ProjectFiles(primary, (paths) => checkPaths.call(rpc.contentExclusion, { paths })) : undefined;
         if (this.files) this.warnings.delete("File views");
         else this.warnings.set("File views", "File and Git views require explicit content-exclusion allowance for the live working directory.");
-        changes = {
-          projectId: this.root ? hash(process.platform === "win32" ? this.root.toLowerCase() : this.root) : "unavailable",
-          projectName: this.root ? path.basename(this.root) || this.root : "Unknown project",
-        };
+        if (!this.files || previousRoot !== this.root || !this.summary.workspace) changes = this.folderProject();
+        if (!this.files) this.warnings.delete("Project grouping");
         capabilities = { files: this.files !== undefined, git: this.files !== undefined };
+        break;
+      }
+      case "project": {
+        const files = this.files, root = this.root;
+        if (!files || this.closed) break;
+        const cancellation = new AbortController();
+        this.projectAbort = cancellation;
+        let project: z.infer<typeof projectIdentity> | undefined;
+        try {
+          project = await this.probe("Project grouping", () => files.project(cancellation.signal),
+            projectIdentity.parse, () => cancellation.abort());
+        } finally { this.projectAbort = undefined; }
+        if (this.closed || files !== this.files || root !== this.root) {
+          this.warnings.delete("Project grouping");
+          return;
+        }
+        changes = project ?? this.folderProject();
+        if (project === undefined) this.warnings.set("Project grouping",
+          "Repository grouping could not be verified; this session is grouped by its working directory.");
         break;
       }
       case "metadata": {
@@ -863,6 +900,7 @@ export class CopilotRuntime {
 
   close(): void {
     this.closed = true;
+    this.projectAbort?.abort();
     this.unsubscribe?.();
     this.unsubscribe = undefined;
   }

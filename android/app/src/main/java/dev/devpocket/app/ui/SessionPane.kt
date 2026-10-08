@@ -51,7 +51,8 @@ fun SessionPane(state: PocketUi, model: PocketViewModel, expanded: Boolean) {
         TopAppBar(
             title = { Column {
                 Text(session.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
-                Text("${session.projectName} · ${stateLabel(session.state)}", maxLines = 2,
+                Text(listOfNotNull(session.projectName, workspaceLabel(session), stateLabel(session.state)).joinToString(" · "),
+                    maxLines = 2, overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } },
             navigationIcon = {
@@ -124,6 +125,10 @@ fun SessionPane(state: PocketUi, model: PocketViewModel, expanded: Boolean) {
     }
     if (info) AlertDialog(onDismissRequest = { info = false }, title = { Text("原始运行时") },
         text = { LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            item { Text("项目：${session.projectName}") }
+            session.workspace?.let { workspace ->
+                item { Text("工作区：${workspace.name}\n分支：${workspace.branch.ifBlank { "分离 HEAD" }}") }
+            }
             item { Text("连接：${state.connection}\nCLI：${session.cliVersion}\n权限模式：${session.permissionMode}\n模型：${session.modelId}\n推理：${session.reasoningEffort.ifBlank { "运行时默认" }}") }
             item { SelectionContainer { Text("会话 ${session.sessionId}", style = MaterialTheme.typography.bodySmall) } }
             item { Text("手机只提供单次批准/拒绝，不修改终端权限模式，也不持有 GitHub 凭据。消息采用 CLI 原生排队：正在运行的工具不会因新消息立刻被改写。") }
