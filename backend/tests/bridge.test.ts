@@ -6,8 +6,8 @@ import type { AddressInfo } from "node:net";
 import WebSocket from "ws";
 import { startBridge } from "../src/bridge.js";
 import type { JoinedSession } from "../src/runtime.js";
-import { HostFrame, Receipt, SessionSummary, type Action } from "../src/protocol.js";
-import { fixture, newId, sessionPath } from "./harness.js";
+import { HostFrame, Receipt, SessionSummary, type Action, type EventPage } from "../src/protocol.js";
+import { fixture, newId, nextFrame, sessionPath } from "./harness.js";
 
 async function eventually(predicate: () => boolean, message: string): Promise<void> {
   for (let i = 0; i < 100 && !predicate(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
@@ -271,6 +271,189 @@ test("replayed model receipts cannot bypass pending event and summary delivery",
   assert.equal(execute.mock.callCount(), 1, "Replay must not invoke the runtime operation again.");
   assert.deepEqual(f.transport.sent.slice(before).findLast((frame) => frame.type === "result"),
     { type: "result", ...receipt });
+});
+
+test("streaming after a snapshot cannot postpone its receipt or change its captured state", async (t) => {
+  for (const pauseReceipt of [false, true]) {
+    await t.test(pauseReceipt ? "backpressure after the snapshot" : "continuous production", async (t) => {
+      t.mock.timers.enable({ apis: ["setInterval"] });
+      const f = await modelBridgeFixture(t), limit = 2 * 1024 * 1024;
+      f.transport.bufferedBytes = limit;
+      f.transport.holdAcknowledgements = true;
+      const before = f.transport.sent.length;
+      const prefix = Array.from({ length: 160 }, (_, i) =>
+        f.emit("user.message", { messageId: `prefix-${i}`, content: "Before the snapshot" }));
+      prefix.push(f.emit("assistant.turn_start", {}));
+      const execute = f.bridge.runtime.execute.bind(f.bridge.runtime);
+      let executed = false, snapshotSent = false;
+      t.mock.method(f.bridge.runtime, "execute", async (...args: Parameters<typeof execute>) => {
+        const receipt = await execute(...args);
+        executed = true;
+        return receipt;
+      });
+      f.transport.onSummary = () => {
+        snapshotSent = true;
+        if (pauseReceipt) f.transport.bufferedBytes = limit;
+      };
+      const route = sessionPath(f.host.hostId, f.sid) + "/commands", commandId = newId();
+      await f.request(route, f.phone.token, { commandId, action: { type: "models" } });
+      await eventually(() => executed, "The command must finish while its event prefix is blocked.");
+      f.transport.bufferedBytes = 0;
+      t.mock.timers.tick(120);
+      const later: string[] = [];
+      for (let batch = 0; batch < 3; batch++) {
+        await eventually(() => f.transport.pendingAcknowledgements.length === 1, "Each prefix batch must reach the relay.");
+        later.push(f.emit(batch === 0 ? "session.idle" : "user.message",
+          batch === 0 ? {} : { messageId: `later-${batch}`, content: "After the snapshot" }));
+        f.transport.pendingAcknowledgements.shift()!();
+      }
+      await eventually(() => f.transport.acknowledged.has(prefix.at(-1)!), "The fixed prefix must be acknowledged.");
+      await eventually(() => snapshotSent, "New events must not extend the snapshot's event boundary.");
+      const snapshot = f.transport.sent.slice(before).find((frame) => frame.type === "summary");
+      assert.equal(snapshot?.summary.state, "running", "The snapshot must not absorb later lifecycle observations.");
+      if (pauseReceipt) {
+        assert.ok(!f.transport.sent.slice(before).some((frame) => frame.type === "result"));
+        later.push(f.emit("user.message", { messageId: "while-blocked", content: "Keep producing" }));
+        t.mock.timers.tick(240);
+        assert.ok(!f.transport.acknowledged.has(later[0]!));
+        f.transport.bufferedBytes = 0;
+        t.mock.timers.tick(120);
+      }
+      await eventually(() => f.transport.sent.slice(before).some((frame) =>
+        frame.type === "result" && frame.commandId === commandId), "The snapshot's receipt must not wait for newer events.");
+      assert.ok(later.every((id) => !f.transport.acknowledged.has(id)));
+      f.transport.holdAcknowledgements = false;
+      f.transport.onSummary = () => {};
+      t.mock.timers.tick(120);
+      await eventually(() => later.every((id) => f.transport.acknowledged.has(id)), "Later events must still be delivered.");
+      const frames = f.transport.sent.slice(before);
+      const resultIndex = frames.findIndex((frame) => frame.type === "result" && frame.commandId === commandId);
+      assert.ok(frames.findIndex((frame) => frame.type === "events" &&
+        frame.items.some((item) => later.includes(item.id))) > resultIndex);
+      const receipt = Receipt.parse(await (await f.request(`${route}/${commandId}`, f.phone.token)).json());
+      assert.equal(receipt.status, "completed");
+      assert.equal((await f.catalogSession()).state, "idle");
+    });
+  }
+});
+
+test("mobile page replay retains an idle correction after the catalogue has refreshed", async (t) => {
+  const f = await modelBridgeFixture(t);
+  const viewer = f.socket(`/v1/events?hostId=${f.host.hostId}&sessionId=${f.sid}&after=0`, f.phone.token);
+  const livePages: EventPage[] = [];
+  viewer.on("message", (bytes) => livePages.push(JSON.parse(bytes.toString()) as EventPage));
+  await nextFrame(viewer, "events");
+  f.transport.bufferedBytes = 2 * 1024 * 1024;
+  f.emit("assistant.turn_start", {});
+  await f.bridge.runtime.refresh();
+  const execute = f.bridge.runtime.execute.bind(f.bridge.runtime);
+  let executed = false;
+  t.mock.method(f.bridge.runtime, "execute", async (...args: Parameters<typeof execute>) => {
+    const receipt = await execute(...args);
+    executed = true;
+    return receipt;
+  });
+  const command = f.command({ type: "models" });
+  await eventually(() => executed, "The model snapshot must capture the corrected idle state.");
+  f.transport.bufferedBytes = 0;
+  await command;
+  const eventsRoute = sessionPath(f.host.hostId, f.sid) + "/events";
+  const firstPage: EventPage = await (await f.request(eventsRoute, f.phone.token)).json();
+  const catalog = await f.catalogSession();
+  assert.equal(catalog.state, "idle");
+  const message = f.emit("user.message", { messageId: "later-page", content: "A later page without a lifecycle event" });
+  await eventually(() => f.transport.acknowledged.has(message), "The unrelated later page must be available.");
+  const nextPage: EventPage = await (await f.request(`${eventsRoute}?after=${firstPage.cursor}`, f.phone.token)).json();
+  assert.ok(nextPage.events.some((event) => event.id === message));
+  const cachedEvents = [...firstPage.events, ...nextPage.events];
+  const replayedState = cachedEvents.findLast((event) => event.kind === "runtime.state");
+  assert.ok(replayedState);
+  assert.equal(replayedState?.data.state, catalog.state,
+    "Android reapplies the last cached runtime.state on every page, so the ordered correction must be present.");
+  assert.ok(livePages.flatMap((page) => page.events).some((event) =>
+    event.id === replayedState.id && event.kind === "runtime.state" && event.data.state === "idle"),
+  "The correction must reach already-connected viewers, not just HTTP replay.");
+  await f.command({ type: "models" });
+  const unchanged: EventPage = await (await f.request(`${eventsRoute}?after=${nextPage.cursor}`, f.phone.token)).json();
+  assert.ok(!unchanged.events.some((event) => event.kind === "runtime.state"),
+    "An unchanged summary must not repeat state events or idle notifications.");
+});
+
+test("new snapshots coalesce only behind the fixed active prefix and retain their receipts", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const f = await modelBridgeFixture(t), before = f.transport.sent.length;
+  f.transport.bufferedBytes = 2 * 1024 * 1024;
+  f.transport.holdAcknowledgements = true;
+  const prefix = Array.from({ length: 81 }, (_, i) =>
+    f.emit("user.message", { messageId: `initial-${i}`, content: "Initial prefix" }));
+  let current = "model-0", executions = 0;
+  f.session.rpc.model!.getCurrent = async () => ({ modelId: current });
+  f.session.rpc.model!.list = async () => ({ list: ["model-0", "model-1", "model-2"].map((id) => ({ id })) });
+  const execute = f.bridge.runtime.execute.bind(f.bridge.runtime);
+  t.mock.method(f.bridge.runtime, "execute", async (...args: Parameters<typeof execute>) => {
+    const receipt = await execute(...args);
+    executions++;
+    return receipt;
+  });
+  const route = sessionPath(f.host.hostId, f.sid) + "/commands";
+  const ids = [newId(), newId(), newId()];
+  for (let i = 0; i < ids.length; i++) {
+    current = `model-${i}`;
+    if (i) f.emit("user.message", { messageId: `successor-${i}`, content: "Before the successor" });
+    await f.request(route, f.phone.token, { commandId: ids[i], action: { type: "models" } });
+    await eventually(() => executions === i + 1, "Each command must execute before the next snapshot is requested.");
+  }
+  f.transport.bufferedBytes = 0;
+  t.mock.timers.tick(120);
+  const later: string[] = [];
+  for (let batch = 0; batch < 2; batch++) {
+    await eventually(() => f.transport.pendingAcknowledgements.length === 1, "The active prefix must drain.");
+    later.push(f.emit("user.message", { messageId: `stream-${batch}`, content: "Keep streaming" }));
+    f.transport.pendingAcknowledgements.shift()!();
+  }
+  await eventually(() => f.transport.sent.slice(before).some((frame) =>
+    frame.type === "result" && frame.commandId === ids[0]), "The first receipt cannot wait for successor snapshots.");
+  assert.ok(prefix.every((id) => f.transport.acknowledged.has(id)));
+  assert.deepEqual(f.transport.sent.slice(before).filter((frame) => frame.type === "summary")
+    .map((frame) => frame.summary.modelId), ["model-0"]);
+  assert.ok(!f.transport.sent.slice(before).some((frame) => frame.type === "result" && ids.slice(1).includes(frame.commandId)));
+  t.mock.timers.tick(120);
+  await eventually(() => f.transport.pendingAcknowledgements.length === 1, "The coalesced successor must drain only its prefix.");
+  f.transport.pendingAcknowledgements.shift()!();
+  await eventually(() => ids.slice(1).every((id) => f.transport.sent.slice(before)
+    .some((frame) => frame.type === "result" && frame.commandId === id)), "Coalescing must retain both pending receipts.");
+  assert.deepEqual(f.transport.sent.slice(before).filter((frame) => frame.type === "summary")
+    .map((frame) => frame.summary.modelId), ["model-0", "model-2"]);
+  assert.ok(later.every((id) => !f.transport.acknowledged.has(id)));
+  f.transport.holdAcknowledgements = false;
+  t.mock.timers.tick(120);
+  await eventually(() => later.every((id) => f.transport.acknowledged.has(id)), "Streaming must continue after publication.");
+  assert.equal((await f.catalogSession()).modelId, "model-2");
+});
+
+test("reconnecting during receipt backpressure replaces the old snapshot without repeating the command", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  t.mock.method(Math, "random", () => 0);
+  const f = await modelBridgeFixture(t);
+  const execute = t.mock.method(f.bridge.runtime, "execute");
+  f.emit("assistant.turn_start", {});
+  let snapshotSent = false;
+  f.transport.onSummary = () => {
+    snapshotSent = true;
+    f.transport.bufferedBytes = 2 * 1024 * 1024;
+  };
+  const route = sessionPath(f.host.hostId, f.sid) + "/commands", commandId = newId();
+  await f.request(route, f.phone.token, { commandId, action: { type: "models" } });
+  await eventually(() => snapshotSent, "The original snapshot must precede the interrupted receipt.");
+  f.emit("session.idle", {});
+  f.transport.onSummary = () => {};
+  f.transport.socket!.terminate();
+  f.transport.bufferedBytes = 0;
+  await eventually(() => f.transport.greetings === 2, "The original bridge must reconnect.");
+  await eventually(() => f.transport.sent.some((frame) => frame.type === "result" && frame.commandId === commandId),
+    "The durable receipt must be delivered after reconnect.");
+  assert.equal(execute.mock.callCount(), 1);
+  assert.equal((await f.catalogSession()).state, "idle");
 });
 
 test("confirmed model switch updates the phone catalogue before its completed receipt", async (t) => {

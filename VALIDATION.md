@@ -790,3 +790,41 @@ Android, protocol and persisted formats are unchanged in this follow-up, so no
 Android rebuild or schema regeneration was required. The earlier Android
 acceptance remains separate. No installed runtime, extension, device or cloud
 service was changed.
+
+### Streaming publication and mobile replay review follow-up (2026-10-08)
+
+```powershell
+node --import tsx --test --test-name-pattern 'streaming after a snapshot|mobile page replay' .\backend\tests\bridge.test.ts
+```
+
+Both reproductions failed before correction. Continuous event production kept
+the previous whole-outbox drain from publishing a completed command's summary
+or receipt. Independently, Android-style replay of the last cached
+`runtime.state` restored `running` after the HTTP catalogue had been corrected
+to `idle`.
+
+Each publication now captures its summary, a fixed event-sequence boundary and
+pending receipt IDs. The bridge drains only that prefix, sends the frozen
+summary and receipts before later events, and resumes the receipt phase after
+backpressure instead of reopening the boundary. The active publication is
+never replaced; only its successor is coalesced, keeping periodic updates
+bounded without starving an in-progress publication. Reconnection rebuilds
+publications from the durable journal without re-executing commands.
+
+The relay now emits an ordered, scoped `runtime.state` correction when a
+summary changes display state. Real HTTP and WebSocket regressions cover
+Android-style cache replay after catalogue refresh and unrelated later pages.
+Unchanged summaries do not duplicate idle events or notifications. Additional
+coverage includes events produced between every acknowledgement, backpressure
+after summary delivery, coalesced successor snapshots retaining all receipts,
+and disconnection during the receipt phase.
+
+`npm test` passes **207 tests**. `npm run typecheck`, `npm run build` and
+`node --test .\scripts\tests\extension-package.test.mjs` pass. Android and wire
+definitions are unchanged, so the prior Android record remains separate and
+no schema regeneration was needed.
+
+Unlike the preceding bridge-only follow-up, mobile replay correction requires
+updating the relay as well as the bridge; both remain protocol-v1 compatible
+without a data migration. No live runtime, installed extension, device or cloud
+service was changed.

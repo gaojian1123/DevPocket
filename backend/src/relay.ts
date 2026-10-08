@@ -193,6 +193,7 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
               if (!connection.ready && frame.type !== "hello") throw new Fault("REGISTER_FIRST", "Register before sending events.");
               if (frame.type === "hello" || frame.type === "summary") {
                 if (frame.summary.sessionId !== sessionId) throw new Fault("SCOPE_MISMATCH", "Session identity cannot change.");
+                const previousState = frame.type === "summary" ? store.session(host.id, sessionId).state : undefined;
                 const knownSession = store.touch(host.id, frame.summary);
                 if (frame.type === "hello") {
                   clearTimeout(deadline);
@@ -211,6 +212,10 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
                       result(host.id, sessionId, { commandId: command.commandId, status: "failed", error: publicError(error) });
                     }
                   }
+                } else if (previousState !== frame.summary.state) {
+                  publish(host.id, sessionId, {
+                    id: randomUUID(), at: new Date().toISOString(), kind: "runtime.state", data: { state: frame.summary.state },
+                  });
                 }
               } else if (frame.type === "events") {
                 for (const event of frame.items) {

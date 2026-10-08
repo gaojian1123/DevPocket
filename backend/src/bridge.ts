@@ -4,7 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import WebSocket from "ws";
 import { z } from "zod";
-import { Command, Id, MAX_UPLOAD, PROTOCOL, Receipt, RelayReady, UserEvent, finalStatus, type DeliveryStatus, type SessionSummary } from "./protocol.js";
+import { Command, Id, MAX_UPLOAD, PROTOCOL, Receipt, RelayReady, SessionSummary, UserEvent, finalStatus, type DeliveryStatus } from "./protocol.js";
 import { CopilotRuntime, type JoinedSession, type LocalAttachment } from "./runtime.js";
 import { Fault, fileName, hash, publicError, relayUrl } from "./security.js";
 
@@ -128,10 +128,15 @@ class Journal {
     this.db.prepare("INSERT OR IGNORE INTO outbox (id,entity,body) VALUES (?,?,?)").run(event.id, entity, JSON.stringify(event));
   }
 
-  events(): UserEvent[] {
+  eventBoundary(): number {
+    return z.number().int().nonnegative().parse(
+      this.db.prepare("SELECT COALESCE(MAX(seq),0) AS seq FROM outbox").get()?.seq);
+  }
+
+  events(through = Number.MAX_SAFE_INTEGER): UserEvent[] {
     const selected: UserEvent[] = [];
     let bytes = 0;
-    for (const row of this.db.prepare("SELECT body FROM outbox ORDER BY seq LIMIT 80").all()) {
+    for (const row of this.db.prepare("SELECT body FROM outbox WHERE seq<=? ORDER BY seq LIMIT 80").all(through)) {
       const body = z.string().parse(row.body);
       if (bytes + Buffer.byteLength(body) > 512 * 1024 && selected.length) break;
       bytes += Buffer.byteLength(body);
@@ -143,6 +148,16 @@ class Journal {
   receipts(): Receipt[] {
     return this.db.prepare("SELECT receipt FROM commands WHERE receipt IS NOT NULL AND acked=0 LIMIT 80").all()
       .map((row) => Receipt.parse(JSON.parse(z.string().parse(row.receipt))));
+  }
+
+  pendingReceiptIds(): string[] {
+    return this.db.prepare("SELECT id FROM commands WHERE receipt IS NOT NULL AND acked=0 ORDER BY created_at,id").all()
+      .map((row) => z.string().parse(row.id));
+  }
+
+  receipt(id: string): Receipt {
+    return Receipt.parse(JSON.parse(z.string().parse(
+      this.db.prepare("SELECT receipt FROM commands WHERE id=?").get(id)?.receipt)));
   }
 
   acknowledge(ids: string[]): void {
@@ -180,7 +195,9 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   let ws: WebSocket | undefined, stopped = false, ready = false, permanentFailure = false;
   let workspaceMetadata: boolean | undefined;
   let retry: NodeJS.Timeout | undefined, attempts = 0, eventInFlight = false, closed = false;
-  let summaryPending = false;
+  const summaries: {
+    through: number; summary: SessionSummary; receiptIds: string[]; nextReceipt: number; sent: boolean;
+  }[] = [];
   const inFlight = new Map<string, Promise<void>>();
   let resolveReady!: () => void, rejectReady!: (error: Error) => void;
   const firstReady = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
@@ -202,21 +219,40 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     ];
     return legacy;
   }
+  function queueSummary(): void {
+    if (!ready || stopped) return;
+    const snapshot = {
+      through: journal.eventBoundary(), summary: SessionSummary.parse(runtime.summary),
+      receiptIds: journal.pendingReceiptIds(), nextReceipt: 0, sent: false,
+    };
+    // Freeze the active prefix; only coalesce its successor while delivery is blocked.
+    if (summaries.length < 2) summaries.push(snapshot);
+    else summaries[1] = snapshot;
+  }
   function flush(): void {
     if (!ready || stopped) return;
+    const snapshot = summaries[0];
     let awaitingEvents = eventInFlight;
-    if (!eventInFlight) {
-      const items = journal.events();
+    if (!eventInFlight && !snapshot?.sent) {
+      const items = journal.events(snapshot?.through);
       if (items.length) {
         eventInFlight = send({ type: "events", items });
         awaitingEvents = true;
       }
     }
-    // Older state events must be acknowledged before the current snapshot and its receipts.
-    if (summaryPending) {
+    if (snapshot) {
       if (awaitingEvents) return;
-      if (!send({ type: "summary", summary: summaryForRelay(runtime.summary) })) return;
-      summaryPending = false;
+      if (!snapshot.sent) {
+        if (!send({ type: "summary", summary: summaryForRelay(snapshot.summary) })) return;
+        snapshot.sent = true;
+      }
+      while (snapshot.nextReceipt < snapshot.receiptIds.length) {
+        const receipt = journal.receipt(snapshot.receiptIds[snapshot.nextReceipt]!);
+        if (!send({ type: "result", ...receipt })) return;
+        snapshot.nextReceipt++;
+      }
+      summaries.shift();
+      return;
     }
     for (const receipt of journal.receipts()) send({ type: "result", ...receipt });
   }
@@ -257,7 +293,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     const needsSummary = ["models", "model.set", "refresh"].includes(command.action.type);
     const claim = journal.begin(command);
     if (!claim.fresh) {
-      if (needsSummary) summaryPending = true;
+      if (needsSummary) queueSummary();
       flush();
       return;
     }
@@ -275,7 +311,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
         error: uncertain ? { code: "DELIVERY_UNCERTAIN", message: "The runtime may have accepted this operation. Inspect the terminal; DevPocket will not execute it again automatically." } : publicError(error) });
       console.error("[DevPocket] Command failed:", error instanceof Fault ? error.code : "runtime error");
     }
-    if (needsSummary) summaryPending = true;
+    if (needsSummary) queueSummary();
     flush();
   }
 
@@ -298,7 +334,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
           if (frame.hostId !== config.hostId || frame.sessionId !== session.sessionId) throw new Fault("SCOPE_MISMATCH", "Relay registered a different session.");
           workspaceMetadata = frame.workspaceMetadata === true;
           ready = true; eventInFlight = false; attempts = 0;
-          summaryPending = true;
+          queueSummary();
           resolveReady(); flush();
         } else if (frame.type === "command") {
           if (!ready) throw new Fault("NOT_READY", "Relay issued a command before registration.");
@@ -335,6 +371,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     socket.on("close", () => {
       if (socket !== ws) return;
       ready = false; eventInFlight = false;
+      summaries.length = 0;
       if (!stopped && !permanentFailure) retry = setTimeout(connect, Math.min(30_000, 500 * 2 ** Math.min(attempts++, 6)) + Math.random() * 500);
     });
   }
@@ -344,7 +381,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   const refreshTimer = setInterval(() => {
     if (stopped || refreshing) return;
     refreshing = true;
-    void runtime.refresh().then(() => { summaryPending = true; flush(); })
+    void runtime.refresh().then(() => { queueSummary(); flush(); })
       .catch((error: unknown) => console.error("[DevPocket] Runtime refresh failed:", error instanceof Error ? error.name : "unknown"))
       .finally(() => { refreshing = false; });
   }, 10_000);

@@ -317,15 +317,21 @@ their required probe group; each group updates only its own evidence:
   not grant control capabilities.
   Socket backpressure leaves unsent event batches eligible for the next flush
   instead of waiting for an acknowledgement that cannot arrive.
-  Command, periodic and reconnect summaries wait for all queued event batches
-  and their acknowledgements, then publish the current snapshot before receipts.
-  This prevents older queued state from overwriting a newer read. A slow replay
-  can delay receipt delivery, but does not delay runtime execution or repeat the
-  operation; duplicate receipts use the same ordered delivery path.
+  Command, periodic and reconnect summaries capture a snapshot, a fixed event
+  sequence boundary and the pending receipt IDs. Only that event prefix and its
+  acknowledgements must drain before the snapshot and receipts are sent; later
+  events cannot extend the wait. The active snapshot stays fixed while at most
+  one successor is coalesced. Receipt delivery resumes in place after
+  backpressure, and reconnect rebuilds the boundary from the durable journal
+  without repeating operations.
+  The relay publishes an ordered `runtime.state` correction when a summary
+  changes the stored display state. Existing mobile viewers and later page
+  replay receive the correction; unchanged summaries do not repeat idle events.
   Immediate summaries use the same negotiated workspace projection as periodic
   summaries, so legacy relays do not receive unsupported fields.
-  These changes reuse protocol-v1 frames; the Android app and
-  installed bridge need updating, but no relay/schema migration is needed.
+  These changes reuse protocol-v1 frames and persisted formats. Update Android
+  for the picker, the installed bridge for snapshot delivery, and the relay for
+  mobile state corrections; no schema migration is needed.
 - File/Git views require a live absolute working directory and a complete,
   path-matched content-exclusion response explicitly allowing that directory.
   Every subsequent path is still evaluated; recorded history is never a substitute
