@@ -38,11 +38,15 @@ data class Capabilities(
 )
 
 @Serializable
+data class Workspace(val name: String, val branch: String)
+
+@Serializable
 data class SessionInfo(
     val hostId: String, val sessionId: String, val projectId: String, val projectName: String, val title: String,
     val cliVersion: String, val state: String, val permissionMode: String, val modelId: String,
     val reasoningEffort: String = "", val capabilities: Capabilities, val warnings: List<String> = emptyList(),
     val registeredAt: Long, val online: Boolean, val pinned: Boolean, val archived: Boolean, val lastSeen: Long,
+    val workspace: Workspace? = null,
 )
 
 @Serializable

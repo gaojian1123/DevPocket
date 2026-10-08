@@ -21,7 +21,7 @@ Dev Box extension -> joinSession() -> original Copilot terminal
 | Pairing | Offline administrator-provisioned hosts; five-minute, 256-bit, one-use pairing; independent phone credentials; multiple hosts/relays; host-specific device revocation |
 | Extension installation | Install once for the OS user; all projects' CLI sessions that load the extension register automatically, without per-project switches; standalone ZIP distribution, no source checkout or npm dependencies on the target |
 | Azure setup | One interactive command uses an existing azd login to register a new Dev Box with a verified running relay, encrypt the credential handoff, and install the user extension; no old deployment checkout, new public endpoint or relay restart |
-| Sessions | Registered original runtime only; project grouping, search, pin/rename/archive metadata; explicit offline/unsupported state |
+| Sessions | Registered original runtime only; same-repository worktrees share a project group, with per-session branch/worktree labels and search; pin/rename/archive metadata; explicit offline/unsupported state |
 | Chat | Earlier visible history, live assistant/tool output, terminal-to-phone and phone-to-terminal messages, durable command IDs, queued/admitted/processing/completed/uncertain delivery, offline drafts and replay |
 | Human decisions | Known permission forms: approve once or reject; actual permission mode is read-only; questions with exact choices/free text; stale results are errors; unsupported forms visibly require the terminal |
 | Stop | Sends `session.abort()` to the original runtime; shows **cancellation requested**, not stopped, until runtime idle evidence. Detached/background child processes must still be checked in the terminal |
@@ -42,6 +42,46 @@ Current limitations:
 - History imports the latest 15,000 runtime events; relay keeps the latest 20,000 visible events per session. Replay pages are byte-bounded (512 KiB). Android stores the latest 6,000 events and bounds decoded history text to 8 MiB. Cursor reset is shown when retention changes. Original history remains in the terminal.
 - Attachments expire after seven days, with a 20 MiB per-session relay quota. Private Dev Box attachment staging remains until the operator removes its isolated bridge data; do not remove attachments while the CLI is using them.
 - The separately authorized Azure relay is running with publicly trusted HTTPS. Public checks, a temporary simulated controller, and the sealed native Android build's actual pairing/message roundtrip on a visible isolated emulator passed against the same ordinary CLI. The emulator login is retained for user trial; physical-phone/cellular acceptance is still pending. FCM, release signing and store distribution remain unprovisioned. Opt-in background monitoring is best-effort, **not** a system-push or vehicle-wake guarantee, and is not part of sealed build 002's acceptance.
+
+## Projects and worktrees
+
+The session list groups a repository's main checkout and linked worktrees under
+one project **on the same host**. The project identity is a hash of the canonical
+Git common directory, not the worktree name, branch or remote URL. Independent
+clones remain separate even when they share a name or remote. The project name
+comes from Git's primary working-tree entry; each session shows its own branch
+and worktree name. Detached HEAD uses the worktree name and an explicit detached
+label. Search includes both branch and worktree names.
+
+Discovery uses bounded, read-only Git queries only after the original runtime
+explicitly allows content access to its live working directory. Non-Git folders
+keep directory-based grouping. If policy or Git identity cannot be verified,
+the session keeps directory-based grouping, clears stale workspace labels and
+shows the applicable warning. Absolute repository/Git paths are not sent to the
+phone; display names are redacted and bounded.
+
+Grouping is presentation metadata only. It never changes the original runtime
+or session ID, working directory, permission policy, file/Git browsing boundary,
+command routing, drafts, or pin/rename/archive metadata. A session started in a
+repository subdirectory keeps that subdirectory as its file-access boundary.
+
+Protocol v1 adds optional `workspace: { name, branch }` summary metadata (an
+empty branch means detached HEAD). Updated bridges request `workspaceMetadata=1`
+on the host WebSocket URL and send a legacy-shaped hello. They include workspace
+metadata only after an updated relay acknowledges `workspaceMetadata: true` in
+its ready frame; negotiation restarts on every connection. Legacy bridges still
+receive the original ready shape, and old Android clients ignore the optional
+summary field. A new bridge on an old relay still groups by repository but warns
+that workspace labels require a relay update.
+
+Existing persisted sessions remain readable without a migration. Old bridges
+and offline records keep their previous grouping until the original runtime
+registers through an updated bridge; DevPocket does not scan or resume them.
+The updated Android app, bridge and relay are needed for the complete display.
+Before downgrading a relay to a build that rejects workspace metadata, restore
+its matching pre-upgrade database backup rather than opening newer summaries
+with the old strict decoder. Installation, reload and deployment remain separate
+operator-authorized actions.
 
 ## Layout
 

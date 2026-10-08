@@ -5,6 +5,8 @@ import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { CopilotRuntime, type JoinedSession } from "../src/runtime.js";
 import { Action, PendingRequest, SessionSummary, UserEvent } from "../src/protocol.js";
+import { hash } from "../src/security.js";
+import { gitFixture } from "./git-fixture.js";
 
 export function runtimePeer(root: string, version: string | null = "1.0.90-0") {
   let listener: (event: unknown) => void = () => {};
@@ -95,6 +97,141 @@ test("runtime attachment exports earlier visible history without system prompts 
   const receipt = await runtime.execute({ type: "message", text: "Phone continuation", attachmentIds: [] });
   assert.equal(receipt.status, "admitted");
   assert.equal(receipt.result?.messageId, "runtime-user-id");
+});
+
+test("linked worktrees share project identity without changing the original runtime or working directory", async (t) => {
+  const f = await gitFixture(t);
+  const roots = [f.root, f.worktree], peers = roots.map((root) => runtimePeer(root));
+  const runtimes = peers.map((peer) => new CopilotRuntime(peer.session, () => {}));
+  t.after(() => { for (const runtime of runtimes) runtime.close(); });
+  const [main, linked] = await Promise.all(runtimes.map((runtime) => runtime.connect()));
+  assert.equal(main!.projectId, linked!.projectId);
+  assert.equal(main!.projectName, "project");
+  assert.equal(linked!.projectName, "project");
+  assert.deepEqual(main!.workspace, { name: "project", branch: "main" });
+  assert.deepEqual(linked!.workspace, { name: "task-worktree", branch: "feature/worktree-grouping" });
+  for (const [index, runtime] of runtimes.entries()) {
+    assert.equal(runtime.summary.sessionId, peers[index]!.session.sessionId);
+    assert.equal(runtime.workingDirectory, roots[index]);
+    const read = await runtime.execute({ type: "files.read", path: "note.txt" });
+    assert.deepEqual(read.result?.file, {
+      path: "note.txt", name: "note.txt", mime: "text/plain", size: index ? 15 : 13,
+      encoding: "utf8", content: index ? "Linked checkout" : "Main checkout",
+    });
+  }
+});
+
+test("project metadata refresh follows the live branch and clears stale Git identity when policy is unavailable", async (t) => {
+  const f = await gitFixture(t), peer = runtimePeer(f.worktree);
+  const runtime = new CopilotRuntime(peer.session, () => {});
+  t.after(() => runtime.close());
+  const initial = await runtime.connect();
+  await f.git(f.worktree, "checkout", "--detach");
+  const detached = await runtime.refresh();
+  assert.equal(detached.projectId, initial.projectId);
+  assert.deepEqual(detached.workspace, { name: "task-worktree", branch: "" });
+
+  const check = peer.session.rpc.contentExclusion!.checkPaths!;
+  peer.session.rpc.contentExclusion!.checkPaths = async () => ({ available: false, checks: [] });
+  const denied = await runtime.refresh();
+  assert.equal(denied.workspace, undefined);
+  assert.equal(denied.projectId, hash(process.platform === "win32" ? f.worktree.toLowerCase() : f.worktree));
+  assert.equal(denied.projectName, "task-worktree");
+  assert.equal(denied.capabilities.files, false);
+  assert.equal(denied.capabilities.git, false);
+  assert.equal(denied.sessionId, initial.sessionId);
+  assert.equal(runtime.workingDirectory, f.worktree);
+  assert.ok(denied.warnings.some((warning) => /File and Git views/.test(warning)));
+
+  peer.session.rpc.contentExclusion!.checkPaths = check;
+  const recovered = await runtime.refresh();
+  assert.equal(recovered.projectId, initial.projectId);
+  assert.deepEqual(recovered.workspace, detached.workspace);
+  assert.equal(recovered.capabilities.files, true);
+});
+
+test("file actions do not wait for project discovery and late metadata cannot replace a newer working directory", async (t) => {
+  const f = await gitFixture(t), peer = runtimePeer(f.worktree);
+  const runtime = new CopilotRuntime(peer.session, () => {});
+  let release = () => {}, started = () => {};
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  const probing = new Promise<void>((resolve) => { started = resolve; });
+  t.after(() => { release(); runtime.close(); });
+  await runtime.connect();
+  const check = peer.session.rpc.contentExclusion!.checkPaths!;
+  let calls = 0;
+  peer.session.rpc.contentExclusion!.checkPaths = async (input) => {
+    if (++calls === 2) { started(); await waiting; }
+    return check(input);
+  };
+  const refreshing = runtime.refresh();
+  await probing;
+  peer.session.rpc.permissions!.paths!.list = async () => ({ primary: f.root });
+  assert.equal((await runtime.execute({ type: "files.list", path: "" })).status, "completed");
+  assert.equal(runtime.workingDirectory, f.root);
+  release();
+  await refreshing;
+  assert.equal(runtime.summary.workspace, undefined);
+  assert.equal(runtime.summary.projectId, hash(process.platform === "win32" ? f.root.toLowerCase() : f.root));
+  assert.deepEqual((await runtime.refresh()).workspace, { name: "project", branch: "main" });
+});
+
+test("unchanged-directory file reads do not discard a concurrent branch refresh", async (t) => {
+  const f = await gitFixture(t), peer = runtimePeer(f.worktree);
+  const runtime = new CopilotRuntime(peer.session, () => {});
+  let release = () => {}, started = () => {};
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  const probing = new Promise<void>((resolve) => { started = resolve; });
+  t.after(() => { release(); runtime.close(); });
+  const initial = await runtime.connect();
+  await f.git(f.worktree, "branch", "-m", "feature/refreshed");
+  const check = peer.session.rpc.contentExclusion!.checkPaths!;
+  let calls = 0;
+  peer.session.rpc.contentExclusion!.checkPaths = async (input) => {
+    if (++calls === 2) { started(); await waiting; }
+    return check(input);
+  };
+  const refreshing = runtime.refresh();
+  await probing;
+  assert.equal((await runtime.execute({ type: "files.list", path: "" })).status, "completed");
+  release();
+  const updated = await refreshing;
+  assert.equal(updated.projectId, initial.projectId);
+  assert.equal(updated.workspace?.branch, "feature/refreshed");
+  assert.equal(updated.workspace?.name, "task-worktree");
+});
+
+test("file views use replaced policy owners and handlers even when their directory allowance is unchanged", async (t) => {
+  const f = await gitFixture(t), peer = runtimePeer(f.worktree);
+  const runtime = new CopilotRuntime(peer.session, () => {});
+  t.after(() => runtime.close());
+  await runtime.connect();
+  const allow = peer.session.rpc.contentExclusion!.checkPaths!;
+  peer.session.rpc.contentExclusion = {
+    checkPaths: async ({ paths }) => ({
+      available: true, checks: paths.map((file) => ({ path: file, excluded: path.basename(file) === "note.txt" })),
+    }),
+  };
+  await assert.rejects(runtime.execute({ type: "files.read", path: "note.txt" }), { code: "CONTENT_EXCLUDED" });
+  peer.session.rpc.contentExclusion.checkPaths = allow;
+  assert.equal((await runtime.execute({ type: "files.read", path: "note.txt" })).status, "completed");
+});
+
+test("closing during directory discovery prevents a later Git metadata probe", async (t) => {
+  const f = await capabilityFixture(t);
+  let started = () => {}, release = () => {}, checks = 0;
+  const reading = new Promise<void>((resolve) => { started = resolve; });
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  t.after(() => release());
+  f.session.rpc.permissions!.paths!.list = async () => { started(); await pending; return { primary: f.root }; };
+  const check = f.session.rpc.contentExclusion!.checkPaths!;
+  f.session.rpc.contentExclusion!.checkPaths = (input) => { checks++; return check(input); };
+  const connecting = f.runtime.connect();
+  await reading;
+  f.runtime.close();
+  release();
+  assert.equal((await connecting).workspace, undefined);
+  assert.equal(checks, 1);
 });
 
 test("permission races, unknown forms and strict question choices never produce false approval success", async (t) => {
