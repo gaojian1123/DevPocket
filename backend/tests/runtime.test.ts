@@ -776,6 +776,60 @@ test("deferred model switches keep the active model until a live read confirms t
   assert.equal(f.runtime.summary.reasoningEffort, current.reasoningEffort);
 });
 
+test("live activity observations survive model-only and older activity refreshes", async (t) => {
+  for (const wasActive of [false, true]) {
+    await t.test(wasActive ? "live idle" : "live turn start", async (t) => {
+      const f = await capabilityFixture(t);
+      const snapshot = { hasActiveWork: wasActive, abortable: wasActive };
+      f.session.rpc.permissions!.pendingRequests = async () => ({ items: [] });
+      f.session.rpc.metadata!.activity = async () => snapshot;
+      await f.runtime.connect();
+      let release!: (value: unknown) => void, started!: () => void;
+      const pending = new Promise<unknown>((resolve) => { release = resolve; });
+      const reading = new Promise<void>((resolve) => { started = resolve; });
+      f.session.rpc.metadata!.activity = () => { started(); return pending; };
+      const refresh = f.runtime.refresh();
+      await reading;
+      f.emit(wasActive ? "session.idle" : "assistant.turn_start", {});
+      release(snapshot);
+      await refresh;
+      const expected = wasActive ? "idle" : "running";
+      assert.equal(f.runtime.summary.state, expected);
+      await f.runtime.execute({ type: "models" });
+      assert.equal(f.runtime.summary.state, expected);
+      f.session.rpc.metadata!.activity = async () => snapshot;
+      await f.runtime.refresh();
+      assert.equal(f.runtime.summary.state, wasActive ? "running" : "idle", "A newer activity probe can reconcile the live observation.");
+    });
+  }
+});
+
+test("live activity state never invents missing runtime control capabilities", async (t) => {
+  const f = await capabilityFixture(t);
+  delete f.session.rpc.metadata;
+  f.session.rpc.permissions!.pendingRequests = async () => ({ items: [] });
+  await f.runtime.connect();
+  f.emit("assistant.turn_start", {});
+  await f.runtime.models();
+  assert.equal(f.runtime.summary.state, "running");
+  assert.equal(f.runtime.summary.capabilities.messages, false);
+  assert.equal(f.runtime.summary.capabilities.abort, false);
+  assert.equal(f.runtime.summary.capabilities.questions, false);
+  await assert.rejects(f.runtime.execute({ type: "abort" }), { code: "UNSUPPORTED" });
+});
+
+test("live turn starts do not clear cancellation requested before runtime idle", async (t) => {
+  const f = await capabilityFixture(t);
+  f.session.rpc.permissions!.pendingRequests = async () => ({ items: [] });
+  await f.runtime.connect();
+  await f.runtime.execute({ type: "abort" });
+  f.emit("assistant.turn_start", {});
+  assert.equal(f.runtime.summary.state, "cancel_requested");
+  assert.equal(f.events.at(-1)?.kind === "runtime.state" && f.events.at(-1)?.data.state, "cancel_requested");
+  f.emit("session.idle", { aborted: true });
+  assert.equal(f.runtime.summary.state, "idle");
+});
+
 test("each command refreshes only its prerequisite evidence", async (t) => {
   const cases: { action: Action; reads: string[]; error?: string }[] = [
     { action: { type: "message", text: "Only activity", attachmentIds: [] }, reads: ["activity", "queue"] },

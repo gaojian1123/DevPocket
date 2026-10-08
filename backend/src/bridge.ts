@@ -199,7 +199,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     }
     if (!eventInFlight) {
       const items = journal.events();
-      if (items.length) { eventInFlight = true; send({ type: "events", items }); }
+      if (items.length) eventInFlight = send({ type: "events", items });
     }
     for (const receipt of journal.receipts()) send({ type: "result", ...receipt });
   }

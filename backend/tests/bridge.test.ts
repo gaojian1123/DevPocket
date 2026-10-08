@@ -1,12 +1,121 @@
 import assert from "node:assert/strict";
 import path from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import WebSocket from "ws";
 import { startBridge } from "../src/bridge.js";
 import type { JoinedSession } from "../src/runtime.js";
 import { Receipt, SessionSummary, type Action } from "../src/protocol.js";
 import { fixture, newId, sessionPath } from "./harness.js";
+
+async function eventually(predicate: () => boolean, message: string): Promise<void> {
+  for (let i = 0; i < 100 && !predicate(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(predicate(), message);
+}
+
+async function modelBridgeFixture(t: TestContext) {
+  const transport: {
+    socket?: WebSocket; bufferedBytes: number; greetings: number;
+    acknowledged: Set<string>; onSummary: () => void;
+  } = { bufferedBytes: 0, greetings: 0, acknowledged: new Set(), onSummary: () => {} };
+  const originalSend = WebSocket.prototype.send;
+  const bufferedAmount = Object.getOwnPropertyDescriptor(WebSocket.prototype, "bufferedAmount")!.get!;
+  t.mock.getter(WebSocket.prototype, "bufferedAmount", function (this: WebSocket) {
+    return this === transport.socket ? transport.bufferedBytes : bufferedAmount.call(this);
+  });
+  t.mock.method(WebSocket.prototype, "send", function (this: WebSocket, ...args: Parameters<typeof originalSend>) {
+    if (typeof args[0] === "string") {
+      const frame: { type: string } = JSON.parse(args[0]);
+      if (frame.type === "hello") {
+        transport.socket = this;
+        transport.greetings++;
+        this.on("message", (bytes) => {
+          const incoming: { type: string; ids?: string[] } = JSON.parse(bytes.toString());
+          if (incoming.type === "eventsAck") for (const id of incoming.ids ?? []) transport.acknowledged.add(id);
+        });
+      }
+      if (this === transport.socket && frame.type === "summary") transport.onSummary();
+    }
+    return originalSend.apply(this, args);
+  });
+  let bridge: Awaited<ReturnType<typeof startBridge>> | undefined;
+  t.after(async () => { await bridge?.close(); });
+  const f = await fixture(t), host = f.host(), phone = await f.pair(host.token), sid = newId();
+  let listener: (event: unknown) => void = () => {};
+  const event = (type: string, data: object) => ({ id: newId(), timestamp: new Date().toISOString(), type, data });
+  const session: JoinedSession = {
+    sessionId: sid,
+    getEvents: async () => [event("session.start", { context: { cwd: f.dataDir } })],
+    on: (handler) => { listener = handler; return () => {}; },
+    abort: async () => {},
+    rpc: {
+      metadata: { activity: async () => ({ hasActiveWork: false, abortable: false }) },
+      permissions: { pendingRequests: async () => ({ items: [] }) },
+      model: {
+        getCurrent: async () => ({ modelId: "test-model", reasoningEffort: "high" }),
+        list: async () => ({ list: [{ id: "test-model", supportedReasoningEfforts: ["low", "high"] }] }),
+        switchTo: async () => ({ modelId: "test-model" }),
+      },
+    },
+  };
+  bridge = await startBridge(session, {
+    hostId: host.hostId, token: host.token, relayUrl: f.url,
+    dataDir: path.join(f.dataDir, "bridge"), allowInsecureLoopback: true,
+  });
+  await eventually(() => transport.acknowledged.size > 0, "Initial events must be acknowledged before exercising flush.");
+  return {
+    ...f, host, phone, sid, session, bridge, transport,
+    emit: (type: string, data: object) => { const value = event(type, data); listener(value); return value.id; },
+    command: async (action: Action) => {
+      const route = sessionPath(host.hostId, sid) + "/commands", command = { commandId: newId(), action };
+      await f.request(route, phone.token, command);
+      let receipt: Receipt | undefined;
+      for (let i = 0; i < 100; i++) {
+        receipt = Receipt.parse(await (await f.request(`${route}/${command.commandId}`, phone.token)).json());
+        if (receipt.status === "completed") break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(receipt?.status, "completed");
+      return receipt;
+    },
+    catalogSession: async () => {
+      const catalog: { sessions: SessionSummary[] } = await (await f.request("/v1/catalog", phone.token)).json();
+      return catalog.sessions.find((item) => item.sessionId === sid)!;
+    },
+  };
+}
+
+test("events resume without reconnecting after a summary crosses the socket backpressure threshold", async (t) => {
+  const f = await modelBridgeFixture(t), limit = 2 * 1024 * 1024;
+  let eventId = "", summarySent = false;
+  f.session.rpc.model!.getCurrent = async () => {
+    eventId = f.emit("session.idle", { aborted: true });
+    return { modelId: "test-model", reasoningEffort: "high" };
+  };
+  f.transport.bufferedBytes = limit - 1;
+  f.transport.onSummary = () => { f.transport.bufferedBytes = limit; summarySent = true; };
+  const command = f.command({ type: "models" });
+  await eventually(() => summarySent, "The summary must be sent before event delivery is blocked.");
+  assert.ok(!f.transport.acknowledged.has(eventId), "An unsent event cannot have an acknowledgement.");
+  f.transport.onSummary = () => {};
+  f.transport.bufferedBytes = 0;
+  await command;
+  await eventually(() => f.transport.acknowledged.has(eventId), "Queued events must resume after backpressure clears.");
+  const page = await (await f.request(sessionPath(f.host.hostId, f.sid) + "/events", f.phone.token)).json();
+  assert.ok(page.events.some((item: { id: string; kind: string }) => item.id === eventId && item.kind === "runtime.state"));
+  assert.equal(f.transport.greetings, 1, "Recovery must not require reconnecting the original runtime.");
+});
+
+test("model summaries preserve a live turn start already delivered and acknowledged", async (t) => {
+  const f = await modelBridgeFixture(t);
+  assert.equal((await f.catalogSession()).state, "idle");
+  const eventId = f.emit("assistant.turn_start", {});
+  await eventually(() => f.transport.acknowledged.has(eventId), "The live turn start must be acknowledged first.");
+  assert.equal((await f.catalogSession()).state, "running");
+  await f.command({ type: "models" });
+  assert.equal((await f.catalogSession()).state, "running");
+});
 
 test("confirmed model switch updates the phone catalogue before its completed receipt", async (t) => {
   let bridge: Awaited<ReturnType<typeof startBridge>> | undefined;

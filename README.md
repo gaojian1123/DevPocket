@@ -269,7 +269,12 @@ their required probe group; each group updates only its own evidence:
   before returning model/refresh command receipts, so the phone's completion-triggered
   catalogue refresh does not wait for the periodic bridge update. Deferred
   switches produce a queued notice and retain the active model until confirmed
-  by a live read. These changes reuse protocol-v1 frames; the Android app and
+  by a live read. Live turn-start/idle events also update the summary's display
+  state, including after delivery is acknowledged; older in-flight activity
+  reads cannot overwrite them. These events do not grant control capabilities.
+  Socket backpressure leaves unsent event batches eligible for the next flush
+  instead of waiting for an acknowledgement that cannot arrive.
+  These changes reuse protocol-v1 frames; the Android app and
   installed bridge need updating, but no relay/schema migration is needed.
 - File/Git views require a live absolute working directory and a complete,
   path-matched content-exclusion response explicitly allowing that directory.

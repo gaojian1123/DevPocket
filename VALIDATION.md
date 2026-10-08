@@ -643,3 +643,36 @@ distributed or sealed, and no existing runtime, installed extension, device
 grant or cloud relay was changed. Both the APK and bridge need updating for the
 complete fix. Protocol-v1 shapes and persisted formats are unchanged; no relay
 or schema migration is required.
+
+### Model synchronization review follow-up (2026-10-08)
+
+The review identified two boundary failures in immediate summary publication:
+
+```powershell
+node --import tsx --test --test-name-pattern 'socket backpressure threshold|live turn start already' .\backend\tests\bridge.test.ts
+```
+
+Both tests failed before correction. A summary crossing the 2 MiB socket-buffer
+threshold marked the next unsent event batch in flight, so its nonexistent
+acknowledgement stranded subsequent delivery. Separately, a turn-start event
+already delivered and acknowledged changed the relay to `running`, but a model
+command published an `idle` summary derived from the older activity cache.
+
+The bridge now marks a batch in flight only after a successful send. Runtime
+summaries use live activity observations independently of probe-gated control
+capabilities. Activity reads remember the observation revision at their start,
+so a late read cannot erase a newer turn-start/idle event; a subsequent fresh
+read can still reconcile state. Cancellation remains requested across a
+turn-start event until live idle evidence confirms completion.
+
+The original real local HTTP/WSS/SQLite regressions now pass without reconnecting
+the bridge. Additional runtime regressions cover both live activity directions,
+newer versus older reads, absent control evidence, and cancellation ordering.
+`npm test` passes **168 tests**; `npm run typecheck`, `npm run build`, and
+`node --test .\scripts\tests\extension-package.test.mjs` also pass. The package
+test uses isolated simulated sessions, not an installed working CLI.
+
+Android and wire formats are unchanged by this follow-up; the earlier Android
+acceptance remains a separate record and was not rerun here. No live runtime,
+device installation/enrollment, extension reload or cloud operation was
+performed.
