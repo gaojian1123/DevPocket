@@ -176,6 +176,47 @@ test("file actions do not wait for project discovery and late metadata cannot re
   assert.deepEqual((await runtime.refresh()).workspace, { name: "project", branch: "main" });
 });
 
+test("unchanged-directory file reads do not discard a concurrent branch refresh", async (t) => {
+  const f = await gitFixture(t), peer = runtimePeer(f.worktree);
+  const runtime = new CopilotRuntime(peer.session, () => {});
+  let release = () => {}, started = () => {};
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  const probing = new Promise<void>((resolve) => { started = resolve; });
+  t.after(() => { release(); runtime.close(); });
+  const initial = await runtime.connect();
+  await f.git(f.worktree, "branch", "-m", "feature/refreshed");
+  const check = peer.session.rpc.contentExclusion!.checkPaths!;
+  let calls = 0;
+  peer.session.rpc.contentExclusion!.checkPaths = async (input) => {
+    if (++calls === 2) { started(); await waiting; }
+    return check(input);
+  };
+  const refreshing = runtime.refresh();
+  await probing;
+  assert.equal((await runtime.execute({ type: "files.list", path: "" })).status, "completed");
+  release();
+  const updated = await refreshing;
+  assert.equal(updated.projectId, initial.projectId);
+  assert.equal(updated.workspace?.branch, "feature/refreshed");
+  assert.equal(updated.workspace?.name, "task-worktree");
+});
+
+test("file views use replaced policy owners and handlers even when their directory allowance is unchanged", async (t) => {
+  const f = await gitFixture(t), peer = runtimePeer(f.worktree);
+  const runtime = new CopilotRuntime(peer.session, () => {});
+  t.after(() => runtime.close());
+  await runtime.connect();
+  const allow = peer.session.rpc.contentExclusion!.checkPaths!;
+  peer.session.rpc.contentExclusion = {
+    checkPaths: async ({ paths }) => ({
+      available: true, checks: paths.map((file) => ({ path: file, excluded: path.basename(file) === "note.txt" })),
+    }),
+  };
+  await assert.rejects(runtime.execute({ type: "files.read", path: "note.txt" }), { code: "CONTENT_EXCLUDED" });
+  peer.session.rpc.contentExclusion.checkPaths = allow;
+  assert.equal((await runtime.execute({ type: "files.read", path: "note.txt" })).status, "completed");
+});
+
 test("closing during directory discovery prevents a later Git metadata probe", async (t) => {
   const f = await capabilityFixture(t);
   let started = () => {}, release = () => {}, checks = 0;

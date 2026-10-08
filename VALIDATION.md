@@ -628,3 +628,22 @@ These are source-worktree checks with disposable Git repositories and simulated
 SDK peers, not installed-device or real-CLI acceptance. No existing runtime was
 reloaded, no extension or APK was installed, and no host enrollment, cloud
 deployment or sealed artifact was changed.
+
+### Concurrent worktree metadata review follow-up (2026-10-08)
+
+Copilot identified that an unchanged-directory file read recreated the
+`ProjectFiles` wrapper during project discovery, causing a valid branch refresh
+to be discarded. The new overlapping-read regression first reproduced the old
+branch remaining visible after refresh, then passed after the fix.
+
+The runtime now reuses its file view only while the live directory, positive
+policy allowance, policy owner and evaluator function remain unchanged.
+Directory changes, denial and replaced policy handlers still invalidate that
+view, so stale discovery cannot overwrite a new scope and file reads cannot
+keep using an old evaluator.
+
+`node --import tsx --test backend\tests\runtime.test.ts backend\tests\workspace-wire.test.ts`
+passes **141 tests**, including unchanged-directory overlap, changed-directory
+invalidation, replaced policy owners/handlers and legacy wire negotiation.
+`npm run build` also passes. Android and wire definitions are unchanged by this
+follow-up; no runtime installation, reload or deployment was performed.

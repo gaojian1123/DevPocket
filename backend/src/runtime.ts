@@ -39,6 +39,7 @@ export interface JoinedSession {
     contentExclusion?: { checkPaths?: (input: { paths: string[] }) => Promise<unknown> };
   };
 }
+type ContentExclusion = NonNullable<JoinedSession["rpc"]["contentExclusion"]>;
 
 export const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -301,6 +302,7 @@ export class CopilotRuntime {
   private requestsHash = "";
   private modelItems: ModelItem[] = [];
   private files?: ProjectFiles;
+  private filePolicy?: { owner: ContentExclusion; check: NonNullable<ContentExclusion["checkPaths"]> };
   private closed = false;
   private activity?: z.infer<typeof runtimeActivity>;
   private projectAbort?: AbortController;
@@ -501,13 +503,19 @@ export class CopilotRuntime {
         const paths = await this.probe("Working directory", () => rpc.permissions?.paths?.list?.(), workingDirectory.parse);
         const primary = paths?.primary;
         if (primary) this.root = primary;
-        const checkPaths = rpc.contentExclusion?.checkPaths;
+        const contentExclusion = rpc.contentExclusion, checkPaths = contentExclusion?.checkPaths;
         const policy = primary
-          ? await this.probe("Content exclusion", () => rpc.contentExclusion?.checkPaths?.({ paths: [primary] }),
+          ? await this.probe("Content exclusion", () => checkPaths?.call(contentExclusion, { paths: [primary] }),
             (value) => contentExclusionDecisions(value, [primary])) : undefined;
         if (!primary) this.warnings.delete("Content exclusion");
-        this.files = primary && policy?.[0] === true && typeof checkPaths === "function"
-          ? new ProjectFiles(primary, (paths) => checkPaths.call(rpc.contentExclusion, { paths })) : undefined;
+        if (primary && policy?.[0] === true && contentExclusion && typeof checkPaths === "function") {
+          if (!this.files || previousRoot !== primary || this.filePolicy?.owner !== contentExclusion || this.filePolicy.check !== checkPaths)
+            this.files = new ProjectFiles(primary, (paths) => checkPaths.call(contentExclusion, { paths }));
+          this.filePolicy = { owner: contentExclusion, check: checkPaths };
+        } else {
+          this.files = undefined;
+          this.filePolicy = undefined;
+        }
         if (this.files) this.warnings.delete("File views");
         else this.warnings.set("File views", "File and Git views require explicit content-exclusion allowance for the live working directory.");
         if (!this.files || previousRoot !== this.root || !this.summary.workspace) changes = this.folderProject();
