@@ -440,7 +440,7 @@ export class CopilotRuntime {
       case "activity": {
         const revision = this.activityRevision;
         this.activity = await this.probe("Runtime activity", () => rpc.metadata?.activity?.(), runtimeActivity.parse);
-        if (revision === this.activityRevision) this.observedActiveWork = this.activity?.hasActiveWork;
+        if (this.activity && revision === this.activityRevision) this.observedActiveWork = this.activity.hasActiveWork;
         const send = this.hasMethod("Message sending", this.session.send);
         const abort = this.hasMethod("Cancellation", this.session.abort);
         const questions = this.hasMethod("Question responses", rpc.ui?.handlePendingUserInput, rpc.ui?.handlePendingElicitation);

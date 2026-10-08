@@ -953,6 +953,11 @@ test("live activity state never invents missing runtime control capabilities", a
   assert.equal(f.runtime.summary.capabilities.abort, false);
   assert.equal(f.runtime.summary.capabilities.questions, false);
   await assert.rejects(f.runtime.execute({ type: "abort" }), { code: "UNSUPPORTED" });
+  await f.runtime.refresh();
+  assert.equal(f.runtime.summary.state, "running", "A missing activity RPC cannot erase a known live state.");
+  assert.equal(f.runtime.summary.capabilities.messages, false);
+  assert.equal(f.runtime.summary.capabilities.abort, false);
+  assert.equal(f.runtime.summary.capabilities.questions, false);
 });
 
 test("live turn starts do not clear cancellation requested before runtime idle", async (t) => {
@@ -965,6 +970,54 @@ test("live turn starts do not clear cancellation requested before runtime idle",
   assert.equal(f.events.at(-1)?.kind === "runtime.state" && f.events.at(-1)?.data.state, "cancel_requested");
   f.emit("session.idle", { aborted: true });
   assert.equal(f.runtime.summary.state, "idle");
+});
+
+test("failed activity probes retain known lifecycle state without retaining control grants", async (t) => {
+  for (const state of ["running", "idle"] as const) {
+    for (const failure of ["unavailable", "rejected", "malformed", "timeout"]) {
+      await t.test(`${state}: ${failure}`, async (t) => {
+        const f = await capabilityFixture(t), metadata = f.session.rpc.metadata!;
+        delete f.session.rpc.permissions!.paths;
+        f.session.rpc.permissions!.pendingRequests = async () => ({ items: [] });
+        await f.runtime.connect();
+        f.emit(state === "running" ? "assistant.turn_start" : "session.idle", {});
+        let release: ((value: unknown) => void) | undefined;
+        let reading = false;
+        if (failure === "unavailable") delete metadata.activity;
+        else if (failure === "rejected") metadata.activity = async () => { throw new Error("TEST_ACTIVITY_UNAVAILABLE"); };
+        else if (failure === "malformed") metadata.activity = async () => ({ hasActiveWork: "unknown" });
+        else {
+          t.mock.timers.enable({ apis: ["setTimeout"] });
+          metadata.activity = () => {
+            reading = true;
+            return new Promise<unknown>((resolve) => { release = resolve; });
+          };
+        }
+        const refreshing = f.runtime.refresh();
+        if (failure === "timeout") {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          assert.ok(reading);
+          t.mock.timers.tick(5000);
+        }
+        const summary = await refreshing;
+        assert.equal(summary.state, state);
+        assert.equal(summary.capabilities.messages, false);
+        assert.equal(summary.capabilities.abort, false);
+        assert.equal(summary.capabilities.questions, false);
+        assert.ok(summary.warnings.some((warning) => warning.startsWith("Runtime activity")));
+        release?.({ hasActiveWork: state !== "running", abortable: true });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(f.runtime.summary.state, state, "An expired probe's late response is not new evidence.");
+        assert.equal(f.runtime.summary.capabilities.abort, false);
+        metadata.activity = async () => ({ hasActiveWork: state !== "running", abortable: true });
+        const recovered = await f.runtime.refresh();
+        assert.equal(recovered.state, state === "running" ? "idle" : "running");
+        assert.equal(recovered.capabilities.messages, true);
+        assert.equal(recovered.capabilities.abort, true);
+        assert.equal(recovered.capabilities.questions, true);
+      });
+    }
+  }
 });
 
 test("each command refreshes only its prerequisite evidence", async (t) => {

@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import WebSocket from "ws";
 import { startBridge } from "../src/bridge.js";
 import type { JoinedSession } from "../src/runtime.js";
-import { Receipt, SessionSummary, type Action } from "../src/protocol.js";
+import { HostFrame, Receipt, SessionSummary, type Action } from "../src/protocol.js";
 import { fixture, newId, sessionPath } from "./harness.js";
 
 async function eventually(predicate: () => boolean, message: string): Promise<void> {
@@ -16,9 +16,14 @@ async function eventually(predicate: () => boolean, message: string): Promise<vo
 
 async function modelBridgeFixture(t: TestContext) {
   const transport: {
-    socket?: WebSocket; bufferedBytes: number; greetings: number;
+    socket?: WebSocket; relaySocket?: WebSocket; bufferedBytes: number; greetings: number;
     acknowledged: Set<string>; onSummary: () => void;
-  } = { bufferedBytes: 0, greetings: 0, acknowledged: new Set(), onSummary: () => {} };
+    sent: ReturnType<typeof HostFrame.parse>[];
+    holdAcknowledgements: boolean; pendingAcknowledgements: (() => void)[];
+  } = {
+    bufferedBytes: 0, greetings: 0, acknowledged: new Set(), onSummary: () => {},
+    sent: [], holdAcknowledgements: false, pendingAcknowledgements: [],
+  };
   const originalSend = WebSocket.prototype.send;
   const bufferedAmount = Object.getOwnPropertyDescriptor(WebSocket.prototype, "bufferedAmount")!.get!;
   t.mock.getter(WebSocket.prototype, "bufferedAmount", function (this: WebSocket) {
@@ -35,6 +40,12 @@ async function modelBridgeFixture(t: TestContext) {
           if (incoming.type === "eventsAck") for (const id of incoming.ids ?? []) transport.acknowledged.add(id);
         });
       }
+      if (frame.type === "ready") transport.relaySocket = this;
+      if (frame.type === "eventsAck" && transport.holdAcknowledgements) {
+        transport.pendingAcknowledgements.push(() => originalSend.apply(this, args));
+        return;
+      }
+      if (this === transport.socket) transport.sent.push(HostFrame.parse(frame));
       if (this === transport.socket && frame.type === "summary") transport.onSummary();
     }
     return originalSend.apply(this, args);
@@ -76,7 +87,8 @@ async function modelBridgeFixture(t: TestContext) {
         if (receipt.status === "completed") break;
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
-      assert.equal(receipt?.status, "completed");
+      assert.ok(receipt);
+      assert.equal(receipt.status, "completed");
       return receipt;
     },
     catalogSession: async () => {
@@ -89,12 +101,12 @@ async function modelBridgeFixture(t: TestContext) {
 test("events resume without reconnecting after a summary crosses the socket backpressure threshold", async (t) => {
   const f = await modelBridgeFixture(t), limit = 2 * 1024 * 1024;
   let eventId = "", summarySent = false;
-  f.session.rpc.model!.getCurrent = async () => {
-    eventId = f.emit("session.idle", { aborted: true });
-    return { modelId: "test-model", reasoningEffort: "high" };
-  };
   f.transport.bufferedBytes = limit - 1;
-  f.transport.onSummary = () => { f.transport.bufferedBytes = limit; summarySent = true; };
+  f.transport.onSummary = () => {
+    f.transport.bufferedBytes = limit;
+    eventId = f.emit("session.idle", { aborted: true });
+    summarySent = true;
+  };
   const command = f.command({ type: "models" });
   await eventually(() => summarySent, "The summary must be sent before event delivery is blocked.");
   assert.ok(!f.transport.acknowledged.has(eventId), "An unsent event cannot have an acknowledgement.");
@@ -115,6 +127,150 @@ test("model summaries preserve a live turn start already delivered and acknowled
   assert.equal((await f.catalogSession()).state, "running");
   await f.command({ type: "models" });
   assert.equal((await f.catalogSession()).state, "running");
+});
+
+test("a fresh idle summary supersedes older queued turn-start events across all batches", async (t) => {
+  for (const scenario of [
+    { name: "one state event", count: 0, content: "" },
+    { name: "count-bounded batches", count: 160, content: "Queued message" },
+    { name: "byte-bounded batches", count: 20, content: "x".repeat(60_000) },
+  ]) {
+    await t.test(scenario.name, async (t) => {
+      const f = await modelBridgeFixture(t);
+      f.session.rpc.permissions!.paths = { list: async () => ({ primary: f.dataDir }) };
+      f.session.rpc.contentExclusion = { checkPaths: async ({ paths }) => ({
+        available: true, checks: paths.map((file) => ({ path: file, excluded: false })),
+      }) };
+      const refresh = f.bridge.runtime.refresh.bind(f.bridge.runtime);
+      let refreshed = false;
+      t.mock.method(f.bridge.runtime, "refresh", async () => {
+        const summary = await refresh();
+        refreshed = true;
+        return summary;
+      });
+      f.transport.bufferedBytes = 2 * 1024 * 1024;
+      for (let i = 0; i < scenario.count; i++)
+        f.emit("user.message", { messageId: `message-${i}`, content: scenario.content });
+      const eventId = f.emit("assistant.turn_start", {});
+      const command = f.command({ type: "refresh" });
+      await eventually(() => refreshed, "The later activity probe and full refresh must complete first.");
+      assert.equal(f.bridge.runtime.summary.state, "idle");
+      assert.ok(!f.transport.acknowledged.has(eventId), "The old turn start must still be queued.");
+      const beforeDrain = f.transport.sent.length;
+      f.transport.bufferedBytes = 0;
+      await command;
+      await eventually(() => f.transport.acknowledged.has(eventId), "Every queued event must reach the relay.");
+      assert.equal((await f.catalogSession()).state, "idle");
+      const frames = f.transport.sent.slice(beforeDrain);
+      const lastEvents = frames.findLastIndex((frame) => frame.type === "events");
+      const summary = frames.findIndex((frame) => frame.type === "summary");
+      const result = frames.findIndex((frame) => frame.type === "result");
+      assert.ok(summary > lastEvents, "The summary must follow all older event batches.");
+      assert.ok(result > summary, "Completion must follow the authoritative summary.");
+    });
+  }
+});
+
+test("summary-dependent receipts wait for every event acknowledgement and a drained socket", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const f = await modelBridgeFixture(t), limit = 2 * 1024 * 1024;
+  const before = f.transport.sent.length;
+  f.transport.bufferedBytes = limit;
+  const eventIds = Array.from({ length: 161 }, (_, i) =>
+    f.emit("user.message", { messageId: `message-${i}`, content: `Queued message ${i}` }));
+  f.transport.holdAcknowledgements = true;
+  const execute = f.bridge.runtime.execute.bind(f.bridge.runtime);
+  let executed = false;
+  t.mock.method(f.bridge.runtime, "execute", async (...args: Parameters<typeof execute>) => {
+    const receipt = await execute(...args);
+    executed = true;
+    return receipt;
+  });
+  const command = f.command({ type: "models" });
+  await eventually(() => executed, "The model command must execute while its transport remains blocked.");
+  const receiptsBeforeDrain = f.transport.sent.filter((frame) => frame.type === "result").length;
+  f.transport.bufferedBytes = 0;
+  t.mock.timers.tick(120);
+  for (let batch = 0; batch < 3; batch++) {
+    await eventually(() => f.transport.pendingAcknowledgements.length === 1, "Each event batch must reach the relay.");
+    t.mock.timers.tick(240);
+    assert.equal(f.transport.sent.filter((frame) => frame.type === "result").length, receiptsBeforeDrain);
+    assert.ok(!f.transport.sent.slice(before).some((frame) => frame.type === "summary"),
+      "No summary may pass an outstanding event acknowledgement.");
+    if (batch === 1) {
+      f.transport.bufferedBytes = limit;
+      f.transport.pendingAcknowledgements.shift()!();
+      await eventually(() => f.transport.acknowledged.has(eventIds[159]!), "The second batch must be acknowledged.");
+      t.mock.timers.tick(240);
+      assert.equal(f.transport.pendingAcknowledgements.length, 0, "A blocked batch must remain unsent.");
+      f.transport.bufferedBytes = 0;
+      t.mock.timers.tick(120);
+    } else f.transport.pendingAcknowledgements.shift()!();
+  }
+  await command;
+  assert.ok(eventIds.every((id) => f.transport.acknowledged.has(id)));
+  assert.equal(f.transport.greetings, 1);
+});
+
+test("periodic and reconnect summaries follow queued state events before claiming the current state", async (t) => {
+  for (const source of ["periodic", "reconnect"]) {
+    await t.test(source, async (t) => {
+      t.mock.timers.enable({ apis: ["setInterval"] });
+      t.mock.method(Math, "random", () => 0);
+      const f = await modelBridgeFixture(t);
+      f.transport.bufferedBytes = 2 * 1024 * 1024;
+      const eventId = f.emit("assistant.turn_start", {});
+      const before = f.transport.sent.length;
+      const refresh = f.bridge.runtime.refresh.bind(f.bridge.runtime);
+      let refreshed = false;
+      t.mock.method(f.bridge.runtime, "refresh", async () => {
+        const summary = await refresh();
+        refreshed = true;
+        return summary;
+      });
+      if (source === "periodic") t.mock.timers.tick(10_000);
+      else await f.bridge.runtime.refresh();
+      await eventually(() => refreshed, "A successful idle read must precede delivery of the older event.");
+      assert.equal(f.bridge.runtime.summary.state, "idle");
+      f.transport.bufferedBytes = 0;
+      if (source === "reconnect") f.transport.socket!.terminate();
+      else t.mock.timers.tick(120);
+      await eventually(() => f.transport.acknowledged.has(eventId), "Queued state must be acknowledged.");
+      await eventually(() => f.transport.sent.slice(before).some((frame) => frame.type === "summary"),
+        "The final summary must eventually be published.");
+      assert.equal((await f.catalogSession()).state, "idle");
+      const frames = f.transport.sent.slice(before);
+      assert.ok(frames.findLastIndex((frame) => frame.type === "summary") >
+        frames.findLastIndex((frame) => frame.type === "events"));
+    });
+  }
+});
+
+test("replayed model receipts cannot bypass pending event and summary delivery", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const f = await modelBridgeFixture(t);
+  const execute = t.mock.method(f.bridge.runtime, "execute");
+  const receipt = await f.command({ type: "models" });
+  const before = f.transport.sent.length;
+  f.transport.bufferedBytes = 2 * 1024 * 1024;
+  const eventId = f.emit("assistant.turn_start", {});
+  await f.bridge.runtime.refresh();
+  f.transport.holdAcknowledgements = true;
+  f.transport.bufferedBytes = 0;
+  f.transport.relaySocket!.send(JSON.stringify({
+    type: "command", commandId: receipt.commandId, action: { type: "models" },
+  }));
+  t.mock.timers.tick(120);
+  await eventually(() => f.transport.pendingAcknowledgements.length === 1, "The old state must be delivered first.");
+  assert.ok(!f.transport.sent.slice(before).some((frame) => frame.type === "result"));
+  f.transport.pendingAcknowledgements.shift()!();
+  await eventually(() => f.transport.sent.slice(before).some((frame) => frame.type === "result"),
+    "The immutable receipt must still be returned after draining events.");
+  assert.ok(f.transport.acknowledged.has(eventId));
+  assert.equal((await f.catalogSession()).state, "idle");
+  assert.equal(execute.mock.callCount(), 1, "Replay must not invoke the runtime operation again.");
+  assert.deepEqual(f.transport.sent.slice(before).findLast((frame) => frame.type === "result"),
+    { type: "result", ...receipt });
 });
 
 test("confirmed model switch updates the phone catalogue before its completed receipt", async (t) => {

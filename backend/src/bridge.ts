@@ -42,8 +42,10 @@ class Journal {
     const existing = this.db.prepare("SELECT digest,receipt FROM commands WHERE id=?").get(command.commandId);
     if (existing) {
       if (existing.digest !== digest) throw new Fault("COMMAND_CONFLICT", "Command ID has different content.", 409);
-      if (typeof existing.receipt === "string")
+      if (typeof existing.receipt === "string") {
+        this.db.prepare("UPDATE commands SET acked=0 WHERE id=?").run(command.commandId);
         return { fresh: false, receipt: Receipt.parse(JSON.parse(existing.receipt)) };
+      }
       const receipt: Receipt = { commandId: command.commandId, status: "uncertain",
         error: { code: "DELIVERY_UNCERTAIN", message: "The bridge restarted during this operation. Inspect the original terminal; it will not be executed again automatically." } };
       this.save(receipt);
@@ -202,14 +204,19 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   }
   function flush(): void {
     if (!ready || stopped) return;
-    // Publish refreshed model state before completion, without overwriting newer queued activity events.
-    if (summaryPending) {
-      if (!send({ type: "summary", summary: summaryForRelay(runtime.summary) })) return;
-      summaryPending = false;
-    }
+    let awaitingEvents = eventInFlight;
     if (!eventInFlight) {
       const items = journal.events();
-      if (items.length) eventInFlight = send({ type: "events", items });
+      if (items.length) {
+        eventInFlight = send({ type: "events", items });
+        awaitingEvents = true;
+      }
+    }
+    // Older state events must be acknowledged before the current snapshot and its receipts.
+    if (summaryPending) {
+      if (awaitingEvents) return;
+      if (!send({ type: "summary", summary: summaryForRelay(runtime.summary) })) return;
+      summaryPending = false;
     }
     for (const receipt of journal.receipts()) send({ type: "result", ...receipt });
   }
@@ -247,8 +254,13 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   }
 
   async function execute(command: Command): Promise<void> {
+    const needsSummary = ["models", "model.set", "refresh"].includes(command.action.type);
     const claim = journal.begin(command);
-    if (!claim.fresh) { if (claim.receipt) send({ type: "result", ...claim.receipt }); return; }
+    if (!claim.fresh) {
+      if (needsSummary) summaryPending = true;
+      flush();
+      return;
+    }
     let invoked = false;
     try {
       const attachments = command.action.type === "message"
@@ -263,7 +275,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
         error: uncertain ? { code: "DELIVERY_UNCERTAIN", message: "The runtime may have accepted this operation. Inspect the terminal; DevPocket will not execute it again automatically." } : publicError(error) });
       console.error("[DevPocket] Command failed:", error instanceof Fault ? error.code : "runtime error");
     }
-    if (["models", "model.set", "refresh"].includes(command.action.type)) summaryPending = true;
+    if (needsSummary) summaryPending = true;
     flush();
   }
 
@@ -286,7 +298,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
           if (frame.hostId !== config.hostId || frame.sessionId !== session.sessionId) throw new Fault("SCOPE_MISMATCH", "Relay registered a different session.");
           workspaceMetadata = frame.workspaceMetadata === true;
           ready = true; eventInFlight = false; attempts = 0;
-          send({ type: "summary", summary: summaryForRelay(runtime.summary) });
+          summaryPending = true;
           resolveReady(); flush();
         } else if (frame.type === "command") {
           if (!ready) throw new Fault("NOT_READY", "Relay issued a command before registration.");
@@ -332,7 +344,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   const refreshTimer = setInterval(() => {
     if (stopped || refreshing) return;
     refreshing = true;
-    void runtime.refresh().then((summary) => send({ type: "summary", summary: summaryForRelay(summary) }))
+    void runtime.refresh().then(() => { summaryPending = true; flush(); })
       .catch((error: unknown) => console.error("[DevPocket] Runtime refresh failed:", error instanceof Error ? error.name : "unknown"))
       .finally(() => { refreshing = false; });
   }, 10_000);

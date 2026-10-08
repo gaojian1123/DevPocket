@@ -755,3 +755,38 @@ with zero errors (24 warnings).
 The merge preserves model selection, activity/backpressure safeguards,
 repository worktree grouping and legacy relay compatibility. No installed
 runtime, device, extension or cloud service was changed.
+
+### Queued lifecycle and failed-probe review follow-up (2026-10-08)
+
+```powershell
+node --import tsx --test --test-name-pattern 'fresh idle summary|live activity state' .\backend\tests\bridge.test.ts .\backend\tests\runtime.test.ts
+```
+
+The new reproductions failed before the fixes: an unsent turn-start event
+overwrote a newer idle snapshot after a completed refresh, including across
+multiple event batches. A full refresh with no activity RPC also erased an
+observed running state and displayed `unsupported`.
+
+All summary publication now goes through the same event-drain barrier, including
+command completion, periodic refresh and reconnect. It waits for every pending
+batch and acknowledgement before sending the current snapshot and dependent
+receipts. Replayed receipts are durably marked for delivery through that same
+path without changing their ID/body or re-executing the runtime operation.
+Backpressure preserves unsent events and pending summaries for a later flush.
+
+Failed, missing, malformed and timed-out activity reads still revoke the
+corresponding control capabilities and retain their warning, but no longer
+erase known lifecycle state. A valid newer read can reconcile the display;
+late responses from expired reads cannot.
+
+The original reproductions now pass. Additional coverage exercises count- and
+byte-bounded batches, withheld acknowledgements, backpressure between batches,
+periodic refresh, reconnect, immutable receipt replay, both lifecycle states,
+failed-probe variants and recovery. `npm test` passes **201 tests**;
+`npm run typecheck`, `npm run build` and
+`node --test .\scripts\tests\extension-package.test.mjs` also pass.
+
+Android, protocol and persisted formats are unchanged in this follow-up, so no
+Android rebuild or schema regeneration was required. The earlier Android
+acceptance remains separate. No installed runtime, extension, device or cloud
+service was changed.

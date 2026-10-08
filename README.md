@@ -311,9 +311,17 @@ their required probe group; each group updates only its own evidence:
   switches produce a queued notice and retain the active model until confirmed
   by a live read. Live turn-start/idle events also update the summary's display
   state, including after delivery is acknowledged; older in-flight activity
-  reads cannot overwrite them. These events do not grant control capabilities.
+  reads cannot overwrite them. Missing, failed or invalid activity probes retain
+  the last known display state while disabling the controls that require that
+  evidence; only a successful newer read can reconcile it. Lifecycle events do
+  not grant control capabilities.
   Socket backpressure leaves unsent event batches eligible for the next flush
   instead of waiting for an acknowledgement that cannot arrive.
+  Command, periodic and reconnect summaries wait for all queued event batches
+  and their acknowledgements, then publish the current snapshot before receipts.
+  This prevents older queued state from overwriting a newer read. A slow replay
+  can delay receipt delivery, but does not delay runtime execution or repeat the
+  operation; duplicate receipts use the same ordered delivery path.
   Immediate summaries use the same negotiated workspace projection as periodic
   summaries, so legacy relays do not receive unsupported fields.
   These changes reuse protocol-v1 frames; the Android app and
