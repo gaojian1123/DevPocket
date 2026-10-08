@@ -8,6 +8,71 @@ import type { JoinedSession } from "../src/runtime.js";
 import { Receipt, SessionSummary, type Action } from "../src/protocol.js";
 import { fixture, newId, sessionPath } from "./harness.js";
 
+test("confirmed model switch updates the phone catalogue before its completed receipt", async (t) => {
+  let bridge: Awaited<ReturnType<typeof startBridge>> | undefined;
+  t.after(async () => { await bridge?.close(); });
+  const f = await fixture(t), host = f.host(), phone = await f.pair(host.token), sid = newId();
+  let current = { modelId: "old-model", reasoningEffort: "low" };
+  let switches = 0;
+  const session: JoinedSession = {
+    sessionId: sid,
+    getEvents: async () => [{
+      id: newId(), timestamp: new Date().toISOString(), type: "session.start", data: { context: { cwd: f.dataDir } },
+    }],
+    on: () => () => {},
+    rpc: {
+      model: {
+        getCurrent: async () => current,
+        list: async () => ({ list: ["old-model", "new-model"].map((id) => ({
+          id, supportedReasoningEfforts: ["low", "high"],
+        })) }),
+        switchTo: async (input) => {
+          switches++;
+          current = { modelId: input.modelId, reasoningEffort: input.reasoningEffort ?? "" };
+          return { modelId: current.modelId };
+        },
+      },
+    },
+  };
+  bridge = await startBridge(session, {
+    hostId: host.hostId, token: host.token, relayUrl: f.url,
+    dataDir: path.join(f.dataDir, "bridge"), allowInsecureLoopback: true,
+  });
+  const route = sessionPath(host.hostId, sid) + "/commands";
+  const command = {
+    commandId: newId(), action: { type: "model.set", modelId: "new-model", reasoningEffort: "high" },
+  };
+  assert.equal((await f.request(route, phone.token, command)).status, 202);
+  let receipt: Receipt | undefined;
+  for (let i = 0; i < 100; i++) {
+    receipt = Receipt.parse(await (await f.request(`${route}/${command.commandId}`, phone.token)).json());
+    if (receipt.status === "completed") break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(receipt?.status, "completed");
+  assert.deepEqual(current, { modelId: "new-model", reasoningEffort: "high" });
+  const catalog = await (await f.request("/v1/catalog", phone.token)).json();
+  const visible = catalog.sessions.find((item: { sessionId: string }) => item.sessionId === sid);
+  assert.equal(visible.modelId, current.modelId);
+  assert.equal(visible.reasoningEffort, current.reasoningEffort);
+  const retry = Receipt.parse(await (await f.request(route, phone.token, command)).json());
+  assert.equal(retry.status, "completed");
+  assert.equal(switches, 1);
+
+  session.abort = async () => {};
+  session.rpc.metadata = { activity: async () => ({ hasActiveWork: true, abortable: true }) };
+  const stop = { commandId: newId(), action: { type: "abort" } };
+  await f.request(route, phone.token, stop);
+  for (let i = 0; i < 100; i++) {
+    receipt = Receipt.parse(await (await f.request(`${route}/${stop.commandId}`, phone.token)).json());
+    if (receipt.status === "cancel_requested") break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(receipt?.status, "cancel_requested");
+  const afterStop = await (await f.request("/v1/catalog", phone.token)).json();
+  assert.equal(afterStop.sessions.find((item: { sessionId: string }) => item.sessionId === sid).state, "cancel_requested");
+});
+
 test("bridge restart and duplicate submissions never send a task twice, including response-before-send-ack races", async (t) => {
   let bridge: Awaited<ReturnType<typeof startBridge>> | undefined;
   t.after(async () => { await bridge?.close(); });

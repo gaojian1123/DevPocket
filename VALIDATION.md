@@ -588,3 +588,58 @@ relay behavior. Existing protocol-v1 relays remain compatible but retain their
 cached veto until upgraded. Deploy the updated relay to obtain this recovery
 improvement; no Azure deployment, installed extension reload, device enrollment
 or emulator reinstall was performed here.
+
+## Model picker and immediate model synchronization (2026-10-08)
+
+The following focused regressions reproduced the reported symptoms before the
+fix:
+
+- `node --import tsx --test --test-name-pattern 'confirmed model switch' .\backend\tests\bridge.test.ts`
+  observed a completed switch to `new-model` in the SDK peer while the phone's
+  real HTTP catalogue still returned `old-model`.
+- `node --import tsx --test --test-name-pattern 'model switch confirmation|deferred model switches' .\backend\tests\runtime.test.ts`
+  reproduced reuse of a model probe started before the switch, and the absence
+  of a visible queued-switch notice.
+- From `android`, `.\gradlew.bat --no-daemon --console=plain :app:testDebugUnitTest --tests 'dev.devpocket.app.ModelDialogTest'`
+  reproduced missing reasoning controls on opening the dialog and after model
+  selection with a long catalogue in a phone-sized Compose layout.
+
+The causes were the unselected initial model, reasoning controls placed after
+the entire model list, delayed bridge summary publication, and coalescing a
+post-switch read with older in-flight evidence. The picker now preselects the
+observed model/reasoning, uses a bounded model menu, and keeps reasoning controls
+in its independently scrollable form. Enumerated levels come only from live
+runtime evidence; manual entry remains runtime-validated. The editable form has
+an explicitly bounded adaptive dialog window: its regression also caught
+non-settling wrap-content measurement when the manual field became visible.
+
+Model and explicit-refresh commands publish their observed summary before
+receipts; pending summary delivery survives socket backpressure. This does not
+publish stale snapshots for unrelated controls. A coupled regression verifies
+that a later Stop still displays `cancel_requested`, not the preceding
+`running` snapshot. Post-switch probes cannot reuse a pre-switch read, and a
+deferred switch retains the active model with a queued notice until live
+evidence confirms the new state.
+
+`npm test` passes **161 tests**, and `npm run build` passes production TypeScript
+compilation and bridge/standalone-command bundling.
+
+```powershell
+.\scripts\build-android.ps1 -Jdk C:\Projects\DevPocket\.tools\jdk-21 -Sdk C:\Projects\DevPocket\.tools\android-sdk -Lint
+```
+
+The Android command passes debug APK assembly, **76 JVM tests** with no
+failures/errors/skips, and lint with zero errors (24 warnings). The nine new
+Compose regressions cover current-model preselection, reasoning visibility,
+exact selection callbacks, manual input/default reset, asynchronous catalogue
+loading, capability/policy changes, state restoration, and landscape with
+doubled font size. Temporary diagnostic tests were removed.
+
+These are isolated source-worktree checks using simulated SDK peers with real
+local HTTP/WSS/SQLite and Robolectric Compose UI. They are not acceptance of a
+physical phone or a live Copilot build. The development APK is
+`android\app\build\outputs\apk\debug\app-debug.apk`; no APK was installed,
+distributed or sealed, and no existing runtime, installed extension, device
+grant or cloud relay was changed. Both the APK and bridge need updating for the
+complete fix. Protocol-v1 shapes and persisted formats are unchanged; no relay
+or schema migration is required.

@@ -719,6 +719,63 @@ test("permission schemas reject malformed or unknown nested semantic fields", as
   assert.ok(f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.every((item) => !item.supported));
 });
 
+test("model switch confirmation does not reuse a current-model probe started before the switch", async (t) => {
+  const f = await capabilityFixture(t), rpc = f.session.rpc.model!;
+  let current = { modelId: "old-model", reasoningEffort: "low" };
+  rpc.list = async () => ({ list: ["old-model", "new-model"].map((id) => ({
+    id, supportedReasoningEfforts: ["low", "high"],
+  })) });
+  rpc.getCurrent = async () => ({ ...current });
+  await f.runtime.connect();
+  let switchStarted!: () => void, finishSwitch!: () => void;
+  const switching = new Promise<void>((resolve) => { switchStarted = resolve; });
+  const switched = new Promise<void>((resolve) => { finishSwitch = resolve; });
+  rpc.switchTo = async () => {
+    switchStarted();
+    await switched;
+    current = { modelId: "new-model", reasoningEffort: "high" };
+    return { modelId: current.modelId };
+  };
+  const command = f.runtime.execute({ type: "model.set", modelId: "new-model", reasoningEffort: "high" });
+  await switching;
+  let probeStarted!: () => void, finishProbe!: () => void;
+  const probing = new Promise<void>((resolve) => { probeStarted = resolve; });
+  const probed = new Promise<void>((resolve) => { finishProbe = resolve; });
+  rpc.getCurrent = async () => {
+    const snapshot = { ...current };
+    probeStarted();
+    await probed;
+    return snapshot;
+  };
+  const refresh = f.runtime.refresh();
+  await probing;
+  finishSwitch();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  finishProbe();
+  await refresh;
+  assert.equal((await command).status, "completed");
+  assert.equal(f.runtime.summary.modelId, current.modelId);
+  assert.equal(f.runtime.summary.reasoningEffort, current.reasoningEffort);
+});
+
+test("deferred model switches keep the active model until a live read confirms the change", async (t) => {
+  const f = await capabilityFixture(t), rpc = f.session.rpc.model!;
+  let current = { modelId: "old-model", reasoningEffort: "low" };
+  rpc.getCurrent = async () => ({ ...current });
+  rpc.list = async () => ({ list: ["old-model", "new-model"].map((id) => ({ id })) });
+  rpc.switchTo = async () => ({ modelId: "new-model", deferred: true, message: "Queued" });
+  await f.runtime.connect();
+  const receipt = await f.runtime.execute({ type: "model.set", modelId: "new-model", reasoningEffort: "high" });
+  assert.equal(receipt.result?.deferred, true);
+  assert.equal(f.runtime.summary.modelId, "old-model");
+  assert.equal(f.runtime.summary.reasoningEffort, "low");
+  assert.ok(f.events.some((event) => event.kind === "notice" && event.data.code === "MODEL_SWITCH_DEFERRED"));
+  current = { modelId: "new-model", reasoningEffort: "high" };
+  await f.runtime.models();
+  assert.equal(f.runtime.summary.modelId, current.modelId);
+  assert.equal(f.runtime.summary.reasoningEffort, current.reasoningEffort);
+});
+
 test("each command refreshes only its prerequisite evidence", async (t) => {
   const cases: { action: Action; reads: string[]; error?: string }[] = [
     { action: { type: "message", text: "Only activity", attachmentIds: [] }, reads: ["activity", "queue"] },

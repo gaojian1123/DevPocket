@@ -834,7 +834,11 @@ export class CopilotRuntime {
         }
         const result = modelSelection.parse(raw);
         if (result.confirmation) throw new Fault("TERMINAL_REQUIRED", "Model switch needs compaction confirmation in the terminal.", 409);
+        // A read started during switchTo may still contain the previous model.
+        await this.refreshInFlight.get("models");
         await this.refreshGroup("models");
+        if (result.deferred) this.notice("MODEL_SWITCH_DEFERRED",
+          "The original runtime queued this model switch. The displayed model changes only after a live read confirms it.");
         return { status: "completed", result: {
           modelId: text(result.modelId) || this.summary.modelId, deferred: result.deferred === true,
           message: redact(text(result.message), 2000), reasoningEffort: this.summary.reasoningEffort,

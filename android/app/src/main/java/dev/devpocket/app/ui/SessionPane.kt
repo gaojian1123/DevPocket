@@ -11,7 +11,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -30,6 +32,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import dev.devpocket.app.PocketUi
 import dev.devpocket.app.PocketViewModel
 import dev.devpocket.app.data.*
@@ -385,41 +388,69 @@ private fun AttachmentsPane(state: PocketUi, model: PocketViewModel, modifier: M
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ModelDialog(state: PocketUi, onDismiss: () -> Unit, select: (ModelOption, String?) -> Unit) {
-    var selected by remember { mutableStateOf<ModelOption?>(null) }
-    var effort by remember { mutableStateOf<String?>(null) }
-    var customEffort by remember { mutableStateOf("") }
+internal fun ModelDialog(state: PocketUi, onDismiss: () -> Unit, select: (ModelOption, String?) -> Unit) {
+    var selectedId by rememberSaveable(state.selected, state.session?.sessionId) { mutableStateOf<String?>(null) }
+    val modelId = selectedId ?: state.session?.modelId
+    val selected = state.models.find { it.id == modelId }
+    var effortEdited by rememberSaveable(state.selected, modelId) { mutableStateOf(false) }
+    var effortInput by rememberSaveable(state.selected, modelId) { mutableStateOf("") }
+    val currentEffort = state.session?.takeIf { it.modelId == modelId }?.reasoningEffort.orEmpty()
+    val effortText = if (effortEdited) effortInput else currentEffort
+    val effort = effortText.trim().ifEmpty { null }
+    val validEffort = selected != null && (effort == null || selected.reasoningManual || effort in selected.reasoningEfforts)
+    val enabled = !state.busy && state.session?.online == true && state.session.capabilities.models
+    var modelMenu by remember { mutableStateOf(false) }
+    // Keep editable content from repeatedly changing the dialog's wrap-content width.
     AlertDialog(onDismissRequest = onDismiss, title = { Text("模型与推理强度") },
-        text = { LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            item { Text("选择来自这台 Dev Box 的实时 CLI 能力。组织策略与订阅不变；运行中的模型切换可能排队生效。", style = MaterialTheme.typography.bodySmall) }
-            items(state.models, key = { it.id }) { option ->
-                Row(Modifier.fillMaxWidth().clickable(enabled = option.enabled) { selected = option; effort = null }.padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(selected = selected?.id == option.id, onClick = { selected = option; effort = null }, enabled = option.enabled)
-                    Text(option.name, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.padding(horizontal = 24.dp).widthIn(max = 560.dp).fillMaxWidth(),
+        text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("选择来自这台 Dev Box 的实时 CLI 能力。组织策略与订阅不变；运行中的模型切换可能排队生效。", style = MaterialTheme.typography.bodySmall)
+            Box(Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = { modelMenu = true }, enabled = enabled && state.models.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth().testTag("model_picker")) {
+                    Text(selected?.name ?: modelId?.ifBlank { null } ?: "选择模型", modifier = Modifier.weight(1f),
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Icon(Icons.Default.ArrowDropDown, contentDescription = "选择模型")
+                }
+                DropdownMenu(expanded = modelMenu, onDismissRequest = { modelMenu = false },
+                    modifier = Modifier.heightIn(max = 280.dp)) {
+                    state.models.forEach { option ->
+                        DropdownMenuItem(text = { Text(option.name) }, enabled = enabled && option.enabled, onClick = {
+                            selectedId = option.id
+                            modelMenu = false
+                        })
+                    }
                 }
             }
             selected?.let { option ->
-                item { HorizontalDivider(); Text("推理强度", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp)) }
-                item { Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { effort = null }) {
-                    RadioButton(selected = effort == null, onClick = { effort = null }); Text("运行时默认")
-                } }
-                items(option.reasoningEfforts) { level ->
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { effort = level }) {
-                        RadioButton(selected = effort == level, onClick = { effort = level }); Text(level)
+                HorizontalDivider()
+                Text("推理强度", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = effort == null, enabled = enabled && option.enabled,
+                        onClick = { effortEdited = true; effortInput = "" }, label = { Text("运行时默认") })
+                    option.reasoningEfforts.forEach { level ->
+                        FilterChip(selected = effort == level, enabled = enabled && option.enabled,
+                            onClick = { effortEdited = true; effortInput = level }, label = { Text(level) })
                     }
                 }
-                if (option.reasoningManual) item {
+                if (option.reasoningManual) {
                     Text("此 CLI 目录未列出可选推理级别。可输入级别交由原始运行时校验；不支持或策略禁止时会明确拒绝，不会猜测支持。",
                         style = MaterialTheme.typography.bodySmall)
-                    OutlinedTextField(customEffort, { customEffort = it.take(60); effort = it.trim().ifEmpty { null } },
-                        label = { Text("推理级别（留空为默认）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(effortText, { effortEdited = true; effortInput = it.take(60) },
+                        enabled = enabled && option.enabled, label = { Text("推理级别（留空为默认）") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("reasoning_input"))
+                }
+                if (!validEffort) {
+                    Text("当前推理级别 $effort 不在此模型的实时目录中，请重新选择。",
+                        color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }
             }
-            if (state.models.isEmpty() && !state.busy) item { Text("模型目录未能加载，请在原始终端查看。") }
+            if (state.models.isEmpty() && !state.busy) Text("模型目录未能加载，请在原始终端查看。")
         } }, confirmButton = { TextButton(
-            enabled = selected != null && !state.busy && state.session?.online == true && state.session.capabilities.models,
+            enabled = selected?.enabled == true && validEffort && enabled, modifier = Modifier.testTag("apply_model"),
             onClick = { selected?.let { select(it, effort) } }) { Text("应用") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
 }

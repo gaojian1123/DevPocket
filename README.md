@@ -260,7 +260,17 @@ their required probe group; each group updates only its own evidence:
   of selecting a policy by list order. Provided policy states must be `enabled`, `disabled`
   or `unconfigured`; the latter two cannot be selected, and unknown/incomplete
   policy shapes disable model controls. Missing model evidence does not disable
-  chat or files.
+  chat or files. Android preselects the observed model and reasoning level; a
+  compact, scrollable model menu leaves the reasoning controls in the dialog
+  rather than below the entire catalogue. Changing models resets edited
+  reasoning, and unavailable selections cannot be applied.
+  After switching, the bridge reads current model state again without reusing a
+  probe started before the switch. It publishes the observed session summary
+  before returning model/refresh command receipts, so the phone's completion-triggered
+  catalogue refresh does not wait for the periodic bridge update. Deferred
+  switches produce a queued notice and retain the active model until confirmed
+  by a live read. These changes reuse protocol-v1 frames; the Android app and
+  installed bridge need updating, but no relay/schema migration is needed.
 - File/Git views require a live absolute working directory and a complete,
   path-matched content-exclusion response explicitly allowing that directory.
   Every subsequent path is still evaluated; recorded history is never a substitute

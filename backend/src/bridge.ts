@@ -177,6 +177,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   }, null, 2), { mode: 0o600 });
   let ws: WebSocket | undefined, stopped = false, ready = false, permanentFailure = false;
   let retry: NodeJS.Timeout | undefined, attempts = 0, eventInFlight = false, closed = false;
+  let summaryPending = false;
   const inFlight = new Map<string, Promise<void>>();
   let resolveReady!: () => void, rejectReady!: (error: Error) => void;
   const firstReady = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
@@ -184,11 +185,18 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     console.error("[DevPocket] Relay registration failed:", error instanceof Fault ? error.code : "connection error");
   });
 
-  function send(value: unknown): void {
-    if (ready && ws?.readyState === WebSocket.OPEN && ws.bufferedAmount < 2 * 1024 * 1024) ws.send(JSON.stringify(value));
+  function send(value: unknown): boolean {
+    if (!ready || ws?.readyState !== WebSocket.OPEN || ws.bufferedAmount >= 2 * 1024 * 1024) return false;
+    ws.send(JSON.stringify(value));
+    return true;
   }
   function flush(): void {
     if (!ready || stopped) return;
+    // Publish refreshed model state before completion, without overwriting newer queued activity events.
+    if (summaryPending) {
+      if (!send({ type: "summary", summary: runtime.summary })) return;
+      summaryPending = false;
+    }
     if (!eventInFlight) {
       const items = journal.events();
       if (items.length) { eventInFlight = true; send({ type: "events", items }); }
@@ -245,6 +253,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
         error: uncertain ? { code: "DELIVERY_UNCERTAIN", message: "The runtime may have accepted this operation. Inspect the terminal; DevPocket will not execute it again automatically." } : publicError(error) });
       console.error("[DevPocket] Command failed:", error instanceof Fault ? error.code : "runtime error");
     }
+    if (["models", "model.set", "refresh"].includes(command.action.type)) summaryPending = true;
     flush();
   }
 
