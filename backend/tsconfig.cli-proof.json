@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "allowJs": true,
+    "noEmit": true
+  },
+  "include": [
+    "integration/cli-proof.ts",
+    "integration/canvas-proof.ts",
+    "integration/live-checks.ts",
+    "integration/cancel-check.ts",
+    "tests/cli-proof*.test.ts",
+    "tests/local-proof.test.ts"
+  ]
+}
