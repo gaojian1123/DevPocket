@@ -6,6 +6,8 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.devpocket.app.data.*
@@ -14,6 +16,11 @@ import java.net.ServerSocket
 import java.net.SocketException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -36,7 +43,12 @@ class AdaptiveLayoutTest {
         withCatalogError(message) { relay -> exerciseCachedSession(relay, message) }
     }
 
-    private fun exerciseCachedSession(relay: String, expectedError: String? = null) {
+    @Test fun shortWindowKeepsSessionsReachableWhileMultilineErrorIsVisible() {
+        val message = (1..25).joinToString("\n") { "Diagnostic detail line $it" }
+        withCatalogError(message) { relay -> exerciseCachedSession(relay, message, shortWindow = true) }
+    }
+
+    private fun exerciseCachedSession(relay: String, expectedError: String? = null, shortWindow: Boolean = false) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val account = Account(UUID.randomUUID().toString(), relay,
             "dpd_" + "x".repeat(43), UUID.randomUUID().toString(), "Offline layout fixture")
@@ -52,13 +64,29 @@ class AdaptiveLayoutTest {
                 Catalog(Device(account.deviceId, account.name), listOf(host), listOf(session), false, 1)) }
             context.getSharedPreferences("devpocket_settings", 0).edit().remove("last_scope").commit()
             scenario = ActivityScenario.launch(MainActivity::class.java)
+            fun constrainWindow() {
+                if (shortWindow) scenario.onActivity {
+                    val density = it.resources.displayMetrics.density
+                    it.window.setLayout((360 * density).toInt(), (400 * density).toInt())
+                }
+            }
+            constrainWindow()
             compose.waitUntil(20_000) { compose.onAllNodesWithText("知道了").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithTag("error_notice").assertIsDisplayed()
             expectedError?.let { compose.onNodeWithText(it, substring = true).assertIsDisplayed() }
+            if (shortWindow) {
+                val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
+                val density = context.resources.displayMetrics.density
+                assertTrue("The native window did not shrink to the requested bounds: $root",
+                    root.width <= 360 * density + 1 && root.height <= 400 * density + 1)
+            }
             val pageBounds = compose.onNodeWithTag("session_list").fetchSemanticsNode().boundsInRoot
             assertTrue("The visible error consumed the session page: $pageBounds", pageBounds.height > 0f)
-            compose.onNode(hasScrollToIndexAction() and hasAnyAncestor(hasTestTag("session_list")))
-                .performScrollToNode(hasText(session.title))
+            val sessions = compose.onNode(hasScrollToIndexAction() and hasAnyAncestor(hasTestTag("session_list")))
+            val viewport = sessions.fetchSemanticsNode().boundsInRoot
+            assertTrue("The session scroll viewport collapsed under the error and headers: $viewport",
+                viewport.height > 0f)
+            sessions.performScrollToNode(hasText(session.title))
             val targetBounds = compose.onNodeWithText(session.title).fetchSemanticsNode().boundsInRoot
             val errorBounds = compose.onNodeWithTag("error_notice").fetchSemanticsNode().boundsInRoot
             compose.onNodeWithText(session.title).performTouchInput { click() }
@@ -86,15 +114,28 @@ class AdaptiveLayoutTest {
                         message.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value() > 0f)
                 }
             }
-            compose.onNodeWithText("知道了").assertIsDisplayed().performTouchInput { click() }
-            compose.waitUntil(20_000) { compose.onAllNodesWithText("知道了").fetchSemanticsNodes().isEmpty() }
-            if (context.resources.configuration.screenWidthDp >= 840)
+            val dismissed = AtomicBoolean(false)
+            var observer: Job? = null
+            scenario.onActivity { activity ->
+                val model = ViewModelProvider(activity)[PocketViewModel::class.java]
+                check(model.ui.value.error != null) { "The error disappeared before its dismiss action was tested." }
+                observer = activity.lifecycleScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                    model.ui.first { it.error == null }
+                    dismissed.set(true)
+                }
+            }
+            try {
+                compose.onNodeWithText("知道了").assertIsDisplayed().performTouchInput { click() }
+                compose.waitUntil(5000) { dismissed.get() }
+            } finally { observer?.cancel() }
+            if (!shortWindow && context.resources.configuration.screenWidthDp >= 840)
                 compose.onNodeWithTag("session_list").assertIsDisplayed()
             else compose.onNodeWithTag("session_list").assertDoesNotExist()
             compose.onNodeWithTag("message_input").performClick()
             compose.onNodeWithTag("message_input").performTextInput("这是一条用于大字体、旋转和窗口变化的原生中文草稿，不会发送。")
             compose.onNodeWithContentDescription("发送到原始 CLI").assertIsNotEnabled()
             scenario.recreate()
+            constrainWindow()
             compose.waitUntil(20_000) { compose.onAllNodesWithTag("message_input").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithTag("message_input").assertTextContains("这是一条用于大字体、旋转和窗口变化的原生中文草稿，不会发送。")
             LocalStore(context).use { store ->

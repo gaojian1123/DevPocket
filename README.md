@@ -35,7 +35,9 @@ reserve space below the page content rather than covering it. Session cards
 remain reachable by normal scrolling and tapping while an error is visible,
 including in landscape and short windows. The error area is height-bounded;
 long messages scroll within it without truncating their text, while the dismiss
-action remains outside the scrolling text.
+action remains outside the scrolling text. The session toolbar, search and
+filters scroll with the cards, so those controls cannot consume the entire
+session viewport in a short window.
 
 Current limitations:
 

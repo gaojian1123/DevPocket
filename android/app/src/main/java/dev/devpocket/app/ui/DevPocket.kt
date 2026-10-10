@@ -154,27 +154,32 @@ private fun SessionList(state: PocketUi, model: PocketViewModel, pair: () -> Uni
     var archived by rememberSaveable { mutableStateOf(false) }
     var rename by remember { mutableStateOf<Pair<BoxCard, SessionInfo>?>(null) }
     Column(modifier.testTag("session_list")) {
-        TopAppBar(title = { Text("DevPocket", fontWeight = FontWeight.SemiBold) }, actions = {
-            IconButton(onClick = model::refreshNow) { Icon(Icons.Default.Refresh, contentDescription = "刷新电脑和会话") }
-            IconButton(onClick = pair) { Icon(Icons.Default.Add, contentDescription = "配对新的 Dev Box") }
-        })
-        OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }, label = { Text("搜索电脑、项目、分支或会话") },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = !archived, onClick = { archived = false }, label = { Text("当前") })
-            FilterChip(selected = archived, onClick = { archived = true }, label = { Text("已归档") })
-        }
-        if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-        if (state.accounts.isEmpty()) {
-            Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
-                Icon(Icons.Default.PhonelinkSetup, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(48.dp))
-                Spacer(Modifier.height(16.dp))
-                Text("连接你的 Dev Box", style = MaterialTheme.typography.headlineSmall)
-                Text("使用独立的一次性配对码。手机不需要登录 GitHub，你的授权和订阅始终留在终端。", Modifier.padding(vertical = 12.dp))
-                Button(onClick = pair, modifier = Modifier.fillMaxWidth()) { Text("开始配对") }
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+            item(key = "session-controls") {
+                Column {
+                    TopAppBar(title = { Text("DevPocket", fontWeight = FontWeight.SemiBold) }, actions = {
+                        IconButton(onClick = model::refreshNow) { Icon(Icons.Default.Refresh, contentDescription = "刷新电脑和会话") }
+                        IconButton(onClick = pair) { Icon(Icons.Default.Add, contentDescription = "配对新的 Dev Box") }
+                    })
+                    OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }, label = { Text("搜索电脑、项目、分支或会话") },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = !archived, onClick = { archived = false }, label = { Text("当前") })
+                        FilterChip(selected = archived, onClick = { archived = true }, label = { Text("已归档") })
+                    }
+                    if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
             }
-        } else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+            if (state.accounts.isEmpty()) item(key = "pairing") {
+                Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.Center) {
+                    Icon(Icons.Default.PhonelinkSetup, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(48.dp))
+                    Spacer(Modifier.height(16.dp))
+                    Text("连接你的 Dev Box", style = MaterialTheme.typography.headlineSmall)
+                    Text("使用独立的一次性配对码。手机不需要登录 GitHub，你的授权和订阅始终留在终端。", Modifier.padding(vertical = 12.dp))
+                    Button(onClick = pair, modifier = Modifier.fillMaxWidth()) { Text("开始配对") }
+                }
+            }
             for (box in state.boxes) {
                 val matches = box.sessions.filter { session ->
                     session.archived == archived && sessionMatchesQuery(session, box.host.name, query)
@@ -237,7 +242,7 @@ private fun SessionList(state: PocketUi, model: PocketViewModel, pair: () -> Uni
                     }
                 }
             }
-            if (state.boxes.isEmpty()) item {
+            if (state.accounts.isNotEmpty() && state.boxes.isEmpty()) item {
                 Text("尚无授权电脑，或配对已撤销。可刷新连接或重新配对。", Modifier.padding(24.dp))
             }
         }
