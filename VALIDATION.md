@@ -828,3 +828,88 @@ Unlike the preceding bridge-only follow-up, mobile replay correction requires
 updating the relay as well as the bridge; both remain protocol-v1 compatible
 without a data migration. No live runtime, installed extension, device or cloud
 service was changed.
+
+## Native reasoning catalogue field (2026-10-09)
+
+An explicitly authorized, temporary session-only diagnostic extension joined
+the original running session and read only its current model and model
+catalogue. Cached and `skipCache: true` reads both returned the same enumerated
+levels in `capabilities.supports.reasoning_effort` (singular). The active model
+advertised `low`, `medium`, `high`, `xhigh` and `max`. The adapter recognized
+normalized SDK fields and the legacy plural capability field, but omitted this
+native field and incorrectly selected manual input. This was not a missing
+runtime enumeration or an Android rendering failure.
+
+Both a replay of the projected live catalogue and its single-model,
+single-field reduction reproduced an empty outgoing list before the fix.
+The adapter now validates and projects the native array without hardcoding
+model IDs or a universal reasoning vocabulary. Existing SDK/legacy fields
+remain supported; missing or empty lists retain the existing manual fallback,
+while malformed lists revoke model controls rather than enabling free-form
+selection.
+
+```powershell
+node --import tsx --test --test-name-pattern='model reasoning catalogues|CLI reasoning choices' .\backend\tests\runtime.test.ts
+node --import tsx --test .\backend\tests\runtime.test.ts .\backend\tests\bridge.test.ts .\scripts\tests\extension-package.test.mjs
+npm run build
+```
+
+The focused regression first failed for the native field while the other three
+field dialects passed. All seven focused cases now pass, as do both live-data
+replays and all 184 combined runtime, bridge and extension-package cases.
+Production TypeScript compilation and extension bundling pass. The existing
+Android `:app:testDebugUnitTest --tests 'dev.devpocket.app.ModelDialogTest'`
+suite also passes without changes to the Android implementation.
+
+After separate authorization, the fixed managed user extension was installed
+and reloaded in the current original session. The original session and parent
+process were retained, host configuration was unchanged, and the diagnostic
+extension was removed. Reopening that session's model picker in the retained
+Android emulator displayed the runtime default and all five advertised level
+buttons, with `max` still selected and no manual input field. No model choice
+was applied and no validation prompt was sent to the live runtime.
+
+Only the host extension needs updating for this fix. Other already-running
+sessions need their own explicitly authorized reload; the relay, APK, wire
+schema and persisted formats were not changed by this follow-up. Projected
+diagnostic evidence and installation hashes remain in private local artifacts,
+not in the source repository.
+
+## Contextual composer Send/Stop action (2026-10-09)
+
+The separate always-rendered red Stop icon is removed. The primary button beside
+the input now uses Send whenever the draft contains nonblank text, including
+during active work. With no text it uses Stop for `running`, `waiting` and
+`cancel_requested`; idle, offline and unsupported state values do not invent a
+Stop control. An unavailable action remains disabled, and disabled Stop styling
+uses the Material component colors rather than an unconditional red icon tint.
+
+The composer receives the existing view-model operations as callbacks so native
+tests can exercise the complete input and both action positions without a real
+network command. Stop still opens the existing confirmation; it does not invoke
+abort directly. Online/capability gates, upload restrictions on Send, durable
+draft staging, enqueue behavior and cancellation-requested semantics remain
+unchanged. Unrelated busy work does not block sending or requesting cancellation.
+
+The eight new `ComposerActionTest` cases first failed against the previous UI.
+They cover idle visibility, the three active states, typing and clearing text,
+returning to idle, callback routing, disabled touch handling, missing runtime
+capabilities, offline/upload states and unrelated busy work.
+
+```powershell
+.\scripts\build-android.ps1 -Jdk C:\Projects\DevPocket\.tools\jdk-21 -Sdk C:\Projects\DevPocket\.tools\android-sdk -Lint
+```
+
+The required build passes debug APK assembly, all **87 JVM tests** including
+the eight composer cases, and lint with no errors. After target-specific
+authorization, the APK was installed in place on the retained Android emulator.
+Its signing certificate matched the previous installation, the pulled-back APK
+matched the new build byte-for-byte, and the original installation identity and
+application data were retained. Existing sealed artifacts were not overwritten.
+
+The installed native screen showed the single primary Stop button for the
+current active session with an empty input, with no separate toolbar Stop icon.
+The emulator initially delayed rendering after package replacement, then
+rendered the new interface without resetting its data. No live message was sent
+and no live cancellation or model change was applied during this check. Relay,
+user-extension and wire formats were not changed by this UI follow-up.

@@ -414,6 +414,80 @@ test("additive read-only probe metadata is tolerated but never exported", async 
   assert.ok(!JSON.stringify({ summary, models, events: f.events }).includes("PRIVATE_API_METADATA"));
 });
 
+test("model reasoning catalogues preserve runtime choices across supported field dialects", async (t) => {
+  const levels = ["low", "medium", "high", "xhigh", "max"];
+  const dialects = [
+    ["CLI capability", { capabilities: { supports: { reasoning_effort: levels, adaptive_thinking: "unsupported" } } }],
+    ["SDK camel case", { supportedReasoningEfforts: levels }],
+    ["legacy snake case", { supported_reasoning_efforts: levels }],
+    ["legacy plural capability", { capabilities: { supports: { reasoning_efforts: levels } } }],
+  ] as const;
+  for (const [name, fields] of dialects) {
+    await t.test(name, async (t) => {
+      const f = await capabilityFixture(t, "unlisted-build");
+      let mutations = 0;
+      f.session.rpc.model!.list = async () => ({ list: [{ id: "test-model", ...fields }] });
+      f.session.rpc.model!.switchTo = async (input) => {
+        mutations++;
+        assert.equal(input.reasoningEffort, "xhigh");
+        return { modelId: input.modelId };
+      };
+      await f.runtime.connect();
+      assert.deepEqual((await f.runtime.execute({ type: "models" })).result?.models, [{
+        id: "test-model", name: "test-model", reasoningEfforts: levels, reasoningManual: false, enabled: true,
+      }]);
+      assert.equal(mutations, 0);
+      await assert.rejects(f.runtime.execute({ type: "model.set", modelId: "test-model", reasoningEffort: "none" }),
+        { code: "REASONING_UNSUPPORTED" });
+      assert.equal(mutations, 0);
+      assert.equal((await f.runtime.execute({ type: "model.set", modelId: "test-model", reasoningEffort: "xhigh" })).status, "completed");
+      assert.equal(mutations, 1);
+    });
+  }
+});
+
+test("CLI reasoning choices stay model-specific without guessing a fixed vocabulary", async (t) => {
+  const f = await capabilityFixture(t);
+  f.session.rpc.model!.list = async () => ({ list: [
+    { id: "test-model", capabilities: { supports: { reasoning_effort: ["low", "high"] } } },
+    { id: "other-model", capabilities: { supports: { reasoning_effort: ["none", "provider-specific"] } } },
+    { id: "missing-levels" },
+    { id: "empty-levels", capabilities: { supports: { reasoning_effort: [] } } },
+  ] });
+  await f.runtime.connect();
+  const models = await f.runtime.models();
+  assert.deepEqual(models.map(({ id, reasoningEfforts, reasoningManual }) => ({ id, reasoningEfforts, reasoningManual })), [
+    { id: "test-model", reasoningEfforts: ["low", "high"], reasoningManual: false },
+    { id: "other-model", reasoningEfforts: ["none", "provider-specific"], reasoningManual: false },
+    { id: "missing-levels", reasoningEfforts: [], reasoningManual: true },
+    { id: "empty-levels", reasoningEfforts: [], reasoningManual: true },
+  ]);
+});
+
+test("malformed CLI reasoning choices revoke model controls instead of enabling manual input", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  assert.equal(f.runtime.summary.capabilities.models, true);
+  let mutations = 0;
+  f.session.rpc.model!.switchTo = async () => { mutations++; return { modelId: "test-model" }; };
+  for (const levels of [["low", 1], [""], ["x".repeat(61)], "high", { levels: ["high"] }]) {
+    f.session.rpc.model!.list = async () => ({ list: [{
+      id: "test-model", capabilities: { supports: { reasoning_effort: levels } },
+    }] });
+    await assert.rejects(f.runtime.models(), { code: "UNSUPPORTED" });
+    assert.equal(f.runtime.summary.capabilities.models, false);
+    assert.ok(f.runtime.summary.warnings.some((warning) => warning.startsWith("Model catalogue returned an unsupported response shape")));
+    await assert.rejects(f.runtime.execute({ type: "model.set", modelId: "test-model", reasoningEffort: "high" }),
+      { code: "UNSUPPORTED" });
+  }
+  assert.equal(mutations, 0);
+  f.session.rpc.model!.list = async () => ({ list: [{
+    id: "test-model", capabilities: { supports: { reasoning_effort: ["high"] } },
+  }] });
+  assert.deepEqual((await f.runtime.models())[0]?.reasoningEfforts, ["high"]);
+  assert.equal(f.runtime.summary.capabilities.models, true);
+});
+
 test("missing messaging does not block independently supported runtime operations", async (t) => {
   const f = await capabilityFixture(t, "unlisted-build");
   delete f.session.send;

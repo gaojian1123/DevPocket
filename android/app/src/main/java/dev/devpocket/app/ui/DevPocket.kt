@@ -58,7 +58,6 @@ fun DevPocket(model: PocketViewModel, requestNotifications: () -> Unit) {
             val rail = maxWidth >= 600.dp
             Scaffold(
                 contentWindowInsets = WindowInsets.safeDrawing,
-                snackbarHost = { SnackbarHost(snackbar) },
                 bottomBar = {
                     if (!rail && (state.selected == null || destination != "sessions")) NavigationBar {
                         NavigationBarItem(selected = destination == "sessions", onClick = { destination = "sessions" },
@@ -68,36 +67,39 @@ fun DevPocket(model: PocketViewModel, requestNotifications: () -> Unit) {
                     }
                 },
             ) { padding ->
-                Row(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
-                    if (rail) {
-                        NavigationRail {
-                            Spacer(Modifier.height(12.dp))
-                            Icon(Icons.Default.Terminal, contentDescription = "DevPocket", tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(16.dp))
-                            NavigationRailItem(selected = destination == "sessions", onClick = { destination = "sessions" },
-                                icon = { Icon(Icons.Default.Devices, contentDescription = null) }, label = { Text("工作台") })
-                            NavigationRailItem(selected = destination == "settings", onClick = { destination = "settings" },
-                                icon = { Icon(Icons.Default.Settings, contentDescription = null) }, label = { Text("设置") })
+                Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
+                    Row(Modifier.weight(1f).fillMaxWidth()) {
+                        if (rail) {
+                            NavigationRail {
+                                Spacer(Modifier.height(12.dp))
+                                Icon(Icons.Default.Terminal, contentDescription = "DevPocket", tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(16.dp))
+                                NavigationRailItem(selected = destination == "sessions", onClick = { destination = "sessions" },
+                                    icon = { Icon(Icons.Default.Devices, contentDescription = null) }, label = { Text("工作台") })
+                                NavigationRailItem(selected = destination == "settings", onClick = { destination = "settings" },
+                                    icon = { Icon(Icons.Default.Settings, contentDescription = null) }, label = { Text("设置") })
+                            }
+                            VerticalDivider()
                         }
-                        VerticalDivider()
+                        if (destination == "settings") {
+                            SettingsPane(state, model, requestNotifications, { pairing = true }, Modifier.weight(1f))
+                        } else if (expanded) {
+                            SessionList(state, model, { pairing = true }, Modifier.widthIn(max = 360.dp).width(320.dp).fillMaxHeight())
+                            VerticalDivider()
+                            Box(Modifier.weight(1f).fillMaxHeight()) {
+                                if (state.selected != null && state.session != null) {
+                                    holder.SaveableStateProvider(state.selected!!.key) {
+                                        SessionPane(state, model, expanded = true)
+                                    }
+                                } else EmptyDetail()
+                            }
+                        } else if (state.selected != null && state.session != null) {
+                            holder.SaveableStateProvider(state.selected!!.key) {
+                                SessionPane(state, model, expanded = false)
+                            }
+                        } else SessionList(state, model, { pairing = true }, Modifier.weight(1f).fillMaxHeight())
                     }
-                    if (destination == "settings") {
-                        SettingsPane(state, model, requestNotifications, { pairing = true }, Modifier.weight(1f))
-                    } else if (expanded) {
-                        SessionList(state, model, { pairing = true }, Modifier.widthIn(max = 360.dp).width(320.dp).fillMaxHeight())
-                        VerticalDivider()
-                        Box(Modifier.weight(1f).fillMaxHeight()) {
-                            if (state.selected != null && state.session != null) {
-                                holder.SaveableStateProvider(state.selected!!.key) {
-                                    SessionPane(state, model, expanded = true)
-                                }
-                            } else EmptyDetail()
-                        }
-                    } else if (state.selected != null && state.session != null) {
-                        holder.SaveableStateProvider(state.selected!!.key) {
-                            SessionPane(state, model, expanded = false)
-                        }
-                    } else SessionList(state, model, { pairing = true }, Modifier.weight(1f).fillMaxHeight())
+                    SnackbarHost(snackbar, Modifier.align(Alignment.CenterHorizontally).testTag("error_notice"))
                 }
             }
         }

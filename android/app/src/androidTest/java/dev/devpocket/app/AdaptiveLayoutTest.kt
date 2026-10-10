@@ -13,7 +13,7 @@ import java.util.UUID
 class AdaptiveLayoutTest {
     @get:Rule val compose = createEmptyComposeRule()
 
-    @Test fun cachedSessionAndChineseDraftSurviveWindowAndActivityChanges() {
+    @Test fun visibleErrorAllowsSessionSelectionAndPreservesDraftAcrossWindowAndActivityChanges() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val account = Account(UUID.randomUUID().toString(), "https://127.0.0.1:1",
             "dpd_" + "x".repeat(43), UUID.randomUUID().toString(), "Offline layout fixture")
@@ -30,12 +30,18 @@ class AdaptiveLayoutTest {
             context.getSharedPreferences("devpocket_settings", 0).edit().remove("last_scope").commit()
             scenario = ActivityScenario.launch(MainActivity::class.java)
             compose.waitUntil(20_000) { compose.onAllNodesWithText(session.title).fetchSemanticsNodes().isNotEmpty() }
-            // The offline fixture's snackbar covers the first card in short windows.
             compose.waitUntil(20_000) { compose.onAllNodesWithText("知道了").fetchSemanticsNodes().isNotEmpty() }
-            compose.onNodeWithText("知道了").performClick()
+            compose.onNodeWithTag("error_notice").assertIsDisplayed()
+            compose.onNodeWithText(session.title).performScrollTo()
+            val targetBounds = compose.onNodeWithText(session.title).fetchSemanticsNode().boundsInRoot
+            val errorBounds = compose.onNodeWithTag("error_notice").fetchSemanticsNode().boundsInRoot
+            compose.onNodeWithText(session.title).performTouchInput { click() }
+            compose.onNodeWithTag("session_detail")
+                .assertExists("Session tap failed while the error remained visible: session=$targetBounds notice=$errorBounds")
+                .assertIsDisplayed()
+            compose.onNodeWithTag("error_notice").assertIsDisplayed()
+            compose.onNodeWithText("知道了").assertIsDisplayed().performTouchInput { click() }
             compose.waitUntil(20_000) { compose.onAllNodesWithText("知道了").fetchSemanticsNodes().isEmpty() }
-            compose.onNodeWithText(session.title).performClick()
-            compose.onNodeWithTag("session_detail").assertIsDisplayed()
             if (context.resources.configuration.screenWidthDp >= 840)
                 compose.onNodeWithTag("session_list").assertIsDisplayed()
             else compose.onNodeWithTag("session_list").assertDoesNotExist()

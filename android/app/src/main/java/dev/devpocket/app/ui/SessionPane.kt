@@ -94,7 +94,7 @@ fun SessionPane(state: PocketUi, model: PocketViewModel, expanded: Boolean) {
         when (tab) {
             "chat" -> {
                 ChatHistory(state, model, { request, decision -> confirmPermission = request to decision }, Modifier.weight(1f))
-                ComposeBar(state, model,
+                ComposeBar(state, editDraft = model::editDraft, removeAttachment = model::removeAttachment, send = model::send,
                     attach = { upload.launch(arrayOf("text/plain", "application/json", "application/pdf", "image/png", "image/jpeg", "image/webp")) },
                     models = { modelPicker = true; model.loadModels() }, stop = { confirmStop = true })
             }
@@ -278,8 +278,18 @@ private fun RequestCard(request: PendingRequest, disabled: Boolean,
 }
 
 @Composable
-private fun ComposeBar(state: PocketUi, model: PocketViewModel, attach: () -> Unit, models: () -> Unit, stop: () -> Unit) {
+internal fun ComposeBar(
+    state: PocketUi,
+    editDraft: (String) -> Unit,
+    removeAttachment: (String) -> Unit,
+    send: () -> Unit,
+    attach: () -> Unit,
+    models: () -> Unit,
+    stop: () -> Unit,
+) {
     val session = state.session ?: return
+    val hasMessage = state.draft.text.isNotBlank()
+    val showStop = !hasMessage && session.state in setOf("running", "waiting", "cancel_requested")
     Surface(tonalElevation = 3.dp) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -292,25 +302,27 @@ private fun ComposeBar(state: PocketUi, model: PocketViewModel, attach: () -> Un
                 IconButton(onClick = attach, enabled = session.online && !state.uploading && state.draft.attachments.size < 4) {
                     Icon(Icons.Default.AttachFile, contentDescription = "选择附件，最多 2 MiB")
                 }
-                IconButton(onClick = stop, enabled = session.online && session.capabilities.abort && session.state in setOf("running", "waiting", "cancel_requested")) {
-                    Icon(Icons.Default.StopCircle, contentDescription = "请求停止当前任务", tint = MaterialTheme.colorScheme.error)
-                }
             }
             for (attachment in state.draft.attachments) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(attachment.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
-                    IconButton(onClick = { model.removeAttachment(attachment.id) }) { Icon(Icons.Default.Close, contentDescription = "移除附件 ${attachment.name}") }
+                    IconButton(onClick = { removeAttachment(attachment.id) }) { Icon(Icons.Default.Close, contentDescription = "移除附件 ${attachment.name}") }
                 }
             }
             Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedTextField(state.draft.text, model::editDraft,
+                OutlinedTextField(state.draft.text, editDraft,
                     modifier = Modifier.weight(1f).heightIn(max = 180.dp).testTag("message_input"), maxLines = 5,
                     label = { Text(if (session.online) "继续原始会话" else "离线草稿") },
                     supportingText = { Text("CLI 排队处理 · 不立即中断工具", style = MaterialTheme.typography.labelSmall) })
-                FilledIconButton(onClick = model::send,
-                    enabled = state.draft.text.isNotBlank() && session.online && session.capabilities.messages && !state.uploading,
-                    modifier = Modifier.padding(bottom = 28.dp).size(48.dp)) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送到原始 CLI")
+                FilledIconButton(onClick = if (showStop) stop else send,
+                    enabled = if (showStop) session.online && session.capabilities.abort
+                        else hasMessage && session.online && session.capabilities.messages && !state.uploading,
+                    colors = if (showStop) IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError,
+                    ) else IconButtonDefaults.filledIconButtonColors(),
+                    modifier = Modifier.padding(bottom = 28.dp).size(48.dp).testTag("composer_action")) {
+                    if (showStop) Icon(Icons.Default.Stop, contentDescription = "请求停止当前任务")
+                    else Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送到原始 CLI")
                 }
             }
         }
