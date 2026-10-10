@@ -8,7 +8,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
@@ -56,6 +58,7 @@ fun DevPocket(model: PocketViewModel, requestNotifications: () -> Unit) {
         BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
             val expanded = maxWidth >= 840.dp
             val rail = maxWidth >= 600.dp
+            val maxErrorHeight = (maxHeight / 3).coerceAtMost(160.dp)
             Scaffold(
                 contentWindowInsets = WindowInsets.safeDrawing,
                 bottomBar = {
@@ -99,11 +102,36 @@ fun DevPocket(model: PocketViewModel, requestNotifications: () -> Unit) {
                             }
                         } else SessionList(state, model, { pairing = true }, Modifier.weight(1f).fillMaxHeight())
                     }
-                    SnackbarHost(snackbar, Modifier.align(Alignment.CenterHorizontally).testTag("error_notice"))
+                    SnackbarHost(snackbar, Modifier.align(Alignment.CenterHorizontally)
+                        .heightIn(max = maxErrorHeight).testTag("error_notice")) { data ->
+                        ErrorNotice(data)
+                    }
                 }
             }
         }
         if (pairing) PairDialog(state, model) { pairing = false }
+    }
+}
+
+@Composable
+internal fun ErrorNotice(data: SnackbarData, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.padding(12.dp).widthIn(max = 568.dp).fillMaxWidth(),
+        shape = MaterialTheme.shapes.extraSmall,
+        color = MaterialTheme.colorScheme.inverseSurface,
+        contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+    ) {
+        Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(data.visuals.message, Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                style = MaterialTheme.typography.bodyMedium)
+            data.visuals.actionLabel?.let { label ->
+                TextButton(onClick = data::performAction,
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.inversePrimary)) {
+                    Text(label)
+                }
+            }
+        }
     }
 }
 
