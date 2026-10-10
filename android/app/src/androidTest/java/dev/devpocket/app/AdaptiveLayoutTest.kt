@@ -30,6 +30,10 @@ class AdaptiveLayoutTest {
             context.getSharedPreferences("devpocket_settings", 0).edit().remove("last_scope").commit()
             scenario = ActivityScenario.launch(MainActivity::class.java)
             compose.waitUntil(20_000) { compose.onAllNodesWithText(session.title).fetchSemanticsNodes().isNotEmpty() }
+            // The offline fixture's snackbar covers the first card in short windows.
+            compose.waitUntil(20_000) { compose.onAllNodesWithText("知道了").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithText("知道了").performClick()
+            compose.waitUntil(20_000) { compose.onAllNodesWithText("知道了").fetchSemanticsNodes().isEmpty() }
             compose.onNodeWithText(session.title).performClick()
             compose.onNodeWithTag("session_detail").assertIsDisplayed()
             if (context.resources.configuration.screenWidthDp >= 840)

@@ -100,6 +100,18 @@ All host/device credentials, SQLite data, copied attachments, SDK/JDK downloads,
 
 After the user finished the trial, its dedicated local emulator, ADB server and ordinary CLI were shut down normally. Their app/Keystore data, host configuration and history were retained. The cloud relay remains running by explicit user choice; restarting or enrolling a local runtime still requires the relevant opt-in setup.
 
+## AI development workflow
+
+An optional developer-only Copilot workflow can create an isolated worktree,
+implement a task, run source-bound checks and request an independent read-only
+review with bounded repairs. Android-affecting changes require actual emulator
+instrumentation against a local test adapter, not just a successful APK build.
+See [development workflow](docs/DEVELOPMENT-WORKFLOW.md) for task input,
+`npm run verify`, explicit extension activation, runner prerequisites and CI
+rules. Missing required device evidence blocks acceptance. Repository files do
+not by themselves enable a runner, enforce branch protection or authorize
+installation, runtime control, cloud operations, merging or publication.
+
 ## Backend build and local development
 
 Use Node 24.x and PowerShell. Commands are run from the DevPocket folder.

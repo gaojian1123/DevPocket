@@ -2,6 +2,11 @@
 
 Use `README.md` for setup and build instructions. Consult `VALIDATION.md` for recorded acceptance and known gaps; historical results do not validate new changes.
 
+For an AI development task, workflow activation, missing verification evidence
+or interrupted workflow recovery, read `docs\DEVELOPMENT-WORKFLOW.md`. Use
+`npm run verify -- -Base BASE_COMMIT` for the diff-selected gate; planning,
+partial shards and skipped required tests are not completed verification.
+
 ## Change boundaries
 
 - Preserve the original process/session identity when attaching to an already-running runtime, whether launched in a CLI terminal or hosted by Copilot App. Use `joinSession()` and the CLI-bundled SDK, rather than starting, cloning or resuming a replacement session.

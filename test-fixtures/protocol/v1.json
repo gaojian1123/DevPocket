@@ -1,0 +1,103 @@
+[
+  {
+    "id": "legacy-message-default-attachments",
+    "shape": "command",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": {
+      "commandId": "11111111-1111-4111-8111-111111111111",
+      "action": { "type": "message", "text": "Keep the same command across retries." }
+    }
+  },
+  {
+    "id": "nullable-model-reasoning",
+    "shape": "command",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": {
+      "commandId": "22222222-2222-4222-8222-222222222222",
+      "action": { "type": "model.set", "modelId": "fixture-model", "reasoningEffort": null }
+    }
+  },
+  {
+    "id": "unknown-command-kind",
+    "shape": "command",
+    "backendValid": false,
+    "androidValid": false,
+    "wire": {
+      "commandId": "33333333-3333-4333-8333-333333333333",
+      "action": { "type": "future.admin" }
+    }
+  },
+  {
+    "id": "missing-message-text",
+    "shape": "command",
+    "backendValid": false,
+    "androidValid": false,
+    "wire": {
+      "commandId": "33333333-3333-4333-8333-333333333333",
+      "action": { "type": "message" }
+    }
+  },
+  {
+    "id": "server-rejects-extra-mutation-semantics",
+    "shape": "command",
+    "backendValid": false,
+    "androidValid": true,
+    "wire": {
+      "commandId": "33333333-3333-4333-8333-333333333333",
+      "action": { "type": "permission", "requestId": "fixture-permission", "decision": "approve-once", "scope": "all-future" }
+    }
+  },
+  {
+    "id": "legacy-session-without-workspace",
+    "shape": "session",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": {
+      "hostId": "44444444-4444-4444-8444-444444444444",
+      "sessionId": "55555555-5555-4555-8555-555555555555",
+      "projectId": "fixture-project", "projectName": "Fixture", "title": "Original session",
+      "cliVersion": "unknown", "state": "idle", "permissionMode": "manual",
+      "modelId": "fixture-model", "reasoningEffort": "",
+      "capabilities": { "messages": false, "abort": false, "permissions": false, "questions": true, "models": true, "files": false, "git": false },
+      "warnings": [], "registeredAt": 1, "online": true, "pinned": false, "archived": false, "lastSeen": 2
+    }
+  },
+  {
+    "id": "workspace-session",
+    "shape": "session",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": {
+      "hostId": "44444444-4444-4444-8444-444444444444",
+      "sessionId": "55555555-5555-4555-8555-555555555555",
+      "projectId": "fixture-project", "projectName": "Fixture", "title": "Original session",
+      "workspace": { "name": "isolated-worktree", "branch": "" },
+      "cliVersion": "unknown", "state": "cancel_requested", "permissionMode": "manual",
+      "modelId": "fixture-model", "reasoningEffort": "low",
+      "capabilities": { "messages": true, "abort": true, "permissions": false, "questions": false, "models": true, "files": false, "git": false },
+      "warnings": [], "registeredAt": 1, "online": true, "pinned": false, "archived": false, "lastSeen": 2
+    }
+  },
+  {
+    "id": "unsupported-request-stays-terminal-only",
+    "shape": "request",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": {
+      "requestId": "fixture-form", "type": "terminal", "title": "Unsupported form",
+      "detail": "Review in the original client.", "choices": [], "allowFreeform": false, "supported": false
+    }
+  },
+  {
+    "id": "unknown-outcome-is-not-completed",
+    "shape": "receipt",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": {
+      "commandId": "11111111-1111-4111-8111-111111111111", "status": "uncertain",
+      "error": { "code": "DELIVERY_UNCERTAIN", "message": "Inspect the original runtime; do not repeat the operation." }
+    }
+  }
+]

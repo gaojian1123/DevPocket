@@ -1,0 +1,34 @@
+name: AI development task
+description: Define an observable task for the DevPocket development workflow.
+title: "[Task] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        An issue describes work; it does not authorize a deployment, installation,
+        real CLI experiment, device enrollment, or release. Start the approved
+        task in a new Copilot worktree using the development workflow.
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: Describe the user-visible outcome rather than a list of implementation steps.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Give observable success and failure cases. Identify any required native Android behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: Non-goals and invariants
+      description: State what must remain unchanged. AGENTS.md always applies.
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and decisions
+      description: Record product decisions already made and any known affected areas. The verifier also inspects the actual diff.
