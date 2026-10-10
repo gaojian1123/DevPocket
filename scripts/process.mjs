@@ -11,8 +11,18 @@ export function spawnOwnedCommand(file, args, {
   const launcher = fileURLToPath(new URL("./owned-command.ps1", import.meta.url));
   const child = spawn("pwsh", ["-NoProfile", "-NonInteractive", "-File", launcher],
     { cwd, env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
-  child.stdin.write(JSON.stringify({ file, arguments: args, timeoutMs, graceMs, persistent }) + "\n");
+  child.stdin.write(JSON.stringify({ file, arguments: args, timeoutMs, graceMs, persistent, ownerPid: process.pid }) + "\n");
   return child;
+}
+
+export async function ownerProcessFamilyAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Invalid process-family owner.");
+  const result = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
+    `$ErrorActionPreference='Stop'; $items=@(Get-CimInstance Win32_Process -Filter "ProcessId=${pid} OR ParentProcessId=${pid}"); ` +
+    `if($items.Count) { 'alive' } else { 'exited' }`], { timeout: 20_000, windowsHide: true });
+  const status = result.stdout.trim();
+  if (!["alive", "exited"].includes(status)) throw new Error("Process-family liveness is unavailable; retaining the emulator lease.");
+  return status === "alive";
 }
 
 export async function stopOwnedProcess(child) {

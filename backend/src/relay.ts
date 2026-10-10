@@ -9,6 +9,7 @@ import {
   type Receipt, type SessionInfo, type UserEvent,
 } from "./protocol.js";
 import { FcmPush, type PushSender } from "./push.js";
+import { ProofKey, proofSignature } from "./local-proof.js";
 
 export { VERSION, PROTOCOL } from "./protocol.js";
 export type RelayOptions = {
@@ -21,6 +22,7 @@ export type RelayOptions = {
   now?: () => number;
   fcmServiceAccount?: string;
   pushSender?: PushSender;
+  proofOwnerKey?: string;
 };
 
 export async function readBody(request: IncomingMessage, maxBytes = 64 * 1024): Promise<Buffer> {
@@ -61,6 +63,10 @@ function json(response: ServerResponse, status: number, value: unknown): void {
 
 export async function startRelay(options: RelayOptions): Promise<{ url: string; close(): Promise<void> }> {
   const bind = options.bind ?? "127.0.0.1";
+  const proofOwnerKey = options.proofOwnerKey === undefined ? undefined : ProofKey.parse(options.proofOwnerKey);
+  if (proofOwnerKey && (!options.allowInsecureLoopback || bind !== "127.0.0.1" || options.publicUrl)) {
+    throw new Fault("UNSAFE_BIND", "Proof-owner authentication is only for a private loopback acceptance relay.");
+  }
   if (options.allowInsecureLoopback && !["127.0.0.1", "::1"].includes(bind)) {
     throw new Fault("UNSAFE_BIND", "Insecure development mode may bind only to loopback.");
   }
@@ -293,6 +299,12 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
       return;
     }
     checkTransport(request);
+    const nonce = /^\/__devpocket-proof\/([a-f0-9]{64})$/.exec(url.pathname)?.[1];
+    if (proofOwnerKey && nonce && method === "GET") {
+      response.writeHead(200, { "Content-Type": "text/plain", "Content-Length": 64, "Cache-Control": "no-store" });
+      response.end(proofSignature(proofOwnerKey, nonce));
+      return;
+    }
     const ip = request.socket.remoteAddress ?? "unknown";
     if (method === "POST" && url.pathname === "/v1/host/pairings") {
       const host = store.host(bearer(request.headers.authorization));

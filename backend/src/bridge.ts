@@ -7,11 +7,13 @@ import { z } from "zod";
 import { Command, Id, MAX_UPLOAD, PROTOCOL, Receipt, RelayReady, SessionSummary, UserEvent, finalStatus, type DeliveryStatus } from "./protocol.js";
 import { CopilotRuntime, type JoinedSession, type LocalAttachment } from "./runtime.js";
 import { Fault, fileName, hash, publicError, relayUrl } from "./security.js";
+import { authenticatedProofFetch, createProofAgent, ProofKey } from "./local-proof.js";
 
 export const HostConfig = z.object({
   hostId: Id, token: z.string().regex(/^dph_[A-Za-z0-9_-]{43}$/),
   relayUrl: z.string().url(), dataDir: z.string().min(1),
   allowInsecureLoopback: z.boolean().default(false),
+  proofOwnerKey: ProofKey.optional(),
 }).strict();
 export type HostConfig = z.infer<typeof HostConfig>;
 
@@ -184,6 +186,8 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   options: { waitForReady?: boolean } = {}): Promise<{ close(): Promise<void>; runtime: CopilotRuntime }> {
   const config = HostConfig.parse(input);
   const origin = relayUrl(config.relayUrl, config.allowInsecureLoopback);
+  if (config.proofOwnerKey && !config.allowInsecureLoopback) throw new Fault("UNSAFE_BIND", "Proof transport requires explicit local acceptance configuration.");
+  const proofAgent = config.proofOwnerKey ? createProofAgent(origin, config.proofOwnerKey) : undefined;
   Id.parse(session.sessionId);
   const journal = new Journal(path.join(config.dataDir, config.hostId, session.sessionId));
   const runtime = new CopilotRuntime(session, (event) => { journal.observe(event); journal.enqueue(event); });
@@ -258,9 +262,10 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   }
 
   async function attachment(id: string): Promise<LocalAttachment> {
-    const response = await fetch(new URL(`/v1/host/sessions/${session.sessionId}/attachments/${id}`, origin), {
-      headers: { Authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(15_000), redirect: "error",
-    });
+    const url = new URL(`/v1/host/sessions/${session.sessionId}/attachments/${id}`, origin);
+    const options = { headers: { Authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(15_000) };
+    const response = config.proofOwnerKey ? await authenticatedProofFetch(url, config.proofOwnerKey, options)
+      : await fetch(url, { ...options, redirect: "error" });
     if (!response.ok) throw new Fault("ATTACHMENT_UNAVAILABLE", `Relay refused attachment (${response.status}).`, 409);
     if (!response.body || Number(response.headers.get("content-length")) > MAX_UPLOAD)
       throw new Fault("ATTACHMENT_TOO_LARGE", "Attachment exceeds 2 MiB.");
@@ -323,7 +328,8 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     url.searchParams.set("sessionId", session.sessionId);
     url.searchParams.set("workspaceMetadata", "1");
     ws = new WebSocket(url, { headers: { Authorization: `Bearer ${config.token}` },
-      maxPayload: 4 * 1024 * 1024, perMessageDeflate: false, handshakeTimeout: 15_000 });
+      maxPayload: 4 * 1024 * 1024, perMessageDeflate: false, handshakeTimeout: 15_000,
+      ...(proofAgent ? { agent: proofAgent } : {}) });
     const socket = ws;
     // Protocol-v1 peers validate fields strictly, so the first hello remains legacy-shaped.
     socket.on("open", () => socket.send(JSON.stringify({ type: "hello", protocol: PROTOCOL, summary: summaryForRelay(runtime.summary) })));
@@ -394,6 +400,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
       if (retry) clearTimeout(retry);
       clearInterval(flushTimer); clearInterval(refreshTimer);
       runtime.close();
+      proofAgent?.destroy();
       if (ws && ws.readyState !== WebSocket.CLOSED) {
         const socket = ws;
         await new Promise<void>((resolve) => { socket.once("close", () => resolve()); socket.terminate(); });

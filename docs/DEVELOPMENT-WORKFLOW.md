@@ -1,17 +1,33 @@
 # Development workflow
 
-The optional **devpocket-development** Copilot extension is development tooling,
+The **devpocket-development** Copilot extension is development tooling,
 not the shipped phone/runtime extension. It uses the host's bundled SDK and
 `joinSession()` to register tools and a workflow. It does not replace the current
-runtime, change its permission handler, or request credentials.
+runtime, change its permission handler, or request credentials. `AGENTS.md`
+defines when agents use this workflow by default. This is an agent routing rule,
+not a background message listener or automatic extension activation.
 
 ## Start a task
 
-Use the AI development issue template to define a goal, observable acceptance
-criteria and non-goals. Issue text alone never starts privileged work.
+Form a task contract from the user's implementation request: goal, observable
+acceptance criteria and non-goals. Reuse decisions already made and state the
+criteria before dispatch. Ask only for unresolved scope, behavior or acceptance
+decisions; a clear implementation request does not need an additional question
+about whether to use the default workflow. An in-conversation contract is
+sufficient; the AI development issue template is optional. Issue text alone
+does not start work or authorize privileged operations.
+
+First distinguish a new task from a continuation. For an existing workflow,
+route feedback to its current owner or resume its recorded run; preserve its
+workspace, task contract and evidence. A dispatched implementation/review agent
+performs only that assigned phase. Neither case calls the starter recursively.
+Pre-existing direct work stays in its current workspace unless the user chooses
+to migrate it; report that it is outside the registered workflow. Explicit
+requests for a different route still retain applicable checks and authorization
+boundaries and must not be labelled as workflow runs.
 
 After explicitly authorizing this repository's development extension to load in
-the current session, invoke `devpocket_start_development` with:
+the current session, use `devpocket_start_development` for a new task with:
 
 ```json
 {
@@ -29,11 +45,20 @@ worktree can invoke that workflow directly. The primary checkout and dirty
 starting worktrees are refused. The App/CLI must support Dynamic Workflows and
 eligible execution credentials; an unavailable capability is a blocker, not
 permission to substitute a different runtime.
+If the task depends on uncommitted work or a particular in-progress branch,
+resolve that dependency before dispatch rather than silently starting from a
+base that omits it. Preserve the current checkout's changes.
 
 Loading/reloading the extension and the repository's read/search-only
 `devpocket-reviewer` profile is explicit. Reloading extensions may also reload
 other extensions in that session. Merely adding these files does not activate
-them in an already-running session.
+them in an already-running session. If the starter, workflow or read-only
+reviewer is unavailable, report the missing prerequisite and request the
+specific setup/loading authorization needed before proceeding. An explicit
+eligible-worktree entry point above may replace an unavailable starter, but
+direct coding or implementer self-review is not a substitute for the workflow.
+Honor the App's per-run approval and credit/time controls; default routing does
+not bypass them.
 
 The controller dispatches implementation, executes verification itself, and
 dispatches a separate read-only reviewer against the actual diff and added files.
@@ -52,6 +77,9 @@ The automatic endpoint is **ready for a PR**, with changes in the worktree and
 PR, merge or deploy. Use the App's normal PR creation path when publication is
 authorized. Commit/merge-ref changes require fresh applicable verification; old
 reports are not re-labelled as evidence for a new revision.
+Report the actual run/worktree and outcome when dispatched. Say that a workflow
+has started only after an invocation returns its run identity; a proposed plan
+or manually performed equivalent steps are not a registered workflow run.
 
 ## Verification
 
@@ -141,14 +169,120 @@ opt-in real-CLI path; its skipped opt-in invocation cannot satisfy this gate.
 Shared `test-fixtures\protocol\v1.json` is consumed by both TypeScript and Kotlin
 tests, preserving intentional strict-server/forward-compatible-client decoding.
 
-The automated runner does not use the historical `DevPocketProof` AVD or the
-fixed-port manual scripts. Owned credential/data/AVD subdirectories are removed
+Automated and manual emulator commands share the same resource pool. They do
+not reuse the historical `DevPocketProof` AVD or any retained user emulator.
+Owned credential/data/AVD subdirectories are removed
 after process shutdown; reports and private diagnostics remain. Windows job
 objects retain descendant ownership after a launcher exits. Normal controller
 cancellation requests graceful cleanup first; after process exit the controller
 also cleans only directories bearing that invocation's owner nonce. A forced
 host termination can leave a run directory. Inspect its owner/process record
 before targeted cleanup; never delete another run or a retained trial AVD.
+
+### Concurrent worktrees and manual runs
+
+All participating worktrees of the same Windows account coordinate through
+`%LOCALAPPDATA%\DevPocket\verification\emulator-pool`, not a per-worktree lock.
+An OS-owned named-pipe mutex serializes admission. The default limit is one;
+excess requests wait, and cancellation removes only that request. Port leases
+cover the emulator console/guest-ADB pair, the dedicated ADB server and the
+authenticated emulator gRPC listener. TCP reservations are held until process
+startup; the shared lease remains held through shutdown. Listener process
+ownership and the live AVD identity are checked before application operations.
+Every allocation is checked against the complete live-lease port set, including
+the handoff-to-listener startup interval. Reservations cover both loopback address
+families; reclamation also checks all addresses in Windows' TCP listener table.
+
+```powershell
+npm run emulator:status
+npm run emulator:limit -- --max 2
+```
+
+Changing the account limit is explicit and applies to future admission; it
+does not stop existing runs. Even at a higher limit, a second emulator run in
+the same checkout waits so participating builds do not overwrite each other's
+APKs. Build commands run outside these entry points still need coordination.
+CPU/RAM and SDK installation remain host resources: only share immutable
+toolchains, do not update them while tests use them, and choose a limit the
+machine can actually support.
+
+The manual entry points no longer use fixed ports or select a global "last"
+device. Run the starter in one terminal and keep it open:
+
+```powershell
+.\scripts\start-test-emulator.ps1
+```
+
+It prints a new owned run directory after readiness. From the same checkout
+in another terminal, supply that exact directory:
+
+```powershell
+.\scripts\test-native-layouts.ps1 -RunDirectory 'PRINTED_RUN_DIRECTORY'
+.\scripts\stop-test-emulator.ps1 -RunDirectory 'PRINTED_RUN_DIRECTORY'
+```
+
+Layout and stop requests go to that live run's scoped local controller, not
+directly to a guessed serial/ADB server. A different worktree or stale handle
+is refused. Owned worker exit invalidates the handle; manual operations check
+the listener owners and AVD again before installation rather than adopting a
+new process at an old port. The stop response is sent only after cleanup. Manual layout
+results are recorded separately and cannot stand in for the automatic
+fixture-backed device gate. The previous parameterless layout invocation is
+intentionally unsupported rather than silently selecting a retained AVD.
+
+Both starters accept `-QueueTimeoutSeconds` (default 900). A crashed owner is
+reclaimed only when its liveness endpoint, process and direct owned launchers
+are gone and every leased port is unoccupied. Job owners monitor the initiating
+process through a held Windows process handle, so an interrupted starter cannot
+leave its build running while a replacement run is admitted. A dead owner with
+surviving work or occupied ports stays visible and blocks reuse;
+inspect it rather than killing an unknown process or deleting the registry.
+Older scripts/checkouts and unrelated applications do not participate in this
+pool. Occupied external ports are skipped, startup races fail ownership checks,
+and retained emulators are never adopted or stopped.
+
+### Local relays and opt-in CLI compatibility
+
+The automatic Android fixture binds its local relay with `port: 0` and keeps
+its database, credentials and SDK fixture in its owned run. The opt-in real-CLI
+harness now does the same for each explicit `.data\cli-proofs\<run>` directory.
+The OS allocates and binds relay ports atomically; relays do not consume emulator
+slots and do not share a global database, pairing output or "current proof"
+pointer. The ordinary `npm run relay` service still has its documented default
+port; it is not one of these disposable acceptance relays.
+
+See the README's opt-in CLI procedure for explicit launch, pre-attachment
+process capture, staging/reload and runtime-check authorization. The launcher
+uses an explicitly selected installed CLI, not a hard-coded historical version.
+Subsequent checks verify the original process creation time, session ID and
+bridge registration. A failed or closed proof is not a reason to start, resume
+or clone a replacement runtime under its old identity.
+
+Checks against one proof are mutually exclusive, preserve command IDs and
+failed/uncertain evidence, and cannot overwrite an earlier check. Stop targets
+the exact live controller and waits for that relay's cleanup, without stopping
+the original CLI. A dead controller or changed handle is refused. An opt-in
+`proofOwnerKey` in this disposable host configuration binds script requests and
+all bridge connections/downloads to a fresh HMAC challenge on the same socket,
+preventing credentials from crossing a check/connect or reconnect port-reuse
+race. The key stays in ignored local metadata and never enters wire events,
+Android models or public run summaries. Normal host configurations omit it;
+deployed transport behavior and protocol-v1 frames are unchanged. Separate
+proofs/worktrees can keep their own relays running independently.
+
+`npm run test:cli:harness` and the normal backend suite exercise only local
+relays and fake CLI executables. They do not install/reload extensions or run
+real model, permission, question or cancellation scenarios. Fake SDK events are
+passed through the actual bridge/relay to check that changed question semantics,
+terminal rejection and failed tools cannot produce a false acceptance pass.
+Only literal, exact non-freeform questions can be answered automatically by the
+harness. The existing display-only elicitation projection can represent different
+original messages identically; these forms stay in the original terminal and
+cannot count as passed compatibility checks. Product mobile form support remains
+unchanged.
+A green fixture gate
+does not qualify a new real CLI build; that remains a separately authorized,
+disposable-terminal compatibility check, not an automatic per-PR operation.
 
 ## CI activation and trust
 

@@ -113,15 +113,24 @@ After the user finished the trial, its dedicated local emulator, ADB server and 
 
 ## AI development workflow
 
-An optional developer-only Copilot workflow can create an isolated worktree,
-implement a task, run source-bound checks and request an independent read-only
-review with bounded repairs. Android-affecting changes require actual emulator
+The developer-only Copilot workflow is the default agent route for new feature
+implementation and bug-fix requests under `AGENTS.md`; no special workflow phrase
+is needed. It creates an isolated worktree, implements the task, runs source-bound
+checks and requests an independent read-only review with bounded repairs.
+Discussion, planning and documentation-only tasks do not start implementation.
+Extension loading and the App's run approvals remain explicit; unavailable
+prerequisites are reported rather than silently bypassed.
+Android-affecting changes require actual emulator
 instrumentation against a local test adapter, not just a successful APK build.
 See [development workflow](docs/DEVELOPMENT-WORKFLOW.md) for task input,
 `npm run verify`, explicit extension activation, runner prerequisites and CI
 rules. Missing required device evidence blocks acceptance. Repository files do
 not by themselves enable a runner, enforce branch protection or authorize
 installation, runtime control, cloud operations, merging or publication.
+Automatic and manual emulator entry points share an account-wide resource pool
+across worktrees (one emulator by default). Use `npm run emulator:status` to
+inspect it; manual layout/stop commands require the run directory printed by
+`scripts\start-test-emulator.ps1`, never a fixed ADB port or retained AVD name.
 
 ## Backend build and local development
 
@@ -416,14 +425,108 @@ Unit checks cover release TLS rules and late-ack draft/delivery invariants. `and
 
 ### Reproduce the opt-in real CLI checks
 
-These tests use a **new disposable ordinary terminal**, not the SDK's create/resume client. They require interactive trust decisions and an already-authorized CLI. Do not point them at a working user session.
+These checks are an **on-demand compatibility check**, not part of the automatic
+PR gate. They use a new disposable ordinary Windows terminal, not the SDK's
+create/resume client. Real CLI launch, extension staging/reload and runtime
+mutations each need authorization for this exact run. Historical approvals and
+the flags below do not grant standing permission to an agent.
 
-1. In the DevPocket folder run `npm run build`, then `npm run test:cli:start` in a dedicated terminal. It binds local port 18879 and creates ignored, independent test credentials.
-2. In a second ordinary PowerShell terminal run `.\scripts\launch-cli-proof.ps1`. Only this test process's app-routing/terminal-host environment is adjusted, and it is restored afterward. Select the first folder-trust **Yes** for this session only; do not remember a grant or enable allow-all. Wait until the initial marker is actually answered.
-3. Run `node --import tsx backend\integration\canvas-proof.ts install` from the project folder. Ask the **same** running CLI to invoke its built-in `extensions_reload` once. Approve that reload and the DevPocket extension's ability to **handle** permission requests, once. Reject unrelated requests to **skip** permission prompts. On a TUI use the selection keys and Enter; Escape may abort the entire current tool rather than only reject one extension.
-4. Run `npm run test:cli`. It verifies original parent PID/session identity, the earlier marker timestamp, model/reasoning controls, phone-first approval/stale rejection, a live question, and terminal-first approval/stale rejection. It pauses for the harmless terminal-first `Write-Output` approval: inspect and approve that single command in the original terminal.
-5. Run `npm run test:cli:cancel` to run a bounded in-workspace Node helper through the real built-in PowerShell tool. It observes actual parent/child PIDs, queues another message, requests abort, requires runtime idle and both process exits, checks the cleared queue's delivery state, and sends a new prompt to the **same** runtime afterward.
-6. End the disposable CLI with `/exit` and stop the dedicated relay with Ctrl+C. Remove its raw test credentials; preserve only the ignored diagnostic evidence you need. Do not restart or modify unrelated CLI sessions.
+From the DevPocket checkout, build the extension and start a dedicated local
+relay in one terminal:
+
+```powershell
+npm run build
+$proof = '.data\cli-proofs\' + [guid]::NewGuid().ToString()
+npm run test:cli:start -- --directory $proof
+```
+
+Keep that terminal open. The relay binds `127.0.0.1` with **port zero**, letting
+the OS allocate and bind an available port atomically. It prints a public run
+summary, not credentials. In subsequent terminals set `$proof` to its printed
+absolute directory. Every command requires that directory; there is no global
+"active proof", fixed relay port or automatic reuse of old evidence. Proof
+commands and the proof-configured bridge authenticate a fresh per-run owner
+challenge on the **same TCP connection** before sending credentials, including
+every bridge reconnect and attachment download. This does not trust a separate
+port/liveness check or change normal production relay/bridge behavior.
+
+1. Select an already-installed CLI by its absolute executable/shim path, then run
+   `.\scripts\launch-cli-proof.ps1 -RunDirectory $proof -CliPath 'C:\Path\To\Installed\copilot.exe' -ConfirmLaunch`
+   in a second ordinary terminal. The launcher does not install/update a CLI or
+   pass a historical `--prefer-version`; it disables auto-update/allow-all in this
+   process and restores the caller's environment afterward. `launch.json` records
+   the selected file/hash, not a claimed runtime version or PID. Select folder
+   trust for this session only and wait for the exact initial marker reply.
+2. Before staging the extension, identify the actual CLI process for the printed
+   `--session-id`, not the PowerShell launcher. Record its observed PID using
+   `npm run test:cli:proof -- capture --directory $proof --runtime-pid ACTUAL_CLI_PID`.
+   This read-only OS observation uses Windows argument parsing, rejects shell
+   wrappers/quoted lookalikes, and checks the exact session argument and creation
+   time, and creates `before-attachment.evidence.json` once. It never fabricates
+   identity from the launcher or a post-attachment registration.
+3. With explicit staging authorization, run
+   `npm run test:cli:proof -- install --directory $proof --confirm-install`.
+   Ask the **same** running CLI to invoke its built-in `extensions_reload` once.
+   Authorize that reload and the extension's ability to **handle** permission
+   requests, once; reject requests to **skip** permission prompts. Finish reload
+   and return to an idle, Manual-permission CLI before running checks.
+4. Select a model and effort explicitly for this disposable runtime, then run
+   `npm run test:cli -- --directory $proof --confirm-runtime-checks --model LIVE_MODEL_ID --reasoning LIVE_EFFORT`.
+   This verifies original process/session and earlier history, sends its own
+   relay roundtrip, checks the live model catalog and actual selection, tests
+   phone-first/stale permission handling, a supported question and terminal-first
+   approval. Inspect and approve the single expected `Write-Output` command in
+   the original terminal when requested. Unsupported/incomplete or changed
+   permission/question details fail the check and remain for the original terminal.
+   Both approval cases require a correlated successful built-in shell completion
+   with the expected output, not just a disappearing request or completed turn;
+   unavailable models/efforts are not silently skipped.
+   The automated question scenario accepts only the exact literal question and
+   choices with no freeform answer. Elicitation display strings combine optional
+   source, message and schema without unambiguous field boundaries, so the harness
+   leaves those forms unanswered in the original terminal and records incomplete
+   acceptance instead of reconstructing fields or claiming a question pass. This
+   does not change mobile form support or the wire protocol.
+5. Separately authorize and run
+   `npm run test:cli:cancel -- --directory $proof --confirm-runtime-checks`.
+   It runs the bounded helper through the real built-in PowerShell tool, observes
+   both helper PIDs and actual queue admission, requests abort, then requires an
+   aborted-idle event, both process exits, a cancelled queued receipt and a
+   follow-up reply from the same original CLI. Abort admission is not completion.
+6. End the disposable CLI normally with `/exit`, then run
+   `npm run test:cli:proof -- stop --directory $proof` or press Ctrl+C in its
+   relay terminal. Stop acknowledges closure/credential-file cleanup only for
+   this proof's relay. It does **not** terminate the CLI, any other relay or an
+   emulator. Private diagnostic evidence remains in the run directory.
+
+`inspect`, `catalog`, `events`, `state` and `receipt COMMAND_UUID` are read-only
+proof commands. To obtain a live model list before choosing one, explicitly
+authorize `send '{"type":"models"}' --directory $proof --command-id COMMAND_UUID
+--confirm-runtime-checks`, then read that receipt. A manual `send` always needs
+an operator-chosen command UUID; preserve the UUID **and action body** for a
+retry, and inspect uncertain receipts rather than resubmitting with a new ID.
+Live/cancellation checks persist dispatch IDs and receipts and never auto-retry
+unknown outcomes. Each check runs once per proof and rejects concurrent checks
+or overwriting prior evidence, including failed evidence.
+
+The separately authorized `android --directory $proof --confirm-runtime-checks`
+proof command saves a five-minute pairing in a new `android-*.local.json` inside
+this run, using the actual relay port with the emulator's `10.0.2.2` host alias.
+It does not start an emulator or enroll a device itself. These private files
+are not shareable reports.
+The ordinary Android debug HTTP client does not implement the harness's owner
+challenge; this opt-in pairing is not a protected or production TLS transport.
+End that disposable client/CLI use before stopping the relay.
+
+Closed, altered, foreign-worktree and dead-owner handles are refused, even if
+another process has acquired their old TCP port. A crashed check leaves its
+ownership lock visible: inspect the original CLI and finish it explicitly; do
+not clear locks to replay an uncertain operation. Start a new proof for another
+acceptance attempt. Legacy global-pointer runs are deliberately not migrated.
+`npm run test:cli:harness` exercises local relay isolation, authenticated
+connection/reconnect races, real bridge projections from a fake SDK, and fake CLI programs
+only (Windows launch/process cases require Windows); `npm run typecheck` also
+checks these entry points. Neither command is real CLI compatibility acceptance.
 
 The tested terminal host was the app's native **Terminal canvas**, used as a terminal display/PTY for an ordinary Copilot CLI. Direct terminal input works too. A generic piped-stdin/raw-PTY harness is not shipped as a claimed replacement; it did not reliably drive this machine's startup/trust UI. Tests fail rather than fabricating an attachment.
 

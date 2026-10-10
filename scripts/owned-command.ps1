@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $request = [Console]::In.ReadLine() | ConvertFrom-Json
-if (-not $request.file -or $request.timeoutMs -le 0) { throw 'Invalid owned-command request.' }
+if (-not $request.file -or $request.timeoutMs -le 0 -or $request.ownerPid -le 0) { throw 'Invalid owned-command request.' }
 $executable = (Get-Command -Name $request.file -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 
 # Assign the job atomically at process creation, including cancellation during startup.
@@ -61,7 +61,9 @@ public sealed class DevPocketOwnedCommand : IDisposable {
     [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateProcess(IntPtr process, uint code);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int id);
-    IntPtr job, process;
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
+    IntPtr job, process, owner;
     static string Quote(string value) {
         var result = new StringBuilder("\"");
         int slashes = 0;
@@ -72,9 +74,12 @@ public sealed class DevPocketOwnedCommand : IDisposable {
         }
         return result.Append('\\', slashes * 2).Append('"').ToString();
     }
-    public DevPocketOwnedCommand(string file, string[] args, string cwd) {
+    public DevPocketOwnedCommand(string file, string[] args, string cwd, int ownerPid) {
+        owner = OpenProcess(0x00100000, false, (uint)ownerPid);
+        if (owner == IntPtr.Zero) throw new Win32Exception();
+        if (!OwnerAlive) { Dispose(); throw new InvalidOperationException("Command owner exited before startup."); }
         job = CreateJobObjectW(IntPtr.Zero, null);
-        if (job == IntPtr.Zero) throw new Win32Exception();
+        if (job == IntPtr.Zero) { var error = new Win32Exception(); Dispose(); throw error; }
         var limits = new ExtendedLimits(); limits.basic.flags = 0x2000;
         if (!SetInformationJobObject(job, 9, ref limits, Marshal.SizeOf(limits))) {
             var error = new Win32Exception(); Dispose(); throw error;
@@ -120,6 +125,13 @@ public sealed class DevPocketOwnedCommand : IDisposable {
     public int ExitCode {
         get { uint code; if (!GetExitCodeProcess(process, out code)) throw new Win32Exception(); return unchecked((int)code); }
     }
+    public bool OwnerAlive {
+        get {
+            uint status = WaitForSingleObject(owner, 0);
+            if (status == 0xffffffff) throw new Win32Exception();
+            return status == 258;
+        }
+    }
     public int[] ProcessIds() {
         for (int bytes = 4096; bytes <= 1048576; bytes *= 2) {
             IntPtr buffer = Marshal.AllocHGlobal(bytes);
@@ -139,16 +151,18 @@ public sealed class DevPocketOwnedCommand : IDisposable {
     public void Dispose() {
         if (job != IntPtr.Zero) { CloseHandle(job); job = IntPtr.Zero; }
         if (process != IntPtr.Zero) { CloseHandle(process); process = IntPtr.Zero; }
+        if (owner != IntPtr.Zero) { CloseHandle(owner); owner = IntPtr.Zero; }
     }
 }
 '@
 
-$owned = [DevPocketOwnedCommand]::new($executable, [string[]]$request.arguments, (Get-Location).Path)
+$owned = [DevPocketOwnedCommand]::new($executable, [string[]]$request.arguments, (Get-Location).Path, [int]$request.ownerPid)
 [Console]::Error.WriteLine('DEVPOCKET_OWNERSHIP_ACTIVE')
 $watch = [Diagnostics.Stopwatch]::StartNew()
 $exitCode = 124
 try {
     while ($true) {
+        if (-not $owned.OwnerAlive) { break }
         if ($request.persistent) {
             if (-not $owned.ProcessIds().Count) { break }
             Start-Sleep -Milliseconds 100

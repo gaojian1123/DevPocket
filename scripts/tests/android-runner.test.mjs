@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 
 const exec = promisify(execFile);
 const entry = path.resolve("scripts/android-runner.mjs");
@@ -62,4 +63,43 @@ test("cancelled-run cleanup cannot delete another run's AVD or fixture credentia
   assert.equal(await readFile(path.join(directory, "avd", "preserved.txt"), "utf8"), "owned by the other run");
   await cleanDeviceRun(process.cwd(), directory, owner);
   await assert.rejects(readFile(path.join(directory, "avd", "preserved.txt")), { code: "ENOENT" });
+});
+
+test("a live device handle is revoked when a worker exits or listener ownership changes", async () => {
+  const { createLiveDeviceGuard } = await import("../android-emulator.mjs");
+  const worker = () => ({ child: Object.assign(new EventEmitter(), { exitCode: null, signalCode: null }), settled: false });
+  const adb = worker(), emulator = worker();
+  let probes = 0;
+  const guard = createLiveDeviceGuard([adb, emulator], async () => { probes++; });
+  await guard.verify();
+  assert.equal(probes, 1);
+  emulator.child.emit("exit", 1);
+  assert.equal(guard.signal.aborted, true);
+  await assert.rejects(guard.verify(), /exited|unavailable/);
+  assert.equal(probes, 1, "A replacement listener must not revive an exited owned worker.");
+  guard.close();
+  let replaced = false;
+  const live = createLiveDeviceGuard([worker(), worker()], async () => {
+    if (replaced) throw new Error("Listener ownership mismatch.");
+  });
+  await live.verify();
+  replaced = true;
+  await assert.rejects(live.verify(), /ownership mismatch/);
+  assert.equal(live.signal.aborted, true);
+  live.close();
+});
+
+test("caller cancellation during ownership inspection is not latched as an unexpected worker failure", async () => {
+  const { createLiveDeviceGuard } = await import("../android-emulator.mjs");
+  const worker = { child: Object.assign(new EventEmitter(), { exitCode: null, signalCode: null }), settled: false };
+  const cancellation = new AbortController();
+  let finish;
+  const inspected = new Promise((resolve) => { finish = resolve; });
+  const guard = createLiveDeviceGuard([worker], () => inspected, cancellation.signal);
+  const verification = guard.verify();
+  cancellation.abort(new Error("Manual stop requested."));
+  finish();
+  await assert.rejects(verification, /Manual stop/);
+  assert.equal(guard.failure, undefined);
+  guard.close();
 });

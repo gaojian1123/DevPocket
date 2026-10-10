@@ -2,10 +2,20 @@
 
 Use `README.md` for setup and build instructions. Consult `VALIDATION.md` for recorded acceptance and known gaps; historical results do not validate new changes.
 
-For an AI development task, workflow activation, missing verification evidence
-or interrupted workflow recovery, read `docs\DEVELOPMENT-WORKFLOW.md`. Use
-`npm run verify -- -Base BASE_COMMIT` for the diff-selected gate; planning,
-partial shards and skipped required tests are not completed verification.
+## Default development routing
+
+For new user requests to implement a feature or fix a bug, use the registered
+`devpocket-development` workflow by default. No special workflow phrase is
+required. Before implementation, follow `docs\DEVELOPMENT-WORKFLOW.md` for the
+task contract, entry point and activation requirements. Use that guide also for
+missing verification evidence or interrupted-run recovery.
+
+Continue the existing task for follow-ups. Workflow-dispatched implementers and
+reviewers perform their assigned step, rather than dispatching another workflow.
+Advice, explanations, planning, read-only reviews and documentation-only edits
+do not start an implementation workflow. A different implementation route needs
+the user's explicit choice; missing workflow prerequisites are blockers, not
+permission to silently fall back to direct implementation or self-review.
 
 ## Change boundaries
 
@@ -22,6 +32,7 @@ partial shards and skipped required tests are not completed verification.
 
 ## Checks and operations
 
+- Use `npm run verify -- -Base BASE_COMMIT` for the diff-selected gate; planning, partial shards and skipped required tests are not completed verification.
 - Use the relevant checks in `package.json` for backend changes and `scripts\build-android.ps1 -Lint` for Android changes. Documentation-only edits need no application build.
 - Real CLI checks use explicitly opted-in disposable terminals. Extension installation/reload, host/device enrollment and cloud operations require authorization for the specific target; previous trial approvals are not standing permission.
 - Before deployment or onboarding, read the matching runbook in `deployment\`. Keep credentials and private runtime evidence in ignored storage; preserve sealed artifacts and record new acceptance separately.
