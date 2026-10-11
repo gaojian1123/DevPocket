@@ -33,6 +33,10 @@ for (const part of path.relative(root, path.dirname(reportPath)).split(path.sep)
   }
 }
 const output = await open(reportPath, "wx", 0o600);
+const cancellation = new AbortController();
+const cancel = () => cancellation.abort(new Error("Verification cancelled."));
+process.once("SIGINT", cancel);
+process.once("SIGTERM", cancel);
 let report;
 try {
   try {
@@ -43,7 +47,7 @@ try {
       report = combineVerification(plan, reports);
     } else {
       report = values.plan ? { ...plan, status: "planned", complete: false, checks: [] }
-        : await executeVerification(root, plan, { ...values, directory: path.dirname(reportPath) });
+        : await executeVerification(root, plan, { ...values, directory: path.dirname(reportPath), signal: cancellation.signal });
     }
     if (["failed", "blocked"].includes(report.status)) process.exitCode = 1;
   } catch (error) {
@@ -52,5 +56,9 @@ try {
   }
   await output.writeFile(JSON.stringify(report, null, 2) + "\n");
   await output.sync();
-} finally { await output.close(); }
+} finally {
+  await output.close();
+  process.off("SIGINT", cancel);
+  process.off("SIGTERM", cancel);
+}
 console.log(`Verification ${report.status}: ${reportPath}`);

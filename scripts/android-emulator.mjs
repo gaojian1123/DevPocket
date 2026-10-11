@@ -5,6 +5,7 @@ import path from "node:path";
 import { runCommand, spawnOwnedCommand, stopOwnedProcess } from "./process.mjs";
 import { cleanDeviceRun } from "./device-run.mjs";
 import { acquireEmulatorLease } from "./emulator-resources.mjs";
+import { acquireLinuxEmulatorLease, linuxAcceleration, ownsLinuxListener } from "./linux-emulator.mjs";
 
 export function createLiveDeviceGuard(workers, inspect, signal) {
   const controller = new AbortController();
@@ -40,6 +41,29 @@ export function createLiveDeviceGuard(workers, inspect, signal) {
   };
 }
 
+export function trackManagedCommand(child, output, platform = process.platform) {
+  let tail = "";
+  const state = { child, settled: false, error: undefined, done: undefined,
+    requiresCleanupConfirmation: platform === "linux", cleanupConfirmed: false };
+  child.stdout.pipe(output, { end: false });
+  child.stderr.pipe(output, { end: false });
+  child.stderr.on("data", (bytes) => { tail = (tail + bytes.toString()).slice(-4096); });
+  child.once("error", (error) => { state.error = error; });
+  child.stdin.on("error", (error) => { if (error.code !== "EPIPE") state.error = error; });
+  state.done = new Promise((resolve) => child.once("close", () => {
+    state.settled = true;
+    state.cleanupConfirmed = tail.trimEnd().split(/\r?\n/).at(-1) === "DEVPOCKET_OWNED_TREE_STOPPED";
+    output.end(resolve);
+  }));
+  return state;
+}
+
+export function requireManagedCleanup(state) {
+  if (state.requiresCleanupConfirmation && !state.cleanupConfirmed) {
+    throw new Error("Linux owned-process cleanup was not confirmed; retaining its data and lease.");
+  }
+}
+
 export async function waitForAndroid(check, label, timeoutMs, processState, signal) {
   const deadline = Date.now() + timeoutMs;
   let last = "not ready";
@@ -54,6 +78,10 @@ export async function waitForAndroid(check, label, timeoutMs, processState, sign
 }
 
 async function ownsListener(port, rootPid, signal) {
+  if (process.platform === "linux") {
+    signal?.throwIfAborted();
+    return ownsLinuxListener(port, rootPid);
+  }
   const result = await runCommand("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
     `$ErrorActionPreference='Stop'; $listeners=@(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique); ` +
     `$owned=$listeners.Count -gt 0; foreach($listenerId in $listeners) { $current=[int]$listenerId; $matched=$false; ` +
@@ -69,14 +97,17 @@ async function createRunDirectory(root, directory) {
     throw new Error("An emulator run must use a new directory beneath this checkout's .data.");
   }
   await mkdir(path.dirname(directory), { recursive: true });
-  if ((await realpath(path.dirname(directory))).toLowerCase() !== path.dirname(directory).toLowerCase()) {
+  const canonical = await realpath(path.dirname(directory));
+  const expected = path.dirname(directory);
+  if (process.platform === "win32" ? canonical.toLowerCase() !== expected.toLowerCase() : canonical !== expected) {
     throw new Error("Linked emulator run directories are not supported.");
   }
   await mkdir(directory);
 }
 
 export async function withAndroidEmulator(options, operation) {
-  if (process.platform !== "win32") throw new Error("Android emulator coordination requires Windows.");
+  if (!["win32", "linux"].includes(process.platform)) throw new Error("Android emulator coordination requires Windows or Linux.");
+  const linux = process.platform === "linux";
   const root = path.resolve(options.repo ?? process.cwd());
   const directory = path.resolve(root, options.directory ?? path.join(".data", "android-runs", randomUUID()));
   const runId = options.owner ?? randomUUID();
@@ -88,21 +119,14 @@ export async function withAndroidEmulator(options, operation) {
   const sdk = path.resolve(options.sdk ?? process.env.DEVPOCKET_ANDROID_SDK ?? path.join(root, ".tools", "android-sdk"));
   const emulatorSdk = path.resolve(options.emulatorSdk ?? process.env.DEVPOCKET_EMULATOR_SDK ?? sdk);
   const jdk = path.resolve(options.jdk ?? process.env.DEVPOCKET_JDK ?? path.join(root, ".tools", "jdk-21"));
-  const image = options.image ?? process.env.DEVPOCKET_ANDROID_IMAGE ?? "system-images\\android-35\\google_apis\\x86_64";
+  const image = (options.image ?? process.env.DEVPOCKET_ANDROID_IMAGE ??
+    path.join("system-images", "android-35", "google_apis", "x86_64")).replaceAll("\\", path.sep);
   const identity = { root, directory, runId, sdk, emulatorSdk, jdk, image };
   const manage = (file, args, env, name) => {
     if (closing) throw new Error("The emulator run is closing.");
     const output = createWriteStream(path.join(directory, `${name}.log`), { flags: "wx", mode: 0o600 });
     const child = spawnOwnedCommand(file, args, { cwd: root, env, timeoutMs: 24 * 60 * 60_000, persistent: true });
-    child.stdout.pipe(output, { end: false });
-    child.stderr.pipe(output, { end: false });
-    const state = { child, settled: false, error: undefined, done: undefined };
-    child.once("error", (error) => { state.error = error; });
-    child.stdin.on("error", (error) => { if (error.code !== "EPIPE") state.error = error; });
-    state.done = new Promise((resolve) => child.once("close", () => {
-      state.settled = true;
-      output.end(resolve);
-    }));
+    const state = trackManagedCommand(child, output);
     processes.push(state);
     return state;
   };
@@ -111,9 +135,10 @@ export async function withAndroidEmulator(options, operation) {
       throw new Error("Image must name an installed x86_64 SDK system-image directory.");
     }
     const imageDir = path.resolve(emulatorSdk, image);
-    const executable = path.join(emulatorSdk, "emulator", "emulator.exe");
-    const adb = path.join(emulatorSdk, "platform-tools", "adb.exe");
-    Object.assign(identity, { imageDir, executable, adbPath: adb });
+    const executable = path.join(emulatorSdk, "emulator", linux ? "emulator" : "emulator.exe");
+    const adb = path.join(emulatorSdk, "platform-tools", linux ? "adb" : "adb.exe");
+    const javaPath = path.join(jdk, "bin", linux ? "java" : "java.exe");
+    Object.assign(identity, { imageDir, executable, adbPath: adb, javaPath });
     for (const file of [executable, adb, path.join(imageDir, "system.img")]) {
       try { await access(file); }
       catch (error) {
@@ -121,7 +146,7 @@ export async function withAndroidEmulator(options, operation) {
         throw new Error(`Missing Android prerequisite: ${file}. Provision tools and licenses explicitly.`);
       }
     }
-    lease = await acquireEmulatorLease({
+    lease = await (linux ? acquireLinuxEmulatorLease : acquireEmulatorLease)({
       workspace: root, runId, signal, timeoutMs: options.queueTimeoutMs,
       onWaiting: options.onWaiting,
     });
@@ -136,14 +161,16 @@ export async function withAndroidEmulator(options, operation) {
     await mkdir(avd);
     const api = /android-(\d+)/.exec(image)[1];
     await writeFile(path.join(avdHome, `${identity.avdName}.ini`), `avd.ini.encoding=UTF-8\npath=${avd}\ntarget=android-${api}\n`);
+    const gpu = linux ? "swiftshader" : "swiftshader_indirect";
     await writeFile(path.join(avd, "config.ini"), [
       `AvdId=${identity.avdName}`, `avd.ini.displayname=${identity.avdName}`, "abi.type=x86_64", "hw.cpu.arch=x86_64",
       "hw.cpu.ncore=4", "hw.ramSize=4096", "hw.lcd.width=1080", "hw.lcd.height=2400", "hw.lcd.density=420",
-      "hw.keyboard=yes", "hw.mainKeys=no", "hw.gpu.enabled=yes", "hw.gpu.mode=swiftshader_indirect",
+      "hw.keyboard=yes", "hw.mainKeys=no", "hw.gpu.enabled=yes", `hw.gpu.mode=${gpu}`,
       "disk.dataPartition.size=2G", `image.sysdir.1=${imageDir}${path.sep}`, "tag.id=google_apis",
       "showDeviceFrame=no", "fastboot.forceColdBoot=yes", "fastboot.forceFastBoot=no", "skin.dynamic=yes", "",
     ].join("\n"));
-    const env = { ...process.env, ANDROID_HOME: emulatorSdk, ANDROID_AVD_HOME: avdHome, ANDROID_EMULATOR_HOME: emulatorHome,
+    const env = { ...process.env, ANDROID_HOME: emulatorSdk, ANDROID_SDK_ROOT: emulatorSdk,
+      ANDROID_AVD_HOME: avdHome, ANDROID_EMULATOR_HOME: emulatorHome,
       ANDROID_USER_HOME: home, ANDROID_SDK_HOME: directory, HOME: home, USERPROFILE: home,
       ANDROID_ADB_SERVER_PORT: String(lease.ports.adb), ADB_SERVER_PORT: String(lease.ports.adb),
       ADB_SERVER_SOCKET: `tcp:${lease.ports.adb}` };
@@ -155,14 +182,16 @@ export async function withAndroidEmulator(options, operation) {
       return runCommand(adb, ["-P", String(lease.ports.adb), "-s", identity.serial, ...command],
         { cwd: root, env, timeoutMs, signal: guard?.signal ?? signal });
     };
-    await runCommand(executable, ["-accel-check"], { env, timeoutMs: 30_000, signal });
+    const acceleration = await runCommand(executable, ["-accel-check"], { env, timeoutMs: 30_000, signal });
+    if (linux) identity.acceleration = linuxAcceleration(acceleration.stdout + acceleration.stderr);
     await lease.handoff();
     const adbServer = manage(adb, ["-L", `tcp:${lease.ports.adb}`, "nodaemon", "server"], env, "adb");
     await waitForAndroid(() => ownsListener(lease.ports.adb, adbServer.child.pid, signal),
       "Owned ADB listener", 30_000, adbServer, signal);
     const emulator = manage(executable, ["-avd", identity.avdName, "-port", String(lease.ports.console),
-      "-grpc", String(lease.ports.grpc), "-grpc-use-jwt", "-no-window", "-no-audio",
-      "-no-boot-anim", "-no-snapshot", "-no-metrics", "-show-kernel", "-gpu", "swiftshader_indirect"], env, "emulator");
+      "-grpc", String(lease.ports.grpc), linux ? "-grpc-use-token" : "-grpc-use-jwt", "-no-window", "-no-audio",
+      "-no-boot-anim", "-no-snapshot", "-no-metrics", "-show-kernel", "-gpu", gpu,
+      ...(linux ? ["-accel", "on"] : [])], env, "emulator");
     guard = createLiveDeviceGuard([adbServer, emulator], async () => {
       if (!await ownsListener(lease.ports.adb, adbServer.child.pid, guard.signal)) {
         throw new Error("The leased ADB listener is no longer owned by this run.");
@@ -194,6 +223,7 @@ export async function withAndroidEmulator(options, operation) {
       try {
         if (!state.settled) await stopOwnedProcess(state.child);
         await state.done;
+        requireManagedCleanup(state);
       } catch (error) { errors.push(error.message); }
     }
     if (!errors.length) {

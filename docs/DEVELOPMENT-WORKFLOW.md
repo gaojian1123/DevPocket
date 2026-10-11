@@ -124,15 +124,91 @@ allowlisted machine reports and explicitly selected candidate artifacts.
 Report destinations must be new files beneath `.data\verification` or `.data\ci`;
 existing reports and sealed/operational evidence cannot be overwritten.
 
+### Android failure diagnostics
+
+The Android CI job runs `scripts\android-diagnostics.mjs` after a failure and
+publishes only these two explicitly named files:
+
+- `.data\ci\android\report.json`: the original source-bound machine report.
+- `.data\ci\android\android-diagnostics.json`: diagnostic metadata, **not**
+  verification evidence or a replacement for the report.
+
+The exporter also prints the same projection to the job log. It reads only
+`android-build.log` in the selected run directory. It samples at most 256 KiB
+(both ends of a larger log), emits at most 24 findings and 16 KiB, and marks
+truncation. Allowlisted fields include known failure categories, failed app
+tasks, JVM test counts/identifiers, exception types/source positions, compiler
+source positions/error categories and lint issue IDs/source positions. Messages,
+assertion values, source excerpts, environment values, absolute paths, URLs and
+unrecognized text are omitted; credential-like identifiers are rejected too.
+Raw Gradle logs, JVM XML/HTML reports, lint reports and the rest of `.data` are
+never uploaded by this step. An unsupported error may require an explicitly
+authorized local reproduction or further reviewed diagnostic projection.
+
+The exporter refuses linked directories/log files and existing output files.
+Missing logs are reported as missing, never as passing. Its success only means
+diagnostics were exported: it cannot turn a failed build green. CI still
+propagates the verifier's exit code, preserves `report.json`, and requires actual
+device evidence. An absent/disabled runner remains blocked/incomplete; the
+aggregate source/policy checks are unchanged.
+
+Public component checks (no real CLI or device):
+
+```powershell
+node --test scripts\tests\android-build.test.mjs scripts\tests\android-diagnostics.test.mjs
+node scripts\android-diagnostics.mjs --directory .data\ci\android
+```
+
+The tests invoke the actual PowerShell build script with fixture toolchains and
+a recording Gradle boundary, and the actual diagnostic CLI with private fixture
+logs. They do not claim to run Gradle or satisfy the device gate. The exporter
+can also target a new run beneath `.data\verification`; it never overwrites
+prior diagnostics or machine reports.
+
+**PR #7 investigation, 2026-10-10:** read-only inspection of Actions runs
+[38045477183](https://github.com/gaojian1123/DevPocket/actions/runs/38045477183)
+and [38040577037](https://github.com/gaojian1123/DevPocket/actions/runs/38040577037)
+found `android-build` exiting 1. Each Android artifact contained only
+`report.json`, referring to the unavailable private `android-build.log`; the
+remote Gradle cause therefore remains unknown. The latest inspected PR head was
+`dc691a326a97b720841bf03d066fda20d5f7309d`, with base
+`78e3886f57d276b02059c6889d09f90ce0b12733`.
+
+On an isolated worktree of that base, the pre-fix command below failed with
+`Several environment variables and/or system properties contain different paths
+to the SDK.` The minimal extra condition was an inherited `ANDROID_SDK_ROOT`
+pointing to a different existing directory; `-Jdk` and `-Sdk` selected the valid,
+already-provisioned toolchains:
+
+```powershell
+pwsh -NoProfile -NonInteractive -File scripts\build-android.ps1 `
+  -Jdk C:\Projects\DevPocket\.tools\jdk-21 `
+  -Sdk C:\Projects\DevPocket\.tools\android-sdk -Lint -Instrumentation
+```
+
+Removing only the conflicting variable removed that SDK error. The fix sets
+both SDK variables to the resolved selection and restores the caller's prior
+environment, including absent variables. The same command with conflicting
+inherited SDK/JDK values subsequently built both APKs, passed 80 JVM tests
+(zero failures/errors/skips), and passed lint (24 warnings, zero errors).
+An initially overlong, worktree-owned scratch path separately caused SQLite
+test failures; using a short owned scratch path resolved those without changing
+app code or tests. These are targeted local observations, **not** mandatory
+source-bound acceptance, independent-review approval or evidence that #7's CI
+has recovered. Changes to the build script, test registration, diagnostic
+exporter and CI artifact wiring require the workflow's human policy review
+before the controller executes the changed verification policy.
+
 ## Android execution environment
 
-Provision an isolated Windows executor with hardware-accelerated emulation,
+For local Windows runs, provision an isolated executor with hardware-accelerated emulation,
 JDK 17/21, SDK platform/build-tools 35, platform-tools, and an installed x86_64
 system image. Licenses must already be accepted by the operator. The runner does
 not install tools, silently accept terms or change host virtualization settings.
 Explicit setup can use `scripts\prepare-android.ps1 -Emulator`; this downloads
 checksum-verified tools and the API-35 image into `.tools`, reusing an already
-accepted SDK license. Provision a separate, credential-free executor for CI.
+accepted SDK license. Hosted Linux CI setup is described below and does not
+change this local Windows installation.
 
 Set process/runner environment variables to the provisioned paths:
 
@@ -169,7 +245,7 @@ opt-in real-CLI path; its skipped opt-in invocation cannot satisfy this gate.
 Shared `test-fixtures\protocol\v1.json` is consumed by both TypeScript and Kotlin
 tests, preserving intentional strict-server/forward-compatible-client decoding.
 
-Automated and manual emulator commands share the same resource pool. They do
+Windows automated and manual emulator commands share the same resource pool. They do
 not reuse the historical `DevPocketProof` AVD or any retained user emulator.
 Owned credential/data/AVD subdirectories are removed
 after process shutdown; reports and private diagnostics remain. Windows job
@@ -178,6 +254,60 @@ cancellation requests graceful cleanup first; after process exit the controller
 also cleans only directories bearing that invocation's owner nonce. A forced
 host termination can leave a run directory. Inspect its owner/process record
 before targeted cleanup; never delete another run or a retained trial AVD.
+
+### Hosted Ubuntu device execution
+
+The CI `device` job uses the standard x64 `ubuntu-24.04` VM, not `ubuntu-slim`,
+ARM or a job container. GitHub supports
+[hardware-accelerated Android testing on standard Linux runners](https://github.blog/changelog/2024-04-02-github-actions-hardware-accelerated-android-virtualization-now-available/).
+The job selects Node 24 and Temurin JDK 21 and uses the image's PowerShell 7,
+Python 3 and Android command-line tools. The
+[runner image inventory](https://github.com/actions/runner-images/blob/8197087fc536320d1441203fdb5da9ae1b44b863/images/ubuntu/Ubuntu2404-Readme.md)
+is a snapshot, not proof of any future job's installed versions.
+
+Setup requires `/dev/kvm` and, only when necessary, grants this job's UID
+read/write access with `setfacl`. It does not grant world access, change the
+developer machine's virtualization or install a self-hosted runner.
+`sdkmanager --channel=0` installs the required stable platform/build tools,
+emulator and API-35 Google APIs x86_64 image into the disposable VM's existing
+SDK. Stdin is closed: no `yes`, `--licenses` or invented acceptance hash is used.
+Existing license records must suffice, and required files are checked afterward
+because a refused package may be skipped. Missing licenses, SDK tools or
+acceleration fail the job rather than silently falling back.
+
+The same `android-runner.mjs` builds and runs the shared discovered test classes,
+layout matrix and real App/relay/bridge fixture. The Linux build uses the selected
+`bin/java` and the checked-in wrapper JAR directly through `build-android.ps1`;
+it does not require a generated Unix wrapper or executable-mode changes.
+The emulator requires `-accel on` and explicit usable KVM output from
+`-accel-check`; software GPU rendering is separate from VM acceleration.
+Successful Linux evidence includes `platform: linux` and
+`acceleration: { provider: KVM, usable: true }`, which the combiner validates.
+Windows evidence and its existing command entry points remain supported.
+
+Linux commands use an unprivileged Python standard-library supervisor. It
+confirms `PR_SET_CHILD_SUBREAPER` before spawning, holds a pidfd for the owner,
+and kills/reaps only validated descendant pidfds, including orphaned detached
+children. Dead owners, cancellation and timeouts trigger bounded cleanup.
+This is lifecycle ownership, not a sandbox: forcibly killing the supervisor or
+delegating work outside its ancestry remains outside that guarantee. The
+disposable hosted VM is discarded after the job.
+
+Each Linux invocation reserves its own loopback ports and exclusive
+`.data/linux-emulator.lock`, verifies listener inode ownership through `/proc`
+and checks the live AVD name. The lock stays through startup/cleanup and an
+unreclaimed lock fails closed. This is a single-checkout, job-isolated path,
+not a replacement for the Windows account-wide concurrent-worktree pool.
+AVD, local credentials and fixture data are removed only after owned processes
+stop; raw logs stay private. The authenticated emulator gRPC listener uses the
+Linux token option; no unauthenticated listener is enabled.
+
+The job also runs `scripts/tests/linux-process.test.mjs` against real Linux
+processes and the actual PowerShell build interface. Portable lease/ownership
+parsing checks run in the existing Windows workflow suite as well. Neither
+those tests nor a Windows emulator pass substitutes for the actual Ubuntu/KVM
+native gate. An incremental Gradle invocation may reuse JVM/lint outputs;
+`UP-TO-DATE` is not a claim those tests executed again.
 
 ### Concurrent worktrees and manual runs
 
@@ -286,24 +416,47 @@ disposable-terminal compatibility check, not an automatic per-PR operation.
 
 ## CI activation and trust
 
-`ci.yml` plans every PR and runs selected backend and Android checks. The device
-job runs only for same-repository PRs or explicit dispatch, when repository
-variable `DEVPOCKET_ANDROID_RUNNER_ENABLED` is `true`. It requires an isolated
-runner labelled `self-hosted`, `Windows`, `X64`, `devpocket-android-ci`, plus the
-`devpocket-android-ci` environment. An absent/disabled device runner leaves the
-**Required verification** gate failing for changes that require device evidence.
-It is not a successful skipped check.
+The verification workflow uses the maintained Node-24-native Actions:
+`checkout@v7`, `setup-node@v7`, `setup-java@v6`, `setup-python@v7`,
+`upload-artifact@v7` and `download-artifact@v8`. Their runtime requires
+[Actions Runner 2.327.1 or newer](https://github.com/actions/checkout/releases/tag/v5.0.0).
+GitHub provisions the hosted VM; this does not install a local runner. The
+[checkout container credential requirement](https://github.com/actions/checkout/blob/v7.0.1/README.md)
+is 2.329.0 or newer for authenticated Git inside Docker container actions; this
+workflow has no job container and keeps `persist-credentials: false`.
+Project toolchains remain Node 24, Temurin JDK 21 and Python 3.12. The Windows
+Android job passes its explicit project-local SDK; the Linux device job passes
+the explicit hosted SDK path after the required stable packages are available.
 
-Before enabling that variable, an administrator must configure:
+The upload keeps its explicit file lists and default archived, non-overwriting
+behavior. The downloader retains separate artifact directories when multiple
+artifacts match; recursive `report.json` discovery also handles a single match
+extracted directly into the destination. Keep
+[v8's failing digest-mismatch default](https://github.com/actions/download-artifact/releases/tag/v8.0.0):
+do not merge same-named reports or downgrade integrity failures to warnings.
+An empty download still cannot satisfy the source-bound combiner.
+These compatibility checks do not prove a remote Actions run succeeded or that
+its warnings disappeared. The separate extension-release workflow is unchanged.
 
-- A disposable runner without production, host/device or personal CLI
-  credentials. Restrict who can send same-repository code to it. Fork PRs must
-  not run on a credentialed or shared development machine.
-- Environment restrictions/required reviewers appropriate to that runner.
-- A repository ruleset requiring **Required verification**, appropriate
-  approvals, code-owner review for protected paths and dismissal of stale
-  approvals. `CODEOWNERS` lists the current maintainer; the file alone does not
-  enforce anything. Do not enable automatic merging before these controls exist.
+`ci.yml` plans every PR and runs selected backend and Android checks on hosted
+Windows runners. The required device job uses hosted Ubuntu for same-repository
+PRs or explicit dispatch. It no longer depends on `DEVPOCKET_ANDROID_RUNNER_ENABLED`,
+self-hosted labels or the `devpocket-android-ci` environment. Fork PRs do not
+gain device execution through an unsafe checkout. Missing or failed device
+evidence still blocks **Required verification**, never counts as skipped success.
+
+All jobs retain `contents: read`, full-history checkout with
+`persist-credentials: false`, and pre-checkout `core.autocrlf=false`. Source
+identity hashes tracked bytes and Git index modes, not absolute checkout paths;
+cross-platform reports must match rather than normalize away discrepancies.
+Device reports and tested APKs use explicit Linux artifact paths. The Windows
+combiner still recursively finds only `report.json` and rejects incomplete,
+duplicate, failed or mismatched reports.
+
+An administrator should still require **Required verification**, appropriate
+approvals, code-owner review for protected paths and dismissal of stale
+approvals in the repository ruleset. `CODEOWNERS` alone does not enforce these.
+Runner migration does not configure branch protection or enable automatic merge.
 
 CI and reviewer profiles in a PR are themselves changeable code. This workflow
 is not a sandbox or a cryptographic attestation service. A protected review

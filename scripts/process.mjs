@@ -7,9 +7,11 @@ const exec = promisify(execFile);
 export function spawnOwnedCommand(file, args, {
   cwd, env = process.env, timeoutMs = 30_000, graceMs = 5000, persistent = false,
 } = {}) {
-  if (process.platform !== "win32") throw new Error("Owned command execution requires the Windows development executor.");
-  const launcher = fileURLToPath(new URL("./owned-command.ps1", import.meta.url));
-  const child = spawn("pwsh", ["-NoProfile", "-NonInteractive", "-File", launcher],
+  if (!["win32", "linux"].includes(process.platform)) throw new Error("Owned command execution requires Windows or Linux.");
+  const linux = process.platform === "linux";
+  const launcher = fileURLToPath(new URL(linux ? "./owned-command-linux.py" : "./owned-command.ps1", import.meta.url));
+  const child = spawn(linux ? "python3" : "pwsh",
+    linux ? ["-u", launcher] : ["-NoProfile", "-NonInteractive", "-File", launcher],
     { cwd, env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
   child.stdin.write(JSON.stringify({ file, arguments: args, timeoutMs, graceMs, persistent, ownerPid: process.pid }) + "\n");
   return child;
@@ -73,7 +75,8 @@ export function runCommand(file, args, { cwd, env = process.env, timeoutMs = 30_
       clearTimeout(timer);
       clearTimeout(hardStop);
       signal?.removeEventListener("abort", abort);
-      const processTreeStopped = /DEVPOCKET_OWNERSHIP_ACTIVE/.test(stderr);
+      const processTreeStopped = (process.platform === "linux"
+        ? /DEVPOCKET_OWNED_TREE_STOPPED/ : /DEVPOCKET_OWNERSHIP_ACTIVE/).test(stderr);
       stderr = stderr.replace(/^DEVPOCKET_(?:OWNERSHIP_ACTIVE|OWNED_TREE_STOPPED)\r?\n/gm, "");
       if (failure || code !== 0) {
         const error = failure ?? new Error(`${file} exited with ${code}.`);

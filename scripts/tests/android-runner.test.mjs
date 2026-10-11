@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { test } from "node:test";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 
 const exec = promisify(execFile);
 const entry = path.resolve("scripts/android-runner.mjs");
@@ -102,4 +103,28 @@ test("caller cancellation during ownership inspection is not latched as an unexp
   await assert.rejects(verification, /Manual stop/);
   assert.equal(guard.failure, undefined);
   guard.close();
+});
+
+test("unconfirmed Linux supervisor exit cannot be accepted as completed resource cleanup", async () => {
+  const { trackManagedCommand, requireManagedCleanup } = await import("../android-emulator.mjs");
+  for (const [platform, acknowledged] of [["linux", false], ["linux", true], ["win32", false]]) {
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+    });
+    const output = new PassThrough();
+    output.resume();
+    const state = trackManagedCommand(child, output, platform);
+    child.stderr.write(acknowledged ? "DEVPOCKET_OWNED_TREE_STOPPED\n" : "Owned descendants did not confirm exit.\n");
+    child.emit("close", 1);
+    await state.done;
+    if (platform === "linux" && !acknowledged) assert.throws(() => requireManagedCleanup(state), /cleanup.*confirm/i);
+    else assert.doesNotThrow(() => requireManagedCleanup(state));
+  }
+});
+
+test("the Linux supervisor frames its acknowledgement after unterminated worker stderr", async () => {
+  const file = path.resolve("scripts/owned-command-linux.py");
+  const program = "import runpy,sys\nmodule=runpy.run_path(sys.argv[1])\nsys.stderr.write('partial')\nmodule['write_cleanup_ack']()";
+  const result = await exec("python", ["-c", program, file], { timeout: 10000 });
+  assert.deepEqual(result.stderr.split(/\r?\n/), ["partial", "DEVPOCKET_OWNED_TREE_STOPPED", ""]);
 });

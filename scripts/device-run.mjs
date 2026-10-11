@@ -14,9 +14,10 @@ export async function cleanDeviceRun(root, directory, runId) {
     if (error.code === "ENOENT") return;
     throw error;
   }
+  const canonical = await realpath(directory);
   if (owner.version !== 1 || owner.root !== root || owner.runId !== runId || !Number.isInteger(owner.pid) ||
       !/^[a-f0-9-]{36}$/.test(owner.runId) ||
-      (await realpath(directory)).toLowerCase() !== directory.toLowerCase()) {
+      (process.platform === "win32" ? canonical.toLowerCase() !== directory.toLowerCase() : canonical !== directory)) {
     throw new Error("Device cleanup ownership cannot be verified.");
   }
   for (const name of ["fixture", "fixture.local.json", "avd", "home", "emulator-home"]) {

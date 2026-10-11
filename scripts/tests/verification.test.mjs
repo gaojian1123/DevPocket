@@ -121,6 +121,21 @@ test("combining reports refuses absent device evidence and stale source fingerpr
   result = await verify(root, ["--combine", "--input", input]);
   assert.equal(result.exitCode, 0);
   assert.equal(result.report.complete, true);
+  const linux = JSON.parse(await readFile(input, "utf8"));
+  linux.environment = { platform: "linux" };
+  const native = linux.checks.find((check) => check.id === "android-device").deviceEvidence;
+  await writeFile(input, JSON.stringify(linux));
+  result = await verify(root, ["--combine", "--input", input]);
+  assert.equal(result.exitCode, 1, "Linux reports cannot omit platform/acceleration evidence.");
+  native.platform = "linux";
+  native.acceleration = { provider: "WHPX", usable: true };
+  await writeFile(input, JSON.stringify(linux));
+  result = await verify(root, ["--combine", "--input", input]);
+  assert.equal(result.exitCode, 1, "A different hypervisor cannot qualify Linux KVM.");
+  native.acceleration = { provider: "KVM", usable: true };
+  await writeFile(input, JSON.stringify(linux));
+  result = await verify(root, ["--combine", "--input", input]);
+  assert.equal(result.exitCode, 0);
   await writeFile(path.join(root, "android", "screen.kt"), "// new source\n");
   result = await verify(root, ["--combine", "--input", input]);
   assert.equal(result.exitCode, 1);
@@ -160,6 +175,22 @@ test("Git executable-mode changes invalidate source evidence even when bytes are
   await exec("git", ["update-index", "--chmod=+x", "README.md"], { cwd: root });
   const after = (await verify(root, ["--plan"])).report.source.fingerprint;
   assert.notEqual(after, before);
+});
+
+test("source fingerprints retain Git modes and bytes across distinct unnormalized checkouts", async (t) => {
+  const { sourceSnapshot } = await import("../verification.mjs");
+  const root = await repository(t);
+  await exec("git", ["update-index", "--chmod=+x", "README.md"], { cwd: root });
+  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+    "commit", "--quiet", "-m", "Mode fixture"], { cwd: root });
+  const clone = `${root}-clone`;
+  t.after(() => rm(clone, { recursive: true, force: true }));
+  await exec("git", ["-c", "core.autocrlf=false", "clone", "--quiet", "--no-local", root, clone]);
+  assert.deepEqual(await sourceSnapshot(clone), await sourceSnapshot(root),
+    "Absolute host checkout paths and filesystem executable bits are not source identity.");
+  await writeFile(path.join(clone, "README.md"), "Original documentation\r\n");
+  assert.notEqual((await sourceSnapshot(clone)).fingerprint, (await sourceSnapshot(root)).fingerprint,
+    "Different checkout bytes must not be hidden by normalization.");
 });
 
 test("planning refuses sealed or existing evidence destinations without overwriting them", async (t) => {

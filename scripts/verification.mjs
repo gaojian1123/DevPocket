@@ -151,7 +151,7 @@ export async function executeVerification(root, plan, options = {}) {
       await logFile.writeFile(output.stdout + output.stderr);
       if (check.id === "android-device") {
         const evidence = JSON.parse(await readFile(path.join(options.directory, "device", "device-report.json"), "utf8"));
-        validateDeviceEvidence(evidence, plan);
+        validateDeviceEvidence(evidence, plan, process.platform);
         if (evidence.runId !== deviceOwner) throw new Error("Device evidence belongs to another invocation.");
         for (const [field, parts] of [
           ["apkSha256", ["debug", "app-debug.apk"]],
@@ -234,7 +234,7 @@ export function combineVerification(plan, reports) {
       if (check.status !== "passed" || check.exitCode !== 0 || passed.has(check.id)) {
         throw new Error(`Conflicting or unsuccessful evidence for ${check.id}.`);
       }
-      if (check.id === "android-device") validateDeviceEvidence(check.deviceEvidence, plan);
+      if (check.id === "android-device") validateDeviceEvidence(check.deviceEvidence, plan, report.environment?.platform);
       passed.set(check.id, check);
     }
   }
@@ -244,13 +244,18 @@ export function combineVerification(plan, reports) {
     checks: plan.requiredChecks.map((id) => passed.get(id)) };
 }
 
-function validateDeviceEvidence(evidence, plan) {
+function validateDeviceEvidence(evidence, plan, platform) {
   if (!evidence || evidence.status !== "passed" || evidence.cleanup !== "completed" ||
       evidence.evidence !== "emulator-test-sdk-adapter" || evidence.source?.head !== plan.source.head ||
       evidence.source?.fingerprint !== plan.source.fingerprint ||
       !/^[a-f0-9]{64}$/.test(evidence.apkSha256) || !/^[a-f0-9]{64}$/.test(evidence.testApkSha256) ||
       !/^[a-f0-9-]{36}$/.test(evidence.runId) || !Array.isArray(evidence.cases) ||
       !Array.isArray(evidence.discoveredClasses)) throw new Error("Missing or stale device instrumentation evidence.");
+  if ((platform === "linux" && evidence.platform !== "linux") ||
+      (evidence.platform === "linux" &&
+        (evidence.acceleration?.provider !== "KVM" || evidence.acceleration.usable !== true))) {
+    throw new Error("Linux device evidence requires usable KVM acceleration.");
+  }
   const baseline = ["NativeFlowTest", "AdaptiveLayoutTest", "FixtureFlowTest"].map((name) => `dev.devpocket.app.${name}`);
   if (baseline.some((name) => !evidence.discoveredClasses.includes(name)) ||
       new Set(evidence.discoveredClasses).size !== evidence.discoveredClasses.length ||

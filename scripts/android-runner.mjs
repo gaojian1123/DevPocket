@@ -86,11 +86,11 @@ export async function runAndroidTests(options) {
     const finished = await withAndroidEmulator({
       ...options, repo: root, directory, owner: runId,
       onWaiting: options.onWaiting ?? ((status) => console.log(`Waiting for emulator slot ${status.position}; ${status.active}/${status.limit} active.`)),
-      prepare: async ({ jdk, sdk, image, imageDir, executable, adbPath }) => {
-        await access(path.join(jdk, "bin", "java.exe"));
+      prepare: async ({ jdk, sdk, image, imageDir, executable, adbPath, javaPath }) => {
+        await access(javaPath);
         report.source = await sourceSnapshot(root);
         report.image = image;
-        const java = await runCommand(path.join(jdk, "bin", "java.exe"), ["-version"], { signal });
+        const java = await runCommand(javaPath, ["-version"], { signal });
         const adbVersion = await runCommand(adbPath, ["version"], { signal });
         const emulatorVersion = await runCommand(executable, ["-version"], { signal });
         const imageProperties = await readFile(path.join(imageDir, "source.properties"), "utf8");
@@ -113,6 +113,8 @@ export async function runAndroidTests(options) {
       },
     }, async (device) => {
       booted = true;
+      report.platform = process.platform;
+      if (device.acceleration) report.acceleration = device.acceleration;
       report.lease = { id: device.leaseId, ports: device.ports };
       const adbRun = device.adb;
       for (const file of [apk, testApk]) await adbRun(["install", "-r", file], 120_000);
