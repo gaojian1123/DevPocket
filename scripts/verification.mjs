@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { runCommand } from "./process.mjs";
 import { cleanDeviceRun } from "./device-run.mjs";
+import { projectWorkerDiagnostics } from "./worker-diagnostics.mjs";
 
 const exec = promisify(execFile);
 const digest = (value) => createHash("sha256").update(value).digest("hex");
@@ -160,7 +161,8 @@ export async function executeVerification(root, plan, options = {}) {
           const bytes = await readFile(path.join(root, "android", "app", "build", "outputs", "apk", ...parts));
           if (digest(bytes) !== evidence[field]) throw new Error("The APK changed after device acceptance.");
         }
-        check.deviceEvidence = evidence;
+        check.workerDiagnostics = projectWorkerDiagnostics(evidence.workerDiagnostics, deviceOwner);
+        check.deviceEvidence = { ...evidence, workerDiagnostics: check.workerDiagnostics };
       }
       Object.assign(check, { status: "passed", exitCode: 0 });
     } catch (error) {
@@ -178,14 +180,18 @@ export async function executeVerification(root, plan, options = {}) {
             check.cleanup = "completed";
           } catch (cleanupError) {
             check.cleanup = "failed";
-            check.reason += ` Cleanup remains incomplete: ${cleanupError.message}`;
+            await logFile.writeFile(`\nPrivate cleanup failure: ${cleanupError.message}\n`);
+            check.reason += " Cleanup remains incomplete; inspect retained owned resources.";
           }
         }
         try {
           const evidence = JSON.parse(await readFile(path.join(options.directory, "device", "device-report.json"), "utf8"));
+          if (evidence.runId === deviceOwner) {
+            check.workerDiagnostics = projectWorkerDiagnostics(evidence.workerDiagnostics, deviceOwner);
+          }
           if (evidence.runId === deviceOwner && evidence.status === "blocked" && evidence.cleanup === "completed") {
             check.status = "blocked";
-            check.reason = typeof evidence.error === "string" ? evidence.error : "Device prerequisites are unavailable.";
+            check.reason = "Device prerequisites or worker readiness are unavailable; inspect the bounded worker diagnostics.";
           }
         } catch (evidenceError) {
           if (evidenceError.code !== "ENOENT" && !(evidenceError instanceof SyntaxError)) throw evidenceError;

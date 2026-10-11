@@ -169,7 +169,7 @@ jobs:
           test -x "$ANDROID_HOME/emulator/emulator"
           test -s "$ANDROID_HOME/system-images/android-35/google_apis/x86_64/system.img"
       - name: Verify Linux process, ownership and build entry points
-        run: node --test scripts/tests/linux-emulator.test.mjs scripts/tests/linux-process.test.mjs scripts/tests/linux-runtime.test.mjs
+        run: node --test scripts/tests/linux-emulator.test.mjs scripts/tests/linux-process.test.mjs scripts/tests/linux-runtime.test.mjs scripts/tests/worker-diagnostics.test.mjs
       - name: Check the emulator loader and resolve only its approved missing runtime dependency
         shell: pwsh
         run: |
@@ -183,11 +183,19 @@ jobs:
           ./scripts/verify.ps1 -Base $env:BASE_SHA -Group device -Jdk $env:JAVA_HOME -Sdk $env:ANDROID_HOME `
             -Image system-images/android-35/google_apis/x86_64 -Report .data/ci/device/report.json
           exit $LASTEXITCODE
+      - name: Export bounded owned-worker diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          node scripts/worker-diagnostics.mjs --directory .data/ci/device
+          exit $LASTEXITCODE
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: verification-device
-          path: .data/ci/device/report.json
+          path: |
+            .data/ci/device/report.json
+            .data/ci/device/worker-diagnostics.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         if: success()

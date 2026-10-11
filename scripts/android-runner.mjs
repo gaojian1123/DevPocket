@@ -150,12 +150,14 @@ export async function runAndroidTests(options) {
       }
     });
     report.cleanup = finished.cleanup;
+    report.workerDiagnostics = finished.workerDiagnostics;
     report.status = "passed";
   } catch (error) {
     if (error.runDirectory !== directory) throw error;
     report.status = signal?.aborted ? "blocked" : report.cases.length || booted ? "failed" : "blocked";
     report.error = error.message;
     report.cleanup = error.cleanup;
+    report.workerDiagnostics = error.workerDiagnostics;
     if (error.cleanupErrors) report.cleanupErrors = error.cleanupErrors;
     if (error.stdout || error.stderr) await writeFile(path.join(directory, "failure.log"),
       `${error.stdout ?? ""}${error.stderr ?? ""}`, { mode: 0o600 });

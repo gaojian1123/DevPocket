@@ -6,6 +6,7 @@ import { runCommand, spawnOwnedCommand, stopOwnedProcess } from "./process.mjs";
 import { cleanDeviceRun } from "./device-run.mjs";
 import { acquireEmulatorLease } from "./emulator-resources.mjs";
 import { acquireLinuxEmulatorLease, linuxAcceleration, ownsLinuxListener } from "./linux-emulator.mjs";
+import { createWorkerObservation, projectWorkerDiagnostics } from "./worker-diagnostics.mjs";
 
 export function createLiveDeviceGuard(workers, inspect, signal) {
   const controller = new AbortController();
@@ -41,13 +42,18 @@ export function createLiveDeviceGuard(workers, inspect, signal) {
   };
 }
 
-export function trackManagedCommand(child, output, platform = process.platform) {
+export function trackManagedCommand(child, output, platform = process.platform, { role, signal } = {}) {
   let tail = "";
+  const observation = ["adb", "emulator"].includes(role) ? createWorkerObservation(role, signal) : undefined;
   const state = { child, settled: false, error: undefined, done: undefined,
-    requiresCleanupConfirmation: platform === "linux", cleanupConfirmed: false };
+    requiresCleanupConfirmation: platform === "linux", cleanupConfirmed: false, workerObservation: observation };
   child.stdout.pipe(output, { end: false });
   child.stderr.pipe(output, { end: false });
-  child.stderr.on("data", (bytes) => { tail = (tail + bytes.toString()).slice(-4096); });
+  child.stderr.on("data", (bytes) => {
+    tail = (tail + bytes.toString()).slice(-4096);
+    observation?.stderr(bytes);
+  });
+  child.once("exit", (code, exitSignal) => observation?.exit(code, exitSignal));
   child.once("error", (error) => { state.error = error; });
   child.stdin.on("error", (error) => { if (error.code !== "EPIPE") state.error = error; });
   state.done = new Promise((resolve) => child.once("close", () => {
@@ -114,7 +120,7 @@ export async function withAndroidEmulator(options, operation) {
   if (!/^[a-f0-9-]{36}$/.test(runId)) throw new Error("Invalid device run owner.");
   await createRunDirectory(root, directory);
   const processes = [];
-  let lease, failure, result, guard, closing = false;
+  let lease, failure, result, guard, workerDiagnostics, closing = false;
   const signal = options.signal;
   const sdk = path.resolve(options.sdk ?? process.env.DEVPOCKET_ANDROID_SDK ?? path.join(root, ".tools", "android-sdk"));
   const emulatorSdk = path.resolve(options.emulatorSdk ?? process.env.DEVPOCKET_EMULATOR_SDK ?? sdk);
@@ -126,7 +132,7 @@ export async function withAndroidEmulator(options, operation) {
     if (closing) throw new Error("The emulator run is closing.");
     const output = createWriteStream(path.join(directory, `${name}.log`), { flags: "wx", mode: 0o600 });
     const child = spawnOwnedCommand(file, args, { cwd: root, env, timeoutMs: 24 * 60 * 60_000, persistent: true });
-    const state = trackManagedCommand(child, output);
+    const state = trackManagedCommand(child, output, process.platform, { role: name, signal });
     processes.push(state);
     return state;
   };
@@ -218,6 +224,8 @@ export async function withAndroidEmulator(options, operation) {
   } finally {
     closing = true;
     guard?.close();
+    // A worker can exit while another worker is being stopped.
+    for (const state of processes) state.workerObservation?.markCleanup();
     const errors = [];
     for (const state of processes.reverse()) {
       try {
@@ -236,12 +244,17 @@ export async function withAndroidEmulator(options, operation) {
       failure ??= new Error("Emulator cleanup did not complete.");
       failure.cleanupErrors = errors;
     }
+    workerDiagnostics = projectWorkerDiagnostics({
+      runId, cleanup: errors.length ? "failed" : "completed",
+      workers: processes.flatMap((state) => state.workerObservation ? [state.workerObservation.snapshot()] : []),
+    });
     if (failure) {
       failure.cleanup = errors.length ? "failed" : "completed";
       failure.runDirectory = directory;
       failure.runId = runId;
+      failure.workerDiagnostics = workerDiagnostics;
     }
   }
   if (failure) throw failure;
-  return { result, identity, cleanup: "completed" };
+  return { result, identity, cleanup: "completed", workerDiagnostics };
 }

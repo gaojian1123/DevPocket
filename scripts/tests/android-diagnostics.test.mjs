@@ -197,7 +197,11 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(device, /-Image system-images\/android-35\/google_apis\/x86_64 -Report \.data\/ci\/device\/report\.json/);
   assert.match(device, /node scripts\/linux-runtime\.mjs\n\s+exit \$LASTEXITCODE/);
   assert.match(device, /node --test scripts\/tests\/linux-emulator\.test\.mjs scripts\/tests\/linux-process\.test\.mjs scripts\/tests\/linux-runtime\.test\.mjs/);
+  assert.match(device, /name: Export bounded owned-worker diagnostics\n\s+if: always\(\)/);
+  assert.match(device, /node scripts\/worker-diagnostics\.mjs --directory \.data\/ci\/device\n\s+exit \$LASTEXITCODE/);
   assert.deepEqual([...device.matchAll(/^\s+((?:\.data|android)\/[^\r\n]+)$/gm)].map((match) => match[1]), [
+    ".data/ci/device/report.json",
+    ".data/ci/device/worker-diagnostics.json",
     "android/app/build/outputs/apk/debug/app-debug.apk",
     "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
     ".data/ci/device/device/device-report.json",

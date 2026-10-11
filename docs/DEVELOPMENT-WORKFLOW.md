@@ -199,6 +199,40 @@ has recovered. Changes to the build script, test registration, diagnostic
 exporter and CI artifact wiring require the workflow's human policy review
 before the controller executes the changed verification policy.
 
+### Owned-worker exit diagnostics
+
+The managed `adb` and `emulator` roles retain bounded exit diagnostics independently
+of the required test result. Roles come from the controller's fixed call sites,
+not from log text. Exit codes and signals come from the existing owned-command
+supervisor's process handle. They are explicitly labelled
+`observedProcess: owned-command-supervisor`: a native emulator descendant's exit
+code is not inferred from a wrapper code. Missing exit events or unsupported
+values remain `unknown`, never zero or success.
+
+The context is frozen when the exit is observed: unexpected, during requested
+cleanup, or during caller cancellation. Later cleanup cannot relabel an earlier
+unexpected exit. These labels describe observation timing, not proof that a
+cancellation request caused a concurrent failure. Cleanup confirmation and
+resource ownership checks are unchanged.
+
+Only the first and last halves of at most 32 KiB of each owned worker's stderr
+are sampled. A fixed category allowlist can identify loader, acceleration,
+option, graphics, port, AVD, disk, memory or process-signal patterns. A category
+is a diagnostic hint, not a proved root cause; missing information stays
+explicitly unknown and truncation is reported. Raw messages, argv, environments, absolute paths, URLs,
+tokens, process-ID inventories and unrelated session data are never included
+in this projection. Original detailed failures remain in private run logs.
+
+The source-bound machine report includes the allowlisted projection on both
+success and failure. The CI exporter reads only that run's `report.json`
+(at most 512 KiB) and creates a separate, at-most-8-KiB
+`.data/ci/device/worker-diagnostics.json`. Missing input is reported as missing;
+linked inputs/directories and existing output files are refused. The device
+verification artifact selects only `report.json` and `worker-diagnostics.json`;
+the tested-APK artifact's existing success-only list is unchanged. The combiner
+continues to read only `report.json`. Diagnostic output can neither satisfy a
+missing required check nor turn a blocked/failed device result into a pass.
+
 ## Android execution environment
 
 For local Windows runs, provision an isolated executor with hardware-accelerated emulation,

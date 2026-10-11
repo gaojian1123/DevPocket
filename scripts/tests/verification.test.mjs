@@ -218,6 +218,26 @@ test("blocked native prerequisites remain blocked at the verification interface"
   assert.equal(result.report.checks.find((check) => check.id === "android-device").status, "blocked");
 });
 
+test("blocked worker diagnostics stay scoped and cannot publish raw process fields", async (t) => {
+  const root = await repository(t);
+  await mkdir(path.join(root, "scripts"));
+  await writeFile(path.join(root, "scripts", "test-android.ps1"), [
+    "param($Jdk,$Sdk,$Image,$RunDirectory,$Owner,[switch]$Layouts)",
+    "New-Item -ItemType Directory -Path $RunDirectory | Out-Null",
+    "$worker=@{role='emulator';observation='exit';context='unexpected';exitCode=23;signal='none';failureCategory='unknown';argv=@('private-worker-argv')}",
+    "@{version=1;runId=$Owner;status='blocked';tests=0;cases=@();cleanup='completed';error='C:\\private-worker-argv\\unknown-worker exited';",
+    "workerDiagnostics=@{runId=$Owner;cleanup='completed';workers=@($worker)}} | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $RunDirectory 'device-report.json')",
+    "exit 1", "",
+  ].join("\n"));
+  const result = await verify(root, ["--group", "device"]);
+  assert.equal(result.exitCode, 1);
+  const check = result.report.checks.find((item) => item.id === "android-device");
+  assert.equal(check.status, "blocked");
+  assert.equal(check.workerDiagnostics.workers[0].exitCode, 23);
+  assert.equal(check.workerDiagnostics.workers[0].context, "unexpected");
+  assert.ok(!JSON.stringify(result.report).includes("private-worker-argv"));
+});
+
 test("controller cancellation removes only its owned device data after the process job stops", async (t) => {
   const { executeVerification, verificationPlan } = await import("../verification.mjs");
   const root = await repository(t);
@@ -276,7 +296,8 @@ test("a device shard accepts current complete case and APK evidence without fabr
     "const sha=createHash('sha256').update('synthetic APK').digest('hex');",
     "await writeFile(path.join(directory,'device-report.json'),JSON.stringify({version:1,runId,status:'passed',cleanup:'completed',",
     "source:await sourceSnapshot(process.cwd()),evidence:'emulator-test-sdk-adapter',apkSha256:sha,testApkSha256:sha,",
-    "tests:8,cases,discoveredClasses:['dev.devpocket.app.AdaptiveLayoutTest','dev.devpocket.app.FixtureFlowTest','dev.devpocket.app.NativeFlowTest']}));",
+    "tests:8,cases,discoveredClasses:['dev.devpocket.app.AdaptiveLayoutTest','dev.devpocket.app.FixtureFlowTest','dev.devpocket.app.NativeFlowTest'],",
+    "workerDiagnostics:{runId,cleanup:'completed',workers:[{role:'emulator',observation:'exit',context:'during-cleanup',exitCode:0,signal:'none',argv:['private-worker-argv']}]}}));",
   ].join("\n"));
   await writeFile(path.join(root, "scripts", "test-android.ps1"), [
     "param($Jdk,$Sdk,$Image,$RunDirectory,$Owner,[switch]$Layouts)",
@@ -288,6 +309,8 @@ test("a device shard accepts current complete case and APK evidence without fabr
   assert.equal(result.report.status, "partial");
   assert.equal(result.report.complete, false);
   assert.equal(result.report.checks.find((check) => check.id === "android-device").status, "passed");
+  assert.ok(!JSON.stringify(result.report).includes("private-worker-argv"),
+    "Both deviceEvidence and the direct worker projection must exclude raw process fields.");
 });
 
 test("schema regeneration preserves a Windows checkout's unchanged source bytes", async (t) => {
