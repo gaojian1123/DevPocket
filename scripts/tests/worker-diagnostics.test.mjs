@@ -48,6 +48,70 @@ test("trusted role and actual observed supervisor exit survive later cleanup wit
   }
 });
 
+test("the official userdata-capacity failure projects numeric evidence without its private path or raw output", () => {
+  const worker = createWorkerObservation("emulator");
+  worker.stdout(Buffer.from("FATAL | Not enough space to create userdata partition. Available: 6700.250000 MB at "));
+  worker.stdout(Buffer.from("/synthetic-private/token=fixture-value/owned.avd, need 7372.800000 MB.\n"));
+  worker.stderr(Buffer.from("https://private.invalid/?token=fixture-value\n"));
+  worker.exit(1, null);
+  const value = projectWorkerDiagnostics({ runId, cleanup: "completed", workers: [worker.snapshot()] });
+  const observed = value.workers[0];
+  assert.equal(observed.failureCategory, "disk-space");
+  assert.equal(observed.failureCategorySource, "stdout");
+  assert.deepEqual(observed.userdataCapacity, { source: "stdout", unit: "MiB", available: 6700.25, required: 7372.8 });
+  assert.equal(observed.context, "unexpected");
+  assert.equal(observed.exitCode, 1);
+  assert.notEqual(observed.nativeLifecycle.availability, "complete");
+  assert.equal(observed.nativeLifecycle.returnCode, "unknown");
+  assert.deepEqual(observed.nativeLifecycle.events, []);
+  for (const privateValue of ["fixture-value", "synthetic-private", "private.invalid", "owned.avd", "Not enough space"]) {
+    assert.ok(!JSON.stringify(value).includes(privateValue));
+  }
+  assert.ok(Buffer.byteLength(JSON.stringify(value)) < 8192);
+});
+
+test("malformed, conflicting and untrusted-role capacity evidence stays unknown", () => {
+  const message = (available, required) =>
+    `ERROR | Not enough space to create userdata partition. Available: ${available} MB at /private, need ${required} MB.\n`;
+  for (const text of [
+    message("NaN", 7000), message(-1, 7000), message(1, 1_000_000_000),
+    message(8000, 7000), message(6000, 7000) + message(5000, 7000),
+    message(6000, 7000) + message("private-value", 7000),
+  ]) {
+    const worker = createWorkerObservation("emulator");
+    worker.stdout(Buffer.from(text));
+    worker.exit(1, null);
+    assert.equal(worker.snapshot().userdataCapacity, "unknown");
+  }
+  const adb = createWorkerObservation("adb");
+  adb.stderr(Buffer.from(message(6000, 7000)));
+  adb.exit(1, null);
+  assert.equal(adb.snapshot().userdataCapacity, "unknown");
+  const worker = createWorkerObservation("emulator");
+  worker.stderr(Buffer.from(message(6000, 7000)));
+  worker.exit(1, null);
+  assert.deepEqual(worker.snapshot().userdataCapacity, { source: "stderr", unit: "MiB", available: 6000, required: 7000 });
+  const projected = projectWorkerDiagnostics({ runId, workers: [
+    { ...worker.snapshot(), userdataCapacity: { source: "private-value", unit: "MiB", available: 1, required: 2 } },
+  ] });
+  assert.equal(projected.workers[0].userdataCapacity, "unknown");
+  assert.ok(!JSON.stringify(projected).includes("private-value"));
+});
+
+test("concatenated capacity templates cannot fabricate a pair from separate records", () => {
+  const message = (available, required) =>
+    `Not enough space to create userdata partition. Available: ${available} MB at /fixture, need ${required} MB.`;
+  for (const text of [
+    `${message(6000, 7000)} ${message(5000, 8000)}\n`,
+    `${message("private-value", 7000)} ${message(5000, 8000)}\n`,
+  ]) {
+    const worker = createWorkerObservation("emulator");
+    worker.stdout(Buffer.from(text));
+    worker.exit(1, null);
+    assert.equal(worker.snapshot().userdataCapacity, "unknown");
+  }
+});
+
 test("cleanup, cancellation and unavailable exits remain distinct from unexpected failure", () => {
   const cleanup = createWorkerObservation("adb");
   cleanup.markCleanup();

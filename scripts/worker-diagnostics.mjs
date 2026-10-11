@@ -21,12 +21,37 @@ function category(text, signal) {
     [/could not connect to display|could not.*Qt platform|Qt platform plugin.*(?:failed|could not)|failed to initialize.*(?:Vulkan|OpenGL)|eglInitialize.*failed/i, "graphics-initialization"],
     [/address already in use|EADDRINUSE/i, "port-conflict"],
     [/unknown AVD name|cannot find AVD system path|PANIC:.*(?:AVD|system path)/i, "avd-configuration"],
-    [/not enough disk space|insufficient disk space|no space left on device|ENOSPC/i, "disk-space"],
+    [/not enough disk space|not enough space to create userdata partition|insufficient disk space|no space left on device|ENOSPC/i, "disk-space"],
     [/out of memory|ENOMEM|bad_alloc/i, "memory-exhaustion"],
     [/segmentation fault|core dumped|fatal signal/i, "process-crash"],
   ]) if (pattern.test(text)) return name;
   if (["SIGABRT", "SIGBUS", "SIGFPE", "SIGILL", "SIGSEGV", "SIGTRAP"].includes(signal)) return "process-crash";
   return signals.includes(signal) ? "process-signalled" : "unknown";
+}
+
+function projectUserdataCapacity(value) {
+  const valid = (number) => Number.isFinite(number) && number >= 0 && number < 1_000_000_000;
+  if (!["stdout", "stderr"].includes(value?.source) || value?.unit !== "MiB" ||
+      !valid(value.available) || !valid(value.required) || value.required <= value.available) return "unknown";
+  return { source: value.source, unit: "MiB", available: value.available, required: value.required };
+}
+
+function userdataCapacity(outputs) {
+  let observed;
+  const marker = "Not enough space to create userdata partition";
+  for (const [source, text] of outputs) {
+    for (const line of text.split("\n")) {
+      if (!line.includes(marker)) continue;
+      if (line.indexOf(marker) !== line.lastIndexOf(marker)) return "unknown";
+      const match = line.match(/Not enough space to create userdata partition\. Available: (\d{1,9}(?:\.\d{1,6})?) MB at [^\r\n]{1,4096}, need (\d{1,9}(?:\.\d{1,6})?) MB\.\r?$/);
+      if (!match) return "unknown";
+      const value = projectUserdataCapacity({ source, unit: "MiB", available: Number(match[1]), required: Number(match[2]) });
+      if (value === "unknown" || observed && (observed.source !== value.source ||
+          observed.available !== value.available || observed.required !== value.required)) return "unknown";
+      observed = value;
+    }
+  }
+  return observed ?? "unknown";
 }
 
 function boundedOutput() {
@@ -67,8 +92,9 @@ export function createWorkerObservation(role, callerSignal, nativeCapture) {
     },
     snapshot: () => {
       const errorOutput = stderr.snapshot(), normalOutput = stdout.snapshot();
-      const classify = (text) => category(text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, ""), "unknown");
-      const stderrCategory = classify(errorOutput.text), stdoutCategory = classify(normalOutput.text);
+      const clean = (text) => text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+      const stderrText = clean(errorOutput.text), stdoutText = clean(normalOutput.text);
+      const stderrCategory = category(stderrText, "unknown"), stdoutCategory = category(stdoutText, "unknown");
       const hint = [["stderr", stderrCategory], ["stdout", stdoutCategory],
         ["supervisor-signal", category("", observed?.signal)]].find(([, value]) => value !== "unknown");
       return {
@@ -88,6 +114,7 @@ export function createWorkerObservation(role, callerSignal, nativeCapture) {
         stderrTruncated: errorOutput.truncated,
         stdoutSampledBytes: normalOutput.bytes,
         stdoutTruncated: normalOutput.truncated,
+        userdataCapacity: role === "emulator" ? userdataCapacity([["stderr", stderrText], ["stdout", stdoutText]]) : "unknown",
         nativeLifecycle: projectNativeLifecycle(nativeCapture?.snapshot()),
       };
     },
@@ -121,6 +148,7 @@ export function projectWorkerDiagnostics(value, expectedRunId) {
       stdoutSampledBytes: Number.isInteger(item.stdoutSampledBytes) && item.stdoutSampledBytes >= 0 &&
         item.stdoutSampledBytes <= stderrBudget ? item.stdoutSampledBytes : "unknown",
       stdoutTruncated: typeof item.stdoutTruncated === "boolean" ? item.stdoutTruncated : "unknown",
+      userdataCapacity: role === "emulator" ? projectUserdataCapacity(item.userdataCapacity) : "unknown",
       nativeLifecycle: projectNativeLifecycle(item.nativeLifecycle),
       workerLog: {
         status: ["retained", "unavailable", "pending"].includes(item.workerLog?.status) ? item.workerLog.status : "unknown",

@@ -227,6 +227,14 @@ is a diagnostic hint, not a proved root cause; missing information stays
 explicitly unknown and truncation is reported. Raw messages, argv, environments, absolute paths, URLs,
 tokens, process-ID inventories and unrelated session data are never included
 in this projection. Original detailed failures remain in private run logs.
+For the trusted emulator role, the exact upstream `Not enough space to create
+userdata partition` template can additionally project `userdataCapacity`:
+stdout/stderr provenance and bounded numeric available/required capacity.
+The upstream values labelled MB are calculated in MiB; the private path and
+entire original message are discarded. Missing, malformed or conflicting values
+remain `unknown`. This is reported output, not a substitute for observed native
+exit/readiness evidence or permission to change disk/AVD policy.
+See the [upstream capacity check](https://android.googlesource.com/platform/external/qemu/+/refs/heads/emu-master-dev/android-qemu2-glue/main.cpp#2447).
 Each private managed-worker log retains at most 1 MiB, preserving its beginning
 and end with an explicit truncation marker while excess output is still drained.
 Log-write failure is reported separately and cannot prevent owned-process cleanup.
