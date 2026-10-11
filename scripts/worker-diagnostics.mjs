@@ -2,6 +2,7 @@ import { lstat, mkdir, open } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { projectNativeLifecycle } from "./native-lifecycle.mjs";
 
 const stderrBudget = 32768;
 const roles = ["adb", "emulator"];
@@ -28,16 +29,33 @@ function category(text, signal) {
   return signals.includes(signal) ? "process-signalled" : "unknown";
 }
 
-export function createWorkerObservation(role, callerSignal) {
-  let head = Buffer.alloc(0), tail = Buffer.alloc(0), seen = 0, cleanupRequested = false, observed;
+function boundedOutput() {
+  let head = Buffer.alloc(0), tail = Buffer.alloc(0), seen = 0;
   return {
-    stderr: (value) => {
+    add: (value) => {
       const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
       seen += bytes.length;
       const half = stderrBudget / 2;
       if (head.length < half) head = Buffer.concat([head, bytes.subarray(0, half - head.length)]);
       tail = Buffer.concat([tail, bytes.subarray(Math.max(0, bytes.length - half))]).subarray(-half);
     },
+    snapshot: () => {
+      const remaining = Math.min(Math.max(0, seen - head.length), tail.length);
+      return {
+        text: head.toString("utf8") + (seen > stderrBudget ? "\n" : "") +
+          (remaining ? tail.subarray(tail.length - remaining).toString("utf8") : ""),
+        bytes: Math.min(seen, stderrBudget), truncated: seen > stderrBudget,
+      };
+    },
+  };
+}
+
+export function createWorkerObservation(role, callerSignal, nativeCapture) {
+  const stderr = boundedOutput(), stdout = boundedOutput();
+  let cleanupRequested = false, observed;
+  return {
+    stderr: stderr.add,
+    stdout: stdout.add,
     markCleanup: () => { cleanupRequested = true; },
     exit: (code, signal) => {
       if (observed) return;
@@ -48,9 +66,11 @@ export function createWorkerObservation(role, callerSignal) {
       };
     },
     snapshot: () => {
-      const remaining = Math.min(Math.max(0, seen - head.length), tail.length);
-      const sample = head.toString("utf8") + (seen > stderrBudget ? "\n" : "") +
-        (remaining ? tail.subarray(tail.length - remaining).toString("utf8") : "");
+      const errorOutput = stderr.snapshot(), normalOutput = stdout.snapshot();
+      const classify = (text) => category(text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, ""), "unknown");
+      const stderrCategory = classify(errorOutput.text), stdoutCategory = classify(normalOutput.text);
+      const hint = [["stderr", stderrCategory], ["stdout", stdoutCategory],
+        ["supervisor-signal", category("", observed?.signal)]].find(([, value]) => value !== "unknown");
       return {
         role: roles.includes(role) ? role : "unknown",
         observedProcess: "owned-command-supervisor",
@@ -59,10 +79,16 @@ export function createWorkerObservation(role, callerSignal) {
         exitCode: observed?.exitCode ?? "unknown",
         signal: observed?.signal ?? "unknown",
         failureCategory: observed?.context === "unexpected"
-          ? category(sample.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, ""), observed.signal)
+          ? hint?.[1] ?? "unknown"
           : observed ? "not-applicable" : "unknown",
-        stderrSampledBytes: Math.min(seen, stderrBudget),
-        stderrTruncated: seen > stderrBudget,
+        failureCategorySource: observed?.context === "unexpected" ? hint?.[0] ?? "unknown" : observed ? "not-applicable" : "unknown",
+        stderrFailureCategory: stderrCategory,
+        stdoutFailureCategory: stdoutCategory,
+        stderrSampledBytes: errorOutput.bytes,
+        stderrTruncated: errorOutput.truncated,
+        stdoutSampledBytes: normalOutput.bytes,
+        stdoutTruncated: normalOutput.truncated,
+        nativeLifecycle: projectNativeLifecycle(nativeCapture?.snapshot()),
       };
     },
   };
@@ -85,9 +111,23 @@ export function projectWorkerDiagnostics(value, expectedRunId) {
         : observed && item.signal === "none" && code !== "unknown" ? "none" : "unknown",
       failureCategory: context === "unexpected" ? categories.includes(item.failureCategory) ? item.failureCategory : "unknown"
         : observed && context !== "unknown" ? "not-applicable" : "unknown",
+      failureCategorySource: ["stdout", "stderr", "supervisor-signal", "not-applicable"].includes(item.failureCategorySource)
+        ? item.failureCategorySource : "unknown",
+      stdoutFailureCategory: categories.includes(item.stdoutFailureCategory) ? item.stdoutFailureCategory : "unknown",
+      stderrFailureCategory: categories.includes(item.stderrFailureCategory) ? item.stderrFailureCategory : "unknown",
       stderrSampledBytes: Number.isInteger(item.stderrSampledBytes) && item.stderrSampledBytes >= 0 &&
         item.stderrSampledBytes <= stderrBudget ? item.stderrSampledBytes : "unknown",
       stderrTruncated: typeof item.stderrTruncated === "boolean" ? item.stderrTruncated : "unknown",
+      stdoutSampledBytes: Number.isInteger(item.stdoutSampledBytes) && item.stdoutSampledBytes >= 0 &&
+        item.stdoutSampledBytes <= stderrBudget ? item.stdoutSampledBytes : "unknown",
+      stdoutTruncated: typeof item.stdoutTruncated === "boolean" ? item.stdoutTruncated : "unknown",
+      nativeLifecycle: projectNativeLifecycle(item.nativeLifecycle),
+      workerLog: {
+        status: ["retained", "unavailable", "pending"].includes(item.workerLog?.status) ? item.workerLog.status : "unknown",
+        truncated: typeof item.workerLog?.truncated === "boolean" ? item.workerLog.truncated : "unknown",
+        retainedBytes: Number.isInteger(item.workerLog?.retainedBytes) && item.workerLog.retainedBytes >= 0 &&
+          item.workerLog.retainedBytes <= 1024 * 1024 ? item.workerLog.retainedBytes : "unknown",
+      },
     });
   }
   return {

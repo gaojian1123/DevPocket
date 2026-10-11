@@ -159,44 +159,48 @@ test("CI publishes only the diagnostic projection alongside the original Android
 
 test("CI Action upgrades preserve toolchain selection, artifact isolation and the required device gate", async () => {
   const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
-  const actions = [...workflow.matchAll(/^\s+- uses: (actions\/[^\s]+)$/gm)].map((match) => match[1]);
+  const preparation = (await readFile(".github/actions/prepare-native/action.yml", "utf8")).replaceAll("\r\n", "\n");
+  const normalWorkflow = workflow.replace(/\n  startup:[\s\S]*?(?=\n  gate:)/, "");
+  const expandedNormal = `${normalWorkflow}\n${preparation}`;
+  const actions = [...expandedNormal.matchAll(/^\s+- uses: (actions\/[^\s]+)$/gm)].map((match) => match[1]);
   const counts = {};
   for (const action of actions) counts[action] = (counts[action] ?? 0) + 1;
   assert.deepEqual(counts, {
     "actions/checkout@v7": 5, "actions/setup-node@v7": 5, "actions/setup-python@v7": 1,
     "actions/upload-artifact@v7": 5, "actions/setup-java@v6": 2, "actions/download-artifact@v8": 1,
   });
-  assert.equal([...workflow.matchAll(
+  assert.equal([...normalWorkflow.matchAll(
     /- uses: actions\/checkout@v7\n\s+with:\n\s+fetch-depth: 0\n\s+persist-credentials: false/g,
   )].length, 5);
-  assert.equal([...workflow.matchAll(
+  assert.equal([...expandedNormal.matchAll(
     /- uses: actions\/setup-node@v7\n\s+with:\n\s+node-version: 24\n/g,
   )].length, 5);
-  assert.match(workflow, /- uses: actions\/setup-java@v6\n\s+with:\n\s+distribution: temurin\n\s+java-version: '21'/);
+  assert.equal([...expandedNormal.matchAll(/- uses: actions\/setup-java@v6\n\s+with:\n\s+distribution: temurin\n\s+java-version: '21'/g)].length, 2);
   assert.match(workflow, /- uses: actions\/setup-python@v7\n\s+with:\n\s+python-version: '3\.12'/);
   assert.match(workflow, /^permissions:\n  contents: read\n/m);
   assert.doesNotMatch(workflow, /continue-on-error:|FORCE_JAVASCRIPT_ACTIONS_TO_NODE20|ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION/);
   assert.doesNotMatch(workflow, /^\s+(?:merge-multiple|include-hidden-files|overwrite|archive|digest-mismatch):/m);
-  assert.equal([...workflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 5);
+  assert.equal([...normalWorkflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 5);
 
   const backend = workflow.split("\n  backend:")[1].split("\n  android:")[0];
   assert.match(backend, /\$env:DEVPOCKET_PROBE_PYTHON = \(Get-Command python -CommandType Application -ErrorAction Stop \| Select-Object -First 1\)\.Source\n\s+node scripts\\verify\.mjs/);
   const android = workflow.split("\n  android:")[1].split("\n  device:")[0];
   assert.match(android, /--jdk \$env:JAVA_HOME --sdk \.tools\\android-sdk --report \.data\\ci\\android\\report\.json/);
-  const device = workflow.split("\n  device:")[1].split("\n  gate:")[0];
+  const device = workflow.split("\n  device:")[1].split("\n  startup:")[0];
   assert.match(device, /needs: \[plan, android\]/);
   assert.match(device, /needs\.plan\.outputs\.device == 'true' &&/);
   assert.ok(device.includes("(github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)"));
   assert.match(device, /runs-on: ubuntu-24\.04/);
   assert.doesNotMatch(device, /self-hosted|DEVPOCKET_ANDROID_RUNNER_ENABLED|environment:|container:|ubuntu-slim/);
-  assert.ok(device.includes('sudo setfacl -m "u:$(id -u):rw" /dev/kvm'));
-  assert.ok(device.includes("--channel=0"));
-  assert.ok(device.includes("</dev/null"));
-  assert.doesNotMatch(device, /yes\s*\||--licenses|chmod\s+666/);
+  assert.match(device, /uses: \.\/\.github\/actions\/prepare-native/);
+  assert.ok(preparation.includes('sudo setfacl -m "u:$(id -u):rw" /dev/kvm'));
+  assert.ok(preparation.includes("--channel=0"));
+  assert.ok(preparation.includes("</dev/null"));
+  assert.doesNotMatch(preparation, /yes\s*\||--licenses|chmod\s+666/);
   assert.match(device, /scripts\/verify\.ps1 -Base \$env:BASE_SHA -Group device -Jdk \$env:JAVA_HOME -Sdk \$env:ANDROID_HOME/);
   assert.match(device, /-Image system-images\/android-35\/google_apis\/x86_64 -Report \.data\/ci\/device\/report\.json/);
-  assert.match(device, /node scripts\/linux-runtime\.mjs\n\s+exit \$LASTEXITCODE/);
-  assert.match(device, /node --test scripts\/tests\/linux-emulator\.test\.mjs scripts\/tests\/linux-process\.test\.mjs scripts\/tests\/linux-runtime\.test\.mjs/);
+  assert.match(preparation, /node scripts\/linux-runtime\.mjs\n\s+exit \$LASTEXITCODE/);
+  assert.match(preparation, /node --test scripts\/tests\/linux-emulator\.test\.mjs scripts\/tests\/linux-process\.test\.mjs scripts\/tests\/linux-runtime\.test\.mjs/);
   assert.match(device, /name: Export bounded owned-worker diagnostics\n\s+if: always\(\)/);
   assert.match(device, /node scripts\/worker-diagnostics\.mjs --directory \.data\/ci\/device\n\s+exit \$LASTEXITCODE/);
   assert.deepEqual([...device.matchAll(/^\s+((?:\.data|android)\/[^\r\n]+)$/gm)].map((match) => match[1]), [
@@ -213,6 +217,13 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.ok(gate.includes("'--base', $env:BASE_SHA, '--combine'"));
   assert.ok(gate.includes("Get-ChildItem -LiteralPath .data\\ci\\inputs -Filter report.json -File -Recurse"));
   assert.match(gate, /node @arguments\n\s+if \(\$LASTEXITCODE -ne 0\) \{ throw /);
+  assert.match(gate, /if \(\$env:STARTUP_ONLY -eq 'true'\) \{\n\s+node scripts\\verify\.mjs .*--plan --report \.data\\ci\\gate\.json\n\s+throw 'A startup diagnostic cannot satisfy Required verification/);
+  const startup = workflow.split("\n  startup:")[1].split("\n  gate:")[0];
+  assert.match(startup, /if: github\.event_name == 'workflow_dispatch' && inputs\.startup_diagnostic/);
+  assert.match(startup, /runs-on: ubuntu-24\.04/);
+  assert.match(startup, /uses: \.\/\.github\/actions\/prepare-native/);
+  assert.match(startup, /name: native-startup-diagnostic\n\s+path: \.data\/ci\/native-startup\/startup-report\.json/);
+  assert.doesNotMatch(startup, /name: verification-|continue-on-error/);
 });
 
 test("CI binds exactly the first Python executable when command discovery returns multiple matches", async (t) => {

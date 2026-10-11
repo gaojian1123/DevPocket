@@ -18,11 +18,15 @@ export function ownedCommandLaunch(platform = process.platform, privileged = fal
 }
 
 export function spawnOwnedCommand(file, args, {
-  cwd, env = process.env, timeoutMs = 30_000, graceMs = 5000, persistent = false, privileged = false,
+  cwd, env = process.env, timeoutMs = 30_000, graceMs = 5000, persistent = false, privileged = false, nativeLifecycle = false,
 } = {}) {
+  if (nativeLifecycle && (process.platform !== "linux" || privileged)) {
+    throw new Error("Native lifecycle pipes require an ordinary Linux command owner.");
+  }
   const launch = ownedCommandLaunch(process.platform, privileged, env);
-  const child = spawn(launch.file, launch.args, { cwd, env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
-  child.stdin.write(JSON.stringify({ file, arguments: args, timeoutMs, graceMs, persistent, ownerPid: process.pid }) + "\n");
+  const child = spawn(launch.file, launch.args,
+    { cwd, env, windowsHide: true, stdio: nativeLifecycle ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"] });
+  child.stdin.write(JSON.stringify({ file, arguments: args, timeoutMs, graceMs, persistent, nativeLifecycle, ownerPid: process.pid }) + "\n");
   return child;
 }
 

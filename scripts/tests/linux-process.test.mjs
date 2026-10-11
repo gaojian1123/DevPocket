@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { test } from "node:test";
 import { runCommand, spawnOwnedCommand, stopOwnedProcess } from "../process.mjs";
 import { ownsLinuxListener, parseLinuxProcess } from "../linux-emulator.mjs";
+import { createNativeLifecycleCapture } from "../native-lifecycle.mjs";
 
 const exec = promisify(execFile);
 assert.equal(process.platform, "linux", "These real Linux lifecycle checks must run on the hosted Ubuntu job.");
@@ -129,6 +130,65 @@ test("the real Linux PowerShell build entrypoint invokes the pinned wrapper with
       "org.gradle.wrapper.GradleWrapperMain", "--no-daemon", "--console=plain",
       ":app:assembleDebug", ":app:testDebugUnitTest", ":app:lintDebug", ":app:assembleDebugAndroidTest"],
   });
+
   await assert.rejects(exec("pwsh", args, { cwd: directory, env: { ...env, FIXTURE_EXIT: "37" }, timeout: 20000 }),
     (error) => error.code === 1 && /Android build failed with exit code 37/.test(error.stderr));
+});
+
+async function nativeCommand(t, file, args, options = {}) {
+  const child = spawnOwnedCommand(file, args, { timeoutMs: 5000, graceMs: 250, nativeLifecycle: true, ...options });
+  child.stdout.resume();
+  child.stderr.resume();
+  const capture = createNativeLifecycleCapture();
+  child.stdio[3].on("data", capture.data);
+  child.stdio[3].once("end", capture.end);
+  child.stdio[3].once("error", capture.fail);
+  const done = once(child, "close");
+  t.after(async () => { await stopOwnedProcess(child); await done; });
+  return { child, capture, done };
+}
+
+test("dedicated native telemetry distinguishes spawn errno from an actual child return code", async (t) => {
+  const directory = await fixture(t);
+  const missing = await nativeCommand(t, path.join(directory, "private-missing-executable"), []);
+  await missing.done;
+  const failure = missing.capture.snapshot();
+  assert.equal(failure.availability, "complete");
+  assert.equal(failure.started, false);
+  assert.equal(failure.returnCode, "unknown");
+  assert.equal(failure.events.find((event) => event.phase === "spawn-failed").errno, 2);
+  assert.ok(!JSON.stringify(failure).includes("private-missing-executable"));
+
+  const native = await nativeCommand(t, process.execPath, ["-e",
+    'console.log(\'{"version":1,"sequence":1,"phase":"native-exited","returnCode":0,"signalNumber":0}\');process.exitCode=7']);
+  await native.done;
+  const exited = native.capture.snapshot();
+  assert.equal(exited.availability, "complete");
+  assert.equal(exited.returnCode, 7, "Child stdout cannot forge the supervisor-only lifecycle channel.");
+  assert.equal(exited.exitContext, "before-cleanup");
+});
+
+test("native signal status is not replaced by the supervisor's process exit status", async (t) => {
+  const native = await nativeCommand(t, process.execPath, ["-e", "process.kill(process.pid,'SIGTERM')"]);
+  await native.done;
+  const evidence = native.capture.snapshot();
+  assert.equal(evidence.returnCode, -15);
+  assert.equal(evidence.signalNumber, 15);
+  assert.notEqual(native.child.exitCode, evidence.returnCode);
+});
+
+test("stdin closure records a live native child before confirmed cleanup kills it", async (t) => {
+  const directory = await fixture(t), marker = path.join(directory, "native.pid");
+  const native = await nativeCommand(t, process.execPath, ["-e",
+    `require('node:fs').writeFileSync(${JSON.stringify(marker)},String(process.pid));setInterval(()=>{},1000)`]);
+  const pid = Number(await readWhenReady(marker));
+  native.child.stdin.end();
+  await native.done;
+  const evidence = native.capture.snapshot();
+  const stop = evidence.events.find((event) => event.phase === "stop-requested");
+  assert.equal(stop.reason, "stdin-eof");
+  assert.equal(stop.nativeAlive, true);
+  assert.equal(evidence.returnCode, -9);
+  assert.equal(evidence.exitContext, "during-cleanup");
+  assert.equal(await alive(pid), false);
 });

@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { createWriteStream } from "node:fs";
 import { access, mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runCommand, spawnOwnedCommand, stopOwnedProcess } from "./process.mjs";
@@ -7,6 +6,8 @@ import { cleanDeviceRun } from "./device-run.mjs";
 import { acquireEmulatorLease } from "./emulator-resources.mjs";
 import { acquireLinuxEmulatorLease, linuxAcceleration, ownsLinuxListener } from "./linux-emulator.mjs";
 import { createWorkerObservation, projectWorkerDiagnostics } from "./worker-diagnostics.mjs";
+import { createNativeLifecycleCapture } from "./native-lifecycle.mjs";
+import { createBoundedWorkerLog } from "./bounded-worker-log.mjs";
 
 export function createLiveDeviceGuard(workers, inspect, signal) {
   const controller = new AbortController();
@@ -44,11 +45,24 @@ export function createLiveDeviceGuard(workers, inspect, signal) {
 
 export function trackManagedCommand(child, output, platform = process.platform, { role, signal } = {}) {
   let tail = "";
-  const observation = ["adb", "emulator"].includes(role) ? createWorkerObservation(role, signal) : undefined;
+  const native = child.stdio?.[3] ? createNativeLifecycleCapture() : undefined;
+  const observation = ["adb", "emulator"].includes(role) ? createWorkerObservation(role, signal, native) : undefined;
   const state = { child, settled: false, error: undefined, done: undefined,
-    requiresCleanupConfirmation: platform === "linux", cleanupConfirmed: false, workerObservation: observation };
+    requiresCleanupConfirmation: platform === "linux", cleanupConfirmed: false, workerObservation: observation,
+    logInfo: () => output.logInfo?.(), logError: undefined };
+  output.on("error", (error) => {
+    state.logError = error;
+    child.stdout.resume();
+    child.stderr.resume();
+  });
   child.stdout.pipe(output, { end: false });
+  child.stdout.on("data", (bytes) => observation?.stdout(bytes));
   child.stderr.pipe(output, { end: false });
+  if (native) {
+    child.stdio[3].on("data", native.data);
+    child.stdio[3].once("end", native.end);
+    child.stdio[3].once("error", native.fail);
+  }
   child.stderr.on("data", (bytes) => {
     tail = (tail + bytes.toString()).slice(-4096);
     observation?.stderr(bytes);
@@ -59,7 +73,12 @@ export function trackManagedCommand(child, output, platform = process.platform, 
   state.done = new Promise((resolve) => child.once("close", () => {
     state.settled = true;
     state.cleanupConfirmed = tail.trimEnd().split(/\r?\n/).at(-1) === "DEVPOCKET_OWNED_TREE_STOPPED";
-    output.end(resolve);
+    if (output.destroyed) resolve();
+    else {
+      const finish = () => { output.off("error", finish); resolve(); };
+      output.once("error", finish);
+      output.end(finish);
+    }
   }));
   return state;
 }
@@ -130,8 +149,9 @@ export async function withAndroidEmulator(options, operation) {
   const identity = { root, directory, runId, sdk, emulatorSdk, jdk, image };
   const manage = (file, args, env, name) => {
     if (closing) throw new Error("The emulator run is closing.");
-    const output = createWriteStream(path.join(directory, `${name}.log`), { flags: "wx", mode: 0o600 });
-    const child = spawnOwnedCommand(file, args, { cwd: root, env, timeoutMs: 24 * 60 * 60_000, persistent: true });
+    const output = createBoundedWorkerLog(path.join(directory, `${name}.log`));
+    const child = spawnOwnedCommand(file, args, { cwd: root, env, timeoutMs: 24 * 60 * 60_000, persistent: true,
+      nativeLifecycle: linux && ["adb", "emulator"].includes(name) });
     const state = trackManagedCommand(child, output, process.platform, { role: name, signal });
     processes.push(state);
     return state;
@@ -246,7 +266,8 @@ export async function withAndroidEmulator(options, operation) {
     }
     workerDiagnostics = projectWorkerDiagnostics({
       runId, cleanup: errors.length ? "failed" : "completed",
-      workers: processes.flatMap((state) => state.workerObservation ? [state.workerObservation.snapshot()] : []),
+      workers: processes.flatMap((state) => state.workerObservation
+        ? [{ ...state.workerObservation.snapshot(), workerLog: state.logInfo() }] : []),
     });
     if (failure) {
       failure.cleanup = errors.length ? "failed" : "completed";

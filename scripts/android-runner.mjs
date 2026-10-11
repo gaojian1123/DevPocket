@@ -72,6 +72,35 @@ export async function runNativeLayouts(device, { all = true, directory = device.
   return results;
 }
 
+export async function prepareAndroidRuntime(identity, report, signal, { buildApks = true } = {}) {
+  const { root, directory, jdk, sdk, image, imageDir, executable, adbPath, javaPath } = identity;
+  await access(javaPath);
+  report.source = await sourceSnapshot(root);
+  report.image = image;
+  const java = await runCommand(javaPath, ["-version"], { signal });
+  const adbVersion = await runCommand(adbPath, ["version"], { signal });
+  const emulatorVersion = await runCommand(executable, ["-version"], { signal });
+  const imageProperties = await readFile(path.join(imageDir, "source.properties"), "utf8");
+  report.toolchain = {
+    java: /version "([A-Za-z0-9._+-]+)"/.exec(java.stdout + java.stderr)?.[1] ?? null,
+    adb: /^Android Debug Bridge version ([A-Za-z0-9._+-]+)/m.exec(adbVersion.stdout)?.[1] ?? null,
+    emulator: /Android emulator version ([A-Za-z0-9._+-]+)/.exec(emulatorVersion.stdout + emulatorVersion.stderr)?.[1] ?? null,
+    imageRevision: /^Pkg\.Revision=([0-9.]+)\s*$/m.exec(imageProperties)?.[1] ?? null,
+  };
+  report.toolchainWarnings = Object.entries(report.toolchain).filter(([, value]) => value === null)
+    .map(([tool]) => `${tool} did not report a recognized diagnostic version.`);
+  if (!buildApks) return {};
+  const build = await runCommand("pwsh", ["-NoProfile", "-NonInteractive", "-File",
+    path.join(root, "scripts", "build-android.ps1"), "-Jdk", jdk, "-Sdk", sdk, "-Instrumentation"],
+  { cwd: root, timeoutMs: 20 * 60_000, signal });
+  await writeFile(path.join(directory, "build.log"), build.stdout + build.stderr);
+  const apk = path.join(root, "android", "app", "build", "outputs", "apk", "debug", "app-debug.apk");
+  const testApk = path.join(root, "android", "app", "build", "outputs", "apk", "androidTest", "debug", "app-debug-androidTest.apk");
+  report.apkSha256 = createHash("sha256").update(await readFile(apk)).digest("hex");
+  report.testApkSha256 = createHash("sha256").update(await readFile(testApk)).digest("hex");
+  return { apk, testApk };
+}
+
 export async function runAndroidTests(options) {
   const root = path.resolve(options.repo ?? process.cwd());
   const directory = path.resolve(root, options.directory ?? path.join(".data", "android-runs", randomUUID()));
@@ -86,30 +115,10 @@ export async function runAndroidTests(options) {
     const finished = await withAndroidEmulator({
       ...options, repo: root, directory, owner: runId,
       onWaiting: options.onWaiting ?? ((status) => console.log(`Waiting for emulator slot ${status.position}; ${status.active}/${status.limit} active.`)),
-      prepare: async ({ jdk, sdk, image, imageDir, executable, adbPath, javaPath }) => {
-        await access(javaPath);
-        report.source = await sourceSnapshot(root);
-        report.image = image;
-        const java = await runCommand(javaPath, ["-version"], { signal });
-        const adbVersion = await runCommand(adbPath, ["version"], { signal });
-        const emulatorVersion = await runCommand(executable, ["-version"], { signal });
-        const imageProperties = await readFile(path.join(imageDir, "source.properties"), "utf8");
-        report.toolchain = {
-          java: /version "([A-Za-z0-9._+-]+)"/.exec(java.stdout + java.stderr)?.[1] ?? null,
-          adb: /^Android Debug Bridge version ([A-Za-z0-9._+-]+)/m.exec(adbVersion.stdout)?.[1] ?? null,
-          emulator: /Android emulator version ([A-Za-z0-9._+-]+)/.exec(emulatorVersion.stdout + emulatorVersion.stderr)?.[1] ?? null,
-          imageRevision: /^Pkg\.Revision=([0-9.]+)\s*$/m.exec(imageProperties)?.[1] ?? null,
-        };
-        report.toolchainWarnings = Object.entries(report.toolchain).filter(([, value]) => value === null)
-          .map(([tool]) => `${tool} did not report a recognized diagnostic version.`);
-        const build = await runCommand("pwsh", ["-NoProfile", "-NonInteractive", "-File",
-          path.join(root, "scripts", "build-android.ps1"), "-Jdk", jdk, "-Sdk", sdk, "-Instrumentation"],
-        { cwd: root, timeoutMs: 20 * 60_000, signal });
-        await writeFile(path.join(directory, "build.log"), build.stdout + build.stderr);
-        apk = path.join(root, "android", "app", "build", "outputs", "apk", "debug", "app-debug.apk");
-        testApk = path.join(root, "android", "app", "build", "outputs", "apk", "androidTest", "debug", "app-debug-androidTest.apk");
-        report.apkSha256 = createHash("sha256").update(await readFile(apk)).digest("hex");
-        report.testApkSha256 = createHash("sha256").update(await readFile(testApk)).digest("hex");
+      prepare: async (identity) => {
+        const artifacts = await prepareAndroidRuntime(identity, report, signal);
+        apk = artifacts.apk;
+        testApk = artifacts.testApk;
       },
     }, async (device) => {
       booted = true;

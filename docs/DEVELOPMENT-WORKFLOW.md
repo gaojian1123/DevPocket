@@ -205,9 +205,14 @@ The managed `adb` and `emulator` roles retain bounded exit diagnostics independe
 of the required test result. Roles come from the controller's fixed call sites,
 not from log text. Exit codes and signals come from the existing owned-command
 supervisor's process handle. They are explicitly labelled
-`observedProcess: owned-command-supervisor`: a native emulator descendant's exit
-code is not inferred from a wrapper code. Missing exit events or unsupported
-values remain `unknown`, never zero or success.
+`observedProcess: owned-command-supervisor`, not inferred native exits. On Linux,
+a separate supervisor-only pipe also records `nativeLifecycle` for the directly
+launched command: initialization/spawn phases, numeric spawn errno, actual
+`Popen`/`waitpid` return code and signal, stop reason, native liveness at that
+observation and cleanup-induced exit. The pipe is closed in the native child;
+stdout cannot forge this provenance. A launcher that creates another descendant
+still does not establish that unobserved descendant's exit code. Missing events
+or unsupported values remain `unknown`, never zero or success.
 
 The context is frozen when the exit is observed: unexpected, during requested
 cleanup, or during caller cancellation. Later cleanup cannot relabel an earlier
@@ -215,13 +220,23 @@ unexpected exit. These labels describe observation timing, not proof that a
 cancellation request caused a concurrent failure. Cleanup confirmation and
 resource ownership checks are unchanged.
 
-Only the first and last halves of at most 32 KiB of each owned worker's stderr
-are sampled. A fixed category allowlist can identify loader, acceleration,
+Only the first and last halves of at most 32 KiB **per stream** of each owned
+worker's stdout and stderr are sampled separately. A fixed category allowlist can identify loader, acceleration,
 option, graphics, port, AVD, disk, memory or process-signal patterns. A category
 is a diagnostic hint, not a proved root cause; missing information stays
 explicitly unknown and truncation is reported. Raw messages, argv, environments, absolute paths, URLs,
 tokens, process-ID inventories and unrelated session data are never included
 in this projection. Original detailed failures remain in private run logs.
+Each private managed-worker log retains at most 1 MiB, preserving its beginning
+and end with an explicit truncation marker while excess output is still drained.
+Log-write failure is reported separately and cannot prevent owned-process cleanup.
+The native lifecycle pipe has a 16 KiB input budget and at most twelve fixed
+phase records. It is nonblocking; incomplete/malformed transport is reported
+instead of converting missing native status to a successful wrapper status.
+Native statuses reaped during cleanup are retained rather than lost to a later
+`Popen.poll()` call. Cleanup/owner monitoring and their time bounds remain active.
+Conflicting before/during-cleanup exit records are incomplete evidence with an
+unknown summary, never a confidently relabelled natural exit.
 
 The source-bound machine report includes the allowlisted projection on both
 success and failure. The CI exporter reads only that run's `report.json`
@@ -232,6 +247,34 @@ verification artifact selects only `report.json` and `worker-diagnostics.json`;
 the tested-APK artifact's existing success-only list is unchanged. The combiner
 continues to read only `report.json`. Diagnostic output can neither satisfy a
 missing required check nor turn a blocked/failed device result into a pass.
+
+### Focused native-startup CI
+
+For a source-reviewed startup investigation, the existing manual workflow
+accepts `startup_diagnostic: true` and `startup_variant: same-build` (default) or
+`without-build`. It runs the hosted Ubuntu startup job without waiting for the
+backend/Windows build jobs. Both full verification and this diagnostic reuse
+`.github/actions/prepare-native` and the same build preparation, emulator
+configuration, KVM checks, resource ownership and cleanup implementation.
+The diagnostic keeps the owned PowerShell-to-Node entry chain used by the device
+runner, including its command deadline, cancellation forwarding and owner nonce.
+
+`same-build` preserves the normal Linux build-before-launch path.
+`without-build` changes only that explicitly selected preparation factor; it is
+not a replacement acceptance mode. Each diagnostic records source/base,
+emulator/ADB binary hashes, selected toolchain/image, available bytes on the owned
+run filesystem before/after preparation, readiness and bounded worker/native
+lifecycle metadata. Its explicit `startup-report.json` artifact is at most
+16 KiB and contains no raw output or private paths.
+
+A ready startup probe does not install/run the native test suite and cannot
+satisfy **Required verification**. Diagnostic dispatches deliberately leave that
+gate with a non-acceptance plan and a failing decision. Their artifact name is
+outside `verification-*`; the combiner cannot treat it as a shard. Normal PR and
+full manual verification still require every original check and native case.
+Record a falsifiable prediction and the changed factor before each experiment;
+do not repeat an unchanged failure without new information. Once startup is
+repaired, run full verification against the actual candidate.
 
 ## Android execution environment
 

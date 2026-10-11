@@ -8,6 +8,17 @@ on:
         description: Base commit or ref to compare with the selected workflow ref
         type: string
         required: true
+      startup_diagnostic:
+        description: Run only the hosted native-startup diagnostic; never acceptance
+        type: boolean
+        default: false
+      startup_variant:
+        description: The one controlled startup-preparation factor
+        type: choice
+        options:
+          - same-build
+          - without-build
+        default: same-build
 
 permissions:
   contents: read
@@ -54,7 +65,7 @@ jobs:
 
   backend:
     needs: plan
-    if: needs.plan.outputs.backend == 'true'
+    if: needs.plan.outputs.backend == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.startup_diagnostic)
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -89,7 +100,7 @@ jobs:
 
   android:
     needs: plan
-    if: needs.plan.outputs.android == 'true'
+    if: needs.plan.outputs.android == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.startup_diagnostic)
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -133,6 +144,7 @@ jobs:
     needs: [plan, android]
     if: >-
       needs.plan.outputs.device == 'true' &&
+      !(github.event_name == 'workflow_dispatch' && inputs.startup_diagnostic) &&
       (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -141,40 +153,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: npm
-      - uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '21'
-      - run: npm ci --no-audit --no-fund
-      - name: Prepare hosted KVM and stable SDK packages without accepting new licenses
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -c /dev/kvm
-          if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
-            sudo setfacl -m "u:$(id -u):rw" /dev/kvm
-          fi
-          test -r /dev/kvm && test -w /dev/kvm
-          test -s "$ANDROID_HOME/licenses/android-sdk-license"
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --channel=0 \
-            "platforms;android-35" "build-tools;35.0.0" "platform-tools" "emulator" \
-            "system-images;android-35;google_apis;x86_64" </dev/null
-          test -s "$ANDROID_HOME/platforms/android-35/android.jar"
-          test -x "$ANDROID_HOME/build-tools/35.0.0/aapt"
-          test -x "$ANDROID_HOME/platform-tools/adb"
-          test -x "$ANDROID_HOME/emulator/emulator"
-          test -s "$ANDROID_HOME/system-images/android-35/google_apis/x86_64/system.img"
-      - name: Verify Linux process, ownership and build entry points
-        run: node --test scripts/tests/linux-emulator.test.mjs scripts/tests/linux-process.test.mjs scripts/tests/linux-runtime.test.mjs scripts/tests/worker-diagnostics.test.mjs
-      - name: Check the emulator loader and resolve only its approved missing runtime dependency
-        shell: pwsh
-        run: |
-          node scripts/linux-runtime.mjs
-          exit $LASTEXITCODE
+      - uses: ./.github/actions/prepare-native
       - name: Run the required isolated emulator cases
         shell: pwsh
         env:
@@ -207,6 +186,35 @@ jobs:
             .data/ci/device/device/device-report.json
           if-no-files-found: error
 
+  startup:
+    name: Native startup diagnostic only
+    needs: plan
+    if: github.event_name == 'workflow_dispatch' && inputs.startup_diagnostic
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/prepare-native
+      - name: Diagnose the same owned native startup
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ needs.plan.outputs.base }}
+          STARTUP_VARIANT: ${{ inputs.startup_variant }}
+        run: |
+          node scripts/native-startup.mjs --base $env:BASE_SHA --variant $env:STARTUP_VARIANT `
+            --directory .data/ci/native-startup --jdk $env:JAVA_HOME --sdk $env:ANDROID_HOME `
+            --image system-images/android-35/google_apis/x86_64
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-startup-diagnostic
+          path: .data/ci/native-startup/startup-report.json
+          if-no-files-found: error
+
   gate:
     name: Required verification
     needs: [plan, backend, android, device]
@@ -229,8 +237,13 @@ jobs:
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
           PLAN_RESULT: ${{ needs.plan.result }}
+          STARTUP_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.startup_diagnostic }}
         run: |
           if ($env:PLAN_RESULT -ne 'success') { throw 'The required check plan did not complete.' }
+          if ($env:STARTUP_ONLY -eq 'true') {
+            node scripts\verify.mjs --base $env:BASE_SHA --plan --report .data\ci\gate.json
+            throw 'A startup diagnostic cannot satisfy Required verification. Run full verification for acceptance.'
+          }
           $arguments = @('scripts\verify.mjs', '--base', $env:BASE_SHA, '--combine', '--report', '.data\ci\gate.json')
           if (Test-Path -LiteralPath .data\ci\inputs) {
             Get-ChildItem -LiteralPath .data\ci\inputs -Filter report.json -File -Recurse | ForEach-Object {
