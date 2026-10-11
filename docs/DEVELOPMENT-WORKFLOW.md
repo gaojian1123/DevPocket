@@ -377,6 +377,24 @@ The same `android-runner.mjs` builds and runs the shared discovered test classes
 layout matrix and real App/relay/bridge fixture. The Linux build uses the selected
 `bin/java` and the checked-in wrapper JAR directly through `build-android.ps1`;
 it does not require a generated Unix wrapper or executable-mode changes.
+On the disposable hosted Linux job, native preparation passes a fresh
+`<owned-run>/gradle-cache` through the build script's explicit `-GradleUserHome`
+argument. The full APK/JVM build still runs. After the successful owned build
+reports its process-tree cleanup receipt, preparation removes only that cache
+before emulator startup, preserving APKs, build outputs and source identities.
+Early cache-only cleanup rechecks the run nonce and canonical directory; it
+cannot remove the remaining run data or follow a cache link into another directory.
+This prevents build-only dependencies from occupying the free space required
+to create userdata; it does not reduce the AVD or bypass its capacity check.
+Windows and ordinary local builds keep their default worktree cache. An explicit
+cache argument, like the selected SDK/JDK, is process-scoped and restored afterward.
+Failed/cancelled builds keep their result and use nonce-checked post-shutdown
+cache cleanup. An unconfirmed owned-command cleanup retains private data and the
+lease record with a failed cleanup result; only this controller's temporary
+socket reservations are closed so it can exit for outer-owner recovery.
+Readiness polling immediately propagates explicit command-cleanup uncertainty
+instead of retrying it into success or erasing it in a timeout. The run also
+retains ADB command-cleanup uncertainty across later error handling.
 The emulator requires `-accel on` and explicit usable KVM output from
 `-accel-check`; software GPU rendering is separate from VM acceleration.
 Successful Linux evidence includes `platform: linux` and

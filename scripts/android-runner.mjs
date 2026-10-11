@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { runCommand } from "./process.mjs";
 import { waitForAndroid, withAndroidEmulator } from "./android-emulator.mjs";
 import { sourceSnapshot } from "./verification.mjs";
+import { cleanDeviceRun } from "./device-run.mjs";
 
 const manualClass = "dev.devpocket.app.ConnectedFlowTest";
 const baselineClasses = ["NativeFlowTest", "AdaptiveLayoutTest", "FixtureFlowTest"].map((name) => `dev.devpocket.app.${name}`);
@@ -90,10 +91,19 @@ export async function prepareAndroidRuntime(identity, report, signal, { buildApk
   report.toolchainWarnings = Object.entries(report.toolchain).filter(([, value]) => value === null)
     .map(([tool]) => `${tool} did not report a recognized diagnostic version.`);
   if (!buildApks) return {};
+  const disposableCache = process.platform === "linux" && process.env.GITHUB_ACTIONS === "true" &&
+    process.env.RUNNER_ENVIRONMENT === "github-hosted" ? path.join(directory, "gradle-cache") : undefined;
+  if (disposableCache) await mkdir(disposableCache);
   const build = await runCommand("pwsh", ["-NoProfile", "-NonInteractive", "-File",
-    path.join(root, "scripts", "build-android.ps1"), "-Jdk", jdk, "-Sdk", sdk, "-Instrumentation"],
+    path.join(root, "scripts", "build-android.ps1"), "-Jdk", jdk, "-Sdk", sdk, "-Instrumentation",
+    ...(disposableCache ? ["-GradleUserHome", disposableCache] : [])],
   { cwd: root, timeoutMs: 20 * 60_000, signal });
+  if (disposableCache && build.processTreeStopped !== true) {
+    throw Object.assign(new Error("The build command did not confirm process-tree cleanup."),
+      { processTreeStopped: false, stdout: build.stdout, stderr: build.stderr });
+  }
   await writeFile(path.join(directory, "build.log"), build.stdout + build.stderr);
+  if (disposableCache) await cleanDeviceRun(root, directory, identity.runId, { cacheOnly: true });
   const apk = path.join(root, "android", "app", "build", "outputs", "apk", "debug", "app-debug.apk");
   const testApk = path.join(root, "android", "app", "build", "outputs", "apk", "androidTest", "debug", "app-debug-androidTest.apk");
   report.apkSha256 = createHash("sha256").update(await readFile(apk)).digest("hex");

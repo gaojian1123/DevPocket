@@ -96,7 +96,10 @@ export async function waitForAndroid(check, label, timeoutMs, processState, sign
     signal?.throwIfAborted();
     if (processState?.settled) throw new Error(`${label}: owned process exited before readiness.`);
     try { if (await check()) return; }
-    catch (error) { last = `${error.message} ${(error.stderr ?? "").trim()}`; }
+    catch (error) {
+      if (error.processTreeStopped === false) throw error;
+      last = `${error.message} ${(error.stderr ?? "").trim()}`;
+    }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error(`${label} timed out: ${last}`);
@@ -139,7 +142,7 @@ export async function withAndroidEmulator(options, operation) {
   if (!/^[a-f0-9-]{36}$/.test(runId)) throw new Error("Invalid device run owner.");
   await createRunDirectory(root, directory);
   const processes = [];
-  let lease, failure, result, guard, workerDiagnostics, closing = false;
+  let lease, failure, result, guard, workerDiagnostics, closing = false, commandCleanupUnconfirmed = false;
   const signal = options.signal;
   const sdk = path.resolve(options.sdk ?? process.env.DEVPOCKET_ANDROID_SDK ?? path.join(root, ".tools", "android-sdk"));
   const emulatorSdk = path.resolve(options.emulatorSdk ?? process.env.DEVPOCKET_EMULATOR_SDK ?? sdk);
@@ -205,8 +208,13 @@ export async function withAndroidEmulator(options, operation) {
       guard?.assertAlive();
       const command = args[0] === "shell"
         ? ["shell", ...args.slice(1).map((arg) => `'${arg.replaceAll("'", "'\\''")}'`)] : args;
-      return runCommand(adb, ["-P", String(lease.ports.adb), "-s", identity.serial, ...command],
-        { cwd: root, env, timeoutMs, signal: guard?.signal ?? signal });
+      try {
+        return await runCommand(adb, ["-P", String(lease.ports.adb), "-s", identity.serial, ...command],
+          { cwd: root, env, timeoutMs, signal: guard?.signal ?? signal });
+      } catch (error) {
+        if (error.processTreeStopped === false) commandCleanupUnconfirmed = true;
+        throw error;
+      }
     };
     const acceleration = await runCommand(executable, ["-accel-check"], { env, timeoutMs: 30_000, signal });
     if (linux) identity.acceleration = linuxAcceleration(acceleration.stdout + acceleration.stderr);
@@ -246,7 +254,8 @@ export async function withAndroidEmulator(options, operation) {
     guard?.close();
     // A worker can exit while another worker is being stopped.
     for (const state of processes) state.workerObservation?.markCleanup();
-    const errors = [];
+    const errors = commandCleanupUnconfirmed || failure?.processTreeStopped === false
+      ? ["An owned command did not confirm process-tree cleanup."] : [];
     for (const state of processes.reverse()) {
       try {
         if (!state.settled) await stopOwnedProcess(state.child);
@@ -254,11 +263,18 @@ export async function withAndroidEmulator(options, operation) {
         requireManagedCleanup(state);
       } catch (error) { errors.push(error.message); }
     }
+    try { await lease?.handoff(); }
+    catch (error) { errors.push(error.message); }
     if (!errors.length) {
-      try { await cleanDeviceRun(root, directory, runId); }
+      try {
+        const cleaned = await cleanDeviceRun(root, directory, runId);
+        if (lease && !cleaned) throw new Error("An acquired emulator lease lost its run owner record; cleanup is unconfirmed.");
+      }
       catch (error) { errors.push(error.message); }
-      try { await lease?.release(); }
-      catch (error) { errors.push(error.message); }
+      if (!errors.length) {
+        try { await lease?.release(); }
+        catch (error) { errors.push(error.message); }
+      }
     }
     if (errors.length) {
       failure ??= new Error("Emulator cleanup did not complete.");

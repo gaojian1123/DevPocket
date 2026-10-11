@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -8,6 +9,9 @@ import { test } from "node:test";
 import { runCommand, spawnOwnedCommand, stopOwnedProcess } from "../process.mjs";
 import { ownsLinuxListener, parseLinuxProcess } from "../linux-emulator.mjs";
 import { createNativeLifecycleCapture } from "../native-lifecycle.mjs";
+import { prepareAndroidRuntime } from "../android-runner.mjs";
+import { waitForAndroid, withAndroidEmulator } from "../android-emulator.mjs";
+import { cleanDeviceRun } from "../device-run.mjs";
 
 const exec = promisify(execFile);
 assert.equal(process.platform, "linux", "These real Linux lifecycle checks must run on the hosted Ubuntu job.");
@@ -133,6 +137,137 @@ test("the real Linux PowerShell build entrypoint invokes the pinned wrapper with
 
   await assert.rejects(exec("pwsh", args, { cwd: directory, env: { ...env, FIXTURE_EXIT: "37" }, timeout: 20000 }),
     (error) => error.code === 1 && /Android build failed with exit code 37/.test(error.stderr));
+});
+
+async function nativeBuildFixture(t) {
+  const root = await fixture(t);
+  const jdk = path.join(root, "selected jdk"), sdk = path.join(root, "selected sdk");
+  const image = path.join("system-images", "android-35", "google_apis", "x86_64");
+  const imageDir = path.join(sdk, image);
+  const javaPath = path.join(jdk, "bin", "java"), adbPath = path.join(sdk, "platform-tools", "adb");
+  const executable = path.join(sdk, "emulator", "emulator");
+  for (const directory of [path.join(root, "scripts"), path.join(root, "android", "gradle", "wrapper"),
+    path.dirname(javaPath), path.dirname(adbPath), path.dirname(executable), imageDir,
+    path.join(sdk, "platforms", "android-35"), path.join(root, ".tools", "gradle-cache")]) {
+    await mkdir(directory, { recursive: true });
+  }
+  await writeFile(path.join(root, "scripts", "build-android.ps1"), await readFile("scripts/build-android.ps1"));
+  await writeFile(path.join(root, "android", "gradle", "wrapper", "gradle-wrapper.jar"), "fixture");
+  await writeFile(path.join(sdk, "platforms", "android-35", "android.jar"), "fixture");
+  await writeFile(path.join(imageDir, "system.img"), "fixture");
+  await writeFile(path.join(imageDir, "source.properties"), "Pkg.Revision=9\n");
+  await writeFile(adbPath, "#!/bin/sh\nprintf 'Android Debug Bridge version 1.0.41\\n'\n", { mode: 0o700 });
+  await writeFile(executable, "#!/bin/sh\nprintf 'Android emulator version 37.2.12.0\\n'\n", { mode: 0o700 });
+  await writeFile(javaPath, [
+    "#!/usr/bin/env node",
+    "const fs=require('node:fs'),path=require('node:path');",
+    `const root=${JSON.stringify(root)};`,
+    "if(process.argv.includes('-version')) { process.stderr.write('openjdk version \"21.0.12\"\\n'); }",
+    "else {",
+    " const cache=process.env.GRADLE_USER_HOME; fs.mkdirSync(cache,{recursive:true});",
+    " fs.writeFileSync(path.join(cache,'build-only'),'synthetic dependency');",
+    " fs.writeFileSync(path.join(root,'android','invocation.json'),JSON.stringify({cache,args:process.argv.slice(2)}));",
+    " const mode=fs.readFileSync(path.join(root,'mode.txt'),'utf8');",
+    " if(mode==='cancel') setInterval(()=>{},1000);",
+    " else if(mode==='fail') process.exitCode=37;",
+    " else for(const [relative,bytes] of [['debug/app-debug.apk','synthetic-app'],",
+    "   ['androidTest/debug/app-debug-androidTest.apk','synthetic-tests']]) {",
+    "  const file=path.join(root,'android','app','build','outputs','apk',relative);",
+    "  fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,bytes);",
+    " }",
+    "}",
+  ].join("\n"), { mode: 0o700 });
+  await writeFile(path.join(root, ".tools", "gradle-cache", "preserved"), "shared cache");
+  await writeFile(path.join(root, "mode.txt"), "success");
+  await writeFile(path.join(root, "package.json"), '{"type":"commonjs"}\n');
+  await writeFile(path.join(root, ".gitignore"), ".data/\n.tools/\nandroid/\n");
+  await exec("git", ["init", "--quiet"], { cwd: root, timeout: 10000 });
+  await exec("git", ["add", ".gitignore"], { cwd: root, timeout: 10000 });
+  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+    "-c", "commit.gpgsign=false", "-c", `core.hooksPath=${path.join(root, ".git", "hooks")}`,
+    "commit", "--quiet", "-m", "fixture"], { cwd: root, timeout: 10000 });
+  return { root, jdk, sdk, image, imageDir, javaPath, adbPath, executable };
+}
+
+async function ownedBuildRun(identity, name) {
+  const directory = path.join(identity.root, ".data", name), runId = randomUUID();
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, "owner.json"), JSON.stringify({
+    version: 1, root: identity.root, runId, pid: process.pid,
+  }));
+  return { ...identity, directory, runId };
+}
+
+test("hosted native preparation reclaims only its completed run cache and preserves APK/source evidence", async (t) => {
+  assert.equal(process.env.GITHUB_ACTIONS, "true");
+  assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted");
+  const fixture = await nativeBuildFixture(t);
+  const identity = await ownedBuildRun(fixture, "native success"), report = {};
+  const artifacts = await prepareAndroidRuntime(identity, report);
+  const invocation = JSON.parse(await readFile(path.join(fixture.root, "android", "invocation.json"), "utf8"));
+  assert.equal(invocation.cache, path.join(identity.directory, "gradle-cache"));
+  assert.deepEqual(invocation.args.slice(-3), [":app:assembleDebug", ":app:testDebugUnitTest", ":app:assembleDebugAndroidTest"]);
+  await assert.rejects(readFile(path.join(invocation.cache, "build-only")), { code: "ENOENT" });
+  assert.equal(await readFile(path.join(fixture.root, ".tools", "gradle-cache", "preserved"), "utf8"), "shared cache");
+  assert.equal(await readFile(artifacts.apk, "utf8"), "synthetic-app");
+  assert.equal(await readFile(artifacts.testApk, "utf8"), "synthetic-tests");
+  assert.equal(report.apkSha256, createHash("sha256").update("synthetic-app").digest("hex"));
+  assert.equal(report.testApkSha256, createHash("sha256").update("synthetic-tests").digest("hex"));
+  assert.match(report.source.head, /^[a-f0-9]{40}$/);
+  assert.match(report.source.fingerprint, /^[a-f0-9]{64}$/);
+
+  for (const mode of ["fail", "cancel"]) {
+    const failed = await ownedBuildRun(fixture, `native-${mode}`);
+    await writeFile(path.join(fixture.root, "mode.txt"), mode);
+    const cancellation = new AbortController();
+    const running = prepareAndroidRuntime(failed, {}, cancellation.signal).then(
+      () => ({ passed: true }), (error) => ({ error }));
+    let outcome;
+    try {
+      if (mode === "cancel") {
+        await readWhenReady(path.join(failed.directory, "gradle-cache", "build-only"));
+        cancellation.abort();
+      }
+      outcome = await running;
+    } finally {
+      cancellation.abort();
+      await running;
+    }
+    assert.ok(outcome.error, "A failed or cancelled build cannot be accepted.");
+    assert.equal(outcome.error.processTreeStopped, true);
+    await cleanDeviceRun(fixture.root, failed.directory, failed.runId);
+    await assert.rejects(readFile(path.join(failed.directory, "gradle-cache", "build-only")), { code: "ENOENT" });
+    assert.equal(await readFile(path.join(fixture.root, ".tools", "gradle-cache", "preserved"), "utf8"), "shared cache");
+  }
+});
+
+test("unconfirmed preparation cleanup holds owned data and the Linux lease record", async (t) => {
+  for (const nextReady of [true, false, "missing-owner"]) {
+    const fixture = await nativeBuildFixture(t), owner = randomUUID();
+    const directory = path.join(fixture.root, ".data", "unconfirmed");
+    let attempts = 0;
+    await assert.rejects(withAndroidEmulator({
+      repo: fixture.root, directory, owner, sdk: fixture.sdk, emulatorSdk: fixture.sdk, image: fixture.image, jdk: fixture.jdk,
+      prepare: async () => {
+        await mkdir(path.join(directory, "gradle-cache"));
+        await writeFile(path.join(directory, "gradle-cache", "preserved"), "unconfirmed command data");
+        if (nextReady === "missing-owner") {
+          await rm(path.join(directory, "owner.json"));
+          throw new Error("Synthetic owner record lost during preparation.");
+        }
+        await waitForAndroid(async () => {
+          if (++attempts === 1) throw Object.assign(new Error("Synthetic missing cleanup receipt."), { processTreeStopped: false });
+          return nextReady;
+        }, "Synthetic boot", nextReady ? 2000 : 50);
+        assert.fail("Unconfirmed cleanup must not be retried into readiness.");
+      },
+    }, () => assert.fail("A failed preparation must not start native acceptance.")),
+    (error) => error.cleanup === "failed" && error.cleanupErrors.some((message) => /cleanup.*unconfirmed|command.*cleanup/i.test(message)));
+    assert.equal(attempts, nextReady === "missing-owner" ? 0 : 1);
+    assert.equal(await readFile(path.join(directory, "gradle-cache", "preserved"), "utf8"), "unconfirmed command data");
+    const lease = JSON.parse(await readFile(path.join(fixture.root, ".data", "linux-emulator.lock"), "utf8"));
+    assert.equal(lease.runId, owner);
+  }
 });
 
 async function nativeCommand(t, file, args, options = {}) {

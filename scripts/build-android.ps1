@@ -1,4 +1,4 @@
-param([string]$Jdk, [string]$Sdk, [switch]$Lint, [switch]$Instrumentation)
+param([string]$Jdk, [string]$Sdk, [switch]$Lint, [switch]$Instrumentation, [string]$GradleUserHome)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $Jdk) { $Jdk = [IO.Path]::Combine($root, '.tools', 'jdk-21') }
@@ -14,6 +14,11 @@ if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($Sdk, 'platforms', 'android
 }
 $Jdk = (Resolve-Path -LiteralPath $Jdk).ProviderPath
 $Sdk = (Resolve-Path -LiteralPath $Sdk).ProviderPath
+$GradleUserHome = if ($GradleUserHome) {
+    $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($GradleUserHome)
+} else {
+    [IO.Path]::Combine($root, '.tools', 'gradle-cache')
+}
 $previousEnvironment = @{}
 foreach ($name in @('JAVA_HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT', 'GRADLE_USER_HOME')) {
     $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
@@ -23,7 +28,7 @@ try {
     $env:JAVA_HOME = $Jdk
     $env:ANDROID_HOME = $Sdk
     $env:ANDROID_SDK_ROOT = $Sdk
-    $env:GRADLE_USER_HOME = [IO.Path]::Combine($root, '.tools', 'gradle-cache')
+    $env:GRADLE_USER_HOME = $GradleUserHome
     $tasks = @(':app:assembleDebug', ':app:testDebugUnitTest')
     if ($Lint) { $tasks += ':app:lintDebug' }
     if ($Instrumentation) { $tasks += ':app:assembleDebugAndroidTest' }

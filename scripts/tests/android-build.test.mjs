@@ -66,10 +66,26 @@ test("the build entrypoint applies explicit JDK and SDK despite conflicting inhe
   assert.equal(failure, undefined, failure?.stderr);
 });
 
+test("an explicit run-owned Gradle cache reaches the build without changing SDK selection", async (t) => {
+  const fixture = await buildFixture(t);
+  const cache = path.join(fixture.root, ".data", "owned", "gradle-cache");
+  await exec("pwsh", ["-NoProfile", "-NonInteractive", "-File",
+    path.join(fixture.root, "scripts", "build-android.ps1"), "-Jdk", fixture.jdk, "-Sdk", fixture.sdk,
+    "-GradleUserHome", cache, "-Instrumentation"], { cwd: fixture.root, env: fixture.env, timeout: 20_000 });
+  const invocation = JSON.parse(await readFile(path.join(fixture.root, "android", "invocation.json"), "utf8"));
+  assert.equal(invocation.cache, cache);
+  assert.equal(invocation.java, fixture.jdk);
+  assert.equal(invocation.sdk, fixture.sdk);
+  assert.equal(invocation.sdkRoot, fixture.sdk);
+  assert.deepEqual(invocation.args, [
+    "--no-daemon", "--console=plain", ":app:assembleDebug", ":app:testDebugUnitTest", ":app:assembleDebugAndroidTest",
+  ]);
+});
+
 test("success and Gradle failure restore the caller's environment and working directory", async (t) => {
   for (const populated of [false, true]) {
-    for (const exitCode of [0, 37]) {
-      await t.test(`inherited=${populated}, exit=${exitCode}`, async (t) => {
+    for (const [exitCode, ownedCache] of [[0, false], [0, true], [37, false], [37, true]]) {
+      await t.test(`inherited=${populated}, exit=${exitCode}, ownedCache=${ownedCache}`, async (t) => {
         const fixture = await buildFixture(t);
         const env = { ...fixture.env, FIXTURE_ROOT: fixture.root, FIXTURE_GRADLE_EXIT: String(exitCode) };
         if (!populated) {
@@ -81,7 +97,7 @@ test("success and Gradle failure restore the caller's environment and working di
           "$before = @{}; foreach ($name in $names) { $before[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }",
           "$location = (Get-Location).Path; $failed = $false",
           "try {",
-          "  & (Join-Path $env:FIXTURE_ROOT 'scripts\\build-android.ps1') -Jdk 'selected jdk' -Sdk 'selected sdk'",
+          `  & (Join-Path $env:FIXTURE_ROOT 'scripts\\build-android.ps1') -Jdk 'selected jdk' -Sdk 'selected sdk'${ownedCache ? " -GradleUserHome '.data\\owned-cache'" : ""}`,
           "} catch { $failed = $true }",
           "$after = @{}; foreach ($name in $names) { $after[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }",
           "@{before=$before;after=$after;locationBefore=$location;locationAfter=(Get-Location).Path;failed=$failed} |",
@@ -97,6 +113,8 @@ test("success and Gradle failure restore the caller's environment and working di
         assert.equal(invocation.java, fixture.jdk);
         assert.equal(invocation.sdk, fixture.sdk);
         assert.equal(invocation.sdkRoot, fixture.sdk);
+        assert.equal(invocation.cache, ownedCache
+          ? path.join(fixture.root, ".data", "owned-cache") : path.join(fixture.root, ".tools", "gradle-cache"));
         assert.deepEqual(invocation.args, [
           "--no-daemon", "--console=plain", ":app:assembleDebug", ":app:testDebugUnitTest",
         ]);

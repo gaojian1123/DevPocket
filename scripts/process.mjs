@@ -97,7 +97,7 @@ export function runCommand(file, args, {
         const error = failure ?? new Error(`${file} exited with ${code}.`);
         Object.assign(error, { code: failure ? failure.code : code, stdout, stderr, processTreeStopped });
         reject(error);
-      } else resolve({ stdout, stderr });
+      } else resolve({ stdout, stderr, processTreeStopped });
     });
   });
 }

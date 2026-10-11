@@ -8,6 +8,12 @@ import { runCommand } from "../process.mjs";
 
 const exec = promisify(execFile);
 
+test("successful owned commands expose the cleanup receipt before callers reclaim scratch data", async () => {
+  const result = await runCommand(process.execPath, ["-e", "process.stdout.write('completed')"], { timeoutMs: 5000 });
+  assert.equal(result.stdout, "completed");
+  assert.equal(result.processTreeStopped, true);
+});
+
 test("an exited launcher cannot strand a descendant or keep a bounded command unresolved", async (t) => {
   await mkdir(".data/tests", { recursive: true });
   const directory = await mkdtemp(path.resolve(".data/tests/process-owner-"));
