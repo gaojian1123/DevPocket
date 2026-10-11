@@ -30,7 +30,7 @@ try {
     if ($IsWindows) {
         & .\gradlew.bat --no-daemon --console=plain @tasks
     } else {
-        $wrapper = [IO.Path]::Combine(@($root, 'android', 'gradle', 'wrapper', 'gradle-wrapper.jar'))
+        $wrapper = [IO.Path]::Combine([string[]]@($root, 'android', 'gradle', 'wrapper', 'gradle-wrapper.jar'))
         & ([IO.Path]::Combine($Jdk, 'bin', 'java')) '-Dorg.gradle.appname=gradlew' '-classpath' $wrapper `
             'org.gradle.wrapper.GradleWrapperMain' --no-daemon --console=plain @tasks
     }

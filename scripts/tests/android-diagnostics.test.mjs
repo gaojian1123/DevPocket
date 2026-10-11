@@ -179,6 +179,8 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.doesNotMatch(workflow, /^\s+(?:merge-multiple|include-hidden-files|overwrite|archive|digest-mismatch):/m);
   assert.equal([...workflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 5);
 
+  const backend = workflow.split("\n  backend:")[1].split("\n  android:")[0];
+  assert.match(backend, /\$env:DEVPOCKET_PROBE_PYTHON = \(Get-Command python -CommandType Application -ErrorAction Stop\)\.Source\n\s+node scripts\\verify\.mjs/);
   const android = workflow.split("\n  android:")[1].split("\n  device:")[0];
   assert.match(android, /--jdk \$env:JAVA_HOME --sdk \.tools\\android-sdk --report \.data\\ci\\android\\report\.json/);
   const device = workflow.split("\n  device:")[1].split("\n  gate:")[0];
