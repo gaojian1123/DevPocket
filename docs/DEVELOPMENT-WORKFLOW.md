@@ -275,6 +275,19 @@ Existing license records must suffice, and required files are checked afterward
 because a refused package may be skipped. Missing licenses, SDK tools or
 acceleration fail the job rather than silently falling back.
 
+A hosted-only loader preflight runs `emulator -version` with bounded private
+output. It installs nothing when the probe works. Only an observed exit 127
+naming `libpulse.so.0` permits installation of
+[Ubuntu Noble's `libpulse0`](https://packages.ubuntu.com/noble/amd64/libpulse0/filelist)
+from the VM's already configured signed APT repositories, followed by one new
+probe. No new repository, key or speculative package list is used. Other loader
+failures emit only a bounded library identifier/category and remain blocked.
+This optional VM-local dependency preparation never runs on the Windows host.
+The installer elevates the reviewed command supervisor with non-interactive
+`sudo`, not merely its APT child, so it can stop and reap privileged descendants.
+Real Linux timeout/cancellation regressions cover both privilege modes before
+the job reaches dependency installation.
+
 The same `android-runner.mjs` builds and runs the shared discovered test classes,
 layout matrix and real App/relay/bridge fixture. The Linux build uses the selected
 `bin/java` and the checked-in wrapper JAR directly through `build-android.ps1`;
@@ -285,7 +298,7 @@ Successful Linux evidence includes `platform: linux` and
 `acceleration: { provider: KVM, usable: true }`, which the combiner validates.
 Windows evidence and its existing command entry points remain supported.
 
-Linux commands use an unprivileged Python standard-library supervisor. It
+Ordinary Linux commands use an unprivileged Python standard-library supervisor. It
 confirms `PR_SET_CHILD_SUBREAPER` before spawning, holds a pidfd for the owner,
 and kills/reaps only validated descendant pidfds, including orphaned detached
 children. Dead owners, cancellation and timeouts trigger bounded cleanup.
@@ -444,6 +457,10 @@ PRs or explicit dispatch. It no longer depends on `DEVPOCKET_ANDROID_RUNNER_ENAB
 self-hosted labels or the `devpocket-android-ci` environment. Fork PRs do not
 gain device execution through an unsafe checkout. Missing or failed device
 evidence still blocks **Required verification**, never counts as skipped success.
+
+The backend job binds `DEVPOCKET_PROBE_PYTHON` to the first Python application
+selected on PATH. Command discovery may return multiple installations; the
+probe requires one executable path, not a concatenated list or PATH alone.
 
 All jobs retain `contents: read`, full-history checkout with
 `persist-credentials: false`, and pre-checkout `core.autocrlf=false`. Source

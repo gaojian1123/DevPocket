@@ -180,7 +180,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.equal([...workflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 5);
 
   const backend = workflow.split("\n  backend:")[1].split("\n  android:")[0];
-  assert.match(backend, /\$env:DEVPOCKET_PROBE_PYTHON = \(Get-Command python -CommandType Application -ErrorAction Stop\)\.Source\n\s+node scripts\\verify\.mjs/);
+  assert.match(backend, /\$env:DEVPOCKET_PROBE_PYTHON = \(Get-Command python -CommandType Application -ErrorAction Stop \| Select-Object -First 1\)\.Source\n\s+node scripts\\verify\.mjs/);
   const android = workflow.split("\n  android:")[1].split("\n  device:")[0];
   assert.match(android, /--jdk \$env:JAVA_HOME --sdk \.tools\\android-sdk --report \.data\\ci\\android\\report\.json/);
   const device = workflow.split("\n  device:")[1].split("\n  gate:")[0];
@@ -195,7 +195,8 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.doesNotMatch(device, /yes\s*\||--licenses|chmod\s+666/);
   assert.match(device, /scripts\/verify\.ps1 -Base \$env:BASE_SHA -Group device -Jdk \$env:JAVA_HOME -Sdk \$env:ANDROID_HOME/);
   assert.match(device, /-Image system-images\/android-35\/google_apis\/x86_64 -Report \.data\/ci\/device\/report\.json/);
-  assert.match(device, /node --test scripts\/tests\/linux-emulator\.test\.mjs scripts\/tests\/linux-process\.test\.mjs/);
+  assert.match(device, /node scripts\/linux-runtime\.mjs\n\s+exit \$LASTEXITCODE/);
+  assert.match(device, /node --test scripts\/tests\/linux-emulator\.test\.mjs scripts\/tests\/linux-process\.test\.mjs scripts\/tests\/linux-runtime\.test\.mjs/);
   assert.deepEqual([...device.matchAll(/^\s+((?:\.data|android)\/[^\r\n]+)$/gm)].map((match) => match[1]), [
     "android/app/build/outputs/apk/debug/app-debug.apk",
     "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
@@ -208,4 +209,21 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.ok(gate.includes("'--base', $env:BASE_SHA, '--combine'"));
   assert.ok(gate.includes("Get-ChildItem -LiteralPath .data\\ci\\inputs -Filter report.json -File -Recurse"));
   assert.match(gate, /node @arguments\n\s+if \(\$LASTEXITCODE -ne 0\) \{ throw /);
+});
+
+test("CI binds exactly the first Python executable when command discovery returns multiple matches", async (t) => {
+  const item = await fixture(t);
+  const directories = [path.join(item.root, "first Python"), path.join(item.root, "second Python")];
+  const executable = process.platform === "win32" ? "python.exe" : "python";
+  for (const directory of directories) {
+    await mkdir(directory);
+    await writeFile(path.join(directory, executable), "", { mode: 0o700 });
+  }
+  const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
+  const selector = workflow.split("\n").find((line) => line.trim().startsWith("$env:DEVPOCKET_PROBE_PYTHON ="));
+  assert.ok(selector);
+  const result = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
+    `${selector.trim()}\n$env:DEVPOCKET_PROBE_PYTHON | ConvertTo-Json -Compress`],
+  { env: { ...process.env, PATH: [...directories, process.env.PATH].join(path.delimiter) }, timeout: 20000 });
+  assert.equal(JSON.parse(result.stdout), path.join(directories[0], executable));
 });

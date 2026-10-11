@@ -4,15 +4,24 @@ import { fileURLToPath } from "node:url";
 
 const exec = promisify(execFile);
 
-export function spawnOwnedCommand(file, args, {
-  cwd, env = process.env, timeoutMs = 30_000, graceMs = 5000, persistent = false,
-} = {}) {
-  if (!["win32", "linux"].includes(process.platform)) throw new Error("Owned command execution requires Windows or Linux.");
-  const linux = process.platform === "linux";
+export function ownedCommandLaunch(platform = process.platform, privileged = false, env = process.env) {
+  if (!["win32", "linux"].includes(platform)) throw new Error("Owned command execution requires Windows or Linux.");
+  if (privileged && (platform !== "linux" || env.GITHUB_ACTIONS !== "true" ||
+      env.RUNNER_ENVIRONMENT !== "github-hosted")) {
+    throw new Error("Privileged command ownership requires the configured hosted Linux job.");
+  }
+  const linux = platform === "linux";
   const launcher = fileURLToPath(new URL(linux ? "./owned-command-linux.py" : "./owned-command.ps1", import.meta.url));
-  const child = spawn(linux ? "python3" : "pwsh",
-    linux ? ["-u", launcher] : ["-NoProfile", "-NonInteractive", "-File", launcher],
-    { cwd, env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+  if (privileged) return { file: "sudo", args: ["-n", "python3", "-u", launcher] };
+  return linux ? { file: "python3", args: ["-u", launcher] }
+    : { file: "pwsh", args: ["-NoProfile", "-NonInteractive", "-File", launcher] };
+}
+
+export function spawnOwnedCommand(file, args, {
+  cwd, env = process.env, timeoutMs = 30_000, graceMs = 5000, persistent = false, privileged = false,
+} = {}) {
+  const launch = ownedCommandLaunch(process.platform, privileged, env);
+  const child = spawn(launch.file, launch.args, { cwd, env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
   child.stdin.write(JSON.stringify({ file, arguments: args, timeoutMs, graceMs, persistent, ownerPid: process.pid }) + "\n");
   return child;
 }
@@ -42,9 +51,11 @@ export async function stopOwnedProcess(child) {
   }
 }
 
-export function runCommand(file, args, { cwd, env = process.env, timeoutMs = 30_000, graceMs = 5000, signal } = {}) {
+export function runCommand(file, args, {
+  cwd, env = process.env, timeoutMs = 30_000, graceMs = 5000, signal, privileged = false,
+} = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawnOwnedCommand(file, args, { cwd, env, timeoutMs, graceMs });
+    const child = spawnOwnedCommand(file, args, { cwd, env, timeoutMs, graceMs, privileged });
     let stdout = "", stderr = "", failure, stopping = false, hardStop;
     child.stdin.on("error", (error) => { if (error.code !== "EPIPE") failure = error; });
     const stop = (error) => {

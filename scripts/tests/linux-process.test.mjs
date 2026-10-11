@@ -52,8 +52,8 @@ test("the Linux owner reaps detached descendants after an ordinary launcher exit
 });
 
 test("Linux timeout and cancellation terminate and reap only their owned process family", async (t) => {
-  for (const cancelled of [false, true]) {
-    await t.test(cancelled ? "cancellation" : "timeout", async (t) => {
+  for (const [cancelled, privileged] of [[false, false], [true, false], [false, true], [true, true]]) {
+    await t.test(`${privileged ? "privileged " : ""}${cancelled ? "cancellation" : "timeout"}`, async (t) => {
       const directory = await fixture(t), marker = path.join(directory, "child.pid");
       const program = [
         "const {spawn}=require('node:child_process');const fs=require('node:fs');",
@@ -62,7 +62,7 @@ test("Linux timeout and cancellation terminate and reap only their owned process
       ].join("\n");
       const cancellation = new AbortController();
       const running = runCommand(process.execPath, ["-e", program],
-        { timeoutMs: cancelled ? 5000 : 1000, graceMs: 250, signal: cancellation.signal })
+        { timeoutMs: cancelled ? 5000 : 1000, graceMs: 250, signal: cancellation.signal, privileged })
         .then(() => ({ passed: true }), (error) => ({ error }));
       const pid = Number(await readWhenReady(marker));
       if (cancelled) cancellation.abort();
