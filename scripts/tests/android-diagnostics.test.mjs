@@ -167,7 +167,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   for (const action of actions) counts[action] = (counts[action] ?? 0) + 1;
   assert.deepEqual(counts, {
     "actions/checkout@v7": 5, "actions/setup-node@v7": 5, "actions/setup-python@v7": 1,
-    "actions/upload-artifact@v7": 5, "actions/setup-java@v6": 2, "actions/download-artifact@v8": 1,
+    "actions/upload-artifact@v7": 6, "actions/setup-java@v6": 2, "actions/download-artifact@v8": 1,
   });
   assert.equal([...normalWorkflow.matchAll(
     /- uses: actions\/checkout@v7\n\s+with:\n\s+fetch-depth: 0\n\s+persist-credentials: false/g,
@@ -180,7 +180,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(workflow, /^permissions:\n  contents: read\n/m);
   assert.doesNotMatch(workflow, /continue-on-error:|FORCE_JAVASCRIPT_ACTIONS_TO_NODE20|ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION/);
   assert.doesNotMatch(workflow, /^\s+(?:merge-multiple|include-hidden-files|overwrite|archive|digest-mismatch):/m);
-  assert.equal([...normalWorkflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 5);
+  assert.equal([...normalWorkflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 6);
 
   const backend = workflow.split("\n  backend:")[1].split("\n  android:")[0];
   assert.match(backend, /\$env:DEVPOCKET_PROBE_PYTHON = \(Get-Command python -CommandType Application -ErrorAction Stop \| Select-Object -First 1\)\.Source\n\s+node scripts\\verify\.mjs/);

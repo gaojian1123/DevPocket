@@ -16,6 +16,7 @@ const { values } = parseArgs({ options: {
   image: { type: "string" },
   combine: { type: "boolean", default: false },
   input: { type: "string", multiple: true, default: [] },
+  "backend-diagnostics": { type: "boolean", default: false },
 } });
 const root = path.resolve(values.repo);
 const reportPath = path.resolve(root, values.report ?? path.join(".data", "verification", randomUUID(), "report.json"));
@@ -47,7 +48,8 @@ try {
       report = combineVerification(plan, reports);
     } else {
       report = values.plan ? { ...plan, status: "planned", complete: false, checks: [] }
-        : await executeVerification(root, plan, { ...values, directory: path.dirname(reportPath), signal: cancellation.signal });
+        : await executeVerification(root, plan, { ...values, backendDiagnostics: values["backend-diagnostics"],
+          directory: path.dirname(reportPath), signal: cancellation.signal });
     }
     if (["failed", "blocked"].includes(report.status)) process.exitCode = 1;
   } catch (error) {

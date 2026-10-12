@@ -30,12 +30,12 @@ async function repository(t) {
   return root;
 }
 
-async function verify(root, args) {
+async function verify(root, args, env) {
   const report = path.join(root, ".data", "verification", `${randomUUID()}.json`);
   let exitCode = 0;
   try {
     await exec(process.execPath, [entry, "--repo", root, "--base", "HEAD", "--report", report, ...args],
-      { timeout: 60_000 });
+      { timeout: 60_000, env: typeof env === "function" ? env(report) : env });
   } catch (error) {
     exitCode = error.code;
   }
@@ -85,6 +85,93 @@ test("a failed command exits unsuccessfully and leaves later required checks not
   assert.equal(result.report.checks.find((check) => check.id === "typecheck").status, "failed");
   assert.equal(result.report.checks.find((check) => check.id === "typecheck").exitCode, 23);
   assert.equal(result.report.checks.find((check) => check.id === "backend-tests").status, "not_run");
+});
+
+test("backend diagnostics observe the normal ordered controller entry without accepting a failing suite", async (t) => {
+  const root = await repository(t);
+  const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  manifest.type = "module";
+  manifest.scripts.typecheck = "node -e \"process.exit(0)\"";
+  manifest.scripts.test = "node --import tsx --test backend/tests/*.test.ts";
+  await writeFile(path.join(root, "package.json"), JSON.stringify(manifest));
+  await mkdir(path.join(root, "scripts"));
+  await writeFile(path.join(root, "scripts", "backend-diagnostics.mjs"), await readFile("scripts/backend-diagnostics.mjs"));
+  await mkdir(path.join(root, "backend", "tests"), { recursive: true });
+  await writeFile(path.join(root, "backend", "tests", "fixture.test.ts"), [
+    'import {test} from "node:test";import assert from "node:assert/strict";',
+    'test("trusted controller failure",()=>{console.log("synthetic-private-sdk-event");assert.equal(1,2);});',
+  ].join("\n"));
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const result = await verify(root, ["--group", "backend", "--backend-diagnostics"], env);
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.report.checks.find((check) => check.id === "workflow-tests").status, "passed");
+  assert.equal(result.report.checks.find((check) => check.id === "typecheck").status, "passed");
+  const backend = result.report.checks.find((check) => check.id === "backend-tests");
+  assert.equal(backend.status, "failed");
+  assert.equal(backend.exitCode, 1);
+  assert.match(backend.backendDiagnosticRunId, /^[a-f0-9-]{36}$/);
+  assert.equal(backend.backendDiagnosticLogTruncated, false);
+  assert.equal(result.report.checks.find((check) => check.id === "backend-build").status, "not_run");
+  assert.equal(result.report.complete, false);
+  const log = await readFile(path.join(root, backend.log), "utf8");
+  assert.match(log, /DEVPOCKET_BACKEND_DIAGNOSTIC /);
+  assert.ok(!log.includes("synthetic-private-sdk-event"));
+  const { combineVerification } = await import("../verification.mjs");
+  assert.throws(() => combineVerification(result.report, [result.report]), /failed, blocked/);
+});
+
+test("diagnostic preflight rejects raw reporter configuration before workflow-test predecessors can write artifacts", async (t) => {
+  const root = await repository(t);
+  const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  manifest.type = "module";
+  manifest.scripts["test:workflow"] = "node --test workflow-canary.test.mjs";
+  await writeFile(path.join(root, "package.json"), JSON.stringify(manifest));
+  await writeFile(path.join(root, "workflow-canary.test.mjs"), [
+    'import {test} from "node:test";import assert from "node:assert/strict";import {writeFileSync} from "node:fs";',
+    'test("synthetic raw predecessor",()=>{writeFileSync("predecessor-ran","yes");',
+    'assert.fail("PRIVATE_PREDECESSOR_CANARY".repeat(1024));});',
+  ].join("\n"));
+  const caller = { ...process.env };
+  delete caller.NODE_TEST_CONTEXT;
+  const result = await verify(root, ["--group", "backend", "--backend-diagnostics"], (report) => ({
+    ...caller,
+    NODE_OPTIONS: `--title='x --test_reporter=spec --test_reporter_destination=${report} --title=y'`,
+  }));
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.report.status, "blocked");
+  assert.equal(result.report.complete, false);
+  assert.ok(!JSON.stringify(result.report).includes("PRIVATE_PREDECESSOR_CANARY"));
+  await assert.rejects(readFile(path.join(root, "predecessor-ran")), { code: "ENOENT" });
+});
+
+test("npm interpolation cannot introduce a raw reporter after diagnostic preflight", async (t) => {
+  const root = await repository(t);
+  const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  manifest.type = "module";
+  manifest.scripts.typecheck = "node -e \"process.exit(0)\"";
+  manifest.scripts.test = "node --import tsx --test backend/tests/*.test.ts";
+  await writeFile(path.join(root, "package.json"), JSON.stringify(manifest));
+  await mkdir(path.join(root, "scripts"));
+  await writeFile(path.join(root, "scripts", "backend-diagnostics.mjs"), await readFile("scripts/backend-diagnostics.mjs"));
+  await mkdir(path.join(root, "backend", "tests"), { recursive: true });
+  await writeFile(path.join(root, "backend", "tests", "fixture.test.ts"), [
+    'import {test} from "node:test";import assert from "node:assert/strict";import {writeFileSync} from "node:fs";',
+    'test("synthetic interpolation",()=>{writeFileSync("backend-ran","yes");',
+    'assert.fail("PRIVATE_INTERPOLATION_CANARY".repeat(1024));});',
+  ].join("\n"));
+  const caller = { ...process.env };
+  delete caller.NODE_TEST_CONTEXT;
+  for (const key of Object.keys(caller)) if (key.toLowerCase().replaceAll("-", "_") === "npm_config_node_options") delete caller[key];
+  const result = await verify(root, ["--group", "backend", "--backend-diagnostics"], (report) => ({
+    ...caller, NODE_OPTIONS: "--title=${DP_BG_OPTIONS}",
+    DP_BG_OPTIONS: `x --test-reporter=spec --test-reporter-destination=${report}`,
+  }));
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.report.status, "blocked");
+  assert.match(result.report.error, /interpolation/);
+  assert.ok(!JSON.stringify(result.report).includes("PRIVATE_INTERPOLATION_CANARY"));
+  await assert.rejects(readFile(path.join(root, "backend-ran")), { code: "ENOENT" });
 });
 
 test("combining reports refuses absent device evidence and stale source fingerprints", async (t) => {

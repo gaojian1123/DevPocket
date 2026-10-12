@@ -124,6 +124,67 @@ allowlisted machine reports and explicitly selected candidate artifacts.
 Report destinations must be new files beneath `.data\verification` or `.data\ci`;
 existing reports and sealed/operational evidence cannot be overwritten.
 
+### Backend failure diagnostics
+
+CI retains the normal owned PowerShell `npm test` invocation, test discovery,
+default concurrency and predecessor checks. `--backend-diagnostics` (or
+`-BackendDiagnostics` through PowerShell) adds a check-scoped Node test reporter
+through npm's lifecycle `node-options`; it does not replace the command with a
+selected-test proxy. Before any predecessor runs, diagnostic preflight checks
+inherited Node/npm options and reads effective project/user npm `node-options`
+with a bounded owned `npm config get node-options` command. Conflicting
+reporter settings are refused before they can affect workflow-test predecessors.
+For the backend check only, the effective benign options are retained and the
+reporter is appended through npm's own configuration channel, so npm cannot
+silently replace the protected child configuration. The npm parent's original
+Node options remain unchanged. Other caller flags remain, and conflicting reporter options, including
+Node's underscore aliases, are refused. Source maps are explicitly enabled;
+caller options that disable them are refused rather than silently overridden.
+Option tokenization follows Node's `NODE_OPTIONS` grammar: double quotes group
+values, spaces separate unquoted arguments, and apostrophes remain literal.
+Interpolation-bearing option strings (`${...}`, including escaped forms) are
+unsupported and explicitly block diagnostic preflight. They are not expanded,
+discarded or copied into a channel where npm could reinterpret validated tokens.
+Instrumentation can affect timing; a non-reproducing diagnostic run is not a fix.
+
+The reporter builds a catalogue from current `backend/tests/*.test.ts` source
+declarations using the existing TypeScript dependency. Source-mapped runner
+coordinates must exactly match a catalogue declaration before its repository
+file and original line/column can be emitted. Names are never used for lookup,
+so a dynamic name cannot borrow a static test's identity. Runtime names, dynamic
+labels and unmatched transformed `tsx` locations are never exported. Missing
+matches retain a known file where available and an unknown declaration.
+A catalogue digest and per-check invocation ID prevent stale
+observation from being relabelled against a different source or invocation.
+
+Only fixed runner failure types, allowlisted error categories and bounded counts
+are retained. Messages, assertion operands, stacks, SDK events, stdout/stderr
+events, argv, environment values, absolute paths, URLs and credentials are omitted.
+The catalogue is limited to 64 files, 512 KiB per file, 4 MiB total source and
+2048 declarations; observation retains at most 10000 events and 32 findings.
+Observation still drains the runner after reaching its budget and marks itself
+incomplete. The private backend log retains at most 1 MiB of beginning/end data.
+Neither complete diagnostic collection nor exporter success means tests passed.
+
+The exporter revalidates identities/categories, reads only the selected
+`report.json` (at most 512 KiB) and `backend-tests.log` (at most 1 MiB), and emits
+at most 16 KiB. Linked inputs/directories and existing output files are refused.
+Missing, mismatched, ambiguous or unsupported evidence remains explicit.
+The original `verification-backend` artifact still contains only `report.json`.
+A separate `backend-test-diagnostics` artifact contains `backend-diagnostics.json`
+only when the current exporter succeeds. Refused/pre-existing output is never
+published by that step; raw logs and the rest of `.data` are not published.
+The original failed check,
+unexecuted later checks and source-bound aggregate remain authoritative.
+
+For a reviewed investigation, manual `backend_diagnostic: true` reuses the
+normal Windows backend job and toolchain/setup/entry chain, without starting
+unrelated Android/device jobs. It cannot be combined with startup diagnostics.
+**Required verification deliberately fails in this mode**, even if all backend
+checks pass. Normal PR/full manual mode still requires current native/source/APK
+evidence and every other selected check. Record the new question before each run;
+do not repeat an unchanged run merely to obtain green.
+
 ### Android failure diagnostics
 
 The Android CI job runs `scripts\android-diagnostics.mjs` after a failure and

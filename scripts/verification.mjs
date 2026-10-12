@@ -121,6 +121,12 @@ export async function executeVerification(root, plan, options = {}) {
   const group = options.group ?? "all";
   if (!["all", "backend", "android", "device"].includes(group)) throw new Error("Unknown verification group.");
   const checks = plan.requiredChecks.map((id) => ({ id, status: "not_run" }));
+  const backendDiagnostics = options.backendDiagnostics ? await import("./backend-diagnostics.mjs") : undefined;
+  const backendDiagnosticRunId = backendDiagnostics && ["all", "backend"].includes(group) &&
+    plan.requiredChecks.includes("backend-tests") ? randomUUID() : undefined;
+  const backendDiagnosticEnv = backendDiagnosticRunId
+    ? await backendDiagnostics.prepareBackendDiagnosticEnvironment(root, backendDiagnosticRunId, process.env, options.signal)
+    : undefined;
   await mkdir(options.directory, { recursive: true });
   let stopped = false;
   for (const check of checks) {
@@ -145,11 +151,23 @@ export async function executeVerification(root, plan, options = {}) {
     const started = Date.now();
     const log = path.join(options.directory, `${check.id}.log`);
     const logFile = await open(log, "wx", 0o600);
+    const writeLog = async (text) => {
+      if (check.id === "backend-tests" && backendDiagnostics) {
+        const bounded = backendDiagnostics.boundedBackendLog(text);
+        check.backendDiagnosticLogTruncated = bounded.truncated;
+        await logFile.writeFile(bounded.bytes);
+      } else await logFile.writeFile(text);
+    };
     try {
+      let env;
+      if (check.id === "backend-tests" && backendDiagnostics) {
+        check.backendDiagnosticRunId = backendDiagnosticRunId;
+        env = backendDiagnosticEnv;
+      }
       const output = await runCommand("pwsh", args, {
-        cwd: root, timeoutMs: 30 * 60_000, graceMs: check.id === "android-device" ? 30_000 : 5000, signal: options.signal,
+        cwd: root, env, timeoutMs: 30 * 60_000, graceMs: check.id === "android-device" ? 30_000 : 5000, signal: options.signal,
       });
-      await logFile.writeFile(output.stdout + output.stderr);
+      await writeLog(output.stdout + output.stderr);
       if (check.id === "android-device") {
         const evidence = JSON.parse(await readFile(path.join(options.directory, "device", "device-report.json"), "utf8"));
         validateDeviceEvidence(evidence, plan, process.platform);
@@ -166,7 +184,7 @@ export async function executeVerification(root, plan, options = {}) {
       }
       Object.assign(check, { status: "passed", exitCode: 0 });
     } catch (error) {
-      await logFile.writeFile(`${error.stdout ?? ""}${error.stderr ?? ""}\n${error.message}\n`);
+      await writeLog(`${error.stdout ?? ""}${error.stderr ?? ""}\n${error.message}\n`);
       Object.assign(check, {
         status: check.id === "android-build" && error.code === 78 ? "blocked" : typeof error.code === "number" ? "failed" : "blocked",
         exitCode: typeof error.code === "number" ? error.code : null,
