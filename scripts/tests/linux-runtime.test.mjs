@@ -80,3 +80,23 @@ test("failed loader projection omits raw diagnostics and credential-shaped ident
     return true;
   });
 });
+
+test("runtime dependency update and install failures retain their exact bounded stage and exit", async () => {
+  for (const failingCall of [2, 3]) {
+    let calls = 0;
+    await assert.rejects(ensureHostedEmulatorRuntime({ ...options, run: async () => {
+      calls++;
+      if (calls === 1) throw Object.assign(new Error("private probe"), {
+        code: 127, stderr: "error while loading shared libraries: libpulse.so.0: missing",
+      });
+      if (calls === failingCall) throw Object.assign(new Error("PRIVATE_INSTALL_FAILURE"), { code: 42 });
+      return { stdout: "", stderr: "" };
+    } }), (error) => {
+      assert.equal(error.reason, failingCall === 2 ? "runtime-dependency-index-failed" : "runtime-dependency-install-failed");
+      assert.equal(error.exitCode, 42);
+      assert.ok(!JSON.stringify(error.failure).includes("PRIVATE_INSTALL_FAILURE"));
+      return true;
+    });
+    assert.equal(calls, failingCall);
+  }
+});

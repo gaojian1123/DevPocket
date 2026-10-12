@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { boundedDiagnosticBytes } from "./bounded-worker-log.mjs";
 
 const eventLimit = 10000;
 const findingLimit = 32;
@@ -10,6 +11,10 @@ const outputLimit = 16384;
 const privateLogLimit = 1024 * 1024;
 const prefix = "DEVPOCKET_BACKEND_DIAGNOSTIC ";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
+export const LINUX_PLATFORM_TESTS = Object.freeze([
+  "scripts/tests/linux-emulator.test.mjs", "scripts/tests/linux-process.test.mjs", "scripts/tests/linux-runtime.test.mjs",
+  "scripts/tests/worker-diagnostics.test.mjs", "scripts/tests/native-lifecycle.test.mjs", "scripts/tests/bounded-worker-log.test.mjs",
+]);
 const failureTypes = ["testCodeFailure", "subtestsFailed", "testTimeoutFailure", "cancelledByParent",
   "parentAlreadyFinished", "uncaughtException", "unhandledRejection", "hookFailed", "testAborted"];
 const categories = ["assertion", "test-timeout", "cancelled", "subtest-failure", "unhandled-error",
@@ -43,27 +48,31 @@ async function boundedFile(file, limit) {
   } finally { await handle.close(); }
 }
 
-export async function backendTestCatalogue(root) {
+export async function backendTestCatalogue(root, scope = "backend") {
   root = path.resolve(root);
-  for (const directory of [root, path.join(root, "backend"), path.join(root, "backend", "tests")]) {
+  if (!["backend", "linux-platform"].includes(scope)) throw new Error("Unsupported diagnostic test scope.");
+  const base = scope === "backend" ? "backend" : "scripts";
+  for (const directory of [root, path.join(root, base), path.join(root, base, "tests")]) {
     if (!(await lstat(directory)).isDirectory() || !samePath(await realpath(directory), directory)) {
       throw new Error("Linked backend test catalogues are not supported.");
     }
   }
   const ts = await import("typescript");
-  const names = (await readdir(path.join(root, "backend", "tests"))).filter((name) => name.endsWith(".test.ts")).sort();
-  if (!names.length || names.length > 64 || names.some((name) => !/^[a-z][a-z0-9-]{0,63}\.test\.ts$/.test(name))) {
+  const names = scope === "backend"
+    ? (await readdir(path.join(root, "backend", "tests"))).filter((name) => name.endsWith(".test.ts")).sort()
+    : LINUX_PLATFORM_TESTS.map((file) => path.basename(file));
+  if (!names.length || names.length > 64 || names.some((name) => !/^[a-z][a-z0-9-]{0,63}\.test\.(?:ts|mjs)$/.test(name))) {
     throw new Error("Unsupported backend test catalogue.");
   }
   const files = [], identities = [];
   let totalBytes = 0, declarations = 0;
   for (const name of names) {
-    const absolute = path.join(root, "backend", "tests", name), file = `backend/tests/${name}`;
+    const absolute = path.join(root, base, "tests", name), file = `${base}/tests/${name}`;
     const text = await boundedFile(absolute, 512 * 1024);
     identities.push([file, hash(text)]);
     totalBytes += Buffer.byteLength(text);
     if (totalBytes > 4 * 1024 * 1024) throw new Error("Backend test catalogue exceeded its source budget.");
-    const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, name.endsWith(".ts") ? ts.ScriptKind.TS : ts.ScriptKind.JS);
     if (source.parseDiagnostics.length) throw new Error("Backend test declarations could not be parsed.");
     const imports = new Set();
     for (const statement of source.statements) {
@@ -103,7 +112,7 @@ export async function backendTestCatalogue(root) {
     visit(source);
     files.push({ absolute, file, entries });
   }
-  return { root, files, fingerprint: hash(JSON.stringify(identities)) };
+  return { root, files, scope, fingerprint: hash(JSON.stringify(identities)) };
 }
 
 function trustedIdentity(catalogue, file, line, column) {
@@ -163,10 +172,11 @@ export function createBackendObservation(catalogue, runId) {
     },
     snapshot() {
       const result = {
-        version: 1, kind: "backend-test-diagnostics", acceptance: false,
+        version: 1, kind: catalogue.scope === "linux-platform" ? "platform-test-diagnostics" : "backend-test-diagnostics", acceptance: false,
         runId: typeof runId === "string" && /^[a-f0-9-]{36}$/.test(runId) ? runId : "unknown",
         catalogueFingerprint: catalogue.fingerprint ?? "unknown",
         availability: summary && !invalid && !inputTruncated && !outputTruncated ? "complete" : "incomplete",
+        collectionStatus: "completed",
         inputTruncated, outputTruncated,
         summary: summary ?? "unknown", findings: findings.map((item) => ({ ...item })),
       };
@@ -184,7 +194,7 @@ function compatibleNodeOptions(value) {
   if (value === undefined || value === null) return "";
   if (typeof value !== "string" || value.length > 16384) throw new Error("Unsupported backend Node option configuration.");
   if (value.includes("${")) {
-    throw new Error("Backend diagnostics do not support interpolation-bearing Node options.");
+    throw Object.assign(new Error("Backend diagnostics do not support interpolation-bearing Node options."), { diagnosticCode: "options-interpolation" });
   }
   const options = [];
   let token = "", quote;
@@ -220,7 +230,7 @@ export function backendDiagnosticEnvironment(root, runId, env = process.env, npm
   for (const key of configured) compatibleNodeOptions(env[key]);
   const effective = compatibleNodeOptions(npmNodeOptions ?? env[configured[0]]) || original;
   const reporter = pathToFileURL(path.join(root, "scripts", "backend-diagnostics.mjs")).href;
-  const result = { ...env, DEVPOCKET_BACKEND_DIAGNOSTIC_ID: runId };
+  const result = { ...env, DEVPOCKET_BACKEND_DIAGNOSTIC_ID: runId, DEVPOCKET_TEST_DIAGNOSTIC_SCOPE: "backend" };
   for (const key of nodeKeys) delete result[key];
   if (nodeKeys.length) result.NODE_OPTIONS = original;
   for (const key of configured) delete result[key];
@@ -241,38 +251,38 @@ export async function prepareBackendDiagnosticEnvironment(root, runId, env = pro
     }
     const value = result.stdout.replace(/\r?\n$/, "");
     configured = value === "null" ? null : value;
-  } catch {
-    throw new Error("Backend diagnostic preflight could not resolve effective npm node-options with confirmed cleanup.");
+  } catch (error) {
+    const { failureDetails } = await import("./diagnostic-errors.mjs");
+    const known = failureDetails(error, "configuration");
+    throw Object.assign(new Error("Backend diagnostic preflight could not resolve effective npm node-options with confirmed cleanup."), {
+      diagnosticCode: known.reason, commandOutcome: error.commandOutcome, processTreeStopped: error.processTreeStopped,
+    });
   }
   return backendDiagnosticEnvironment(root, runId, env, configured);
 }
 
 export default async function* backendReporter(source) {
   let catalogue, collectionError;
-  try { catalogue = await backendTestCatalogue(process.cwd()); }
+  try { catalogue = await backendTestCatalogue(process.cwd(), process.env.DEVPOCKET_TEST_DIAGNOSTIC_SCOPE ?? "backend"); }
   catch { collectionError = "catalogue-unavailable"; }
   const observation = createBackendObservation(catalogue ?? { root: process.cwd(), files: [] },
     process.env.DEVPOCKET_BACKEND_DIAGNOSTIC_ID);
   for await (const event of source) observation.add(event);
   const result = observation.snapshot();
-  if (collectionError) Object.assign(result, { availability: "incomplete", collectionError });
+  if (collectionError) Object.assign(result, { availability: "incomplete", collectionError, collectionStatus: "failed" });
   yield `${prefix}${JSON.stringify(result)}\n`;
 }
 
 export function boundedBackendLog(value) {
-  const bytes = Buffer.from(value);
-  if (bytes.length <= privateLogLimit) return { bytes, truncated: false };
-  const marker = Buffer.from("\n[Private backend log truncated; beginning and end retained]\n");
-  const half = Math.floor((privateLogLimit - marker.length) / 2);
-  return { bytes: Buffer.concat([bytes.subarray(0, half), marker,
-    bytes.subarray(bytes.length - (privateLogLimit - marker.length - half))]), truncated: true };
+  return boundedDiagnosticBytes(value);
 }
 
 export function parseBackendOutput(text, catalogue, runId) {
   const empty = (collectionError) => ({
-    version: 1, kind: "backend-test-diagnostics", acceptance: false, runId,
+    version: 1, kind: catalogue.scope === "linux-platform" ? "platform-test-diagnostics" : "backend-test-diagnostics", acceptance: false, runId,
     catalogueFingerprint: catalogue.fingerprint,
     availability: "incomplete", collectionError, inputTruncated: false, outputTruncated: false,
+    collectionStatus: "unavailable",
     summary: "unknown", findings: [],
   });
   if (typeof text !== "string" || Buffer.byteLength(text) > privateLogLimit) return empty("input-limit");
@@ -281,7 +291,7 @@ export function parseBackendOutput(text, catalogue, runId) {
   let value;
   try { value = JSON.parse(frames[0].slice(prefix.length)); }
   catch { return empty("invalid-frame"); }
-  if (value?.version !== 1 || value.runId !== runId || value.catalogueFingerprint !== catalogue.fingerprint) {
+  if (value?.version !== 1 || value.runId !== runId) {
     return empty("invocation-or-catalogue-mismatch");
   }
   const output = empty("unknown");
@@ -295,6 +305,13 @@ export function parseBackendOutput(text, catalogue, runId) {
   if (!Object.values(counts).includes("unknown") && typeof value.summary?.success === "boolean") {
     output.summary = { success: value.summary.success, counts };
   } else valid = false;
+  if (value.collectionError === "catalogue-unavailable" || value.collectionStatus === "failed") {
+    output.collectionStatus = "failed";
+    output.collectionError = value.collectionError === "catalogue-unavailable" ? "catalogue-unavailable" : "reporter-failed";
+    return output;
+  }
+  if (value.catalogueFingerprint !== catalogue.fingerprint) return empty("invocation-or-catalogue-mismatch");
+  output.collectionStatus = value.collectionStatus === "completed" ? "completed" : "unavailable";
   for (const finding of Array.isArray(value.findings) ? value.findings.slice(0, findingLimit) : []) {
     const file = catalogue.files.find((item) => item.file === finding?.file);
     const entries = file?.entries.filter((entry) => finding?.declaration?.file === file.file &&
@@ -322,7 +339,9 @@ async function optionalFile(file, limit) {
 }
 
 async function main() {
-  const { values } = parseArgs({ options: { directory: { type: "string", default: path.join(".data", "ci", "backend") } } });
+  const { values } = parseArgs({ options: {
+    directory: { type: "string", default: path.join(".data", "ci", "backend") }, github: { type: "boolean", default: false },
+  } });
   const root = process.cwd(), directory = path.resolve(root, values.directory), relative = path.relative(root, directory);
   if (!["ci", "verification"].some((folder) => relative.startsWith(path.join(".data", folder) + path.sep))) {
     throw new Error("Backend diagnostic output must remain in an isolated CI or verification directory.");
@@ -341,7 +360,13 @@ async function main() {
   const check = Array.isArray(report?.checks) ? report.checks.find((item) => item.id === "backend-tests") : undefined;
   const runId = typeof check?.backendDiagnosticRunId === "string" && /^[a-f0-9-]{36}$/.test(check.backendDiagnosticRunId)
     ? check.backendDiagnosticRunId : "unknown";
-  const catalogue = await backendTestCatalogue(root);
+  let catalogue, catalogueFailure;
+  try { catalogue = await backendTestCatalogue(root); }
+  catch (error) {
+    const { failureDetails } = await import("./diagnostic-errors.mjs");
+    catalogue = { root, files: [], fingerprint: "unknown" };
+    catalogueFailure = failureDetails(error, "collector-failed");
+  }
   const log = await optionalFile(path.join(directory, "backend-tests.log"), privateLogLimit);
   const observation = parseBackendOutput(log ?? "", catalogue, runId);
   const output = {
@@ -353,16 +378,17 @@ async function main() {
     checkStatus: ["failed", "blocked", "not_run", "passed"].includes(check?.status) ? check.status : "unknown",
     exitCode: Number.isInteger(check?.exitCode) && check.exitCode >= 0 && check.exitCode <= 255 ? check.exitCode : "unknown",
     privateLogTruncated: typeof check?.backendDiagnosticLogTruncated === "boolean" ? check.backendDiagnosticLogTruncated : "unknown",
+    collectionStatus: observation.collectionStatus === "failed" || check?.collectionStatus === "failed" || catalogueFailure ? "failed" : observation.collectionStatus,
+    catalogueFailure: catalogueFailure ?? null,
   };
   if (bytes === undefined || log === undefined || runId === "unknown") {
     Object.assign(output, { availability: "missing", findings: [], summary: "unknown" });
   }
   const encoded = JSON.stringify(output, null, 2) + "\n";
   if (Buffer.byteLength(encoded) > outputLimit) throw new Error("Backend diagnostic output exceeded its budget.");
-  const destination = await open(path.join(directory, "backend-diagnostics.json"), "wx", 0o600);
-  try { await destination.writeFile(encoded); }
-  finally { await destination.close(); }
-  console.log(encoded.trim());
+  const { publishDiagnostic } = await import("./diagnostic-publication.mjs");
+  await publishDiagnostic({ root, directory, name: "backend-diagnostics.json", value: output, limit: outputLimit, github: values.github });
+  if (output.collectionStatus === "failed") process.exitCode = 1;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

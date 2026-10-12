@@ -101,6 +101,11 @@ test("startup projection rejects arbitrary toolchain, path and process fields", 
   assert.equal(value.availableDiskBytes.afterPreparation, 1234);
   assert.ok(!JSON.stringify(value).includes("secret-value"));
   assert.ok(!JSON.stringify(value).includes("private"));
+  const credential = `21-dpp_${"A".repeat(43)}`;
+  const rejected = projectStartupReport({ toolchain: { java: credential, emulator: "37-custom-private-payload" } });
+  assert.equal(rejected.toolchain.java, "unknown");
+  assert.equal(rejected.toolchain.emulator, "unknown");
+  assert.ok(!JSON.stringify(rejected).includes(credential));
 });
 
 test("a diagnostic poll failure stays unknown instead of interrupting cleanup", async () => {

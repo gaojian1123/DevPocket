@@ -55,6 +55,21 @@ jobs:
           "backend=$([bool]($plan.requiredChecks | Where-Object { $_ -notin @('android-build', 'android-device') }))".ToLowerInvariant() >> $env:GITHUB_OUTPUT
           "android=$($plan.requiredChecks -contains 'android-build')".ToLowerInvariant() >> $env:GITHUB_OUTPUT
           "device=$($plan.requiredChecks -contains 'android-device')".ToLowerInvariant() >> $env:GITHUB_OUTPUT
+      - name: Explain plan outcome
+        id: diagnostics
+        if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
+        shell: pwsh
+        env:
+          STEP_RESULT: ${{ steps.plan.outcome }}
+        run: |
+          node scripts/verification-diagnostics.mjs --directory .data/ci --job plan --step-result $env:STEP_RESULT --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.diagnostics.outputs.report_ready == 'true'
+        with:
+          name: check-diagnostics-plan
+          path: .data/ci/verification-diagnostics.json
+          if-no-files-found: error
 
   backend:
     needs: plan
@@ -77,6 +92,7 @@ jobs:
       - run: npm --prefix deployment\azure ci --no-audit --no-fund
       - run: python -m pip install -r deployment\azure\probe\requirements-test.txt
       - name: Verify backend and operational fixtures
+        id: verify
         shell: pwsh
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
@@ -84,12 +100,27 @@ jobs:
           $env:DEVPOCKET_PROBE_PYTHON = (Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
           node scripts\verify.mjs --base $env:BASE_SHA --group backend --backend-diagnostics --report .data\ci\backend\report.json
           exit $LASTEXITCODE
+      - name: Explain backend check outcomes
+        id: diagnostics
+        if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
+        shell: pwsh
+        env:
+          STEP_RESULT: ${{ steps.verify.outcome }}
+        run: |
+          node scripts/verification-diagnostics.mjs --directory .data/ci/backend --job backend --step-result $env:STEP_RESULT --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.diagnostics.outputs.report_ready == 'true'
+        with:
+          name: check-diagnostics-backend
+          path: .data/ci/backend/verification-diagnostics.json
+          if-no-files-found: error
       - name: Export bounded backend test diagnostics
         id: backend_diagnostics
         if: always()
         shell: pwsh
         run: |
-          node scripts\backend-diagnostics.mjs --directory .data\ci\backend
+          node scripts\backend-diagnostics.mjs --directory .data\ci\backend --github
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v7
         if: always()
@@ -99,7 +130,7 @@ jobs:
             .data\ci\backend\report.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
-        if: always() && steps.backend_diagnostics.outcome == 'success'
+        if: always() && steps.backend_diagnostics.outputs.report_ready == 'true'
         with:
           name: backend-test-diagnostics
           path: |
@@ -127,17 +158,34 @@ jobs:
         shell: pwsh
         run: .\scripts\prepare-android.ps1 -ExistingSdk $env:ANDROID_HOME
       - name: Verify native build, JVM contracts and lint
+        id: verify
         shell: pwsh
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
         run: |
           node scripts\verify.mjs --base $env:BASE_SHA --group android --jdk $env:JAVA_HOME --sdk .tools\android-sdk --report .data\ci\android\report.json
           exit $LASTEXITCODE
+      - name: Explain Android check outcome
+        id: diagnostics
+        if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
+        shell: pwsh
+        env:
+          STEP_RESULT: ${{ steps.verify.outcome }}
+        run: |
+          node scripts/verification-diagnostics.mjs --directory .data/ci/android --job android --step-result $env:STEP_RESULT --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.diagnostics.outputs.report_ready == 'true'
+        with:
+          name: check-diagnostics-android
+          path: .data/ci/android/verification-diagnostics.json
+          if-no-files-found: error
       - name: Export bounded Android failure diagnostics
+        id: android_diagnostics
         if: failure()
         shell: pwsh
         run: |
-          node scripts\android-diagnostics.mjs --directory .data\ci\android
+          node scripts\android-diagnostics.mjs --directory .data\ci\android --github
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v7
         if: always()
@@ -145,7 +193,12 @@ jobs:
           name: verification-android
           path: |
             .data\ci\android\report.json
-            .data\ci\android\android-diagnostics.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.android_diagnostics.outputs.report_ready == 'true'
+        with:
+          name: android-test-diagnostics
+          path: .data/ci/android/android-diagnostics.json
           if-no-files-found: error
 
   device:
@@ -163,6 +216,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/prepare-native
       - name: Run the required isolated emulator cases
+        id: verify
         shell: pwsh
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
@@ -170,11 +224,34 @@ jobs:
           ./scripts/verify.ps1 -Base $env:BASE_SHA -Group device -Jdk $env:JAVA_HOME -Sdk $env:ANDROID_HOME `
             -Image system-images/android-35/google_apis/x86_64 -Report .data/ci/device/report.json
           exit $LASTEXITCODE
+      - name: Explain device check outcome
+        id: diagnostics
+        if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
+        shell: pwsh
+        env:
+          STEP_RESULT: ${{ steps.verify.outcome }}
+        run: |
+          node scripts/verification-diagnostics.mjs --directory .data/ci/device --job device --step-result $env:STEP_RESULT --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.diagnostics.outputs.report_ready == 'true'
+        with:
+          name: check-diagnostics-device
+          path: .data/ci/device/verification-diagnostics.json
+          if-no-files-found: error
       - name: Export bounded owned-worker diagnostics
+        id: worker_diagnostics
         if: always()
         shell: pwsh
         run: |
-          node scripts/worker-diagnostics.mjs --directory .data/ci/device
+          node scripts/worker-diagnostics.mjs --directory .data/ci/device --github
+          exit $LASTEXITCODE
+      - name: Export device phases and instrumentation failures
+        id: device_diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          node scripts/device-diagnostics.mjs --directory .data/ci/device --github
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v7
         if: always()
@@ -182,7 +259,18 @@ jobs:
           name: verification-device
           path: |
             .data/ci/device/report.json
-            .data/ci/device/worker-diagnostics.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.worker_diagnostics.outputs.report_ready == 'true'
+        with:
+          name: owned-worker-diagnostics
+          path: .data/ci/device/worker-diagnostics.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.device_diagnostics.outputs.report_ready == 'true'
+        with:
+          name: device-test-diagnostics
+          path: .data/ci/device/device-diagnostics.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         if: success()
@@ -212,11 +300,18 @@ jobs:
           pattern: verification-*
           path: .data\ci\inputs
       - name: Require every selected check for this exact source
+        id: verify
         shell: pwsh
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
           PLAN_RESULT: ${{ needs.plan.result }}
           BACKEND_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic }}
+          BACKEND_REQUIRED: ${{ needs.plan.outputs.backend }}
+          ANDROID_REQUIRED: ${{ needs.plan.outputs.android }}
+          DEVICE_REQUIRED: ${{ needs.plan.outputs.device }}
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          ANDROID_RESULT: ${{ needs.android.result }}
+          DEVICE_RESULT: ${{ needs.device.result }}
         run: |
           if ($env:PLAN_RESULT -ne 'success') { throw 'The required check plan did not complete.' }
           if ($env:BACKEND_ONLY -eq 'true') {
@@ -224,6 +319,13 @@ jobs:
             throw 'A backend diagnostic cannot satisfy Required verification. Run full verification for acceptance.'
           }
           $arguments = @('scripts\verify.mjs', '--base', $env:BASE_SHA, '--combine', '--report', '.data\ci\gate.json')
+          foreach ($group in @('backend', 'android', 'device')) {
+            if ([Environment]::GetEnvironmentVariable("$($group.ToUpperInvariant())_REQUIRED") -eq 'true') {
+              $result = [Environment]::GetEnvironmentVariable("$($group.ToUpperInvariant())_RESULT")
+              if (-not $result) { $result = 'unknown' }
+              $arguments += @('--upstream', "${group}:$result")
+            }
+          }
           if (Test-Path -LiteralPath .data\ci\inputs) {
             Get-ChildItem -LiteralPath .data\ci\inputs -Filter report.json -File -Recurse | ForEach-Object {
               $arguments += @('--input', $_.FullName)
@@ -231,6 +333,21 @@ jobs:
           }
           node @arguments
           if ($LASTEXITCODE -ne 0) { throw 'Required verification is incomplete. Missing or failed device evidence is a blocker, not a skipped success.' }
+      - name: Explain aggregate outcome
+        id: diagnostics
+        if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
+        shell: pwsh
+        env:
+          STEP_RESULT: ${{ steps.verify.outcome }}
+        run: |
+          node scripts/verification-diagnostics.mjs --directory .data/ci --job gate --step-result $env:STEP_RESULT --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.diagnostics.outputs.report_ready == 'true'
+        with:
+          name: check-diagnostics-gate
+          path: .data/ci/verification-diagnostics.json
+          if-no-files-found: error
       - uses: actions/upload-artifact@v7
         if: always()
         with:

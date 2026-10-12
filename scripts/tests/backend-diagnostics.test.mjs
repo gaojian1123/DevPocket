@@ -251,6 +251,7 @@ test("effective project npm options are checked before launch and benign options
   await writeFile(report, '{"fixture":"safe-machine-report"}');
   await mkdir(path.join(item.root, "scripts"));
   await writeFile(path.join(item.root, "scripts", "backend-diagnostics.mjs"), await readFile("scripts/backend-diagnostics.mjs"));
+  await writeFile(path.join(item.root, "scripts", "bounded-worker-log.mjs"), await readFile("scripts/bounded-worker-log.mjs"));
   await writeFile(path.join(item.root, "package.json"), JSON.stringify({
     type: "module", scripts: { test: "node --import tsx --test backend/tests/*.test.ts" },
   }));
@@ -370,10 +371,10 @@ test("backend-only CI reuses the normal job, conditionally exports validated dia
   assert.match(workflow, /backend_diagnostic:\n\s+description:.*\n\s+type: boolean\n\s+default: false/);
   assert.match(backend, /node scripts\\verify\.mjs --base \$env:BASE_SHA --group backend --backend-diagnostics --report/);
   assert.match(backend, /Export bounded backend test diagnostics\n\s+id: backend_diagnostics\n\s+if: always\(\)/);
-  assert.match(backend, /node scripts\\backend-diagnostics\.mjs --directory \.data\\ci\\backend\n\s+exit \$LASTEXITCODE/);
+  assert.match(backend, /node scripts\\backend-diagnostics\.mjs --directory \.data\\ci\\backend --github\n\s+exit \$LASTEXITCODE/);
   assert.deepEqual([...backend.matchAll(/^\s+(\.data\\[^\r\n]+)$/gm)].map((match) => match[1]),
     [".data\\ci\\backend\\report.json", ".data\\ci\\backend\\backend-diagnostics.json"]);
-  assert.match(backend, /if: always\(\) && steps\.backend_diagnostics\.outcome == 'success'\n\s+with:\n\s+name: backend-test-diagnostics/);
+  assert.match(backend, /if: always\(\) && steps\.backend_diagnostics\.outputs\.report_ready == 'true'\n\s+with:\n\s+name: backend-test-diagnostics/);
   const originalUpload = backend.split("name: verification-backend")[1].split("- uses:")[0];
   assert.doesNotMatch(originalUpload, /backend-diagnostics\.json/);
   assert.ok(android.includes("!(github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic)"));
@@ -384,4 +385,41 @@ test("backend-only CI reuses the normal job, conditionally exports validated dia
   const manifest = JSON.parse(await readFile("package.json", "utf8"));
   assert.equal(manifest.scripts.test, "node --import tsx --test backend/tests/*.test.ts");
   assert.ok(manifest.scripts["test:workflow"].includes("scripts/tests/backend-diagnostics.test.mjs"));
+});
+
+test("an actual reporter catalogue exception remains failed after the test command restores catalogue health", async (t) => {
+  const item = await fixture(t);
+  await mkdir(path.join(item.root, "scripts"));
+  for (const file of ["backend-diagnostics.mjs", "bounded-worker-log.mjs"]) {
+    await writeFile(path.join(item.root, "scripts", file), await readFile(path.join("scripts", file)));
+  }
+  await writeFile(path.join(item.root, ".gitignore"), ".data/\nbackend/tests/ignored.test.ts\n");
+  await writeFile(path.join(item.root, "package.json"), JSON.stringify({ type: "module", scripts: {
+    "test:workflow": 'node -e "process.exit(0)"', typecheck: 'node -e "process.exit(0)"',
+    test: 'node --import tsx --test backend/tests/*.test.ts && node -e "require(\'node:fs\').unlinkSync(\'backend/tests/ignored.test.ts\')"',
+    build: 'node -e "process.exit(0)"', schema: 'node -e "process.exit(0)"',
+  } }));
+  await exec("git", ["init", "--quiet"], { cwd: item.root });
+  await exec("git", ["add", "."], { cwd: item.root });
+  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Fixture"], { cwd: item.root });
+  await writeFile(item.file, (await readFile(item.file, "utf8")) + "\n// changed\n");
+  const target = path.join(item.root, ".data", "empty.test.ts");
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, "export {};\n");
+  await symlink(target, path.join(item.root, "backend", "tests", "ignored.test.ts"));
+  const directory = path.join(item.root, ".data", "ci", "backend"), caller = { ...process.env };
+  delete caller.NODE_TEST_CONTEXT;
+  await assert.rejects(exec(process.execPath, [path.resolve("scripts/verify.mjs"), "--repo", item.root,
+    "--base", "HEAD", "--group", "backend", "--backend-diagnostics", "--report", path.join(directory, "report.json")],
+  { cwd: item.root, env: caller, timeout: 45000 }), (error) => error.code === 1);
+  const report = JSON.parse(await readFile(path.join(directory, "report.json"), "utf8"));
+  const check = report.checks.find((entry) => entry.id === "backend-tests");
+  assert.equal(check.collectionStatus, "failed");
+  assert.equal(check.reportedBackendTestStatus, "passed");
+  assert.equal(check.commandOutcome.exitCode, 0);
+  await assert.rejects(exec(process.execPath, [path.resolve("scripts/backend-diagnostics.mjs"), "--directory", directory],
+    { cwd: item.root, env: caller, timeout: 20000 }), (error) => error.code === 1);
+  const output = JSON.parse(await readFile(path.join(directory, "backend-diagnostics.json"), "utf8"));
+  assert.equal(output.collectionStatus, "failed");
+  assert.equal(output.collectionError, "catalogue-unavailable");
 });

@@ -1,13 +1,16 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { runCommand } from "./process.mjs";
+import { failureDetails } from "./diagnostic-errors.mjs";
 
 function probeFailure(error, reason) {
   const match = /error while loading shared libraries: ([A-Za-z][A-Za-z0-9_.+-]{0,95}):/.exec(
     String(error.stderr ?? "").slice(0, 16384));
-  const library = match && !/gh[pousr]_|github_pat_|token|secret|password|bearer/i.test(match[1]) ? match[1] : undefined;
+  const library = match && ["libpulse.so.0", "libX11.so.6", "libXext.so.6", "libxcb.so.1", "libGL.so.1",
+    "libgbm.so.1", "libnss3.so"].includes(match[1]) ? match[1] : undefined;
   return Object.assign(new Error("Hosted emulator runtime preflight failed."), {
     reason, library, exitCode: Number.isInteger(error.code) ? error.code : null,
+    failure: failureDetails(error),
   });
 }
 
@@ -29,8 +32,10 @@ export async function ensureHostedEmulatorRuntime({
     if (failure.exitCode !== 127 || failure.library !== "libpulse.so.0") throw failure;
   }
   // Ubuntu Noble's libpulse0 supplies this exact loader dependency; install nothing on speculation.
-  await run("apt-get", ["update", "-qq"], { timeoutMs: 180000, privileged: true });
-  await run("apt-get", ["install", "-y", "--no-install-recommends", "libpulse0"], { timeoutMs: 180000, privileged: true });
+  try { await run("apt-get", ["update", "-qq"], { timeoutMs: 180000, privileged: true }); }
+  catch (error) { throw probeFailure(error, "runtime-dependency-index-failed"); }
+  try { await run("apt-get", ["install", "-y", "--no-install-recommends", "libpulse0"], { timeoutMs: 180000, privileged: true }); }
+  catch (error) { throw probeFailure(error, "runtime-dependency-install-failed"); }
   try { await probe(); }
   catch (error) { throw probeFailure(error, "runtime-probe-failed-after-dependency-install"); }
   return { status: "ready", installedPackages: ["libpulse0"] };
@@ -40,7 +45,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   try { console.log(JSON.stringify(await ensureHostedEmulatorRuntime())); }
   catch (error) {
     console.error(JSON.stringify({ status: "blocked", reason: error.reason ?? "runtime-preparation-failed",
-      library: error.library ?? null, exitCode: error.exitCode ?? (Number.isInteger(error.code) ? error.code : null) }));
+      library: error.library ?? null, exitCode: error.exitCode ?? (Number.isInteger(error.code) ? error.code : null),
+      failure: error.failure ?? failureDetails(error) }));
     process.exitCode = 1;
   }
 }

@@ -1,10 +1,20 @@
 import { createWriteStream } from "node:fs";
 import { Writable } from "node:stream";
+import { finished } from "node:stream/promises";
 
 const budget = 1024 * 1024;
 const marker = Buffer.from("\n[DevPocket private worker log truncated; beginning and end retained]\n");
 const headBudget = Math.floor((budget - marker.length) / 2);
 const tailBudget = budget - marker.length - headBudget;
+
+export function boundedDiagnosticBytes(value) {
+  const bytes = Buffer.from(value);
+  if (bytes.length <= budget) return { bytes, truncated: false };
+  const separator = Buffer.from("\n[Private diagnostic log truncated; beginning and end retained]\n");
+  const half = Math.floor((budget - separator.length) / 2);
+  return { bytes: Buffer.concat([bytes.subarray(0, half), separator,
+    bytes.subarray(bytes.length - (budget - separator.length - half))]), truncated: true };
+}
 
 export function createBoundedWorkerLog(file) {
   const destination = createWriteStream(file, { flags: "wx", mode: 0o600 });
@@ -46,4 +56,12 @@ export function createBoundedWorkerLog(file) {
       (seen > headBudget + tailBudget ? marker.length : 0) : "unknown",
   });
   return output;
+}
+
+export async function writeBoundedWorkerLog(file, value) {
+  const output = createBoundedWorkerLog(file);
+  const done = finished(output);
+  output.end(value);
+  await done;
+  return output.logInfo();
 }

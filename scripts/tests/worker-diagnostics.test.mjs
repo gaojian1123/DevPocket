@@ -5,11 +5,126 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
+import { once } from "node:events";
+import { createBoundedWorkerLog } from "../bounded-worker-log.mjs";
+import { failureDetails } from "../diagnostic-errors.mjs";
 import { createWorkerObservation, projectWorkerDiagnostics } from "../worker-diagnostics.mjs";
-import { createLiveDeviceGuard, trackManagedCommand } from "../android-emulator.mjs";
+import { createLiveDeviceGuard, trackManagedCommand, managedWorkerDiagnostics, requireManagedCleanup } from "../android-emulator.mjs";
 
 const exec = promisify(execFile);
 const runId = "11111111-1111-4111-8111-111111111111";
+
+test("actual managed log-write failure makes public collectors nonzero without changing native success or cleanup", async (t) => {
+  await mkdir(".data/tests", { recursive: true });
+  const root = await mkdtemp(path.resolve(".data/tests/managed-log-outcome-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sink = createBoundedWorkerLog(path.join(root, "missing-parent", "adb.log"));
+  const failedLog = once(sink, "error");
+  const child = spawn(process.execPath, ["-e", "setTimeout(()=>process.stdout.write('PRIVATE_WORKER_OUTPUT'),50);setTimeout(()=>process.exit(0),150)"],
+    { stdio: ["pipe", "pipe", "pipe"] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
+  const tracked = trackManagedCommand(child, sink, process.platform, { role: "adb" });
+  await failedLog;
+  tracked.workerObservation.markCleanup();
+  await tracked.done;
+  assert.equal(child.exitCode, 0);
+  assert.equal(tracked.logInfo().status, "unavailable");
+  const directory = path.join(root, ".data", "ci", "device");
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, "report.json"), JSON.stringify({
+    version: 1, status: "partial", checks: [{ id: "android-device", status: "passed", exitCode: 0, deviceRunId: runId,
+      workerDiagnostics: { version: 1, runId, cleanup: "completed",
+        workers: [{ ...tracked.workerObservation.snapshot(), workerLog: tracked.logInfo() }],
+        collectionFailures: [{ role: "adb", failure: failureDetails(tracked.logError, "collector-failed") }] } }],
+  }));
+  for (const entry of ["worker-diagnostics", "device-diagnostics"]) {
+    await assert.rejects(exec(process.execPath, [path.resolve(`scripts/${entry}.mjs`), "--directory", directory],
+      { cwd: root, timeout: 20000 }), (error) => error.code === 1);
+    const result = JSON.parse(await readFile(path.join(directory, `${entry}.json`), "utf8"));
+    assert.equal(result.collectionStatus, "failed");
+    assert.ok(!JSON.stringify(result).includes("PRIVATE_WORKER_OUTPUT"));
+    if (entry === "worker-diagnostics") assert.equal(result.cleanup, "completed");
+    else assert.equal(result.checkStatus, "passed");
+  }
+});
+
+test("a real dedicated lifecycle pipe error remains a failed collection after healthy logs and successful cleanup", async (t) => {
+  await mkdir(".data/tests", { recursive: true });
+  const root = await mkdtemp(path.resolve(".data/tests/lifecycle-pipe-failure-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const child = spawn(process.execPath, ["-e",
+    "setTimeout(()=>{process.stderr.write('DEVPOCKET_OWNED_TREE_STOPPED\\n');process.exit(0)},150)"],
+  { stdio: ["pipe", "pipe", "pipe", "pipe"] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
+  const state = trackManagedCommand(child, createBoundedWorkerLog(path.join(root, "worker.log")), "linux", { role: "emulator" });
+  const failed = once(child.stdio[3], "error");
+  child.stdio[3].destroy(Object.assign(new Error("PRIVATE_PIPE_ERROR"), { code: "EIO" }));
+  await failed;
+  state.workerObservation.markCleanup();
+  await state.done;
+  assert.equal(child.exitCode, 0);
+  assert.equal(state.logInfo().status, "retained");
+  assert.doesNotThrow(() => requireManagedCleanup(state));
+  const value = managedWorkerDiagnostics([state], runId, "completed");
+  assert.equal(value.cleanup, "completed");
+  assert.equal(value.collectionStatus, "failed");
+  assert.ok(value.collectionFailures.some((failure) => failure.channel === "native-lifecycle" && failure.failure.osCode === "EIO"));
+  assert.ok(!JSON.stringify(value).includes("PRIVATE_PIPE_ERROR"));
+  const directory = path.join(root, ".data", "ci", "device");
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, "report.json"), JSON.stringify({
+    version: 1, status: "partial", checks: [{ id: "android-device", status: "passed", exitCode: 0,
+      deviceRunId: runId, workerDiagnostics: value }],
+  }));
+  for (const entry of ["worker-diagnostics", "device-diagnostics"]) {
+    await assert.rejects(exec(process.execPath, [path.resolve(`scripts/${entry}.mjs`), "--directory", directory],
+      { cwd: root, timeout: 20000 }), (error) => error.code === 1);
+    const result = JSON.parse(await readFile(path.join(directory, `${entry}.json`), "utf8"));
+    assert.equal(result.collectionStatus, "failed");
+    const failures = result.collectionFailures ?? result.workerCollectionFailures;
+    assert.ok(failures.some((failure) => failure.channel === "native-lifecycle" && failure.failure.osCode === "EIO"));
+    assert.ok(!JSON.stringify(result).includes("PRIVATE_PIPE_ERROR"));
+    if (entry === "worker-diagnostics") assert.equal(result.cleanup, "completed");
+    else assert.equal(result.checkStatus, "passed");
+  }
+});
+
+test("missing, unsupported and truncated lifecycle telemetry do not invent a channel I/O failure", async (t) => {
+  await mkdir(".data/tests", { recursive: true });
+  const root = await mkdtemp(path.resolve(".data/tests/lifecycle-incomplete-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const [name, telemetry] of [
+    ["missing", ""], ["unsupported", '{"version":2,"private":"PRIVATE_CHANNEL_DATA"}\n'],
+    ["truncated", "PRIVATE_CHANNEL_DATA".repeat(1000)],
+  ]) {
+    const child = spawn(process.execPath, ["-e",
+      `require('node:fs').writeSync(3,${JSON.stringify(telemetry)});process.stderr.write('DEVPOCKET_OWNED_TREE_STOPPED\\n')`],
+    { stdio: ["pipe", "pipe", "pipe", "pipe"] });
+    t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
+    const state = trackManagedCommand(child, createBoundedWorkerLog(path.join(root, `${name}.log`)), "linux", { role: "emulator" });
+    await state.done;
+    assert.equal(child.exitCode, 0);
+    assert.doesNotThrow(() => requireManagedCleanup(state));
+    const result = managedWorkerDiagnostics([state], runId, "completed");
+    assert.equal(result.collectionStatus, "completed");
+    assert.deepEqual(result.collectionFailures, []);
+    assert.equal(result.workers[0].nativeLifecycle.availability, "incomplete");
+    assert.ok(!JSON.stringify(result).includes("PRIVATE_CHANNEL_DATA"));
+  }
+});
+
+test("worker collection projection keeps separate channel faults and rejects arbitrary channel text", () => {
+  const result = projectWorkerDiagnostics({
+    runId, collectionFailures: [
+      { role: "emulator", channel: "native-lifecycle", failure: { reason: "collector-failed", osCode: "EIO" } },
+      { role: "emulator", channel: "PRIVATE_CHANNEL_TOKEN", failure: { reason: "PRIVATE_ERROR_TOKEN" } },
+    ],
+    workers: [{ role: "emulator", workerLog: { status: "unavailable" } }],
+  });
+  assert.equal(result.collectionStatus, "failed");
+  assert.deepEqual(result.collectionFailures.map((failure) => failure.channel), ["native-lifecycle", "unknown", "worker-log"]);
+  assert.ok(!JSON.stringify(result).includes("PRIVATE_"));
+});
 
 test("the existing managed handle captures a real exit without weakening the live-device guard", async (t) => {
   const child = spawn(process.execPath, ["-e",

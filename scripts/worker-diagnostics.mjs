@@ -2,6 +2,8 @@ import { lstat, mkdir, open } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { publishDiagnostic } from "./diagnostic-publication.mjs";
+import { diagnosticError, failureDetails, projectFailureDetails } from "./diagnostic-errors.mjs";
 import { projectNativeLifecycle } from "./native-lifecycle.mjs";
 
 const stderrBudget = 32768;
@@ -125,6 +127,14 @@ export function projectWorkerDiagnostics(value, expectedRunId) {
   if (expectedRunId && value?.runId !== expectedRunId) value = { runId: expectedRunId };
   const input = Array.isArray(value?.workers) ? value.workers.slice(0, 2) : [];
   const workers = [];
+  const collectionFailures = (Array.isArray(value?.collectionFailures) ? value.collectionFailures.slice(0, 6) : []).map((item) => ({
+    role: ["adb", "emulator", "fixture"].includes(item?.role) ? item.role : "unknown",
+    channel: ["worker-log", "native-lifecycle"].includes(item?.channel) ? item.channel : "unknown",
+    failure: projectFailureDetails(item?.failure),
+  }));
+  if (value?.collectionStatus === "failed" && !collectionFailures.length) {
+    collectionFailures.push({ role: "unknown", channel: "unknown", failure: failureDetails(diagnosticError("collector-failed")) });
+  }
   for (const role of roles) {
     const matches = input.filter((item) => item?.role === role);
     if (matches.length !== 1) continue;
@@ -157,26 +167,36 @@ export function projectWorkerDiagnostics(value, expectedRunId) {
           item.workerLog.retainedBytes <= 1024 * 1024 ? item.workerLog.retainedBytes : "unknown",
       },
     });
+    if (item.workerLog?.status === "unavailable" &&
+        !collectionFailures.some((failure) => failure.role === role && failure.channel === "worker-log")) {
+      collectionFailures.push({ role, channel: "worker-log", failure: failureDetails(diagnosticError("collector-failed")) });
+    }
   }
   return {
     version: 1,
     runId: typeof value?.runId === "string" && /^[a-f0-9-]{36}$/.test(value.runId) ? value.runId : "unknown",
     availability: workers.some((worker) => worker.observation === "exit") ? "observed" : "unknown",
     cleanup: ["completed", "failed"].includes(value?.cleanup) ? value.cleanup : "unknown",
+    collectionStatus: collectionFailures.length ? "failed"
+      : workers.length && workers.every((worker) => worker.workerLog.status === "retained") ? "completed" : "unknown",
+    collectionFailures,
     workers,
     unobservedRoles: roles.filter((role) => !workers.some((worker) => worker.role === role && worker.observation === "exit")),
   };
 }
 
-async function readReport(file) {
+export async function readDiagnosticReport(file) {
   let info;
   try { info = await lstat(file); }
   catch (error) { if (error.code === "ENOENT") return null; throw error; }
-  if (!info.isFile() || info.isSymbolicLink() || info.size > 512 * 1024) throw new Error("Unsupported diagnostic input.");
+  if (info.isSymbolicLink()) throw diagnosticError("ownership-mismatch");
+  if (!info.isFile()) throw diagnosticError("report-invalid");
+  if (info.size > 512 * 1024) throw diagnosticError("output-limit");
   const input = await open(file, "r");
   try {
     const current = await input.stat();
-    if (current.ino !== info.ino || current.dev !== info.dev || current.size > 512 * 1024) throw new Error("Diagnostic input changed.");
+    if (current.ino !== info.ino || current.dev !== info.dev) throw diagnosticError("ownership-mismatch");
+    if (current.size > 512 * 1024) throw diagnosticError("output-limit");
     const bytes = Buffer.alloc(current.size);
     let offset = 0;
     while (offset < bytes.length) {
@@ -189,7 +209,9 @@ async function readReport(file) {
 }
 
 async function main() {
-  const { values } = parseArgs({ options: { directory: { type: "string", default: path.join(".data", "ci", "device") } } });
+  const { values } = parseArgs({ options: {
+    directory: { type: "string", default: path.join(".data", "ci", "device") }, github: { type: "boolean", default: false },
+  } });
   const root = process.cwd(), directory = path.resolve(root, values.directory), relative = path.relative(root, directory);
   if (!["ci", "verification"].some((name) => relative.startsWith(path.join(".data", name) + path.sep))) {
     throw new Error("Worker diagnostics require an isolated CI or verification directory.");
@@ -202,7 +224,7 @@ async function main() {
     const info = await lstat(parent);
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Linked diagnostic directories are not supported.");
   }
-  const report = await readReport(path.join(directory, "report.json"));
+  const report = await readDiagnosticReport(path.join(directory, "report.json"));
   const check = Array.isArray(report?.checks) ? report.checks.find((item) => item?.id === "android-device") : undefined;
   const projected = projectWorkerDiagnostics(check?.workerDiagnostics);
   const source = typeof report?.source?.head === "string" && /^[a-f0-9]{40}$/.test(report.source.head) &&
@@ -218,10 +240,8 @@ async function main() {
   };
   const bytes = JSON.stringify(output, null, 2) + "\n";
   if (Buffer.byteLength(bytes) > 8192) throw new Error("Worker diagnostics exceeded their public budget.");
-  const file = await open(path.join(directory, "worker-diagnostics.json"), "wx", 0o600);
-  try { await file.writeFile(bytes); }
-  finally { await file.close(); }
-  process.stdout.write(bytes);
+  await publishDiagnostic({ root, directory, name: "worker-diagnostics.json", value: output, limit: 8192, github: values.github });
+  if (projected.collectionStatus === "failed") process.exitCode = 1;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

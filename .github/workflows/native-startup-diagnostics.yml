@@ -48,6 +48,7 @@ jobs:
           "sha=$base" >> $env:GITHUB_OUTPUT
       - uses: ./.github/actions/prepare-native
       - name: Diagnose the same owned native startup
+        id: probe
         shell: pwsh
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
@@ -55,11 +56,27 @@ jobs:
         run: |
           node scripts/native-startup.mjs --base $env:BASE_SHA --variant $env:STARTUP_VARIANT `
             --directory .data/ci/native-startup --jdk $env:JAVA_HOME --sdk $env:ANDROID_HOME `
-            --image system-images/android-35/google_apis/x86_64
+            --image system-images/android-35/google_apis/x86_64 --github
+          exit $LASTEXITCODE
+      - name: Explain native startup outcome
+        id: diagnostics
+        if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
+        shell: pwsh
+        env:
+          STEP_RESULT: ${{ steps.probe.outcome }}
+          CURRENT_OWNER: ${{ steps.probe.outputs.startup_run_id }}
+        run: |
+          node scripts/verification-diagnostics.mjs --directory .data/ci/native-startup --job startup --step-result $env:STEP_RESULT --owner=$env:CURRENT_OWNER --github
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v7
-        if: always()
+        if: always() && steps.diagnostics.outputs.startup_report_ready == 'true'
         with:
           name: native-startup-diagnostic
-          path: .data/ci/native-startup/startup-report.json
+          path: .data/ci/native-startup/public/startup-report.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.diagnostics.outputs.report_ready == 'true'
+        with:
+          name: check-diagnostics-startup
+          path: .data/ci/native-startup/verification-diagnostics.json
           if-no-files-found: error

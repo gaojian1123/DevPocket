@@ -12,6 +12,7 @@ import { createNativeLifecycleCapture } from "../native-lifecycle.mjs";
 import { prepareAndroidRuntime } from "../android-runner.mjs";
 import { waitForAndroid, withAndroidEmulator } from "../android-emulator.mjs";
 import { cleanDeviceRun } from "../device-run.mjs";
+import { createDeviceDiagnostics } from "../device-diagnostics.mjs";
 
 const exec = promisify(execFile);
 assert.equal(process.platform, "linux", "These real Linux lifecycle checks must run on the hosted Ubuntu job.");
@@ -241,13 +242,24 @@ test("hosted native preparation reclaims only its completed run cache and preser
   }
 });
 
+test("the real owned toolchain probes do not retain arbitrary version suffixes in device evidence", async (t) => {
+  const fixture = await nativeBuildFixture(t);
+  const credential = `21-dpp_${"A".repeat(43)}`;
+  await writeFile(fixture.javaPath, (await readFile(fixture.javaPath, "utf8")).replace("21.0.12", credential));
+  const report = {};
+  await prepareAndroidRuntime(await ownedBuildRun(fixture, "version-projection"), report, undefined, { buildApks: false });
+  assert.equal(report.toolchain.java, null);
+  assert.ok(!JSON.stringify(report).includes(credential));
+});
+
 test("unconfirmed preparation cleanup holds owned data and the Linux lease record", async (t) => {
   for (const nextReady of [true, false, "missing-owner"]) {
     const fixture = await nativeBuildFixture(t), owner = randomUUID();
     const directory = path.join(fixture.root, ".data", "unconfirmed");
+    const diagnostics = await createDeviceDiagnostics({ root: fixture.root, runId: owner });
     let attempts = 0;
     await assert.rejects(withAndroidEmulator({
-      repo: fixture.root, directory, owner, sdk: fixture.sdk, emulatorSdk: fixture.sdk, image: fixture.image, jdk: fixture.jdk,
+      repo: fixture.root, directory, owner, sdk: fixture.sdk, emulatorSdk: fixture.sdk, image: fixture.image, jdk: fixture.jdk, diagnostics,
       prepare: async () => {
         await mkdir(path.join(directory, "gradle-cache"));
         await writeFile(path.join(directory, "gradle-cache", "preserved"), "unconfirmed command data");
@@ -267,7 +279,68 @@ test("unconfirmed preparation cleanup holds owned data and the Linux lease recor
     assert.equal(await readFile(path.join(directory, "gradle-cache", "preserved"), "utf8"), "unconfirmed command data");
     const lease = JSON.parse(await readFile(path.join(fixture.root, ".data", "linux-emulator.lock"), "utf8"));
     assert.equal(lease.runId, owner);
+    const evidence = diagnostics.snapshot();
+    assert.equal(evidence.primary.phase, "prepare");
+    assert.equal(evidence.phase, "cleanup");
+    assert.ok(evidence.secondary.some((issue) => issue.operation === "cleanup"));
   }
+});
+
+test("the hosted startup CLI preserves the owned process exit when recovery cleanup rejects ownership", async (t) => {
+  const fixture = await nativeBuildFixture(t);
+  await writeFile(path.join(fixture.root, "scripts", "test-android.ps1"), [
+    "param([switch]$StartupDiagnostic,$Base,$Variant,$RunDirectory,$Owner)",
+    "New-Item -ItemType Directory -Path $RunDirectory -Force | Out-Null",
+    "@{version=1;root=(Get-Location).Path;runId='foreign-owner';pid=$PID} | ConvertTo-Json | Set-Content (Join-Path $RunDirectory 'owner.json')",
+    "exit 37",
+  ].join("\n"));
+  const environment = { ...process.env, GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted" };
+  delete environment.NODE_TEST_CONTEXT;
+  await assert.rejects(exec(process.execPath, [path.resolve("scripts/native-startup.mjs"), "--base", "HEAD",
+    "--directory", path.join(fixture.root, ".data", "startup-entry")],
+  { cwd: fixture.root, env: environment, timeout: 20000 }), (error) => {
+    assert.equal(error.code, 1);
+    const value = JSON.parse(error.stdout.trim());
+    assert.equal(value.exitCode, 37);
+    assert.equal(value.recoveryCleanup, "failed");
+    assert.equal(value.failure.exitCode, 37);
+    assert.ok(!error.stdout.includes(fixture.root));
+    return true;
+  });
+});
+
+test("startup execution and report-write failure survive the real hosted CLI and public collector", async (t) => {
+  const fixture = await nativeBuildFixture(t), directory = path.join(fixture.root, ".data", "ci", "native-startup");
+  const entry = path.resolve("scripts/native-startup.mjs");
+  const wrapper = (await readFile("scripts/test-android.ps1", "utf8"))
+    .replace("(Join-Path $PSScriptRoot 'native-startup.mjs')", `'${entry.replaceAll("'", "''")}'`);
+  await writeFile(path.join(fixture.root, "scripts", "test-android.ps1"), wrapper);
+  await writeFile(fixture.javaPath, [
+    "#!/usr/bin/env node",
+    "const fs=require('node:fs');",
+    `fs.mkdirSync(${JSON.stringify(path.join(directory, "startup-report.json"))},{recursive:true});`,
+    "process.exit(37);",
+  ].join("\n"));
+  const env = { ...process.env, GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted" };
+  delete env.NODE_TEST_CONTEXT;
+  await assert.rejects(exec(process.execPath, [entry, "--base", "HEAD", "--directory", directory,
+    "--sdk", fixture.sdk, "--jdk", fixture.jdk, "--image", fixture.image],
+  { cwd: fixture.root, env, timeout: 30000 }), (error) => {
+    assert.equal(error.code, 1);
+    const result = JSON.parse(error.stdout.trim());
+    assert.equal(result.startup.deviceDiagnostics.primary.phase, "prepare");
+    assert.equal(result.startup.deviceDiagnostics.primary.operation, "jdk");
+    assert.equal(result.startup.deviceDiagnostics.primary.exitCode, 37);
+    assert.equal(result.startup.reportFailure.reason, "report-write");
+    return true;
+  });
+  const entryReport = JSON.parse(await readFile(path.join(directory, "startup-entry-report.json"), "utf8"));
+  await assert.rejects(exec(process.execPath, [path.resolve("scripts/verification-diagnostics.mjs"),
+    "--directory", directory, "--job", "startup", "--owner", entryReport.runId], { cwd: fixture.root, env, timeout: 20000 }), (error) => error.code === 1);
+  const report = JSON.parse(await readFile(path.join(directory, "verification-diagnostics.json"), "utf8"));
+  assert.equal(report.reportOrigin, "owned-entry-fallback");
+  assert.equal(report.startup.deviceDiagnostics.primary.exitCode, 37);
+  assert.equal(report.startup.reportFailure.reason, "report-write");
 });
 
 async function nativeCommand(t, file, args, options = {}) {

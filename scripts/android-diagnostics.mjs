@@ -1,30 +1,44 @@
 import { lstat, mkdir, open } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { deviceSourceCatalogue } from "./device-diagnostics.mjs";
+import { publishDiagnostic } from "./diagnostic-publication.mjs";
+import { failureDetails } from "./diagnostic-errors.mjs";
 
 const inputBudget = 256 * 1024;
 const outputBudget = 16 * 1024;
 const sensitiveIdentifier = /gh[pousr]_|github_pat_|sk-[a-z0-9]|AIza|bearer|password[=:]|token[=:]|secret[=:]|api[-_]?key[=:]/i;
 const safeIdentifier = (value) => !sensitiveIdentifier.test(value);
 
-function sourceFile(value, root) {
+function sourceFile(value, root, catalogue) {
   try {
     const android = path.join(root, "android");
     const absolute = value.startsWith("file:") ? fileURLToPath(value) : path.resolve(android, value);
     const relative = path.relative(android, absolute).replaceAll("\\", "/");
     if (relative.length <= 240 && /^app\/src\/(?:[A-Za-z0-9_$-]+\/)*[A-Za-z0-9_$-]+\.(?:kt|java|xml)$/.test(relative) &&
-        safeIdentifier(relative)) return relative;
+        safeIdentifier(relative) && catalogue.files.some((file) => file.file === `android/${relative}`)) return relative;
   } catch { /* Unsupported locations are omitted, never copied verbatim. */ }
 }
 
-function project(text, root, truncated) {
+function project(text, root, truncated, catalogue) {
   const report = {
     version: 1, kind: "android-build-diagnostics", availability: "available", truncated,
     failureKinds: [], failedTasks: [], findings: [],
     note: "Allowlisted diagnostic metadata only; not verification evidence. Unrecognized details remain in the private local log.",
   };
   const kinds = new Set(), tasks = new Set(), seen = new Set();
+  const taskNames = new Set(["assembleDebug", "assembleDebugAndroidTest", "testDebugUnitTest", "lintDebug",
+    "lintAnalyzeDebug", "lintReportDebug", "compileDebugKotlin", "compileDebugJavaWithJavac",
+    "compileDebugUnitTestKotlin", "compileDebugAndroidTestKotlin", "processDebugMainManifest",
+    "processDebugResources", "mergeDebugResources", "checkDebugAarMetadata", "packageDebug"]);
+  const exceptionNames = new Set(["java.lang.AssertionError", "java.lang.IllegalArgumentException", "java.lang.IllegalStateException",
+    "java.lang.NullPointerException", "java.lang.RuntimeException", "java.lang.OutOfMemoryError",
+    "java.io.IOException", "java.net.SocketTimeoutException", "javax.net.ssl.SSLHandshakeException",
+    "android.database.sqlite.SQLiteException", "org.gradle.api.GradleException", "org.gradle.api.tasks.TaskExecutionException",
+    "org.gradle.launcher.daemon.client.DaemonDisappearedException", "org.junit.ComparisonFailure"]);
+  const lintNames = new Set(["MissingPermission", "NewApi", "InlinedApi", "ManifestOrder", "MissingTranslation",
+    "MissingDefaultResource", "ResourceType", "WrongConstant", "RestrictedApi", "UnsafeOptInUsageError", "UnusedResources"]);
   const add = (finding) => {
     const key = JSON.stringify(finding);
     if (seen.has(key)) return;
@@ -51,7 +65,7 @@ function project(text, root, truncated) {
     const task = /^(?:> Task (:[\w:]+) FAILED|Execution failed for task '(:[\w:]+)'\.)$/.exec(line);
     if (task) {
       const value = task[1] ?? task[2];
-      if (/^:app:[A-Za-z][A-Za-z0-9]{0,79}$/.test(value) && safeIdentifier(value)) {
+      if (taskNames.has(value.replace(/^:app:/, "")) && value.startsWith(":app:")) {
         if (tasks.size < 16) tasks.add(value);
         else report.truncated = true;
       }
@@ -64,20 +78,28 @@ function project(text, root, truncated) {
     const test = /^((?:dev\.devpocket\.app\.)?[A-Za-z_$][\w$]{0,96}Test) > ([A-Za-z_$][\w$]{0,127}(?:\[\d{1,3}\])?) FAILED$/.exec(line);
     if (test && safeIdentifier(test[1]) && safeIdentifier(test[2])) {
       kinds.add("jvm-tests");
-      add({ kind: "jvm-test", suite: test[1], test: test[2] });
+      const classes = catalogue.files.flatMap((file) => file.testClasses)
+        .filter((item) => item.name === test[1] || item.name.endsWith(`.${test[1]}`));
+      const method = /^([A-Za-z_$][\w$]*)(?:\[(\d{1,3})\])?$/.exec(test[2]);
+      const methods = classes.length === 1 ? catalogue.files.flatMap((file) => file.methods)
+        .filter((item) => item.class === classes[0].name && item.name === method?.[1]) : [];
+      if (methods.length === 1) add({ kind: "jvm-test", suite: classes[0].name, test: methods[0].name,
+        file: methods[0].file.slice("android/".length), line: methods[0].line,
+        ...(method[2] === undefined ? {} : { invocationIndex: Number(method[2]) }) });
     }
     const exception = /^(?:Caused by:\s+)?((?:java|javax|kotlin|kotlinx|android|com\.android|org\.gradle|org\.jetbrains|org\.junit|org\.robolectric|dev\.devpocket\.app|com\.almworks\.sqlite4java)\.[A-Za-z_$][\w.$]{0,160}(?:Exception|Error))(?::.*| at ([A-Za-z_$][\w$]{0,100}\.(?:kt|java)):(\d{1,7}))?$/.exec(line);
-    if (exception && safeIdentifier(exception[1]) && (!exception[2] || safeIdentifier(exception[2]))) {
+    if (exception && exceptionNames.has(exception[1])) {
+      const files = exception[2] ? catalogue.files.filter((file) => file.basename === exception[2] && Number(exception[3]) <= file.lines) : [];
       add({ kind: "exception", type: exception[1],
-        ...(exception[2] ? { file: exception[2], line: Number(exception[3]) } : {}) });
+        ...(files.length === 1 ? { file: files[0].file.slice("android/".length), line: Number(exception[3]) } : {}) });
     }
     const location = /^(e:\s+)?(.+\.(?:kt|java|xml)):(\d{1,7})(?::(\d{1,7}))?:?\s+(.*)$/.exec(line);
     if (!location) continue;
-    const file = sourceFile(location[2], root);
+    const file = sourceFile(location[2], root, catalogue);
     if (!file) continue;
     const position = { file, line: Number(location[3]), ...(location[4] ? { column: Number(location[4]) } : {}) };
     const lint = /\b(?:Error|Fatal): .*\[([A-Za-z][A-Za-z0-9]{0,63})\]$/.exec(location[5]);
-    if (lint && safeIdentifier(lint[1])) {
+    if (lint && lintNames.has(lint[1])) {
       kinds.add("lint");
       add({ kind: "lint", ...position, issue: lint[1] });
     } else if (location[1] || /\berror: /i.test(location[5])) {
@@ -96,7 +118,7 @@ function project(text, root, truncated) {
   return report;
 }
 
-async function readBoundedLog(file) {
+export async function readBoundedLog(file) {
   let info;
   try { info = await lstat(file); }
   catch (error) {
@@ -130,7 +152,9 @@ async function readBoundedLog(file) {
 }
 
 async function main() {
-  const { values } = parseArgs({ options: { directory: { type: "string", default: path.join(".data", "ci", "android") } } });
+  const { values } = parseArgs({ options: {
+    directory: { type: "string", default: path.join(".data", "ci", "android") }, github: { type: "boolean", default: false },
+  } });
   const root = process.cwd(), directory = path.resolve(root, values.directory);
   const relative = path.relative(root, directory);
   if (!["ci", "verification"].some((folder) => relative.startsWith(path.join(".data", folder) + path.sep))) {
@@ -145,7 +169,13 @@ async function main() {
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Linked directories are not supported.");
   }
   const input = await readBoundedLog(path.join(directory, "android-build.log"));
-  const report = project(input.text, root, input.truncated);
+  let catalogue, catalogueAvailable = true, catalogueFailure;
+  try { catalogue = await deviceSourceCatalogue(root, { includeUnitTests: true }); }
+  catch (error) { catalogue = { files: [] }; catalogueFailure = failureDetails(error, "collector-failed"); }
+  catalogueAvailable = catalogue.files.length > 0;
+  const report = project(input.text, root, input.truncated, catalogue);
+  report.sourceCatalogueAvailable = catalogueAvailable;
+  report.collectionFailure = catalogueFailure ?? null;
   report.availability = input.availability;
   let bytes = JSON.stringify(report, null, 2) + "\n";
   while (Buffer.byteLength(bytes) > outputBudget) {
@@ -153,14 +183,14 @@ async function main() {
     report.truncated = true;
     bytes = JSON.stringify(report, null, 2) + "\n";
   }
-  const output = await open(path.join(directory, "android-diagnostics.json"), "wx", 0o600);
-  try { await output.writeFile(bytes); }
-  finally { await output.close(); }
-  process.stdout.write(bytes);
+  await publishDiagnostic({ root, directory, name: "android-diagnostics.json", value: report, limit: outputBudget, github: values.github });
+  if (catalogueFailure) process.exitCode = 1;
 }
 
-try { await main(); }
-catch {
-  console.error("Android diagnostic export refused or failed; no raw log was published.");
-  process.exitCode = 1;
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  try { await main(); }
+  catch {
+    console.error("Android diagnostic export refused or failed; no raw log was published.");
+    process.exitCode = 1;
+  }
 }

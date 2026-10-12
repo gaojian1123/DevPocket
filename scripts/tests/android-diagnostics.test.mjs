@@ -5,6 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
+import { LINUX_PLATFORM_TESTS } from "../backend-diagnostics.mjs";
 
 const exec = promisify(execFile);
 const entry = path.resolve("scripts/android-diagnostics.mjs");
@@ -31,6 +32,12 @@ test("the diagnostic command projects SDK, compiler, JVM and lint failures witho
   const item = await fixture(t);
   const source = path.join(item.root, "android", "app", "src", "main", "java", "dev", "devpocket", "app", "Main.kt");
   const manifest = path.join(item.root, "android", "app", "src", "main", "AndroidManifest.xml");
+  const testSource = path.join(item.root, "android", "app", "src", "test", "java", "dev", "devpocket", "app", "BackgroundModeTest.kt");
+  await mkdir(path.dirname(source), { recursive: true });
+  await mkdir(path.dirname(testSource), { recursive: true });
+  await writeFile(source, "package dev.devpocket.app\nclass Main\n" + "\n".repeat(20));
+  await writeFile(manifest, "<manifest>\n" + "\n".repeat(20) + "</manifest>\n");
+  await writeFile(testSource, "package dev.devpocket.app\nclass BackgroundModeTest {\n@Test fun cursorRestores() {}\n}\n" + "\n".repeat(240));
   const secret = "synthetic-private-value-do-not-publish";
   const log = [
     `Authorization: Bearer ${secret}`,
@@ -64,7 +71,7 @@ test("the diagnostic command projects SDK, compiler, JVM and lint failures witho
   assert.ok(report.findings.some((finding) => finding.kind === "compiler" &&
     finding.file === "app/src/main/java/dev/devpocket/app/Main.kt" && finding.line === 12 && finding.column === 7));
   assert.ok(report.findings.some((finding) => finding.kind === "jvm-test" &&
-    finding.suite === "BackgroundModeTest" && finding.test === "cursorRestores[26]"));
+    finding.suite === "dev.devpocket.app.BackgroundModeTest" && finding.test === "cursorRestores" && finding.invocationIndex === 26));
   assert.ok(report.findings.some((finding) => finding.kind === "exception" &&
     finding.type === "android.database.sqlite.SQLiteException" && finding.line === 236));
   assert.ok(report.findings.some((finding) => finding.kind === "lint" && finding.issue === "MissingPermission" &&
@@ -74,6 +81,26 @@ test("the diagnostic command projects SDK, compiler, JVM and lint failures witho
   }
   assert.equal(await readFile(path.join(item.directory, "report.json"), "utf8"), '{"preserved":"machine report"}\n');
   assert.equal(await readFile(path.join(item.directory, "android-build.log"), "utf8"), log);
+});
+
+test("the public Android exporter indexes standard build-type resources without losing the original failure", async (t) => {
+  const item = await fixture(t);
+  const source = path.join(item.root, "android", "app", "src", "debug", "res", "xml", "network_security_config.xml");
+  const release = path.join(item.root, "android", "app", "src", "release", "res", "xml", "network_security_config.xml");
+  for (const file of [source, release]) {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, "<network-security-config>\n\n</network-security-config>\n");
+  }
+  await writeFile(path.join(item.directory, "android-build.log"),
+    `${source}:2: Error: PRIVATE_BUILD_TYPE_VALUE [MissingPermission]\nBUILD FAILED\n`);
+  const { report, bytes } = await collect(item);
+  assert.equal(report.sourceCatalogueAvailable, true);
+  assert.equal(report.collectionFailure, null);
+  assert.ok(report.failureKinds.includes("build-failed"));
+  assert.ok(report.findings.some((finding) => finding.kind === "lint" &&
+    finding.file === "app/src/debug/res/xml/network_security_config.xml" && finding.line === 2));
+  assert.ok(!bytes.includes("PRIVATE_BUILD_TYPE_VALUE"));
+  assert.ok(!bytes.includes(item.root));
 });
 
 test("unrecognized and missing private logs do not become a successful verification result", async (t) => {
@@ -97,6 +124,10 @@ test("diagnostics bound both input and output while retaining the failure at the
     `e: app/src/main/java/File${index}.kt:7:8 compiler message must stay private`).join("\n");
   const item = await fixture(t, large + "\n" + "unreviewed-private-line\n".repeat(40_000) +
     "> Task :app:compileDebugKotlin FAILED\nBUILD FAILED\n");
+  const sources = path.join(item.root, "android", "app", "src", "main", "java");
+  await mkdir(sources, { recursive: true });
+  for (let index = 0; index < 30; index++) await writeFile(path.join(sources, `File${index}.kt`),
+    "package dev.devpocket.app\n" + "\n".repeat(10));
   const { report, bytes } = await collect(item);
   assert.equal(report.truncated, true);
   assert.ok(report.failedTasks.includes(":app:compileDebugKotlin"));
@@ -141,16 +172,17 @@ test("source locations outside Android source and untrusted identifiers stay pri
 test("CI publishes only the diagnostic projection alongside the original Android machine report", async () => {
   const workflow = await readFile(".github/workflows/ci.yml", "utf8");
   const android = workflow.split("\n  android:")[1].split("\n  device:")[0];
-  assert.match(android, /name: Export bounded Android failure diagnostics\r?\n\s+if: failure\(\)/);
-  assert.match(android, /node scripts\\android-diagnostics\.mjs --directory \.data\\ci\\android\r?\n\s+exit \$LASTEXITCODE/);
+  assert.match(android, /name: Export bounded Android failure diagnostics\r?\n\s+id: android_diagnostics\r?\n\s+if: failure\(\)/);
+  assert.match(android, /node scripts\\android-diagnostics\.mjs --directory \.data\\ci\\android --github\r?\n\s+exit \$LASTEXITCODE/);
   assert.match(android, /node scripts\\verify\.mjs[^\r\n]+\r?\n\s+exit \$LASTEXITCODE/);
   assert.ok(!android.includes("continue-on-error"));
-  const uploadStart = android.indexOf("- uses: actions/upload-artifact@v7");
+  const uploadStart = android.indexOf("name: verification-android");
   assert.ok(uploadStart >= 0, "The Android report upload step must exist.");
-  const upload = android.slice(uploadStart);
-  assert.match(upload, /if: always\(\)/);
+  const upload = android.slice(uploadStart).split("- uses:")[0];
   const paths = [...upload.matchAll(/^\s+(\.data\\[^\r\n]+)$/gm)].map((match) => match[1]);
-  assert.deepEqual(paths, [".data\\ci\\android\\report.json", ".data\\ci\\android\\android-diagnostics.json"]);
+  assert.deepEqual(paths, [".data\\ci\\android\\report.json"]);
+  assert.match(android, /if: always\(\) && steps\.android_diagnostics\.outputs\.report_ready == 'true'/);
+  assert.match(android, /name: android-test-diagnostics\r?\n\s+path: \.data\/ci\/android\/android-diagnostics\.json/);
   const manifest = JSON.parse(await readFile("package.json", "utf8"));
   for (const testFile of ["android-build.test.mjs", "android-diagnostics.test.mjs"]) {
     assert.ok(manifest.scripts["test:workflow"].includes(`scripts/tests/${testFile}`));
@@ -170,7 +202,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   for (const action of actions) counts[action] = (counts[action] ?? 0) + 1;
   assert.deepEqual(counts, {
     "actions/checkout@v7": 5, "actions/setup-node@v7": 5, "actions/setup-python@v7": 1,
-    "actions/upload-artifact@v7": 6, "actions/setup-java@v6": 2, "actions/download-artifact@v8": 1,
+    "actions/upload-artifact@v7": 15, "actions/setup-java@v6": 2, "actions/download-artifact@v8": 1,
   });
   assert.equal([...normalWorkflow.matchAll(
     /- uses: actions\/checkout@v7\n\s+with:\n\s+fetch-depth: 0\n\s+persist-credentials: false/g,
@@ -183,7 +215,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(workflow, /^permissions:\n  contents: read\n/m);
   assert.doesNotMatch(workflow, /continue-on-error:|FORCE_JAVASCRIPT_ACTIONS_TO_NODE20|ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION/);
   assert.doesNotMatch(workflow, /^\s+(?:merge-multiple|include-hidden-files|overwrite|archive|digest-mismatch):/m);
-  assert.equal([...normalWorkflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 6);
+  assert.equal([...normalWorkflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 14);
 
   const backend = workflow.split("\n  backend:")[1].split("\n  android:")[0];
   assert.match(backend, /\$env:DEVPOCKET_PROBE_PYTHON = \(Get-Command python -CommandType Application -ErrorAction Stop \| Select-Object -First 1\)\.Source\n\s+node scripts\\verify\.mjs/);
@@ -203,16 +235,22 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(device, /scripts\/verify\.ps1 -Base \$env:BASE_SHA -Group device -Jdk \$env:JAVA_HOME -Sdk \$env:ANDROID_HOME/);
   assert.match(device, /-Image system-images\/android-35\/google_apis\/x86_64 -Report \.data\/ci\/device\/report\.json/);
   assert.match(preparation, /node scripts\/linux-runtime\.mjs\n\s+exit \$LASTEXITCODE/);
-  assert.match(preparation, /node --test scripts\/tests\/linux-emulator\.test\.mjs scripts\/tests\/linux-process\.test\.mjs scripts\/tests\/linux-runtime\.test\.mjs/);
-  assert.match(device, /name: Export bounded owned-worker diagnostics\n\s+if: always\(\)/);
-  assert.match(device, /node scripts\/worker-diagnostics\.mjs --directory \.data\/ci\/device\n\s+exit \$LASTEXITCODE/);
+  assert.match(preparation, /node scripts\/platform-diagnostics\.mjs --github/);
+  assert.deepEqual(LINUX_PLATFORM_TESTS, [
+    "scripts/tests/linux-emulator.test.mjs", "scripts/tests/linux-process.test.mjs", "scripts/tests/linux-runtime.test.mjs",
+    "scripts/tests/worker-diagnostics.test.mjs", "scripts/tests/native-lifecycle.test.mjs", "scripts/tests/bounded-worker-log.test.mjs",
+  ]);
+  assert.match(device, /name: Export bounded owned-worker diagnostics\n\s+id: worker_diagnostics\n\s+if: always\(\)/);
+  assert.match(device, /node scripts\/worker-diagnostics\.mjs --directory \.data\/ci\/device --github\n\s+exit \$LASTEXITCODE/);
   assert.deepEqual([...device.matchAll(/^\s+((?:\.data|android)\/[^\r\n]+)$/gm)].map((match) => match[1]), [
     ".data/ci/device/report.json",
-    ".data/ci/device/worker-diagnostics.json",
     "android/app/build/outputs/apk/debug/app-debug.apk",
     "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
     ".data/ci/device/device/device-report.json",
   ]);
+  assert.match(device, /steps\.worker_diagnostics\.outputs\.report_ready == 'true'/);
+  assert.match(device, /name: owned-worker-diagnostics\n\s+path: \.data\/ci\/device\/worker-diagnostics\.json/);
+  assert.match(device, /steps\.device_diagnostics\.outputs\.report_ready == 'true'/);
 
   const gate = workflow.split("\n  gate:")[1];
   assert.match(gate, /needs: \[plan, backend, android, device\]\n\s+if: always\(\)/);
@@ -243,9 +281,11 @@ test("native startup diagnostics are manual-only, reuse the owned entry and neve
   assert.ok(startup.includes("BASE_SHA: ${{ steps.base.outputs.sha }}"));
   assert.ok(startup.includes("STARTUP_VARIANT: ${{ inputs.variant }}"));
   assert.match(startup, /uses: \.\/\.github\/actions\/prepare-native/);
-  assert.match(startup, /node scripts\/native-startup\.mjs --base \$env:BASE_SHA --variant \$env:STARTUP_VARIANT `\n\s+--directory \.data\/ci\/native-startup --jdk \$env:JAVA_HOME --sdk \$env:ANDROID_HOME `\n\s+--image system-images\/android-35\/google_apis\/x86_64\n\s+exit \$LASTEXITCODE/);
-  assert.match(startup, /uses: actions\/upload-artifact@v7\n\s+if: always\(\)/);
-  assert.match(startup, /name: native-startup-diagnostic\n\s+path: \.data\/ci\/native-startup\/startup-report\.json/);
+  assert.match(startup, /node scripts\/native-startup\.mjs --base \$env:BASE_SHA --variant \$env:STARTUP_VARIANT `\n\s+--directory \.data\/ci\/native-startup --jdk \$env:JAVA_HOME --sdk \$env:ANDROID_HOME `\n\s+--image system-images\/android-35\/google_apis\/x86_64 --github\n\s+exit \$LASTEXITCODE/);
+  assert.ok(startup.includes("CURRENT_OWNER: ${{ steps.probe.outputs.startup_run_id }}"));
+  assert.match(startup, /--job startup --step-result \$env:STEP_RESULT --owner=\$env:CURRENT_OWNER --github/);
+  assert.match(startup, /uses: actions\/upload-artifact@v7\n\s+if: always\(\) && steps\.diagnostics\.outputs\.startup_report_ready == 'true'/);
+  assert.match(startup, /name: native-startup-diagnostic\n\s+path: \.data\/ci\/native-startup\/public\/startup-report\.json/);
   assert.match(startup, /if-no-files-found: error/);
   assert.doesNotMatch(startup, /Required verification|name: verification-|continue-on-error|pull_request|pull_request_target|push:|schedule:|workflow_run:|workflow_call:|container:|self-hosted/);
 });

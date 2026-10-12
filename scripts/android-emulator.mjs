@@ -8,11 +8,12 @@ import { acquireLinuxEmulatorLease, linuxAcceleration, ownsLinuxListener } from 
 import { createWorkerObservation, projectWorkerDiagnostics } from "./worker-diagnostics.mjs";
 import { createNativeLifecycleCapture } from "./native-lifecycle.mjs";
 import { createBoundedWorkerLog } from "./bounded-worker-log.mjs";
+import { diagnosticError, contextualFailure, failureDetails } from "./diagnostic-errors.mjs";
 
 export function createLiveDeviceGuard(workers, inspect, signal) {
   const controller = new AbortController();
   const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-  const invalidate = (error = new Error("An owned emulator or ADB worker exited.")) => {
+  const invalidate = (error = Object.assign(new Error("An owned emulator or ADB worker exited."), { diagnosticCode: "worker-exited" })) => {
     if (!controller.signal.aborted) controller.abort(error);
   };
   const handlers = workers.map((worker) => {
@@ -48,8 +49,9 @@ export function trackManagedCommand(child, output, platform = process.platform, 
   const native = child.stdio?.[3] ? createNativeLifecycleCapture() : undefined;
   const observation = ["adb", "emulator"].includes(role) ? createWorkerObservation(role, signal, native) : undefined;
   const state = { child, settled: false, error: undefined, done: undefined,
+    role: ["adb", "emulator", "fixture"].includes(role) ? role : "unknown",
     requiresCleanupConfirmation: platform === "linux", cleanupConfirmed: false, workerObservation: observation,
-    logInfo: () => output.logInfo?.(), logError: undefined };
+    logInfo: () => output.logInfo?.(), logError: undefined, nativeCaptureError: undefined };
   output.on("error", (error) => {
     state.logError = error;
     child.stdout.resume();
@@ -61,7 +63,10 @@ export function trackManagedCommand(child, output, platform = process.platform, 
   if (native) {
     child.stdio[3].on("data", native.data);
     child.stdio[3].once("end", native.end);
-    child.stdio[3].once("error", native.fail);
+    child.stdio[3].once("error", (error) => {
+      state.nativeCaptureError = error;
+      native.fail();
+    });
   }
   child.stderr.on("data", (bytes) => {
     tail = (tail + bytes.toString()).slice(-4096);
@@ -83,6 +88,20 @@ export function trackManagedCommand(child, output, platform = process.platform, 
   return state;
 }
 
+export function managedWorkerDiagnostics(processes, runId, cleanup) {
+  const collectionFailures = processes.flatMap((state) => [
+    ...(state.logError || state.logInfo()?.status === "unavailable"
+      ? [{ role: state.role, channel: "worker-log", failure: failureDetails(state.logError, "collector-failed") }] : []),
+    ...(state.nativeCaptureError
+      ? [{ role: state.role, channel: "native-lifecycle", failure: failureDetails(state.nativeCaptureError, "collector-failed") }] : []),
+  ]);
+  return projectWorkerDiagnostics({
+    runId, cleanup, collectionFailures,
+    workers: processes.flatMap((state) => state.workerObservation
+      ? [{ ...state.workerObservation.snapshot(), workerLog: state.logInfo() }] : []),
+  });
+}
+
 export function requireManagedCleanup(state) {
   if (state.requiresCleanupConfirmation && !state.cleanupConfirmed) {
     throw new Error("Linux owned-process cleanup was not confirmed; retaining its data and lease.");
@@ -94,7 +113,7 @@ export async function waitForAndroid(check, label, timeoutMs, processState, sign
   let last = "not ready";
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
-    if (processState?.settled) throw new Error(`${label}: owned process exited before readiness.`);
+    if (processState?.settled) throw Object.assign(new Error(`${label}: owned process exited before readiness.`), { diagnosticCode: "worker-exited" });
     try { if (await check()) return; }
     catch (error) {
       if (error.processTreeStopped === false) throw error;
@@ -102,7 +121,7 @@ export async function waitForAndroid(check, label, timeoutMs, processState, sign
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new Error(`${label} timed out: ${last}`);
+  throw Object.assign(new Error(`${label} timed out: ${last}`), { diagnosticCode: "readiness-timeout" });
 }
 
 async function ownsListener(port, rootPid, signal) {
@@ -144,6 +163,7 @@ export async function withAndroidEmulator(options, operation) {
   const processes = [];
   let lease, failure, result, guard, workerDiagnostics, closing = false, commandCleanupUnconfirmed = false;
   const signal = options.signal;
+  const diagnostics = options.diagnostics;
   const sdk = path.resolve(options.sdk ?? process.env.DEVPOCKET_ANDROID_SDK ?? path.join(root, ".tools", "android-sdk"));
   const emulatorSdk = path.resolve(options.emulatorSdk ?? process.env.DEVPOCKET_EMULATOR_SDK ?? sdk);
   const jdk = path.resolve(options.jdk ?? process.env.DEVPOCKET_JDK ?? path.join(root, ".tools", "jdk-21"));
@@ -160,21 +180,26 @@ export async function withAndroidEmulator(options, operation) {
     return state;
   };
   try {
+    signal?.throwIfAborted();
+    diagnostics?.stage("resources", "image");
     if (!/^system-images[\\/]android-\d+(?:\.\d+)?[\\/](?:google_apis(?:_playstore)?|default)[\\/]x86_64$/.test(image)) {
-      throw new Error("Image must name an installed x86_64 SDK system-image directory.");
+      throw Object.assign(new Error("Image must name an installed x86_64 SDK system-image directory."), { diagnosticCode: "resource-unavailable" });
     }
     const imageDir = path.resolve(emulatorSdk, image);
     const executable = path.join(emulatorSdk, "emulator", linux ? "emulator" : "emulator.exe");
     const adb = path.join(emulatorSdk, "platform-tools", linux ? "adb" : "adb.exe");
     const javaPath = path.join(jdk, "bin", linux ? "java" : "java.exe");
     Object.assign(identity, { imageDir, executable, adbPath: adb, javaPath });
-    for (const file of [executable, adb, path.join(imageDir, "system.img")]) {
+    for (const [file, operation] of [[executable, "emulator"], [adb, "adb"], [path.join(imageDir, "system.img"), "image"]]) {
+      diagnostics?.operation(operation);
       try { await access(file); }
       catch (error) {
         if (error.code !== "ENOENT") throw error;
-        throw new Error(`Missing Android prerequisite: ${file}. Provision tools and licenses explicitly.`);
+        throw Object.assign(new Error(`Missing Android prerequisite: ${file}. Provision tools and licenses explicitly.`),
+          { diagnosticCode: "resource-unavailable" });
       }
     }
+    diagnostics?.stage("lease", "start");
     lease = await (linux ? acquireLinuxEmulatorLease : acquireEmulatorLease)({
       workspace: root, runId, signal, timeoutMs: options.queueTimeoutMs,
       onWaiting: options.onWaiting,
@@ -182,7 +207,9 @@ export async function withAndroidEmulator(options, operation) {
     Object.assign(identity, { leaseId: lease.id, ports: lease.ports,
       serial: `emulator-${lease.ports.console}`, avdName: `DevPocketCI_${runId.replaceAll("-", "")}` });
     await writeFile(path.join(directory, "owner.json"), JSON.stringify({ version: 1, root, runId, pid: process.pid }), { flag: "wx" });
+    diagnostics?.stage("prepare", "start");
     await options.prepare?.(identity);
+    diagnostics?.stage("avd", "start");
     const home = path.join(directory, "home"), avdHome = path.join(directory, "avd");
     const emulatorHome = path.join(directory, "emulator-home");
     await Promise.all([home, avdHome, emulatorHome].map((folder) => mkdir(folder)));
@@ -216,31 +243,36 @@ export async function withAndroidEmulator(options, operation) {
         throw error;
       }
     };
+    diagnostics?.stage("acceleration", "verify");
     const acceleration = await runCommand(executable, ["-accel-check"], { env, timeoutMs: 30_000, signal });
     if (linux) identity.acceleration = linuxAcceleration(acceleration.stdout + acceleration.stderr);
     await lease.handoff();
+    diagnostics?.stage("adb", "start");
     const adbServer = manage(adb, ["-L", `tcp:${lease.ports.adb}`, "nodaemon", "server"], env, "adb");
     await waitForAndroid(() => ownsListener(lease.ports.adb, adbServer.child.pid, signal),
       "Owned ADB listener", 30_000, adbServer, signal);
+    diagnostics?.stage("boot", "start");
     const emulator = manage(executable, ["-avd", identity.avdName, "-port", String(lease.ports.console),
       "-grpc", String(lease.ports.grpc), linux ? "-grpc-use-token" : "-grpc-use-jwt", "-no-window", "-no-audio",
       "-no-boot-anim", "-no-snapshot", "-no-metrics", "-show-kernel", "-gpu", gpu,
       ...(linux ? ["-accel", "on"] : [])], env, "emulator");
     guard = createLiveDeviceGuard([adbServer, emulator], async () => {
       if (!await ownsListener(lease.ports.adb, adbServer.child.pid, guard.signal)) {
-        throw new Error("The leased ADB listener is no longer owned by this run.");
+        throw Object.assign(new Error("The leased ADB listener is no longer owned by this run."), { diagnosticCode: "ownership-mismatch" });
       }
       for (const port of [lease.ports.console, lease.ports.device, lease.ports.grpc]) {
         if (!await ownsListener(port, emulator.child.pid, guard.signal)) {
-          throw new Error("A leased emulator listener is no longer owned by this run.");
+          throw Object.assign(new Error("A leased emulator listener is no longer owned by this run."), { diagnosticCode: "ownership-mismatch" });
         }
       }
       const observed = (await adbRun(["shell", "getprop", "ro.boot.qemu.avd_name"])).stdout.trim();
-      if (observed !== identity.avdName) throw new Error("Emulator ownership mismatch; no application operation was attempted.");
+      if (observed !== identity.avdName) throw Object.assign(new Error("Emulator ownership mismatch; no application operation was attempted."),
+        { diagnosticCode: "ownership-mismatch" });
       return observed;
     }, signal);
     await waitForAndroid(async () => (await adbRun(["shell", "getprop", "sys.boot_completed"], 10_000)).stdout.trim() === "1",
       "Emulator boot", 600_000, emulator, guard.signal);
+    diagnostics?.stage("ownership", "verify");
     const observed = await guard.verify();
     await writeFile(path.join(directory, "ownership.json"), JSON.stringify({
       expected: identity.avdName, observed, serial: identity.serial, adbPort: lease.ports.adb, leaseId: lease.id, ports: lease.ports,
@@ -248,48 +280,55 @@ export async function withAndroidEmulator(options, operation) {
     result = await operation({ ...identity, adb: adbRun, manage, verifyOwnership: guard.verify, signal: guard.signal });
     if (guard.failure) throw guard.failure;
   } catch (error) {
-    failure = error;
+    failure = contextualFailure(error, signal);
+    diagnostics?.fail(failure);
+    failure.failedCase ??= diagnostics?.failedCase();
   } finally {
     closing = true;
     guard?.close();
+    diagnostics?.stage("cleanup", "processes");
     // A worker can exit while another worker is being stopped.
     for (const state of processes) state.workerObservation?.markCleanup();
     const errors = commandCleanupUnconfirmed || failure?.processTreeStopped === false
       ? ["An owned command did not confirm process-tree cleanup."] : [];
+    if (errors.length) diagnostics?.issue("cleanup", diagnosticError("cleanup-failed"));
     for (const state of processes.reverse()) {
       try {
         if (!state.settled) await stopOwnedProcess(state.child);
         await state.done;
         requireManagedCleanup(state);
-      } catch (error) { errors.push(error.message); }
+      } catch (error) { errors.push(error.message); diagnostics?.issue("cleanup", error); }
     }
     try { await lease?.handoff(); }
-    catch (error) { errors.push(error.message); }
+    catch (error) { errors.push(error.message); diagnostics?.issue("cleanup", error); }
     if (!errors.length) {
       try {
+        diagnostics?.operation("data");
         const cleaned = await cleanDeviceRun(root, directory, runId);
         if (lease && !cleaned) throw new Error("An acquired emulator lease lost its run owner record; cleanup is unconfirmed.");
       }
-      catch (error) { errors.push(error.message); }
+      catch (error) { errors.push(error.message); diagnostics?.issue("cleanup", error); }
       if (!errors.length) {
-        try { await lease?.release(); }
-        catch (error) { errors.push(error.message); }
+        try { diagnostics?.operation("lease"); await lease?.release(); }
+        catch (error) { errors.push(error.message); diagnostics?.issue("cleanup", error); }
       }
     }
     if (errors.length) {
-      failure ??= new Error("Emulator cleanup did not complete.");
+      failure ??= diagnosticError("cleanup-failed");
       failure.cleanupErrors = errors;
+      diagnostics?.fail(failure);
     }
-    workerDiagnostics = projectWorkerDiagnostics({
-      runId, cleanup: errors.length ? "failed" : "completed",
-      workers: processes.flatMap((state) => state.workerObservation
-        ? [{ ...state.workerObservation.snapshot(), workerLog: state.logInfo() }] : []),
-    });
+    for (const state of processes) {
+      if (state.logError) diagnostics?.issue("worker-log", state.logError);
+      if (state.nativeCaptureError) diagnostics?.issue("native-lifecycle", state.nativeCaptureError);
+    }
+    workerDiagnostics = managedWorkerDiagnostics(processes, runId, errors.length ? "failed" : "completed");
     if (failure) {
       failure.cleanup = errors.length ? "failed" : "completed";
       failure.runDirectory = directory;
       failure.runId = runId;
       failure.workerDiagnostics = workerDiagnostics;
+      if (diagnostics) failure.deviceDiagnostics = diagnostics.snapshot();
     }
   }
   if (failure) throw failure;

@@ -124,6 +124,159 @@ allowlisted machine reports and explicitly selected candidate artifacts.
 Report destinations must be new files beneath `.data\verification` or `.data\ci`;
 existing reports and sealed/operational evidence cannot be overwritten.
 
+### End-to-end failure information
+
+Controlled failures retain separate **execution**, **evidence validation** and
+**diagnostic collection** outcomes. A failed collector or cleanup must not replace
+the original test failure. Conversely, a successful command is not accepted when
+its required report, source, APK or cleanup evidence is missing. The controller
+records fixed reason codes for invalid/missing reports, source/policy mismatches,
+missing/duplicate checks, APK identity, cancellation, deadlines and process exits.
+Final source-inspection exceptions retain the already collected checks and add a
+separate source-validation failure. Aggregation republishes only explicit
+acceptance fields, never arbitrary fields from an input shard. Baseline native
+class identifiers are fixed; additional public class identifiers must match
+current Android test-source declarations. An unrecognized additional identity
+blocks evidence publication rather than exposing its raw value or skipping it.
+Observed process exit values identify the owned command supervisor; they are not
+invented exit values for an unobserved descendant.
+
+Every job with available checkout/runtime can publish a bounded
+`verification-diagnostics.json` and a GitHub step summary. These include the
+job/check/phase, original exit facts, collection availability and safe source-aware
+hints from failed private check logs. Hints are not a proved root cause. A required
+upstream job failure also prevents a passing aggregate, even when an earlier
+check report survived a later exporter or artifact failure; that does not relabel
+the original tests as failed.
+
+The failure-surface audit and validation contract are:
+
+| Surface | Failure information and verification |
+| --- | --- |
+| Checkout, Node/JDK/Python setup and their post steps | Keep the named official Action's native error log and platform outcome; no duplicate wrapper. Current workflow contracts retain versions, read permissions and credential isolation. |
+| npm/Python dependency restoration | Keep direct command errors and exit status. The summary distinguishes an unstarted verifier and an unproduced report; it does not invent a check pass. |
+| Plan and explicit base resolution | Native Git/PowerShell errors identify base resolution; controller planning/report errors emit fixed structured reasons. Invalid-base and illegal-destination CLI cases remain nonzero. |
+| `workflow-tests` | Exact check/exit, private-log availability and bounded source-indexed declaration hints. Controlled predecessor, log-init, cancellation and collector regressions exercise the real controller. |
+| `typecheck`, `backend-build` | Exact check/exit plus bounded compiler codes and existing repository source positions. A real synthetic TypeScript compilation checks that private values are excluded. |
+| `backend-tests` | Existing protected source-mapped Node reporter, catalogue/nonce binding and guarded artifact, plus the common check summary. Original invocation/default concurrency and preflight privacy regressions remain. |
+| `schema` | Separate command failure and source-changed outcome. Source mutation cannot be accepted as an unchanged green result. |
+| `extension-package`, `setup`, `azure-tests`, `operations-tests` | Exact check/exit and fixed exception/error codes or trusted relative source frames where recognized. No archive/request/credential/assertion bodies are exported. Unsupported details remain unknown. |
+| Android build/JVM/lint | Bounded Android projection with declared test/source identities and fixed task/exception/lint identifiers; real compiler/Gradle output is not uploaded. Preserve incremental-task qualifications. |
+| Shared KVM/SDK/license preparation | Same resources and policy, with explicit fixed missing-device/access/license/package/tool/image reasons. SDK command failures preserve their exit. No new license acceptance or fallback acceleration. |
+| Shared Linux platform tests | Same fixed test list and default scheduling behind owned bounded capture and the protected Node reporter. Raw assertion/stdout events stay private; actual Node-failure counterexamples retain nonzero exits. |
+| Emulator loader preparation | Distinguish initial probe, package-index update, approved package installation and reprobe. Only the already-approved observed missing `libpulse.so.0` permits installation. |
+| Device execution and standalone startup | Owned phases, attempted cases, primary failure and secondary collection/cleanup facts survive runner/CLI/controller boundaries. Real boundary tests use synthetic failures, not only parser samples. |
+| Exporters and file/summary publication | Explicit missing/invalid/linked/oversized/foreign evidence; exclusive output creation. A readiness output is written only after the current safe JSON is created. Refused existing files are not uploaded. |
+| Artifact upload/download | Keep official Action errors and strict digest/missing-file behavior. Required upstream failures and missing shards remain blockers. |
+| Aggregate/source/policy/APK validation | Distinct safe reason codes and known check/input/artifact-role context, not a single generic exception. CLI regressions cover missing, invalid, mismatched and failed evidence. |
+
+Private check/build/case/crash logs retain at most 1 MiB of their beginning and
+end; the owned command capture has a separate bounded input budget. Summary
+sampling reads at most 256 KiB per failed check. Public check summaries are at
+most 64 KiB. Only current Git-indexed source paths and fixed error/compiler
+identifiers become general log hints; runtime error text is never copied.
+
+**Platform limit:** an unassigned runner, lost VM, forced process termination or
+unavailable checkout/runtime can prevent all finalization. Native GitHub job/step
+termination is then authoritative. A missing report is `not-produced` or
+`unavailable`, never a successful check. Old runs whose private logs were not
+retained cannot be reconstructed by new diagnostics.
+
+### Device failure diagnostics
+
+The device recorder tracks preparation/resources/lease/build/AVD/acceleration,
+ADB/boot/ownership, installation/discovery, native/layout/additional/fixture
+cases, source/APK validation and cleanup. A case is recorded when attempted,
+not only after a successful await. The first execution failure is retained
+while logcat, private-log, report and cleanup issues are recorded separately.
+Timeout/cancel/worker-exit and missing-report states remain explicit.
+Managed ADB/emulator/fixture log-write exceptions are collection failures, not
+failed native assertions or failed resource cleanup. Actual I/O exceptions on
+the dedicated native-lifecycle pipe also latch failed collection, with a fixed
+role/channel and allowlisted OS code, even when worker logs remain healthy.
+Incomplete or bounded-truncated telemetry alone is not an I/O exception.
+Startup capacity sampling similarly preserves unexpected filesystem exceptions
+as separate before/after-preparation collection failures; a later healthy sample
+cannot clear them. Explicitly unsupported or non-representable capacity remains
+unknown rather than an invented I/O failure.
+An otherwise passing native sequence retains `executionStatus: passed` and passed cases, but
+verification becomes blocked; diagnostic collectors exit nonzero after cleanup.
+The success-only APK artifact cannot qualify that run.
+
+Instrumentation projection reads only bounded output from the owned invocation.
+It matches class/method identities and relative source frames against the
+current Android source catalogue. Strings/comments are excluded from declaration
+scanning; unsupported declarations or mismatched catalogues stay unknown.
+Nested Kotlin interpolation is skipped as part of its enclosing literal, so
+inner strings cannot manufacture trusted declarations. Device/startup CLI
+argument errors are handled before any raw argument or stack can be printed.
+Java declarations are not inferred with the Kotlin scanner. Java files may
+provide known file locations, but class/method identity remains unsupported
+rather than approximating Java Unicode/comment/string semantics. Unknown
+additional classes cannot qualify through a missing class field or an
+unexpected case name.
+Only fixed exception types/status codes and trusted source references are public:
+no assertion operands, UI/session text, pairing codes, SDK events, argv/env,
+private absolute paths, credentials, URLs or whole logcat.
+
+The source catalogue is bounded to 128 files, 512 KiB per file and 4 MiB overall.
+Build diagnostics also index the standard debug/release resource source sets,
+including the debug network-security resource, without copying resource values.
+Instrumentation sampling is at most 128 KiB; long messages can still retain a
+known exception prefix without publishing their bodies. Case/history/secondary
+lists and stack frames are bounded. The device snapshot is at most 32 KiB;
+the final source-bound exporter envelope is at most 64 KiB. Unknown, truncated
+or unavailable collection does not erase known phase facts.
+
+The actual device CLI emits the safe final snapshot as well as retaining it in
+the private report. The verifier reprojects it, binds it to its originating
+device invocation, and can recover known facts from the safe CLI frame if the
+private report could not be written. Neither fallback qualifies missing formal
+native evidence. The raw private `device-report.json` is never made an
+unconditional failure artifact.
+
+Artifacts are explicit and separate:
+
+- `verification-backend`, `verification-android`, `verification-device`: the
+  original `report.json` only; `verification-summary`: `gate.json`.
+- `check-diagnostics-plan/backend/android/device/gate`: their bounded
+  `verification-diagnostics.json`.
+- `backend-test-diagnostics`, `android-test-diagnostics`,
+  `device-test-diagnostics`, `owned-worker-diagnostics`: only their corresponding
+  projected JSON. Android and worker projections require successful current
+  creation; the readiness marker prevents publishing refused/pre-existing files.
+- `native-platform-diagnostics`: the protected fixed-suite report.
+- The existing tested-APK artifact remains **success-only** and still contains
+  exactly the app APK, instrumentation APK and qualifying device report.
+
+Collectors do not use `continue-on-error`. A collector may publish a validated
+failure/unavailable descriptor and still exit nonzero: its error stays visible,
+and the original check outcome remains distinct. GitHub file-command writes are
+explicitly enabled by `--github` and restricted to the runner's file-command
+directory; synthetic tests use their own file-command fixtures.
+Unexpected source-index and private-log read exceptions are collector failures,
+not successful collection. Expected unproduced evidence and bounded truncation
+remain explicitly distinguished. Startup outer recovery cleanup similarly
+preserves the original owned command exit alongside a separate cleanup result.
+If the startup report itself cannot be written, its bounded failure snapshot
+travels through the owned CLI entry and an owner-validated entry fallback;
+report publication failure stays separate from the original preparation exit.
+The coordinator publishes a fresh invocation ID before launching the child.
+The startup collector requires that ID, rejects foreign/stale ready-shaped
+files, and prefers the validated current entry fallback when publication was
+refused. No invocation ID means no attributed startup report.
+Cancellation before/while waiting for a lease and lease deadlines have explicit
+categories without invented process exit codes.
+Actual recorder and controller collection exceptions are latched for the run;
+a later healthy catalogue read cannot clear them. This does not turn expected
+bounded truncation or explicitly unsupported declaration syntax into an
+execution failure.
+That latch also applies to planning, standalone readiness qualification and
+protected backend reporter frames. Successful test exits/readiness remain
+separate facts; a later catalogue recovery cannot requalify an earlier
+collection exception. Contradictory passed shards carrying collection-failed
+markers cannot satisfy aggregation.
+
 ### Backend failure diagnostics
 
 CI retains the normal owned PowerShell `npm test` invocation, test discovery,
@@ -172,7 +325,8 @@ at most 16 KiB. Linked inputs/directories and existing output files are refused.
 Missing, mismatched, ambiguous or unsupported evidence remains explicit.
 The original `verification-backend` artifact still contains only `report.json`.
 A separate `backend-test-diagnostics` artifact contains `backend-diagnostics.json`
-only when the current exporter succeeds. Refused/pre-existing output is never
+only after the current exporter creates validated output. A safe failed-collection
+descriptor may be published while the exporter exits nonzero; refused/pre-existing output is never
 published by that step; raw logs and the rest of `.data` are not published.
 The original failed check,
 unexecuted later checks and source-bound aggregate remain authoritative.
@@ -188,11 +342,12 @@ do not repeat an unchanged run merely to obtain green.
 ### Android failure diagnostics
 
 The Android CI job runs `scripts\android-diagnostics.mjs` after a failure and
-publishes only these two explicitly named files:
+keeps these explicitly named files in separate artifacts:
 
 - `.data\ci\android\report.json`: the original source-bound machine report.
 - `.data\ci\android\android-diagnostics.json`: diagnostic metadata, **not**
-  verification evidence or a replacement for the report.
+  verification evidence or a replacement for the report; published only after
+  the current exporter creates a validated output.
 
 The exporter also prints the same projection to the job log. It reads only
 `android-build.log` in the selected run directory. It samples at most 256 KiB
@@ -201,7 +356,10 @@ truncation. Allowlisted fields include known failure categories, failed app
 tasks, JVM test counts/identifiers, exception types/source positions, compiler
 source positions/error categories and lint issue IDs/source positions. Messages,
 assertion values, source excerpts, environment values, absolute paths, URLs and
-unrecognized text are omitted; credential-like identifiers are rejected too.
+unrecognized text are omitted. Test identities and source positions must match
+the current Android source catalogue; dynamic invocation suffixes become bounded
+numeric indices. Task/exception/lint names use fixed allowlists, not arbitrary
+names that merely look harmless.
 Raw Gradle logs, JVM XML/HTML reports, lint reports and the rest of `.data` are
 never uploaded by this step. An unsupported error may require an explicitly
 authorized local reproduction or further reviewed diagnostic projection.
@@ -312,8 +470,9 @@ success and failure. The CI exporter reads only that run's `report.json`
 (at most 512 KiB) and creates a separate, at-most-8-KiB
 `.data/ci/device/worker-diagnostics.json`. Missing input is reported as missing;
 linked inputs/directories and existing output files are refused. The device
-verification artifact selects only `report.json` and `worker-diagnostics.json`;
-the tested-APK artifact's existing success-only list is unchanged. The combiner
+verification artifact selects only `report.json`; the separately guarded
+`owned-worker-diagnostics` artifact selects only `worker-diagnostics.json`.
+The tested-APK artifact's existing success-only list is unchanged. The combiner
 continues to read only `report.json`. Diagnostic output can neither satisfy a
 missing required check nor turn a blocked/failed device result into a pass.
 
@@ -340,8 +499,11 @@ runner, including its command deadline, cancellation forwarding and owner nonce.
 not a replacement acceptance mode. Each diagnostic records source/base,
 emulator/ADB binary hashes, selected toolchain/image, available bytes on the owned
 run filesystem before/after preparation, readiness and bounded worker/native
-lifecycle metadata. Its explicit `startup-report.json` artifact is at most
-16 KiB and contains no raw output or private paths.
+lifecycle metadata and known execution phases. Its `startup-report.json`
+artifact is a reprojected copy from the run's `public` subdirectory, at most
+16 KiB, containing no raw output or private paths. A separate
+`check-diagnostics-startup` summary records preparation/entry/report availability.
+Neither is uploaded merely because an unvalidated destination already exists.
 
 A ready startup probe does not install/run the native test suite and cannot
 satisfy **Required verification**. The standalone workflow succeeds or fails

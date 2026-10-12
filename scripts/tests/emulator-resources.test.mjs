@@ -123,6 +123,7 @@ test("an occupied half-pair is skipped without leaking its other reserved port",
 
 test("cancelling a queued worktree removes its request without affecting the active holder", async (t) => {
   const { acquireEmulatorLease, emulatorLeaseStatus } = await import("../emulator-resources.mjs");
+  const { failureDetails } = await import("../diagnostic-errors.mjs");
   const pool = await poolFixture(t);
   const lease = await acquireEmulatorLease({ ...pool, workspace: pool.first, runId: randomUUID() });
   pool.cleanup(() => lease.release());
@@ -132,7 +133,12 @@ test("cancelling a queued worktree removes its request without affecting the act
   const pending = acquireEmulatorLease({
     ...pool, workspace: pool.second, runId: randomUUID(), signal: cancellation.signal, onWaiting: announce,
   });
-  const cancelled = assert.rejects(pending, { name: "AbortError" });
+  const cancelled = assert.rejects(pending, (error) => {
+    assert.equal(error.name, "AbortError");
+    assert.equal(failureDetails(error).reason, "command-cancelled");
+    assert.equal(failureDetails(error).exitCode, "unknown");
+    return true;
+  });
   await waiting;
   cancellation.abort();
   await cancelled;
@@ -145,6 +151,7 @@ test("cancelling a queued worktree removes its request without affecting the act
 
 test("a crashed owner is reclaimed only after all its leased ports are unoccupied", async (t) => {
   const { acquireEmulatorLease, emulatorLeaseStatus } = await import("../emulator-resources.mjs");
+  const { failureDetails } = await import("../diagnostic-errors.mjs");
   const pool = await poolFixture(t);
   const first = peer(pool);
   first.send({ type: "acquire", options: { ...pool, workspace: pool.first, runId: randomUUID() } });
@@ -160,7 +167,12 @@ test("a crashed owner is reclaimed only after all its leased ports are unoccupie
   await stopOwnedProcess(first.child);
   await assert.rejects(acquireEmulatorLease({
     ...pool, workspace: pool.second, runId: randomUUID(), timeoutMs: 250,
-  }), { code: "EMULATOR_SLOT_TIMEOUT" });
+  }), (error) => {
+    assert.equal(error.code, "EMULATOR_SLOT_TIMEOUT");
+    assert.equal(failureDetails(error).reason, "lease-timeout");
+    assert.equal(failureDetails(error).exitCode, "unknown");
+    return true;
+  });
   const stale = await emulatorLeaseStatus(pool);
   assert.equal(stale.leases[0].id, original.id);
   assert.equal(stale.leases[0].ownerAlive, false);
