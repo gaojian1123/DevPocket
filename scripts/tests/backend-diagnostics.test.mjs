@@ -365,7 +365,7 @@ test("backend-only CI reuses the normal job, conditionally exports validated dia
   const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
   const backend = workflow.split("\n  backend:")[1].split("\n  android:")[0];
   const android = workflow.split("\n  android:")[1].split("\n  device:")[0];
-  const device = workflow.split("\n  device:")[1].split("\n  startup:")[0];
+  const device = workflow.split("\n  device:")[1].split("\n  gate:")[0];
   const gate = workflow.split("\n  gate:")[1];
   assert.match(workflow, /backend_diagnostic:\n\s+description:.*\n\s+type: boolean\n\s+default: false/);
   assert.match(backend, /node scripts\\verify\.mjs --base \$env:BASE_SHA --group backend --backend-diagnostics --report/);
@@ -376,8 +376,8 @@ test("backend-only CI reuses the normal job, conditionally exports validated dia
   assert.match(backend, /if: always\(\) && steps\.backend_diagnostics\.outcome == 'success'\n\s+with:\n\s+name: backend-test-diagnostics/);
   const originalUpload = backend.split("name: verification-backend")[1].split("- uses:")[0];
   assert.doesNotMatch(originalUpload, /backend-diagnostics\.json/);
-  assert.ok(android.includes("inputs.startup_diagnostic || inputs.backend_diagnostic"));
-  assert.ok(device.includes("inputs.startup_diagnostic || inputs.backend_diagnostic"));
+  assert.ok(android.includes("!(github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic)"));
+  assert.ok(device.includes("!(github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic)"));
   assert.match(gate, /BACKEND_ONLY:.*inputs\.backend_diagnostic/);
   assert.match(gate, /if \(\$env:BACKEND_ONLY -eq 'true'\) \{\n\s+node scripts\\verify\.mjs .*--plan --report \.data\\ci\\gate\.json\n\s+throw 'A backend diagnostic cannot satisfy Required verification/);
   assert.doesNotMatch(workflow, /continue-on-error:|--test-concurrency|--test-name-pattern|\.data[\\/]\*\*/);

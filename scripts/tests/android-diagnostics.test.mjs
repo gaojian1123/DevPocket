@@ -160,7 +160,10 @@ test("CI publishes only the diagnostic projection alongside the original Android
 test("CI Action upgrades preserve toolchain selection, artifact isolation and the required device gate", async () => {
   const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
   const preparation = (await readFile(".github/actions/prepare-native/action.yml", "utf8")).replaceAll("\r\n", "\n");
-  const normalWorkflow = workflow.replace(/\n  startup:[\s\S]*?(?=\n  gate:)/, "");
+  const normalWorkflow = workflow;
+  assert.doesNotMatch(workflow, /startup_diagnostic|startup_variant|STARTUP_ONLY|\n  startup:/);
+  assert.deepEqual([...workflow.split("\njobs:\n")[1].matchAll(/^  ([A-Za-z_][\w-]*):[ \t]*$/gm)]
+    .map((match) => match[1]), ["plan", "backend", "android", "device", "gate"]);
   const expandedNormal = `${normalWorkflow}\n${preparation}`;
   const actions = [...expandedNormal.matchAll(/^\s+- uses: (actions\/[^\s]+)$/gm)].map((match) => match[1]);
   const counts = {};
@@ -186,7 +189,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(backend, /\$env:DEVPOCKET_PROBE_PYTHON = \(Get-Command python -CommandType Application -ErrorAction Stop \| Select-Object -First 1\)\.Source\n\s+node scripts\\verify\.mjs/);
   const android = workflow.split("\n  android:")[1].split("\n  device:")[0];
   assert.match(android, /--jdk \$env:JAVA_HOME --sdk \.tools\\android-sdk --report \.data\\ci\\android\\report\.json/);
-  const device = workflow.split("\n  device:")[1].split("\n  startup:")[0];
+  const device = workflow.split("\n  device:")[1].split("\n  gate:")[0];
   assert.match(device, /needs: \[plan, android\]/);
   assert.match(device, /needs\.plan\.outputs\.device == 'true' &&/);
   assert.ok(device.includes("(github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)"));
@@ -217,13 +220,34 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.ok(gate.includes("'--base', $env:BASE_SHA, '--combine'"));
   assert.ok(gate.includes("Get-ChildItem -LiteralPath .data\\ci\\inputs -Filter report.json -File -Recurse"));
   assert.match(gate, /node @arguments\n\s+if \(\$LASTEXITCODE -ne 0\) \{ throw /);
-  assert.match(gate, /if \(\$env:STARTUP_ONLY -eq 'true'\) \{\n\s+node scripts\\verify\.mjs .*--plan --report \.data\\ci\\gate\.json\n\s+throw 'A startup diagnostic cannot satisfy Required verification/);
-  const startup = workflow.split("\n  startup:")[1].split("\n  gate:")[0];
-  assert.match(startup, /if: github\.event_name == 'workflow_dispatch' && inputs\.startup_diagnostic/);
+});
+
+test("native startup diagnostics are manual-only, reuse the owned entry and never become a verification shard", async () => {
+  const startup = (await readFile(".github/workflows/native-startup-diagnostics.yml", "utf8")).replaceAll("\r\n", "\n");
+  const events = startup.split("\non:\n")[1].split("\npermissions:\n")[0];
+  assert.deepEqual([...events.matchAll(/^  ([A-Za-z_][\w-]*):[ \t]*$/gm)].map((match) => match[1]), ["workflow_dispatch"]);
+  assert.deepEqual([...events.matchAll(/^      ([A-Za-z_][\w-]*):[ \t]*$/gm)].map((match) => match[1]), ["base", "variant"]);
+  assert.match(events, /base:\n\s+description:.*\n\s+type: string\n\s+required: true/);
+  assert.match(events, /variant:\n\s+description:.*\n\s+type: choice\n\s+options:\n\s+- same-build\n\s+- without-build\n\s+default: same-build/);
+  assert.match(startup, /^permissions:\n  contents: read\n/m);
+  assert.deepEqual([...startup.split("\njobs:\n")[1].matchAll(/^  ([A-Za-z_][\w-]*):[ \t]*$/gm)]
+    .map((match) => match[1]), ["startup"]);
+  assert.match(startup, /GIT_CONFIG_KEY_0: core\.autocrlf\n\s+GIT_CONFIG_VALUE_0: 'false'/);
+  assert.match(startup, /group: devpocket-native-startup-\$\{\{ github\.ref \}\}\n\s+cancel-in-progress: false/);
   assert.match(startup, /runs-on: ubuntu-24\.04/);
+  assert.match(startup, /timeout-minutes: 35/);
+  assert.match(startup, /uses: actions\/checkout@v7\n\s+with:\n\s+fetch-depth: 0\n\s+persist-credentials: false/);
+  assert.ok(startup.includes("BASE_REF: ${{ inputs.base }}"));
+  assert.match(startup, /\$base = git merge-base -- HEAD \$env:BASE_REF\n\s+if \(\$LASTEXITCODE -ne 0 -or -not \$base\) \{ throw /);
+  assert.ok(startup.includes('"sha=$base" >> $env:GITHUB_OUTPUT'));
+  assert.ok(startup.includes("BASE_SHA: ${{ steps.base.outputs.sha }}"));
+  assert.ok(startup.includes("STARTUP_VARIANT: ${{ inputs.variant }}"));
   assert.match(startup, /uses: \.\/\.github\/actions\/prepare-native/);
+  assert.match(startup, /node scripts\/native-startup\.mjs --base \$env:BASE_SHA --variant \$env:STARTUP_VARIANT `\n\s+--directory \.data\/ci\/native-startup --jdk \$env:JAVA_HOME --sdk \$env:ANDROID_HOME `\n\s+--image system-images\/android-35\/google_apis\/x86_64\n\s+exit \$LASTEXITCODE/);
+  assert.match(startup, /uses: actions\/upload-artifact@v7\n\s+if: always\(\)/);
   assert.match(startup, /name: native-startup-diagnostic\n\s+path: \.data\/ci\/native-startup\/startup-report\.json/);
-  assert.doesNotMatch(startup, /name: verification-|continue-on-error/);
+  assert.match(startup, /if-no-files-found: error/);
+  assert.doesNotMatch(startup, /Required verification|name: verification-|continue-on-error|pull_request|pull_request_target|push:|schedule:|workflow_run:|workflow_call:|container:|self-hosted/);
 });
 
 test("CI binds exactly the first Python executable when command discovery returns multiple matches", async (t) => {

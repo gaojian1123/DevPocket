@@ -179,7 +179,7 @@ unexecuted later checks and source-bound aggregate remain authoritative.
 
 For a reviewed investigation, manual `backend_diagnostic: true` reuses the
 normal Windows backend job and toolchain/setup/entry chain, without starting
-unrelated Android/device jobs. It cannot be combined with startup diagnostics.
+unrelated Android/device jobs. Native-startup diagnostics use a separate workflow.
 **Required verification deliberately fails in this mode**, even if all backend
 checks pass. Normal PR/full manual mode still requires current native/source/APK
 evidence and every other selected check. Record the new question before each run;
@@ -319,10 +319,17 @@ missing required check nor turn a blocked/failed device result into a pass.
 
 ### Focused native-startup CI
 
-For a source-reviewed startup investigation, the existing manual workflow
-accepts `startup_diagnostic: true` and `startup_variant: same-build` (default) or
-`without-build`. It runs the hosted Ubuntu startup job without waiting for the
-backend/Windows build jobs. Both full verification and this diagnostic reuse
+For a source-reviewed startup investigation, **Native startup diagnostics**
+(`.github/workflows/native-startup-diagnostics.yml`) is a separate,
+`workflow_dispatch`-only workflow. Select an explicit `base` and `variant`:
+`same-build` (default) or `without-build`. The base resolves to its merge base
+with the selected workflow ref before shared preparation starts. This workflow
+does not run on pushes or pull requests, and the main **DevPocket verification**
+workflow has no native-startup diagnostic input or job. The existing backend-only
+diagnostic mode remains in the main workflow.
+
+The standalone job runs on hosted Ubuntu without waiting for backend/Windows
+build jobs. Both full verification and this diagnostic reuse
 `.github/actions/prepare-native` and the same build preparation, emulator
 configuration, KVM checks, resource ownership and cleanup implementation.
 The diagnostic keeps the owned PowerShell-to-Node entry chain used by the device
@@ -337,10 +344,21 @@ lifecycle metadata. Its explicit `startup-report.json` artifact is at most
 16 KiB and contains no raw output or private paths.
 
 A ready startup probe does not install/run the native test suite and cannot
-satisfy **Required verification**. Diagnostic dispatches deliberately leave that
-gate with a non-acceptance plan and a failing decision. Their artifact name is
-outside `verification-*`; the combiner cannot treat it as a shard. Normal PR and
-full manual verification still require every original check and native case.
+satisfy **Required verification**. The standalone workflow succeeds or fails
+according to the actual probe and required report publication; it has no
+deliberately failing verification job. Its report remains `acceptance: false`,
+and its artifact name is outside `verification-*`, so the combiner cannot treat
+it as a shard. Normal PR and full manual verification still require every
+original check and native case.
+
+GitHub requires a manual workflow to exist on the default branch before it can
+be dispatched. If that blocks pre-merge execution of a newly added workflow,
+retain static/entry-contract results separately from the new candidate's full
+verification. Do not add automatic triggers or change the default branch to
+bypass registration. Run an actual `same-build` manual check after the exact
+reviewed commit is merged and the workflow becomes available; do not label the
+new standalone entry runtime-tested beforehand.
+
 Record a falsifiable prediction and the changed factor before each experiment;
 do not repeat an unchanged failure without new information. Once startup is
 repaired, run full verification against the actual candidate.

@@ -8,21 +8,10 @@ on:
         description: Base commit or ref to compare with the selected workflow ref
         type: string
         required: true
-      startup_diagnostic:
-        description: Run only the hosted native-startup diagnostic; never acceptance
-        type: boolean
-        default: false
       backend_diagnostic:
         description: Run the normal backend job only with bounded diagnostics; never acceptance
         type: boolean
         default: false
-      startup_variant:
-        description: The one controlled startup-preparation factor
-        type: choice
-        options:
-          - same-build
-          - without-build
-        default: same-build
 
 permissions:
   contents: read
@@ -56,12 +45,7 @@ jobs:
         shell: pwsh
         env:
           BASE_REF: ${{ github.event.pull_request.base.sha || inputs.base }}
-          STARTUP_DIAGNOSTIC: ${{ inputs.startup_diagnostic }}
-          BACKEND_DIAGNOSTIC: ${{ inputs.backend_diagnostic }}
         run: |
-          if ($env:STARTUP_DIAGNOSTIC -eq 'true' -and $env:BACKEND_DIAGNOSTIC -eq 'true') {
-            throw 'Select only one diagnostic mode.'
-          }
           $base = git merge-base HEAD $env:BASE_REF
           if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve the comparison base.' }
           node scripts\verify.mjs --base $base --plan --report .data\ci\plan.json
@@ -74,7 +58,7 @@ jobs:
 
   backend:
     needs: plan
-    if: needs.plan.outputs.backend == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.startup_diagnostic)
+    if: needs.plan.outputs.backend == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -124,7 +108,7 @@ jobs:
 
   android:
     needs: plan
-    if: needs.plan.outputs.android == 'true' && !(github.event_name == 'workflow_dispatch' && (inputs.startup_diagnostic || inputs.backend_diagnostic))
+    if: needs.plan.outputs.android == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic)
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -168,7 +152,7 @@ jobs:
     needs: [plan, android]
     if: >-
       needs.plan.outputs.device == 'true' &&
-      !(github.event_name == 'workflow_dispatch' && (inputs.startup_diagnostic || inputs.backend_diagnostic)) &&
+      !(github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic) &&
       (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -210,35 +194,6 @@ jobs:
             .data/ci/device/device/device-report.json
           if-no-files-found: error
 
-  startup:
-    name: Native startup diagnostic only
-    needs: plan
-    if: github.event_name == 'workflow_dispatch' && inputs.startup_diagnostic
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: ./.github/actions/prepare-native
-      - name: Diagnose the same owned native startup
-        shell: pwsh
-        env:
-          BASE_SHA: ${{ needs.plan.outputs.base }}
-          STARTUP_VARIANT: ${{ inputs.startup_variant }}
-        run: |
-          node scripts/native-startup.mjs --base $env:BASE_SHA --variant $env:STARTUP_VARIANT `
-            --directory .data/ci/native-startup --jdk $env:JAVA_HOME --sdk $env:ANDROID_HOME `
-            --image system-images/android-35/google_apis/x86_64
-          exit $LASTEXITCODE
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: native-startup-diagnostic
-          path: .data/ci/native-startup/startup-report.json
-          if-no-files-found: error
-
   gate:
     name: Required verification
     needs: [plan, backend, android, device]
@@ -261,14 +216,9 @@ jobs:
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
           PLAN_RESULT: ${{ needs.plan.result }}
-          STARTUP_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.startup_diagnostic }}
           BACKEND_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic }}
         run: |
           if ($env:PLAN_RESULT -ne 'success') { throw 'The required check plan did not complete.' }
-          if ($env:STARTUP_ONLY -eq 'true') {
-            node scripts\verify.mjs --base $env:BASE_SHA --plan --report .data\ci\gate.json
-            throw 'A startup diagnostic cannot satisfy Required verification. Run full verification for acceptance.'
-          }
           if ($env:BACKEND_ONLY -eq 'true') {
             node scripts\verify.mjs --base $env:BASE_SHA --plan --report .data\ci\gate.json
             throw 'A backend diagnostic cannot satisfy Required verification. Run full verification for acceptance.'
