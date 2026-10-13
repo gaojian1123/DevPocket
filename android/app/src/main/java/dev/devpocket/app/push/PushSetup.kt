@@ -83,7 +83,7 @@ object Notifications {
     fun createChannels(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL, "会话提醒", NotificationManager.IMPORTANCE_DEFAULT).apply {
-            description = "CLI 等待审批、问题或任务结束。不会在锁屏显示消息内容。"
+            description = "GitHub Copilot 会话等待审批、问题或任务结束。不会在锁屏显示消息内容。"
             lockscreenVisibility = android.app.Notification.VISIBILITY_PRIVATE
         })
         manager.createNotificationChannel(NotificationChannel(BACKGROUND_CHANNEL, "后台连接状态", NotificationManager.IMPORTANCE_LOW).apply {
@@ -137,7 +137,7 @@ object Notifications {
             .setData(Uri.parse("devpocket://background/${Uri.encode(scope.key)}"))
             .putExtra(MainActivity.NOTIFICATION_SCOPE, WireJson.encodeToString(scope))
         val open = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val message = if (notice.kind == "attention") "原始 CLI 会话需要你处理审批或问题。请停车后打开应用。"
+        val message = if (notice.kind == "attention") "GitHub Copilot 会话需要你处理审批或问题。请停车后打开应用。"
             else "会话状态有更新，打开应用同步确认；通知不代表任务成功。"
         val tag = "$BACKGROUND_TAG${scope.key}"
         val repeated = context.getSystemService(NotificationManager::class.java).activeNotifications.any {
@@ -165,7 +165,7 @@ object Notifications {
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val intent = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val pending = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val message = if (kind == "attention") "原始 CLI 会话需要你处理审批或问题。" else "会话状态有更新，打开应用同步确认。"
+        val message = if (kind == "attention") "GitHub Copilot 会话需要你处理审批或问题。" else "会话状态有更新，打开应用同步确认。"
         NotificationManagerCompat.from(context).notify(id.hashCode(), NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.ic_launcher).setContentTitle("DevPocket").setContentText(message)
             .setContentIntent(pending).setAutoCancel(true).setVisibility(NotificationCompat.VISIBILITY_PRIVATE).build())

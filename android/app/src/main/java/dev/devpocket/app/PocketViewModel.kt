@@ -110,7 +110,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     private suspend fun attempt(block: suspend () -> Unit) {
         try { block() }
         catch (error: CancellationException) { throw error }
-        catch (error: Exception) { mutable.update { it.copy(error = error.message ?: "操作失败，请查看 Dev Box 终端。") } }
+        catch (error: Exception) { mutable.update { it.copy(error = error.message ?: "操作失败，请查看 Dev Box 上的原始 GitHub Copilot 客户端。") } }
     }
 
     fun clearError() = mutable.update { it.copy(error = null) }
@@ -252,7 +252,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         if (!liveState.isNullOrEmpty()) mutable.update { state ->
             if (state.selected == scope) state.copy(session = state.session?.copy(state = liveState, online = liveState != "offline")) else state
         }
-        if (page.reset) mutable.update { it.copy(error = "历史保留窗口已变化，已重新同步。旧记录仍可在原始终端查看。") }
+        if (page.reset) mutable.update { it.copy(error = "历史保留窗口已变化，已重新同步。旧记录仍可在原始客户端查看。") }
     }
 
     private suspend fun catchUp(scope: Scope) {
@@ -262,7 +262,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
             val page = apiFor(scope).events(scope, cursor)
             applyPage(scope, page)
             if (!page.hasMore) break
-            check(++pages < 100) { "历史记录过大，请在终端查看较早内容。" }
+            check(++pages < 100) { "历史记录过大，请在原始客户端查看较早内容。" }
         }
     }
 
@@ -405,7 +405,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private suspend fun command(scope: Scope, action: Action): Receipt {
-        check(mutable.value.selected == scope && mutable.value.session?.online == true) { "原始 CLI 会话离线，操作未发送。" }
+        check(mutable.value.selected == scope && mutable.value.session?.online == true) { "原始 GitHub Copilot 会话离线，操作未发送。" }
         val command = Command(UUID.randomUUID().toString(), action)
         var receipt = apiFor(scope).submit(scope, command)
         var attempts = 0
@@ -415,7 +415,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         }
         if (receipt.status in setOf("failed", "uncertain")) throw ApiFailure(409, receipt.error ?: WireError("FAILED", "操作未完成。"))
         if (receipt.status !in setOf("completed", "cancel_requested", "cancelled"))
-            throw ApiFailure(504, WireError("RESULT_PENDING", "操作结果尚未确认。请在终端核实，勿重复提交。"))
+            throw ApiFailure(504, WireError("RESULT_PENDING", "操作结果尚未确认。请在原始客户端核实，勿重复提交。"))
         return receipt
     }
 

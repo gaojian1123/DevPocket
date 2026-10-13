@@ -1,8 +1,10 @@
 # DevPocket 0.1.0 (development)
 
-DevPocket is a **native Android app written in Kotlin and Jetpack Compose** for a GitHub Copilot CLI terminal on a Windows Dev Box.
+DevPocket is a **native Android app written in Kotlin and Jetpack Compose** for **GitHub Copilot** sessions on a Windows Dev Box, in either **GitHub Copilot CLI** or the **GitHub Copilot desktop app (Copilot App)**.
 
-The phone joins a **registered, already-running CLI runtime** through an opt-in extension calling the CLI's bundled `joinSession()`, preserving the original terminal and session identity.
+The phone joins a **registered, already-running GitHub Copilot runtime** through an opt-in extension calling `joinSession()` from the runtime's bundled extension SDK, preserving the original process and session identity.
+
+The **original client** means the CLI terminal or desktop app hosting that session. Compatibility depends on extension loading, the bundled SDK and live capability evidence, not the client name alone. This does not imply support for every GitHub Copilot surface or build; the historical CLI checks below are not desktop-app acceptance evidence.
 
 ```text
 Native Android (Kotlin / Compose / OkHttp / Keystore)
@@ -10,7 +12,7 @@ Native Android (Kotlin / Compose / OkHttp / Keystore)
 DevPocket relay (Node 24 / TypeScript / SQLite)
         ^
         | outbound authenticated WSS only
-Dev Box extension -> joinSession() -> original Copilot terminal
+Dev Box extension -> joinSession() -> original GitHub Copilot runtime (CLI or desktop app)
 ```
 
 ## What is implemented
@@ -19,13 +21,13 @@ Dev Box extension -> joinSession() -> original Copilot terminal
 | --- | --- |
 | Native adaptive UI | Material 3; compact single-pane list/detail and bottom navigation; medium navigation rail; expanded list/detail panes; light/dark/system theme, dynamic color, edge-to-edge/IME insets, system Back, preserved drafts and reading position |
 | Pairing | Offline administrator-provisioned hosts; five-minute, 256-bit, one-use pairing; independent phone credentials; multiple hosts/relays; host-specific device revocation |
-| Extension installation | Install once for the OS user; all projects' CLI sessions that load the extension register automatically, without per-project switches; standalone ZIP distribution, no source checkout or npm dependencies on the target |
+| Extension installation | Install once for the OS user; all projects' GitHub Copilot sessions that load the extension register automatically, without per-project switches; standalone ZIP distribution, no source checkout or npm dependencies on the target |
 | Azure setup | One interactive command uses an existing azd login to register a new Dev Box with a verified running relay, encrypt the credential handoff, and install the user extension; no old deployment checkout, new public endpoint or relay restart |
 | Sessions | Registered original runtime only; same-repository worktrees share a project group, with per-session branch/worktree labels and search; pin/rename/archive metadata; explicit offline/unsupported state |
-| Chat | Earlier visible history, live assistant/tool output, terminal-to-phone and phone-to-terminal messages, durable command IDs, queued/admitted/processing/completed/uncertain delivery, offline drafts and replay |
-| Human decisions | Known permission forms: approve once or reject; actual permission mode is read-only; questions with exact choices/free text; stale results are errors; unsupported forms visibly require the terminal |
-| Stop | Sends `session.abort()` to the original runtime; shows **cancellation requested**, not stopped, until runtime idle evidence. Detached/background child processes must still be checked in the terminal |
-| Models | Lists the current CLI's models/reasoning levels; validates the selection; does not override organization policies or automatically approve model-switch compaction |
+| Chat | Earlier visible history, live assistant/tool output, bidirectional original-client/phone messages, durable command IDs, queued/admitted/processing/completed/uncertain delivery, offline drafts and replay |
+| Human decisions | Known permission forms: approve once or reject; actual permission mode is read-only; questions with exact choices/free text; stale results are errors; unsupported forms visibly require the original client |
+| Stop | Sends `session.abort()` to the original runtime; shows **cancellation requested**, not stopped, until runtime idle evidence. Detached/background child processes must still be checked in the original client |
+| Models | Lists the original GitHub Copilot runtime's models/reasoning levels; validates the selection; does not override organization policies or automatically approve model-switch compaction |
 | Files/attachments | Policy-aware project browsing; text/image previews, bounded downloads, PDF save/open through a trusted external app; <=2 MiB upload, <=4 per message, session-scoped IDs/checksums |
 | Git | Read-only status, branch, staged/unstaged per-path diffs; no commit, staging, checkout or push; no shell interpolation |
 | Notifications | Opt-in foreground-service background monitoring of all paired hosts' unarchived sessions, generic local reminders and a Stop notification; optional FCM remains separate and **unconfigured** until provisioned |
@@ -41,17 +43,17 @@ session viewport in a short window.
 
 Current limitations:
 
-- Only registered live sessions can be controlled. No automatic scan/resume of unregistered CLI history; no "create CLI session" command.
-- The recorded CLI version is diagnostic only, not an allowlist. Each control requires its own live evidence and supported response/request shapes through the CLI-bundled SDK. Missing or incompatible evidence disables only the affected controls; an unfamiliar or missing version does not disable otherwise supported controls. CLI **1.0.90-0** remains a historical acceptance target, not proof of compatibility for every build.
-- Pending tool permissions can be reconstructed at attachment. The bundled CLI does not expose a pending-question snapshot; a question already open at *first* attachment may require the terminal. Live questions and simple string/choice elicitation forms are supported. Complex elicitation, URL redirects, sandbox-bypass, plan-exit, limit and unknown permission forms require the terminal.
-- Incoming messages use CLI `mode: "enqueue"`. Sending during a tool does **not** immediately change or kill that tool. `queued` is reported only when observed in the runtime's public queue; `admitted` alone means delivery is acknowledged but execution has not been confirmed. The CLI's plain abort also clears queued input; the confirmation dialog warns about this and known cleared messages become cancelled after runtime idle evidence. Text and attachment metadata can be manually restored as a new draft.
+- Only registered live sessions can be controlled. No automatic scan/resume of unregistered GitHub Copilot history; no "create GitHub Copilot session" command.
+- The recorded runtime version is diagnostic only, not an allowlist. Each control requires its own live evidence and supported response/request shapes through the runtime-bundled SDK. Missing or incompatible evidence disables only the affected controls; an unfamiliar or missing version does not disable otherwise supported controls. GitHub Copilot CLI **1.0.90-0** remains a historical acceptance target, not proof of compatibility for every build or client.
+- Pending tool permissions can be reconstructed at attachment. The adapter has no pending-question snapshot; a question already open at *first* attachment may require the original client. Live questions and simple string/choice elicitation forms are supported. Complex elicitation, URL redirects, sandbox-bypass, plan-exit, limit and unknown permission forms require the original client.
+- Incoming messages use the runtime SDK's `mode: "enqueue"`. Sending during a tool does **not** immediately change or kill that tool. `queued` is reported only when observed in the runtime's public queue; `admitted` alone means delivery is acknowledged but execution has not been confirmed. The runtime's plain abort also clears queued input; the confirmation dialog warns about this and known cleared messages become cancelled after runtime idle evidence. Text and attachment metadata can be manually restored as a new draft.
 - The composer has one primary Send/Stop button. Nonblank draft text always selects Send, including while work is running. With no text, running, waiting and cancellation-requested sessions show Stop in that same position; idle sessions never show Stop. Offline/capability/upload restrictions still govern availability, and Stop opens the existing confirmation before requesting cancellation.
-- Renaming/pinning/archiving changes DevPocket metadata, not CLI storage or running work.
+- Renaming/pinning/archiving changes DevPocket metadata, not GitHub Copilot storage or running work.
 - Git and files fail closed if the runtime cannot evaluate content exclusion (observed in this non-Git disposable runtime). Secrets/private configuration, `.git`, runtime directories, symlinks and junctions are not exposed. Text preview <=256 KiB; image/PDF <=2 MiB; 200 directory entries/300 Git entries per response.
-- Reasoning choices come from each model's live catalog, including the native CLI's `capabilities.supports.reasoning_effort` array and supported SDK/legacy field variants. Only when no levels are enumerated does the app offer explicit text entry **validated by the original runtime** rather than inventing a supported list; malformed lists disable model controls instead of becoming manual input.
-- History imports the latest 15,000 runtime events; relay keeps the latest 20,000 visible events per session. Replay pages are byte-bounded (512 KiB). Android stores the latest 6,000 events and bounds decoded history text to 8 MiB. Cursor reset is shown when retention changes. Original history remains in the terminal.
-- Android hides completed assistant messages with no visible text after merging their events, including cached history. Tool-only turns no longer leave empty Copilot bubbles; streaming placeholders, normal replies and separate tool cards remain. The underlying events and delivery bookkeeping are retained, so late deltas cannot revive a completed empty message.
-- Attachments expire after seven days, with a 20 MiB per-session relay quota. Private Dev Box attachment staging remains until the operator removes its isolated bridge data; do not remove attachments while the CLI is using them.
+- Reasoning choices come from each model's live catalog, including the native runtime's `capabilities.supports.reasoning_effort` array and supported SDK/legacy field variants. Only when no levels are enumerated does the app offer explicit text entry **validated by the original runtime** rather than inventing a supported list; malformed lists disable model controls instead of becoming manual input.
+- History imports the latest 15,000 runtime events; relay keeps the latest 20,000 visible events per session. Replay pages are byte-bounded (512 KiB). Android stores the latest 6,000 events and bounds decoded history text to 8 MiB. Cursor reset is shown when retention changes. Original history remains in the original client.
+- Android hides completed assistant messages with no visible text after merging their events, including cached history. Tool-only turns no longer leave empty GitHub Copilot bubbles; streaming placeholders, normal replies and separate tool cards remain. The underlying events and delivery bookkeeping are retained, so late deltas cannot revive a completed empty message.
+- Attachments expire after seven days, with a 20 MiB per-session relay quota. Private Dev Box attachment staging remains until the operator removes its isolated bridge data; do not remove attachments while GitHub Copilot is using them.
 - The separately authorized Azure relay is running with publicly trusted HTTPS. Public checks, a temporary simulated controller, and the sealed native Android build's actual pairing/message roundtrip on a visible isolated emulator passed against the same ordinary CLI. The emulator login is retained for user trial; physical-phone/cellular acceptance is still pending. FCM, release signing and store distribution remain unprovisioned. Opt-in background monitoring is best-effort, **not** a system-push or vehicle-wake guarantee, and is not part of sealed build 002's acceptance.
 
 ## Projects and worktrees
@@ -85,6 +87,11 @@ receive the original ready shape, and old Android clients ignore the optional
 summary field. A new bridge on an old relay still groups by repository but warns
 that workspace labels require a relay update.
 
+Unavailable workspace metadata is omitted from summaries and refresh receipts.
+Pending-request synchronization remains available when file/Git policy or
+repository identity cannot be verified. File/Git access still requires its own
+live capability and policy checks.
+
 Existing persisted sessions remain readable without a migration. Old bridges
 and offline records keep their previous grouping until the original runtime
 registers through an updated bridge; DevPocket does not scan or resume them.
@@ -113,7 +120,7 @@ After the user finished the trial, its dedicated local emulator, ADB server and 
 
 ## AI development workflow
 
-The developer-only Copilot workflow is the default agent route for new feature
+The developer-only GitHub Copilot workflow is the default agent route for new feature
 implementation and bug-fix requests under `AGENTS.md`; no special workflow phrase
 is needed. It creates an isolated worktree, implements the task, runs source-bound
 checks and requests an independent read-only review with bounded repairs.
@@ -164,7 +171,7 @@ node .\dist\cli.js host create --data .data\relay --name "My Dev Box" `
 node .\dist\cli.js pair --config .data\my-box.local.json
 ```
 
-For a real installation use an independent **HTTPS** origin, omit `--dev-loopback`, transfer the host configuration **privately** to the Dev Box and restrict its Windows ACL to the authorized user. Do not store a host secret on the phone. A user-level extension installation opts in all CLI sessions that load it; keep a separate host identity per Dev Box/user.
+For a real installation use an independent **HTTPS** origin, omit `--dev-loopback`, transfer the host configuration **privately** to the Dev Box and restrict its Windows ACL to the authorized user. Do not store a host secret on the phone. A user-level extension installation opts in all GitHub Copilot sessions that load it; keep a separate host identity per Dev Box/user.
 
 On the Android pairing screen enter the independent relay origin, one-time code and device name. A debug emulator reaches the loopback relay as `http://10.0.2.2:8787`. This is an explicit **debug-only** exception; release builds reject HTTP. No trust-all certificate code is used.
 
@@ -172,8 +179,9 @@ On the Android pairing screen enter the independent relay origin, one-time code 
 
 Use the standalone ZIP and checksum from an extension release; follow
 [`extension\README.md`](extension/README.md) to verify and extract them. The target
-needs Node 24.x and a compatible Copilot CLI. It does not need this repository,
-npm dependencies, the Android toolchain or a local relay.
+needs Node 24.x and a compatible GitHub Copilot runtime in the CLI or desktop app
+that can load the extension and provide its bundled SDK. It does not need this
+repository, npm dependencies, the Android toolchain or a local relay.
 
 For an existing Azure relay managed by this project, install Azure Developer CLI
 (`azd`) and sign in to its directory if not already authenticated. Run this from
@@ -207,7 +215,7 @@ node .\devpocket.mjs pair --config C:\DevPocketPrivate\host.local.json
 ```
 
 Installation targets `%USERPROFILE%\.copilot\extensions\devpocket`, or
-`COPILOT_HOME\extensions\devpocket` when the CLI's custom configuration directory
+`COPILOT_HOME\extensions\devpocket` when the runtime's custom configuration directory
 is set. Host configuration and its absolute private `dataDir` remain outside
 that directory. The extracted package is not needed to run the installed bridge.
 It is still needed by the printed pairing/device-management commands: keep it
@@ -215,11 +223,11 @@ through pairing, or verify and re-extract the ZIP before later `pair`, `devices`
 or `revoke` use, retaining the existing host configuration.
 Repeat the install command from a newer package to update a managed installation.
 
-**There are no per-project allowlists or runtime enable switches.** New CLI
+**There are no per-project allowlists or runtime enable switches.** New GitHub Copilot
 sessions that load the extension automatically register and synchronize visible
 history, including earlier messages. Every phone paired with that host can access
 all registered sessions. This does not scan the disk or resume closed sessions.
-Normal CLI trust/permission-handler consent, permission mode, organization policy,
+Normal GitHub Copilot trust/permission-handler consent, permission mode, organization policy,
 live capability gates and file-content exclusion remain in effect.
 
 Installation and updates never reload existing sessions. Explicitly ask each
@@ -255,7 +263,7 @@ APK releases. No release is created merely by building locally.
 ## Project-scoped installation (compatibility)
 
 1. Build this project's bridge with `npm run build`.
-2. Inspect the existing CLI's version/capabilities. `--no-auto-update` may select an older bundled executable; do not use its banner as the only evidence. This machine's isolated check used `$env:COPILOT_AUTO_UPDATE='false'` plus `--prefer-version 1.0.90-0`.
+2. Inspect the existing GitHub Copilot runtime's live capabilities and extension-loading support. For GitHub Copilot CLI specifically, `--no-auto-update` may select an older bundled executable; do not use its banner as the only evidence. This machine's isolated CLI check used `$env:COPILOT_AUTO_UPDATE='false'` plus `--prefer-version 1.0.90-0`.
 3. Install **only to the intended existing Git root**, with explicit opt-in:
 
 ```powershell
@@ -263,12 +271,12 @@ node .\dist\cli.js install --config .data\my-box.local.json `
   --project C:\YourExistingRepository --confirm-install
 ```
 
-4. In the **already-running ordinary CLI terminal**, explicitly ask its built-in `extensions_reload` tool to hot-load the new project extension. This is a human trust decision: inspect the extension first. Loading/reloading other extensions may have their own lifecycle effects. DevPocket does **not** perform this action on your behalf.
-5. Verify the original terminal/session ID remains unchanged and earlier answers appear on the phone. Only then is attachment established. If the current CLI cannot discover/hot-load the extension, use the terminal; never claim that a newly spawned/resumed session is the existing runtime.
+4. In the **already-running GitHub Copilot session's original client**, explicitly ask its built-in `extensions_reload` tool to hot-load the new project extension. This is a human trust decision: inspect the extension first. Loading/reloading other extensions may have their own lifecycle effects. DevPocket does **not** perform this action on your behalf.
+5. Verify the original process/session ID remains unchanged and earlier answers appear on the phone. Only then is attachment established. If the original client cannot discover/hot-load the extension, continue there; never claim that a newly spawned/resumed session is the existing runtime.
 
-For a folder-only disposable test, the installer can prepare a **local, uninstalled plugin** with `--plugin-dir C:\AnIsolatedPluginFolder --confirm-install`. An ordinary terminal started with `--plugin-dir` may discover extensions added to that directory later on an explicit hot-load. A running terminal that was not started with this flag cannot retroactively acquire it. This is not a reason to restart the user's working terminal.
+For a folder-only disposable GitHub Copilot CLI test, the installer can prepare a **local, uninstalled plugin** with `--plugin-dir C:\AnIsolatedPluginFolder --confirm-install`. An ordinary CLI terminal started with `--plugin-dir` may discover extensions added to that directory later on an explicit hot-load. A running terminal that was not started with this flag cannot retroactively acquire it. This is not a reason to restart the user's working terminal.
 
-The extension imports `@github/copilot-sdk/extension` supplied by the CLI. It does **not** install an arbitrary newer SDK, request GitHub secrets, change permission mode, enable allow-all, or create a local control listener.
+The extension imports `@github/copilot-sdk/extension` supplied by the original runtime. It does **not** install an arbitrary newer SDK, request GitHub secrets, change permission mode, enable allow-all, or create a local control listener.
 
 ### Runtime capability evidence
 
@@ -326,7 +334,7 @@ their required probe group; each group updates only its own evidence:
   replaced by opaque values. Supported forms display their complete validated
   schema, including form-level and alternate-field descriptions, defaults and
   constraints. Defaults are informational, not automatic answers. If the full
-  definition cannot fit safely without redaction, the form is terminal-only.
+  definition cannot fit safely without redaction, the form requires the original client.
   `Other` is a literal enum choice unless the form actually declares a supported
   alternate field for custom text.
   Form length constraints count Unicode code
@@ -383,9 +391,14 @@ additional fields instead of stripping them. An incompatible response after a
 mutation is reported as **uncertain**, without automatically repeating the
 operation.
 
+Protocol-v1 names such as `cliVersion`, request type `terminal` and error code
+`TERMINAL_REQUIRED` remain unchanged for compatibility. They describe runtime
+metadata and original-client fallbacks, not a CLI-only product restriction.
+
 These checks establish adapter support, not end-to-end acceptance of an arbitrary
 runtime build. Real mutation/cancellation compatibility checks still require an
-explicitly opted-in disposable terminal; discovery never performs them.
+explicitly opted-in disposable session in the intended client; the CLI harness
+below uses a disposable terminal. Discovery never performs these checks.
 
 Earlier protocol-v1 relays remain compatible with the updated extension and app,
 but their cached-capability veto can delay recovery until a new summary arrives.
@@ -403,7 +416,7 @@ node .\dist\cli.js devices --config .data\my-box.local.json
 node .\dist\cli.js revoke --config .data\my-box.local.json --device DEVICE_UUID
 ```
 
-Revocation closes live subscriptions and blocks new commands/uploads/downloads for that host. Already-admitted CLI actions are not silently undone. A phone can also revoke its own host grant in Settings. "Remove relay/cache" is local deletion, **not** server-side revocation.
+Revocation closes live subscriptions and blocks new commands/uploads/downloads for that host. Already-admitted GitHub Copilot actions are not silently undone. A phone can also revoke its own host grant in Settings. "Remove relay/cache" is local deletion, **not** server-side revocation.
 
 ## Native Android build
 
@@ -569,7 +582,7 @@ or new relay endpoint is needed.
 - The default is off. The mode does not start at boot or automatically restart
   after process loss, force-stop or a device restart. Reopening the app reports
   an interrupted previous run rather than claiming it is connected; enable it
-  again explicitly. Stopping the mode never aborts or restarts the original CLI.
+  again explicitly. Stopping the mode never aborts or restarts the original GitHub Copilot runtime.
 - Catalog refresh discovers new sessions and removes archived or unauthorized
   ones. Local pairing, archive, revoke and forget actions refresh subscriptions
   immediately. Invalid credentials stop the affected subscriptions and remain
@@ -604,7 +617,7 @@ or new relay endpoint is needed.
   optional channel; enabling both can produce reminders from both channels.
 
 The Android foreground service declares `specialUse` for ongoing, user-started
-remote CLI monitoring that waits for human decisions and runtime updates, with
+remote GitHub Copilot session monitoring that waits for human decisions and runtime updates, with
 an explicit manifest subtype explanation. It does not misuse `dataSync` as an
 unlimited keepalive, request a system exemption, take a wake lock or silently
 change battery settings. Future store distribution still requires the applicable
@@ -616,7 +629,7 @@ Network loss, Doze, OEM process management, vehicle sleep and power loss can
 interrupt reception even with a foreground service. Real BYD/DiLink behavior,
 notification presentation and unattended runtime have not been accepted.
 This mode targets a powered-on, connected head unit, not waking a parked vehicle.
-Only interact with approvals or terminal controls while safely parked.
+Only interact with approvals or session controls while safely parked.
 
 ### Optional FCM
 
@@ -633,7 +646,7 @@ Push payloads contain opaque routing IDs and a generic update/attention notice, 
 
 If infrastructure already exists and needs a separately authorized endpoint recovery, [`deployment\AZURE-RECOVERY.md`](deployment/AZURE-RECOVERY.md) describes the new-IP → DNS verification → NIC/single-IP firewall switch gates. Original resources and approval evidence are preserved; preparing or previewing recovery is not permission to execute it.
 
-The successful non-sensitive encrypted-transport probe is documented in [`deployment\TRANSPORT-PROBE.md`](deployment/TRANSPORT-PROBE.md). The separately authorized and executed frozen real-release path is documented in [`deployment\REAL-RELEASE.md`](deployment/REAL-RELEASE.md): it preserves the business archive/origin, uses separate transport/control hashes and explicit phases, and cannot inherit probe or exhausted Blob-upload authorization. Actual endpoint/resource IDs and private receipts stay in the ignored environment directory. Public relay acceptance does not install a user's CLI extension, provision host credentials or pair a phone.
+The successful non-sensitive encrypted-transport probe is documented in [`deployment\TRANSPORT-PROBE.md`](deployment/TRANSPORT-PROBE.md). The separately authorized and executed frozen real-release path is documented in [`deployment\REAL-RELEASE.md`](deployment/REAL-RELEASE.md): it preserves the business archive/origin, uses separate transport/control hashes and explicit phases, and cannot inherit probe or exhausted Blob-upload authorization. Actual endpoint/resource IDs and private receipts stay in the ignored environment directory. Public relay acceptance does not install a user's GitHub Copilot extension, provision host credentials or pair a phone.
 
 The subsequent scoped [Dev Box onboarding](deployment/ONBOARDING.md) registered a named test host in that live cloud database, encrypted its credential to a protected Windows recipient, and connected a dedicated ordinary CLI using only a private local plugin. A temporary simulated public controller verified history, command delivery and live WSS, then had its grant revoked. The host configuration and history were retained when the user ended the dedicated local trial; an actual-phone pairing code is generated only when the user is ready.
 
@@ -642,7 +655,7 @@ A later user-selected visible emulator installed the exact sealed build 002, pai
 `deployment\compose.yaml` and `deployment\Caddyfile` are templates only. **Do not run them without authorization for the target infrastructure and its costs.**
 
 - Use a new domain, DNS records, certificates, volumes and credentials; do not reuse another project's endpoints or data.
-- Caddy and the relay share a container network namespace; Caddy terminates TLS and connects to relay loopback. Only ports 80/443 are published. No plaintext relay/CLI port is published.
+- Caddy and the relay share a container network namespace; Caddy terminates TLS and connects to relay loopback. Only ports 80/443 are published. No plaintext relay/runtime-control port is published.
 - The relay requires an exact trusted-proxy socket address plus HTTPS forwarding metadata in production. Do not configure a wildcard or trust client-supplied forwarded headers from arbitrary sources.
 - The supplied deployment is a **single relay replica** with SQLite WAL and private persistent volumes. Multiple replicas need a coordinated datastore and routing implementation; load-balancing this template as if it were stateless is unsupported.
 - Back up encrypted/private relay volumes under your infrastructure access policy; secure filesystem permissions, disk encryption, domain ownership, TLS renewal, monitoring and secret rotation remain operator responsibilities.
@@ -651,11 +664,11 @@ A later user-selected visible emulator installed the exact sealed build 002, pai
 ## Security and delivery semantics
 
 - Every controller operation and stream is authorized to a **device -> host -> registered session** grant. Opaque attachment IDs are checked against that scope. URL paths are not accepted as arbitrary RPC/shell requests.
-- Relay credentials are stored hashed; the only plaintext phone secret is Keystore-encrypted on Android. GitHub auth stays with the CLI. Sensitive environment access is not requested by the extension.
+- Relay credentials are stored hashed; the only plaintext phone secret is Keystore-encrypted on Android. GitHub auth stays with the original GitHub Copilot runtime. Sensitive environment access is not requested by the extension.
 - The relay **can see** user-visible messages and uploaded content. TLS is transport encryption, not end-to-end encryption. Use only a relay and administrative operators you trust.
-- The bridge explicitly projects allowed user events. System/developer prompts, `model.messages_snapshot`, reasoning internals, auth state and full RPC snapshots never enter the wire schema. Known token formats are redacted, but redaction cannot make arbitrary user/CLI text secret-free: do not paste secrets into conversations.
+- The bridge explicitly projects allowed user events. System/developer prompts, `model.messages_snapshot`, reasoning internals, auth state and full RPC snapshots never enter the wire schema. Known token formats are redacted, but redaction cannot make arbitrary user/runtime text secret-free: do not paste secrets into conversations.
 - Durable command IDs are immutable and retained as deduplication tombstones. Crash windows after recording intent but before an RPC result are **uncertain**, never blindly retried. A duplicate payload with another ID is a new user action. Monitor database growth and retain tombstones when archiving.
-- One-time decisions use the runtime's atomic `success` result. Terminal-first/phone-first races have one winner; a stale response is not success.
-- Approvals whose safe display is incomplete, redacted or unknown route back to the terminal. Do not approve model-generated command text without reviewing it.
-- Project file/Git operations are local and read-only, deny sensitive paths and links, bound output/time, and consult the CLI's content-exclusion evaluator on each operation.
+- One-time decisions use the runtime's atomic `success` result. Original-client-first/phone-first races have one winner; a stale response is not success.
+- Approvals whose safe display is incomplete, redacted or unknown route back to the original client. Do not approve model-generated command text without reviewing it.
+- Project file/Git operations are local and read-only, deny sensitive paths and links, bound output/time, and consult the runtime's content-exclusion evaluator on each operation.
 - Android renders untrusted content as selectable native text. Links and attachment previews remain non-executable; opening a saved document in a trusted external app is an explicit user action.

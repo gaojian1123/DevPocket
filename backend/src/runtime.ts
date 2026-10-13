@@ -265,7 +265,7 @@ function permission(item: unknown): PendingRequest {
           (kind !== "mcp" || !!text(server).trim()) && z.record(z.unknown()).safeParse(request.args ?? request.arguments).success;
   const detail = parsed.success
     ? JSON.stringify(Object.fromEntries(Object.entries(request).filter(([key]) => !permissionMetadata.has(key))), null, 2)
-    : "This permission form is unsupported. Review and answer it in the original terminal.";
+    : "This permission form is unsupported. Review and answer it in the original client.";
   const projected = redact(detail, 12_000);
   return PendingRequest.parse({
     requestId: raw.requestId,
@@ -317,8 +317,10 @@ export class CopilotRuntime {
 
   get summary(): SessionSummary {
     if (!this.current) throw new Fault("NOT_ATTACHED", "The original runtime has not finished registering.", 503);
+    const { workspace, ...summary } = this.current;
     return {
-      ...this.current,
+      ...summary,
+      ...(workspace === undefined ? {} : { workspace }),
       state: this.cancelRequested ? "cancel_requested" : this.observedActiveWork === undefined ? "unsupported" :
         this.requests.size ? "waiting" : this.observedActiveWork ? "running" : "idle",
     };
@@ -350,14 +352,14 @@ export class CopilotRuntime {
         await operation.catch(() => undefined);
       }
       this.warnings.set(label, error instanceof Fault && error.code === "CAPABILITY_TIMEOUT"
-        ? `${label} probe timed out; use the terminal.`
-        : `${label} probe failed (${redact(error instanceof Error ? error.name : "runtime error", 80)}); use the terminal.`);
+        ? `${label} probe timed out; use the original client.`
+        : `${label} probe failed (${redact(error instanceof Error ? error.name : "runtime error", 80)}); use the original client.`);
       return undefined;
     } finally {
       if (timer) clearTimeout(timer);
     }
     if (response === undefined) {
-      this.warnings.set(label, `${label} is unavailable; use the terminal.`);
+      this.warnings.set(label, `${label} is unavailable; use the original client.`);
       return undefined;
     }
     try {
@@ -365,7 +367,7 @@ export class CopilotRuntime {
       this.warnings.delete(label);
       return result;
     } catch {
-      this.warnings.set(label, `${label} returned an unsupported response shape; use the terminal.`);
+      this.warnings.set(label, `${label} returned an unsupported response shape; use the original client.`);
       return undefined;
     }
   }
@@ -373,7 +375,7 @@ export class CopilotRuntime {
   private hasMethod(label: string, ...methods: unknown[]): boolean {
     const available = methods.some((method) => typeof method === "function");
     if (available) this.warnings.delete(label);
-    else this.warnings.set(label, `${label} is unavailable in the bundled SDK; use the terminal.`);
+    else this.warnings.set(label, `${label} is unavailable in the bundled SDK; use the original client.`);
     return available;
   }
 
@@ -396,16 +398,16 @@ export class CopilotRuntime {
     }
     this.current = {
       sessionId: this.session.sessionId, projectId: "unavailable", projectName: "Unknown project",
-      title: "Copilot CLI", cliVersion: version, state: "unsupported", permissionMode: "unknown",
+      title: "GitHub Copilot", cliVersion: version, state: "unsupported", permissionMode: "unknown",
       modelId: "", reasoningEffort: "", registeredAt: Date.now(), warnings: [],
       capabilities: { messages: false, abort: false, permissions: false, questions: false, models: false, files: false, git: false },
     };
-    if (history.length > 15_000) this.notice("HISTORY_WINDOW", "The bridge imports the latest 15,000 runtime events. Older history remains in the terminal.");
+    if (history.length > 15_000) this.notice("HISTORY_WINDOW", "The bridge imports the latest 15,000 runtime events. Older history remains in the original client.");
     for (const event of history.slice(-15_000)) this.consume(event, true);
     hydrating = false;
     for (const event of buffered) this.consume(event);
-    this.warnings.set("Recorded version", "CLI version is recorded at session creation and is informational only; controls require live capability evidence.");
-    this.warnings.set("Pending questions", "Questions already open before first attachment may require the terminal; no pending-question snapshot is available.");
+    this.warnings.set("Recorded version", "GitHub Copilot runtime version is recorded at session creation and is informational only; controls require live capability evidence.");
+    this.warnings.set("Pending questions", "Questions already open before first attachment may require the original client; no pending-question snapshot is available.");
     return await this.refresh();
   }
 
@@ -447,7 +449,7 @@ export class CopilotRuntime {
         const abort = this.hasMethod("Cancellation", this.session.abort);
         const questions = this.hasMethod("Question responses", rpc.ui?.handlePendingUserInput, rpc.ui?.handlePendingElicitation);
         if (this.activity && typeof this.activity.abortable !== "boolean")
-          this.warnings.set("Abort evidence", "Runtime activity does not expose a supported cancellation shape; use the terminal.");
+          this.warnings.set("Abort evidence", "Runtime activity does not expose a supported cancellation shape; use the original client.");
         else if (this.activity?.hasActiveWork && !this.activity.abortable)
           this.warnings.set("Abort evidence", "The runtime's current work is not abortable; use the original client.");
         else this.warnings.delete("Abort evidence");
@@ -489,7 +491,7 @@ export class CopilotRuntime {
               } : projected);
               this.permissionIds.add(projected.requestId);
             } catch {
-              this.warnings.set("Permission projection", "A permission request could not be projected safely; review the terminal.");
+              this.warnings.set("Permission projection", "A permission request could not be projected safely; review the original client.");
             }
           }
         }
@@ -583,7 +585,7 @@ export class CopilotRuntime {
     if (this.closed) return;
     let items = this.visibleRequests().slice(0, 100);
     if (Buffer.byteLength(JSON.stringify(items)) > 450 * 1024) items = [{
-      requestId: "terminal-overflow", type: "terminal", title: "Review pending requests in the terminal",
+      requestId: "terminal-overflow", type: "terminal", title: "Review pending requests in the original client",
       detail: "Pending request details exceed the mobile-safe display budget. No mobile approval is available.",
       choices: [], allowFreeform: false, supported: false,
     }];
@@ -597,7 +599,7 @@ export class CopilotRuntime {
     if (this.closed) return;
     const parsed = runtimeEvent.safeParse(raw);
     if (!parsed.success) {
-      this.notice("EVENT_UNSUPPORTED", "A runtime event could not be read; details remain in the terminal.");
+      this.notice("EVENT_UNSUPPORTED", "A runtime event could not be read; details remain in the original client.");
       return;
     }
     const event = parsed.data;
@@ -636,7 +638,7 @@ export class CopilotRuntime {
           const toolCallId = text(data.toolCallId), name = text(data.toolName);
           this.tools.set(toolCallId, name);
           this.emit(UserEvent.parse({ ...base, kind: "tool.start", data: { toolCallId, name: redact(name, 200),
-            text: "Tool arguments remain in the terminal; review permission requests before approving." } }));
+            text: "Tool arguments remain in the original client; review permission requests before approving." } }));
           break;
         }
         case "tool.execution_partial_result":
@@ -650,7 +652,7 @@ export class CopilotRuntime {
           const whole = complete ? chunk : ((this.partialTools.get(toolCallId) ?? "") + chunk).slice(-32_000);
           if (complete) this.partialTools.delete(toolCallId); else this.partialTools.set(toolCallId, whole);
           this.emit(UserEvent.parse({ ...base, kind: "tool.output", data: {
-            toolCallId, text: visible ? redact(whole, 32_000) : "Tool details remain in the original terminal.",
+            toolCallId, text: visible ? redact(whole, 32_000) : "Tool details remain in the original client.",
             complete, ...(typeof data.success === "boolean" ? { success: data.success } : {}),
           } }));
           break;
@@ -680,11 +682,11 @@ export class CopilotRuntime {
           this.elicitationFields.delete(requestId);
           const parsed = userQuestion.safeParse(data);
           const question = parsed.success ? parsed.data : undefined;
-          const detail = question ? redact(question.question, 12_000) : "This unsupported or incomplete question requires the original terminal.";
+          const detail = question ? redact(question.question, 12_000) : "This unsupported or incomplete question requires the original client.";
           const choices = (question?.choices ?? []).map((choice) => redact(choice, 1000));
           const allowFreeform = question !== undefined && (question.allowFreeform ?? choices.length === 0);
           const item = PendingRequest.parse({
-            requestId, type: question ? "question" : "terminal", title: "The CLI needs your answer",
+            requestId, type: question ? "question" : "terminal", title: "GitHub Copilot needs your answer",
             detail, choices, allowFreeform,
             supported: question !== undefined && detail === question.question && (allowFreeform || choices.length > 0) &&
               choices.every((choice, index) => choice === question.choices?.[index]),
@@ -717,7 +719,7 @@ export class CopilotRuntime {
             redact(detail, 12_000) === detail && choices.every((choice) => redact(choice, 1000) === choice);
           if (simple) {
             const item = PendingRequest.parse({
-              requestId, type: "question", title: redact(field.title || "The CLI needs your answer", 500),
+              requestId, type: "question", title: redact(field.title || "GitHub Copilot needs your answer", 500),
               detail,
               choices: alternateChoice ? choices.filter((choice) => choice !== alternateChoice) : choices,
               allowFreeform: choices.length === 0 || !!alternateChoice, supported: typeof this.session.rpc?.ui?.handlePendingElicitation === "function",
@@ -733,7 +735,7 @@ export class CopilotRuntime {
           } else {
             this.requests.set(requestId, {
               requestId, type: "terminal", title: "Structured request",
-              detail: "This form or URL request requires the original terminal. It will not be auto-accepted.",
+              detail: "This form or URL request requires the original client. It will not be auto-accepted.",
               choices: [], allowFreeform: false, supported: false,
             });
           }
@@ -745,7 +747,7 @@ export class CopilotRuntime {
           if (historical) break;
           this.requests.set(text(data.requestId), {
             requestId: text(data.requestId), type: "terminal", title: event.type,
-            detail: "This structured request requires the original terminal. DevPocket will not auto-accept it.",
+            detail: "This structured request requires the original client. DevPocket will not auto-accept it.",
             choices: [], allowFreeform: false, supported: false,
           });
           if (!historical) this.emitRequests(event.id, event.timestamp);
@@ -771,13 +773,13 @@ export class CopilotRuntime {
           } });
           break;
         case "session.error":
-          this.notice("RUNTIME_ERROR", text(data.message) || "The CLI reported an error. Inspect the terminal.");
+          this.notice("RUNTIME_ERROR", text(data.message) || "GitHub Copilot reported an error. Inspect the original client.");
           break;
         default:
           if (!historical && event.type.endsWith(".requested") && text(data.requestId)) {
             this.requests.set(text(data.requestId), {
               requestId: text(data.requestId), type: "terminal", title: event.type,
-              detail: "This runtime request is not supported on the phone. Review it in the original terminal.",
+              detail: "This runtime request is not supported on the phone. Review it in the original client.",
               choices: [], allowFreeform: false, supported: false,
             });
             this.emitRequests(event.id, event.timestamp);
@@ -787,14 +789,14 @@ export class CopilotRuntime {
           }
       }
     } catch {
-      this.notice("EVENT_UNSUPPORTED", `Unsupported ${event.type} data. Review the original terminal.`);
+      this.notice("EVENT_UNSUPPORTED", `Unsupported ${event.type} data. Review the original client.`);
     }
   }
 
   async models(): Promise<ModelItem[]> {
     await this.refreshGroup("models");
     if (!this.summary.capabilities.models)
-      throw new Fault("UNSUPPORTED", "Model controls require a supported live model state and catalogue. Use the terminal.", 409);
+      throw new Fault("UNSUPPORTED", "Model controls require a supported live model state and catalogue. Use the original client.", 409);
     return this.modelItems;
   }
 
@@ -804,7 +806,7 @@ export class CopilotRuntime {
     if (capability) {
       await this.refreshGroup(capabilityGroup[capability]);
       if (!this.summary.capabilities[capability])
-        throw new Fault("UNSUPPORTED", `This runtime does not expose the required ${capability} capability. Use the original terminal.`, 409);
+        throw new Fault("UNSUPPORTED", `This runtime does not expose the required ${capability} capability. Use the original client.`, 409);
     }
     switch (action.type) {
       case "message": {
@@ -833,7 +835,7 @@ export class CopilotRuntime {
         const item = this.requests.get(action.requestId);
         if (!item) throw new Fault("REQUEST_STALE", "The request was already answered or is no longer pending.", 409);
         if (!item.supported || item.type !== "permission" || typeof rpc.permissions?.handlePendingPermissionRequest !== "function")
-          throw new Fault("TERMINAL_REQUIRED", "Review this permission in the original terminal.", 409);
+          throw new Fault("TERMINAL_REQUIRED", "Review this permission in the original client.", 409);
         const result = requestResolution.parse(await rpc.permissions.handlePendingPermissionRequest({
           requestId: action.requestId, result: { kind: action.decision },
         }));
@@ -847,16 +849,16 @@ export class CopilotRuntime {
       }
       case "answer": {
         const item = this.requests.get(action.requestId);
-        if (!item) throw new Fault("REQUEST_STALE", "Question is no longer pending or predates attachment. Use the terminal.", 409);
+        if (!item) throw new Fault("REQUEST_STALE", "Question is no longer pending or predates attachment. Use the original client.", 409);
         const form = this.elicitationFields.get(action.requestId);
         if (item.type !== "question" || !item.supported || (!form && typeof rpc.ui?.handlePendingUserInput !== "function"))
-          throw new Fault("TERMINAL_REQUIRED", "This request must be answered in the terminal.", 409);
+          throw new Fault("TERMINAL_REQUIRED", "This request must be answered in the original client.", 409);
         if (!item.allowFreeform && !item.choices.includes(action.answer))
           throw new Fault("INVALID_CHOICE", "Choose an exact answer offered by the runtime.");
         let raw: unknown;
         if (form) {
           if (typeof rpc.ui?.handlePendingElicitation !== "function")
-            throw new Fault("TERMINAL_REQUIRED", "This request must be answered in the terminal.", 409);
+            throw new Fault("TERMINAL_REQUIRED", "This request must be answered in the original client.", 409);
           const alternate = !item.choices.includes(action.answer) && form.alternateField && form.alternateChoice;
           const minLength = alternate ? form.alternateMinLength ?? 0 : form.minLength;
           const maxLength = alternate ? form.alternateMaxLength ?? 8000 : form.maxLength;
@@ -882,7 +884,7 @@ export class CopilotRuntime {
         } } };
       case "model.set": {
         const model = this.modelItems.find((item) => item.id === action.modelId);
-        if (!model?.enabled || typeof rpc.model?.switchTo !== "function") throw new Fault("MODEL_UNAVAILABLE", "The CLI does not allow this model.", 409);
+        if (!model?.enabled || typeof rpc.model?.switchTo !== "function") throw new Fault("MODEL_UNAVAILABLE", "GitHub Copilot does not allow this model.", 409);
         if (action.reasoningEffort && model.reasoningEfforts.length && !model.reasoningEfforts.includes(action.reasoningEffort))
           throw new Fault("REASONING_UNSUPPORTED", "This reasoning level is not supported by the selected model.", 409);
         let raw: unknown;
@@ -897,7 +899,7 @@ export class CopilotRuntime {
           throw error;
         }
         const result = modelSelection.parse(raw);
-        if (result.confirmation) throw new Fault("TERMINAL_REQUIRED", "Model switch needs compaction confirmation in the terminal.", 409);
+        if (result.confirmation) throw new Fault("TERMINAL_REQUIRED", "Model switch needs compaction confirmation in the original client.", 409);
         // A read started during switchTo may still contain the previous model.
         await this.refreshInFlight.get("models");
         await this.refreshGroup("models");

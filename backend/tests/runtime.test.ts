@@ -5,7 +5,7 @@ import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { CopilotRuntime, type JoinedSession } from "../src/runtime.js";
 import { Action, PendingRequest, SessionSummary, UserEvent } from "../src/protocol.js";
-import { hash } from "../src/security.js";
+import { hash, redact } from "../src/security.js";
 import { gitFixture } from "./git-fixture.js";
 
 export function runtimePeer(root: string, version: string | null = "1.0.90-0") {
@@ -20,7 +20,7 @@ export function runtimePeer(root: string, version: string | null = "1.0.90-0") {
     sessionId: id,
     getEvents: async () => [
       event("session.start", { sessionId: id, ...(version === null ? {} : { copilotVersion: version }), context: { cwd: root } }),
-      event("user.message", { messageId: "original-user", content: "In the terminal before attachment", source: "system" }),
+      event("user.message", { messageId: "original-user", content: "In the original client before attachment", source: "system" }),
       event("system.message", { content: "NEVER_EXPORT" }),
       event("model.messages_snapshot", { messages: [{ role: "system", content: "NEVER_EXPORT" }] }),
       event("assistant.reasoning_delta", { deltaContent: "PRIVATE_REASONING" }),
@@ -87,16 +87,52 @@ test("runtime attachment exports earlier visible history without system prompts 
   t.after(async () => { runtime.close(); await rm(root, { recursive: true, force: true }); });
   const summary = await runtime.connect();
   assert.equal(summary.sessionId, peer.session.sessionId);
+  assert.equal(summary.title, "Original runtime");
   assert.equal(summary.permissionMode, "manual");
   assert.equal(summary.state, "waiting");
   const text = JSON.stringify(events);
-  assert.ok(text.includes("In the terminal before attachment"));
+  assert.ok(text.includes("In the original client before attachment"));
   assert.ok(text.includes("Original answer"));
   assert.ok(!text.includes("NEVER_EXPORT"));
   assert.ok(!text.includes("PRIVATE_REASONING"));
   const receipt = await runtime.execute({ type: "message", text: "Phone continuation", attachmentIds: [] });
   assert.equal(receipt.status, "admitted");
   assert.equal(receipt.result?.messageId, "runtime-user-id");
+});
+
+test("shared runtime labels name GitHub Copilot without assuming a CLI client", async (t) => {
+  const f = await capabilityFixture(t);
+  delete f.session.rpc.name;
+  const summary = await f.runtime.connect();
+  assert.equal(summary.title, "GitHub Copilot");
+  assert.equal(summary.sessionId, f.session.sessionId);
+  assert.equal(summary.cliVersion, "1.0.90-0");
+  assert.ok(summary.warnings.some((warning) => warning === "Session name is unavailable; use the original client."));
+
+  f.emit("user_input.requested", { requestId: "question", question: "Continue?", choices: ["Yes", "No"] });
+  const question = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === "question");
+  assert.equal(question?.title, "GitHub Copilot needs your answer");
+  assert.equal(question?.supported, true);
+  f.emit("exit_plan_mode.requested", { requestId: "plan" });
+  const plan = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === "plan");
+  assert.equal(plan?.type, "terminal");
+  assert.equal(plan?.supported, false);
+  assert.match(plan?.detail ?? "", /original client/);
+  await assert.rejects(f.runtime.execute({ type: "answer", requestId: "plan", answer: "Yes" }), {
+    code: "TERMINAL_REQUIRED", message: "This request must be answered in the original client.",
+  });
+
+  f.session.rpc.name = { get: async () => ({ name: "User-defined session name" }) };
+  assert.equal((await f.runtime.refresh()).title, "User-defined session name");
+});
+
+test("original-client truncation notices fit within projection text budgets", () => {
+  assert.equal(redact("Short text", 80), "Short text");
+  for (const limit of [80, 160, 500, 2000, 12_000, 64_000]) {
+    const projected = redact("x".repeat(limit + 1), limit);
+    assert.equal(projected.length, limit);
+    assert.ok(projected.endsWith("\n[truncated; see original client]"));
+  }
 });
 
 test("linked worktrees share project identity without changing the original runtime or working directory", async (t) => {
@@ -121,6 +157,21 @@ test("linked worktrees share project identity without changing the original runt
   }
 });
 
+test("refresh receipts omit unavailable workspace metadata without changing runtime capabilities", async (t) => {
+  const f = await capabilityFixture(t);
+  delete f.session.rpc.contentExclusion;
+  const initial = await f.runtime.connect();
+  const receipt = await f.runtime.execute({ type: "refresh" });
+  assert.equal(receipt.status, "completed");
+  const summary = SessionSummary.parse(receipt.result?.summary);
+  assert.equal(Object.hasOwn(summary, "workspace"), false);
+  assert.equal(Object.hasOwn(f.runtime.summary, "workspace"), false);
+  assert.equal(summary.sessionId, initial.sessionId);
+  assert.equal(summary.projectId, initial.projectId);
+  assert.deepEqual(summary.capabilities, { ...allCapabilities, files: false, git: false });
+  assert.deepEqual(receipt.result?.requests, f.events.filter((event) => event.kind === "requests").at(-1)?.data.items);
+});
+
 test("project metadata refresh follows the live branch and clears stale Git identity when policy is unavailable", async (t) => {
   const f = await gitFixture(t), peer = runtimePeer(f.worktree);
   const runtime = new CopilotRuntime(peer.session, () => {});
@@ -133,8 +184,10 @@ test("project metadata refresh follows the live branch and clears stale Git iden
 
   const check = peer.session.rpc.contentExclusion!.checkPaths!;
   peer.session.rpc.contentExclusion!.checkPaths = async () => ({ available: false, checks: [] });
-  const denied = await runtime.refresh();
-  assert.equal(denied.workspace, undefined);
+  const deniedReceipt = await runtime.execute({ type: "refresh" });
+  assert.equal(deniedReceipt.status, "completed");
+  const denied = SessionSummary.parse(deniedReceipt.result?.summary);
+  assert.equal(Object.hasOwn(denied, "workspace"), false);
   assert.equal(denied.projectId, hash(process.platform === "win32" ? f.worktree.toLowerCase() : f.worktree));
   assert.equal(denied.projectName, "task-worktree");
   assert.equal(denied.capabilities.files, false);
@@ -144,7 +197,9 @@ test("project metadata refresh follows the live branch and clears stale Git iden
   assert.ok(denied.warnings.some((warning) => /File and Git views/.test(warning)));
 
   peer.session.rpc.contentExclusion!.checkPaths = check;
-  const recovered = await runtime.refresh();
+  const recoveredReceipt = await runtime.execute({ type: "refresh" });
+  assert.equal(recoveredReceipt.status, "completed");
+  const recovered = SessionSummary.parse(recoveredReceipt.result?.summary);
   assert.equal(recovered.projectId, initial.projectId);
   assert.deepEqual(recovered.workspace, detached.workspace);
   assert.equal(recovered.capabilities.files, true);
@@ -316,7 +371,7 @@ test("a message observed in the runtime queue is reported queued rather than pro
   assert.deepEqual(stop.result?.cancelledMessageIds, ["runtime-user-id"]);
 });
 
-test("capability discovery is read-only and independent of the recorded CLI version", async (t) => {
+test("capability discovery is read-only and independent of the recorded runtime version", async (t) => {
   for (const version of ["1.0.90-0", "0.0.1", "99.0.0-preview", "custom-build", null]) {
     await t.test(version ?? "missing version", async (t) => {
       const f = await capabilityFixture(t, version), mutations: string[] = [];
@@ -564,7 +619,7 @@ test("a stalled optional probe times out without granting support from its late 
   t.mock.timers.tick(5000);
   const summary = await connecting;
   assert.deepEqual(summary.capabilities, { ...allCapabilities, models: false });
-  assert.ok(summary.warnings.some((warning) => warning === "Model catalogue probe timed out; use the terminal."));
+  assert.ok(summary.warnings.some((warning) => warning === "Model catalogue probe timed out; use the original client."));
   finish({ list: [{ id: "test-model" }] });
   await Promise.resolve();
   assert.equal(f.runtime.summary.capabilities.models, false);
@@ -809,7 +864,7 @@ test("malformed optional queue evidence cannot claim that a message is queued or
   assert.deepEqual(stop.result?.cancelledMessageIds, []);
 });
 
-test("unknown semantic fields in a known permission form require the terminal", async (t) => {
+test("unknown semantic fields in a known permission form require the original client", async (t) => {
   const f = await capabilityFixture(t, "future-build");
   let decisions = 0;
   f.session.rpc.permissions!.pendingRequests = async () => ({ items: [{
@@ -1308,7 +1363,7 @@ test("single-payload live permission dialects remain supported", async (t) => {
   }
 });
 
-test("unsupported live permission metadata and conflicting paired content stay terminal-only", async (t) => {
+test("unsupported live permission metadata and conflicting paired content require the original client", async (t) => {
   const f = await capabilityFixture(t);
   const request = { kind: "commands", fullCommandText: "echo safe" };
   const invalid: Record<string, unknown>[] = [
@@ -1664,7 +1719,7 @@ test("cancellation is invoked before a stalled optional queue read completes", a
   assert.deepEqual(receipt.result?.cancelledMessageIds, ["queued-before-abort"]);
 });
 
-test("enumNames remains terminal-only for all otherwise supported form layouts", async (t) => {
+test("enumNames requires the original client for all otherwise supported form layouts", async (t) => {
   const f = await capabilityFixture(t);
   f.session.rpc.ui = { handlePendingElicitation: async () => { assert.fail("Unmapped labels must never be submitted."); } };
   await f.runtime.connect();

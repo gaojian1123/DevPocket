@@ -38,7 +38,7 @@ import org.robolectric.annotation.LooperMode
 class ComposerActionTest {
     @get:Rule val compose = createComposeRule()
 
-    private val sendDescription = "\u53d1\u9001\u5230\u539f\u59cb CLI"
+    private val sendDescription = "\u53d1\u9001\u5230\u539f\u59cb GitHub Copilot \u4f1a\u8bdd"
     private val stopDescription = "\u8bf7\u6c42\u505c\u6b62\u5f53\u524d\u4efb\u52a1"
     private val session = SessionInfo(
         hostId = "host", sessionId = "session", projectId = "project", projectName = "Project",

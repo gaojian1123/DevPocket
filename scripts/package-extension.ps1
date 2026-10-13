@@ -41,7 +41,7 @@ try {
         New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $root $entry.Value) -Destination $destination
     }
-    $notices = "Bundled third-party licenses for DevPocket $version.`nNode.js and the Copilot CLI/SDK are not redistributed.`n"
+    $notices = "Bundled third-party licenses for DevPocket $version.`nNode.js, GitHub Copilot and its SDK are not redistributed.`n"
     foreach ($dependency in @('ws', 'zod')) {
         $license = Get-Content -LiteralPath (Join-Path $root "node_modules\$dependency\LICENSE") -Raw
         $notices += "`n--- $dependency ---`n$license`n"

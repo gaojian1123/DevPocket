@@ -53,7 +53,7 @@ async function existingInstallation(target: string): Promise<boolean> {
 
 export function userExtensionDirectory(configDirectory = process.env.COPILOT_HOME || path.join(homedir(), ".copilot")): string {
   if (!path.isAbsolute(configDirectory))
-    throw new Fault("COPILOT_HOME_INVALID", "COPILOT_HOME must be an absolute path matching the CLI's configuration directory.");
+    throw new Fault("COPILOT_HOME_INVALID", "COPILOT_HOME must be an absolute path matching the GitHub Copilot runtime's configuration directory.");
   return path.join(path.resolve(configDirectory), "extensions", "devpocket");
 }
 
