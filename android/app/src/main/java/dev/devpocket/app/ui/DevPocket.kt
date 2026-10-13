@@ -141,9 +141,9 @@ fun EmptyDetail() {
         horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(Icons.Default.Terminal, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(56.dp))
         Spacer(Modifier.height(20.dp))
-        Text("把终端带在身边", style = MaterialTheme.typography.headlineSmall)
+        Text("把 GitHub Copilot 带在身边", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(12.dp))
-        Text("选择已注册的 CLI 会话。\n这里连接的是 Dev Box 上原来的终端，不会启动另一个代理。",
+        Text("选择已注册的 GitHub Copilot 会话。\n这里连接的是 Dev Box 上原有的 CLI 或桌面应用会话，不会启动另一个代理。",
             style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -176,7 +176,7 @@ private fun SessionList(state: PocketUi, model: PocketViewModel, pair: () -> Uni
                     Icon(Icons.Default.PhonelinkSetup, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(48.dp))
                     Spacer(Modifier.height(16.dp))
                     Text("连接你的 Dev Box", style = MaterialTheme.typography.headlineSmall)
-                    Text("使用独立的一次性配对码。手机不需要登录 GitHub，你的授权和订阅始终留在终端。", Modifier.padding(vertical = 12.dp))
+                    Text("使用独立的一次性配对码。手机不需要登录 GitHub，你的授权和订阅仍由 Dev Box 上的 GitHub Copilot 使用。", Modifier.padding(vertical = 12.dp))
                     Button(onClick = pair, modifier = Modifier.fillMaxWidth()) { Text("开始配对") }
                 }
             }
@@ -192,7 +192,7 @@ private fun SessionList(state: PocketUi, model: PocketViewModel, pair: () -> Uni
                             Text(box.host.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                             StatusLabel(if (box.host.online) "在线" else "离线", box.host.online)
                         }
-                        if (matches.isEmpty()) Text("还没有注册的会话。请在原始终端选择启用 DevPocket 扩展。",
+                        if (matches.isEmpty()) Text("还没有注册的会话。请在原始 GitHub Copilot 客户端选择启用 DevPocket 扩展。",
                             style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
                     }
                 }
@@ -233,7 +233,7 @@ private fun SessionList(state: PocketUi, model: PocketViewModel, pair: () -> Uni
                                         DropdownMenuItem(text = { Text("重命名") }, onClick = { menu = false; rename = box to session })
                                         DropdownMenuItem(text = { Text(if (session.pinned) "取消置顶" else "置顶") },
                                             onClick = { menu = false; model.metadata(session, box.accountId, pinned = !session.pinned) })
-                                        DropdownMenuItem(text = { Text(if (session.archived) "取消归档" else "归档（不停止终端）") },
+                                        DropdownMenuItem(text = { Text(if (session.archived) "取消归档" else "归档（不停止原始会话）") },
                                             onClick = { menu = false; model.metadata(session, box.accountId, archived = !session.archived) })
                                     }
                                 }
@@ -252,7 +252,7 @@ private fun SessionList(state: PocketUi, model: PocketViewModel, pair: () -> Uni
         AlertDialog(onDismissRequest = { rename = null }, title = { Text("会话显示名称") },
             text = { Column {
                 OutlinedTextField(value = title, onValueChange = { title = it.take(160) }, label = { Text("名称") })
-                Text("名称保存在 DevPocket，不修改 CLI 的会话文件。", style = MaterialTheme.typography.bodySmall)
+                Text("名称保存在 DevPocket，不修改 GitHub Copilot 的会话文件。", style = MaterialTheme.typography.bodySmall)
             } }, confirmButton = {
                 TextButton(enabled = title.isNotBlank(), onClick = { model.metadata(session, box.accountId, title = title.trim()); rename = null }) { Text("保存") }
             }, dismissButton = { TextButton(onClick = { rename = null }) { Text("取消") } })
@@ -315,7 +315,7 @@ private fun SettingsPane(state: PocketUi, model: PocketViewModel, notifications:
                 }
                 Text(state.background.message, modifier = Modifier.testTag("background_status"))
                 state.background.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                Text("监听所有已配对主机的未归档会话，不需要 FCM。开启后显示常驻通知，可随时停止，不影响原始 CLI。",
+                Text("监听所有已配对主机的未归档会话，不需要 FCM。开启后显示常驻通知，可随时停止，不影响原始 GitHub Copilot 会话。",
                     style = MaterialTheme.typography.bodySmall)
                 Text("为前台会话保留连接额度；超出实时额度的会话定时同步，提醒可能延迟。",
                     style = MaterialTheme.typography.bodySmall)
@@ -350,7 +350,7 @@ private fun SettingsPane(state: PocketUi, model: PocketViewModel, notifications:
             }
             item { SettingsCard("关于 DevPocket", Icons.Default.Info) {
                 Text("0.1.0 · 开发版\nKotlin + Jetpack Compose 原生 Android 应用")
-                Text("只连接明确注册的现有 CLI。无法热挂载的会话不会被伪装为已连接。归档/置顶是独立元数据。文件/Git 只读，遵守终端组织内容排除策略。",
+                Text("只连接明确注册的现有 GitHub Copilot 会话（CLI 或桌面应用）。无法热挂载的会话不会被伪装为已连接。归档/置顶是独立元数据。文件/Git 只读，遵守原始运行时的组织内容排除策略。",
                     style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 10.dp))
                 Text("本地聊天缓存和草稿受 Android 应用沙箱保护；设备密钥由 Android Keystore 加密，备份已禁用。请使用系统锁屏。中转可见转发内容，不提供端到端加密。",
                     style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 10.dp))
@@ -359,7 +359,7 @@ private fun SettingsPane(state: PocketUi, model: PocketViewModel, notifications:
     }
     revoke?.let { box ->
         AlertDialog(onDismissRequest = { revoke = null }, title = { Text("撤销访问 ${box.host.name}？") },
-            text = { Text("不会停止电脑上的 CLI。重新连接需要新的配对码。") },
+            text = { Text("不会停止电脑上的 GitHub Copilot 会话。重新连接需要新的配对码。") },
             confirmButton = { TextButton(onClick = { model.revoke(box.accountId, box.host.id); revoke = null }) { Text("撤销") } },
             dismissButton = { TextButton(onClick = { revoke = null }) { Text("取消") } })
     }
@@ -410,9 +410,9 @@ fun stateLabel(state: String): String = when (state) {
 }
 
 fun deliveryLabel(status: String): String = when (status) {
-    "sending" -> "正在送达"; "dispatched" -> "已到中转，待 CLI 接收"; "admitted" -> "CLI 已接收 · 等待执行状态"
-    "queued" -> "已在原始 CLI 中排队"
+    "sending" -> "正在送达"; "dispatched" -> "已到中转，待原始会话接收"; "admitted" -> "原始会话已接收 · 等待执行状态"
+    "queued" -> "已在原始会话中排队"
     "processing" -> "正在处理"; "completed" -> "本次处理完成"; "cancel_requested" -> "已请求停止，待运行时确认"
-    "cancelled" -> "本次处理已取消"; "failed" -> "未成功"; "uncertain" -> "结果不确定 · 请在终端核实"
+    "cancelled" -> "本次处理已取消"; "failed" -> "未成功"; "uncertain" -> "结果不确定 · 请在原始客户端核实"
     "delivery_unknown" -> "送达未知 · 正在恢复"; "not_received" -> "中转未收到 · 可重试原请求"; else -> status
 }

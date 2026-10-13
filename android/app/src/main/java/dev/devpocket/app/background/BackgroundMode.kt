@@ -54,7 +54,7 @@ class BackgroundMode(private val context: Context) {
         context.stopService(Intent(context, BackgroundService::class.java))
         val error = if (prefs.edit().putBoolean("requested", false).commit()) null else "连接已停止，但无法保存关闭状态。"
         if (error != null) Log.e("DevPocketBackground", error)
-        mutable.value = BackgroundState(message = "后台模式已关闭；不会停止原始 CLI。", error = error)
+        mutable.value = BackgroundState(message = "后台模式已关闭；不会停止原始 GitHub Copilot 会话。", error = error)
     }
 
     fun configurationChanged() {

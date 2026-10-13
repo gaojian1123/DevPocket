@@ -10,6 +10,7 @@ import dev.devpocket.app.data.WireJson
 import dev.devpocket.app.data.Workspace
 import dev.devpocket.app.data.Scope
 import dev.devpocket.app.data.acceptDelivery
+import dev.devpocket.app.ui.deliveryLabel
 import dev.devpocket.app.ui.sessionMatchesQuery
 import dev.devpocket.app.ui.stateLabel
 import dev.devpocket.app.ui.workspaceLabel
@@ -24,6 +25,16 @@ class ClientStateTest {
             "cliVersion":"unknown","state":"idle","permissionMode":"manual","modelId":"model","capabilities":{},
             "registeredAt":1,"online":true,"pinned":false,"archived":false,"lastSeen":1}"""
     )
+
+    @Test fun sharedDeliveryLabelsReferToTheOriginalSessionAndClient() {
+        val statuses = listOf("dispatched", "admitted", "queued")
+        for (status in statuses) {
+            assertEquals(true, deliveryLabel(status).contains("\u539f\u59cb\u4f1a\u8bdd"))
+            assertEquals(false, deliveryLabel(status).contains("CLI"))
+        }
+        assertEquals(3, statuses.map(::deliveryLabel).toSet().size)
+        assertEquals(true, deliveryLabel("uncertain").contains("\u539f\u59cb\u5ba2\u6237\u7aef"))
+    }
 
     @Test fun optionalWorkspaceMetadataDecodesWithoutChangingSessionScope() {
         val legacy = session()

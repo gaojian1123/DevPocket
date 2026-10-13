@@ -60,9 +60,9 @@ Host creation is an offline administrative operation on the relay host. No netwo
 Setup uses an existing azd login and Azure Run Command to register with an already-running relay,
 securely save this Dev Box's configuration, and install the user extension after explicit confirmation.
 It resumes recorded operations without repeating an uncertain submission. No old deployment checkout is needed.
-User installation uses COPILOT_HOME (default: ~/.copilot). All projects' CLI sessions that load it
+User installation uses COPILOT_HOME (default: ~/.copilot). All projects' GitHub Copilot sessions that load it
 automatically connect to this host, including earlier visible history. Paired phones have host-wide access.
-Install never hot-reloads, changes CLI permission settings, starts a new session, or initializes Git.`);
+Install never hot-reloads, changes GitHub Copilot permission settings, starts a new session, or initializes Git.`);
     return;
   }
   switch (command) {
@@ -128,9 +128,9 @@ Install never hot-reloads, changes CLI permission settings, starts a new session
       if (values.user) {
         const result = await installUserExtension(source, configPath);
         console.log(`${result.updated ? "Updated" : "Installed"} user extension at ${result.target}. Nothing was reloaded.`);
-        console.log("All projects' CLI sessions that load this extension will connect automatically, including earlier visible history. Paired phones can access every registered session on this host.");
-        console.log("New CLI sessions discover it at startup, subject to normal CLI trust/permission prompts. For an existing session, explicitly invoke its built-in extensions_reload tool; do not restart it.");
-        console.log("A project extension named devpocket takes precedence over this user extension. No project extension or CLI setting was changed.");
+        console.log("All projects' GitHub Copilot sessions that load this extension will connect automatically, including earlier visible history. Paired phones can access every registered session on this host.");
+        console.log("Compatible GitHub Copilot CLI and desktop app sessions discover it at startup, subject to normal trust/permission prompts. For an existing session, explicitly invoke its built-in extensions_reload tool in the original client; do not restart it.");
+        console.log("A project extension named devpocket takes precedence over this user extension. No project extension or GitHub Copilot setting was changed.");
         break;
       }
       await loadHost();
@@ -143,7 +143,7 @@ Install never hot-reloads, changes CLI permission settings, starts a new session
         const pluginRoot = path.resolve(required(values["plugin-dir"], "plugin-dir"));
         await mkdir(pluginRoot, { recursive: true });
         await writeFile(path.join(pluginRoot, "plugin.json"), JSON.stringify({
-          name: "devpocket", version: VERSION, description: "Opt-in access to the original Copilot CLI session", extensions: "./extensions",
+          name: "devpocket", version: VERSION, description: "Opt-in access to the original GitHub Copilot session", extensions: "./extensions",
         }, null, 2), { flag: "wx" });
         target = path.join(pluginRoot, "extensions", "devpocket");
       }
@@ -154,8 +154,8 @@ Install never hot-reloads, changes CLI permission settings, starts a new session
       if (process.platform !== "win32") await chmod(configPath, 0o600);
       console.log(`Installed only to ${target}. Nothing was reloaded.`);
       console.log(values.project
-        ? "In the EXISTING terminal, explicitly ask its built-in extensions_reload tool to reload extensions. Verify the terminal session ID remains the same."
-        : "For folder-only opt-in tests, start an ordinary terminal with --plugin-dir <this-plugin-root>. Existing terminals cannot retroactively add startup flags; use a project extension + explicit hot-load for already-running Git-root sessions.");
+        ? "In the EXISTING GitHub Copilot session's original client, explicitly ask its built-in extensions_reload tool to reload extensions. Verify the original process/session ID remains the same."
+        : "For folder-only opt-in GitHub Copilot CLI tests, start an ordinary terminal with --plugin-dir <this-plugin-root>. Existing terminals cannot retroactively add startup flags; use a project extension + explicit hot-load for already-running Git-root sessions.");
       break;
     }
     default: throw new Fault("COMMAND_UNKNOWN", "Unknown command. Use --help.");

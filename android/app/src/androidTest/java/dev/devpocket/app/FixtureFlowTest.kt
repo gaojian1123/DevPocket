@@ -45,9 +45,9 @@ class FixtureFlowTest {
         }
         compose.onNodeWithTag("message_input").performTextInput("native fixture hello")
         compose.waitUntil(20_000) {
-            compose.onAllNodes(hasContentDescription("发送到原始 CLI") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(hasContentDescription("发送到原始 GitHub Copilot 会话") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithContentDescription("发送到原始 CLI").performClick()
+        compose.onNodeWithContentDescription("发送到原始 GitHub Copilot 会话").performClick()
         compose.onNodeWithTag("message_input").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
         compose.onNodeWithTag("message_input").performTextInput("New draft must remain")
         assertReply("Fixture reply: native fixture hello")
@@ -57,9 +57,9 @@ class FixtureFlowTest {
         compose.onNodeWithTag("message_input").assertTextContains("New draft must remain")
         compose.onNodeWithTag("message_input").performTextReplacement("native fixture after reconnect")
         compose.waitUntil(20_000) {
-            compose.onAllNodes(hasContentDescription("发送到原始 CLI") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(hasContentDescription("发送到原始 GitHub Copilot 会话") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithContentDescription("发送到原始 CLI").performClick()
+        compose.onNodeWithContentDescription("发送到原始 GitHub Copilot 会话").performClick()
         compose.onNodeWithTag("message_input").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
         assertReply("Fixture reply: native fixture after reconnect")
         compose.runOnIdle {

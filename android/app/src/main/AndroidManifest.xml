@@ -37,7 +37,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="User-started ongoing monitoring of paired remote CLI sessions for pending human decisions and runtime updates. A visible connection notification provides Stop. This is continuous interactive-session monitoring, not a finite data transfer; no boot or automatic restart." />
+                android:value="User-started ongoing monitoring of paired remote GitHub Copilot sessions for pending human decisions and runtime updates. A visible connection notification provides Stop. This is continuous interactive-session monitoring, not a finite data transfer; no boot or automatic restart." />
         </service>
         <provider
             android:name="com.google.firebase.provider.FirebaseInitProvider"

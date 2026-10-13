@@ -143,7 +143,7 @@ class BackgroundMonitor(
                     apply(page, durable = true)
                     if (!page.hasMore) break
                     check(page.reset || checkpoint.cursor > before) { "中转历史游标未前进。" }
-                    check(++pages < 100) { "历史过大，后台提醒已暂停；请在原始终端查看。" }
+                    check(++pages < 100) { "历史过大，后台提醒已暂停；请在原始客户端查看。" }
                 }
                 val ready = checkpoint.caughtUp()
                 checkpoints.save(scope, ready)

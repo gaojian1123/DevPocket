@@ -41,9 +41,9 @@ class ConnectedFlowTest {
         compose.onNodeWithTag("session_detail").assertIsDisplayed()
         compose.onNodeWithTag("message_input").performTextInput("Reply exactly $marker. Do not use any tools.")
         compose.waitUntil(35_000) {
-            compose.onAllNodes(hasContentDescription("发送到原始 CLI") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(hasContentDescription("发送到原始 GitHub Copilot 会话") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithContentDescription("发送到原始 CLI").performClick()
+        compose.onNodeWithContentDescription("发送到原始 GitHub Copilot 会话").performClick()
         compose.onNodeWithTag("message_input").performTextInput("保留的新草稿")
         compose.waitUntil(120_000) {
             LocalStore(context).use { store ->
@@ -80,9 +80,9 @@ class ConnectedFlowTest {
             fun send(text: String) {
                 compose.onNodeWithTag("message_input").performTextReplacement(text)
                 compose.waitUntil(35_000) {
-                    compose.onAllNodes(hasContentDescription("发送到原始 CLI") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
+                    compose.onAllNodes(hasContentDescription("发送到原始 GitHub Copilot 会话") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
                 }
-                compose.onNodeWithContentDescription("发送到原始 CLI").performClick()
+                compose.onNodeWithContentDescription("发送到原始 GitHub Copilot 会话").performClick()
             }
             fun waitAnswer(value: String) = compose.waitUntil(100_000) {
                 LocalStore(context).use { store -> store.events(scope).any { it.kind == "assistant.message" && it.data.text("content").contains(value) } }

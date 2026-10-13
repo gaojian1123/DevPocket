@@ -1,25 +1,28 @@
 # DevPocket user extension
 
-Install once for the current OS user. Every Copilot CLI session that loads this
+Install once for the current OS user. Every GitHub Copilot session that loads this
 extension automatically registers with the configured Dev Box host. There are no
 project allowlists or DevPocket enable switches. Already-paired phones can access
 all registered sessions on that host, including their synchronized earlier
 visible history.
 
 This is not a disk-wide repository scan. Closed/unregistered sessions are not
-resumed. The original CLI's session identity, permission mode, organization
-policies and live capability checks are preserved.
+resumed. The original GitHub Copilot runtime's session identity, permission mode,
+organization policies and live capability checks are preserved. The original
+client can be GitHub Copilot CLI or the GitHub Copilot desktop app (Copilot App);
+both require extension loading and a compatible bundled SDK.
 
 ## Install on a new Dev Box
 
-You need Node.js **24.x** and a compatible Copilot CLI. The runtime adapter checks
-each capability through read-only live probes, the CLI-bundled SDK and supported
-protocol shapes, not a version allowlist. Missing evidence disables the affected
-controls; an unfamiliar or missing recorded version alone does not. CLI
-**1.0.90-0** is a historical acceptance target, not a compatibility guarantee for
-other builds. Discovery never sends a message, aborts work, answers a request or
-switches a model. No npm install, source checkout, Android build or local relay
-is needed.
+You need Node.js **24.x** and a compatible GitHub Copilot runtime in either client.
+The runtime adapter checks each capability through read-only live probes, the
+runtime-bundled SDK and supported protocol shapes, not a version allowlist.
+Missing evidence disables the affected controls; an unfamiliar or missing
+recorded version alone does not. GitHub Copilot CLI **1.0.90-0** is a historical
+acceptance target, not a compatibility guarantee for other builds or
+desktop-app acceptance evidence. Discovery never sends a message, aborts work,
+answers a request or switches a model. No npm install, source checkout, Android
+build or local relay is needed.
 
 Download `DevPocket-extension-VERSION.zip` and its `.zip.sha256` file from the
 same trusted GitHub release. Repository access is still required for private
@@ -82,7 +85,7 @@ It prints the relay origin and a PowerShell `pair --config` command with absolut
 literal-quoted package/configuration paths, independent of the current directory.
 Run that command when
 the Android pairing screen is ready; setup does not pre-generate an expiring code.
-Only loading the extension in a CLI session makes that session available.
+Only loading the extension in a GitHub Copilot session makes that session available.
 
 ### Already have a host configuration
 
@@ -95,9 +98,10 @@ node .\devpocket-extension\devpocket.mjs install --user `
 ```
 
 The installer uses `%USERPROFILE%\.copilot\extensions\devpocket` by default.
-If your CLI uses `COPILOT_HOME`, set the same environment variable for installation;
-use an absolute path. Installation does not alter CLI settings or environment
-variables. The SHA-256 file detects corruption; it is not a publisher signature.
+If your GitHub Copilot runtime uses `COPILOT_HOME`, set the same environment
+variable for installation; use an absolute path. Installation does not alter
+GitHub Copilot settings or environment variables. The SHA-256 file detects
+corruption; it is not a publisher signature.
 
 Keep `host.local.json` protected by a Windows ACL for the intended user and
 SYSTEM. Its `dataDir` must be absolute and outside the extension directory.
@@ -112,9 +116,10 @@ retained host configuration. Do not register another host just to restore these
 commands. Keep the original package for any interrupted setup, which is bound
 to its exact helper files.
 
-New CLI sessions discover the user extension automatically, subject to the CLI's
-normal trust and permission-handler consent. The installer does not bypass these
-prompts or select allow-all. In each already-running session you want to attach,
+New GitHub Copilot sessions with user-extension support discover it automatically,
+subject to the original client's normal trust and permission-handler consent.
+The installer does not bypass these prompts or select allow-all. In each
+already-running session you want to attach,
 explicitly ask its built-in `extensions_reload` tool to reload extensions. Do not
 restart, clone or resume that session as a substitute.
 
@@ -151,7 +156,7 @@ recovery location. An interrupted installation may leave a
 and ensure no installer is running before removing that specific lock.
 
 Running extension processes are not reloaded by an update. They continue using
-the version already loaded until an explicit reload or a future CLI session.
+the version already loaded until an explicit reload or a future GitHub Copilot session.
 
 ## Interrupted setup
 
@@ -185,5 +190,5 @@ The archive contains standalone `devpocket.mjs` and `setup.mjs` commands, fixed
 onboarding helpers in `setup-assets`, the extension entry and bundled bridge,
 this guide, dependency license notices, and a per-file SHA-256 manifest.
 It contains no host/device credentials, local connection
-pointer, runtime evidence, Node.js executable or Copilot SDK. The CLI provides its
-own SDK when it launches the installed extension.
+pointer, runtime evidence, Node.js executable or GitHub Copilot SDK. The original
+runtime provides its own SDK when it launches the installed extension.

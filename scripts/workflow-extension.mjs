@@ -31,7 +31,7 @@ export async function registerDevelopmentExtension({ defineWorkflow, joinSession
     workflows: [workflow],
     tools: [{
       name: "devpocket_start_development",
-      description: "Start an explicitly requested DevPocket implementation task in a NEW isolated Copilot App worktree. Use after the user chooses the goal and observable acceptance criteria, not for advice/planning. It starts the implementation/verification/independent-review workflow; it grants no real CLI, installation, cloud, merge or release authority.",
+      description: "Start an explicitly requested DevPocket implementation task in a NEW isolated GitHub Copilot desktop app worktree. Use after the user chooses the goal and observable acceptance criteria, not for advice/planning. It starts the implementation/verification/independent-review workflow; it grants no real GitHub Copilot runtime control, installation, cloud, merge or release authority.",
       parameters: taskSchema,
       handler: async (input) => {
         const task = parseTask(input);

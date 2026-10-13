@@ -133,7 +133,7 @@ class AdaptiveLayoutTest {
             else compose.onNodeWithTag("session_list").assertDoesNotExist()
             compose.onNodeWithTag("message_input").performClick()
             compose.onNodeWithTag("message_input").performTextInput("这是一条用于大字体、旋转和窗口变化的原生中文草稿，不会发送。")
-            compose.onNodeWithContentDescription("发送到原始 CLI").assertIsNotEnabled()
+            compose.onNodeWithContentDescription("发送到原始 GitHub Copilot 会话").assertIsNotEnabled()
             scenario.recreate()
             constrainWindow()
             compose.waitUntil(20_000) { compose.onAllNodesWithTag("message_input").fetchSemanticsNodes().isNotEmpty() }
