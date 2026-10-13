@@ -8,8 +8,40 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { finished } from "node:stream/promises";
+import { createBoundedWorkerLog } from "../bounded-worker-log.mjs";
 
 const exec = promisify(execFile);
+
+test("fixture instrumentation and its live worker log use separate exclusive files", async (t) => {
+  for (const liveWorker of [false, true]) {
+    await t.test(liveWorker ? "with a live fixture worker log" : "without a fixture worker log", async (t) => {
+      await mkdir(".data/tests", { recursive: true });
+      const directory = await mkdtemp(path.resolve(".data/tests/device-log-namespace-"));
+      let worker;
+      t.after(async () => {
+        if (worker) { worker.end(); await finished(worker); }
+        await rm(directory, { recursive: true, force: true });
+      });
+      if (liveWorker) {
+        worker = createBoundedWorkerLog(path.join(directory, "fixture.log"));
+        await new Promise((resolve, reject) => worker.write("PRIVATE_FIXTURE_WORKER\n", (error) => error ? reject(error) : resolve()));
+      }
+      const output = "INSTRUMENTATION_STATUS: class=dev.devpocket.app.FixtureFlowTest\n" +
+        "INSTRUMENTATION_STATUS_CODE: 0\nOK (1 test)\nINSTRUMENTATION_CODE: -1\n";
+      const device = { root: process.cwd(), directory, runId: randomUUID(), adb: async (args) =>
+        runCommand(process.execPath, ["-e", `process.stdout.write(${JSON.stringify(args.includes("instrument") ? output : "Success\n")})`],
+          { cwd: directory, timeoutMs: 15000 }) };
+      const result = await runNativeCase(device, "fixture", "FixtureFlowTest");
+      assert.equal(result.status, "passed");
+      assert.equal(result.tests, 1);
+      if (worker) {
+        assert.equal(await readFile(path.join(directory, "fixture.log"), "utf8"), "PRIVATE_FIXTURE_WORKER\n");
+        assert.equal(await readFile(path.join(directory, "case-fixture.log"), "utf8"), output);
+      }
+    });
+  }
+});
 
 test("the actual native case preserves an instrumentation failure when its crash collector also fails", async (t) => {
   await mkdir(".data/tests", { recursive: true });
@@ -36,7 +68,7 @@ test("the actual native case preserves an instrumentation failure when its crash
   assert.equal(observed.diagnosticIssues[0].operation, "logcat");
   assert.equal(observed.diagnosticIssues[0].reason, "collector-failed");
   assert.ok(!JSON.stringify(observed.diagnosticIssues).includes("synthetic-private"));
-  assert.ok((await readFile(path.join(directory, "native.log"), "utf8")).includes("INSTRUMENTATION_STATUS_CODE: -2"));
+  assert.ok((await readFile(path.join(directory, "case-native.log"), "utf8")).includes("INSTRUMENTATION_STATUS_CODE: -2"));
 });
 
 test("an owned instrumentation command keeps its attempted case, trusted method and primary failure without leaking assertion text", async (t) => {
@@ -351,7 +383,7 @@ test("the successful device report selected for the APK artifact cannot retain a
   await mkdir(".data/tests", { recursive: true });
   const parent = await mkdtemp(path.resolve(".data/tests/device-success-version-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
-  let directory = path.join(parent, "owned"), logFailure = false;
+  let directory = path.join(parent, "owned"), logFailure = false, caseLogFailure = false;
   const credential = `21-dpp_${"A".repeat(43)}`;
   const runtime = {
     prepare: async (_identity, report) => {
@@ -365,6 +397,8 @@ test("the successful device report selected for the APK artifact cannot retain a
       const result = await operation({
         root: process.cwd(), directory, runId: options.owner, ports: {}, leaseId: randomUUID(),
         manage(_file, args) {
+          writeFileSync(path.join(directory, "fixture.log"), "PRIVATE_FIXTURE_WORKER\n");
+          if (caseLogFailure) writeFileSync(path.join(directory, "case-fixture.log"), "preserve prior case evidence");
           writeFileSync(args[args.indexOf("--output") + 1], JSON.stringify({
             relayUrl: "http://127.0.0.1:54321", pairingCode: `dpp_${"A".repeat(43)}`, title: "synthetic",
           }));
@@ -399,6 +433,49 @@ test("the successful device report selected for the APK artifact cannot retain a
   assert.equal(blocked.collectionStatus, "failed");
   assert.equal(blocked.cleanup, "completed");
   assert.ok(blocked.cases.every((item) => item.status === "passed"));
+  directory = path.join(parent, "failed-case-log");
+  logFailure = false;
+  caseLogFailure = true;
+  const caseBlocked = await runAndroidTests({ directory }, runtime);
+  assert.equal(caseBlocked.status, "blocked");
+  assert.equal(caseBlocked.executionStatus, "passed");
+  assert.equal(caseBlocked.collectionStatus, "failed");
+  assert.equal(caseBlocked.cleanup, "completed");
+  assert.ok(caseBlocked.cases.every((item) => item.status === "passed"));
+  assert.equal(caseBlocked.deviceDiagnostics.primary, null);
+  const issue = caseBlocked.deviceDiagnostics.secondary.find((item) => item.operation === "case-log");
+  assert.equal(issue.osCode, "EEXIST");
+  assert.equal(issue.phase, "fixture");
+  assert.equal(issue.case.name, "fixture");
+  assert.equal(issue.case.class.name, "dev.devpocket.app.FixtureFlowTest");
+  assert.equal(await readFile(path.join(directory, "case-fixture.log"), "utf8"), "preserve prior case evidence");
+  assert.equal(await readFile(path.join(directory, "fixture.log"), "utf8"), "PRIVATE_FIXTURE_WORKER\n");
+  await mkdir(".data/verification", { recursive: true });
+  const exportedDirectory = await mkdtemp(path.resolve(".data/verification/case-log-export-"));
+  t.after(() => rm(exportedDirectory, { recursive: true, force: true }));
+  await writeFile(path.join(exportedDirectory, "report.json"), JSON.stringify({
+    version: 1, status: "blocked", source: caseBlocked.source,
+    checks: [{ id: "android-device", status: "blocked", exitCode: 1, deviceRunId: caseBlocked.runId,
+      reportedDeviceExecutionStatus: caseBlocked.executionStatus, collectionStatus: caseBlocked.collectionStatus,
+      deviceDiagnostics: caseBlocked.deviceDiagnostics }],
+  }));
+  await assert.rejects(exec(process.execPath, [path.resolve("scripts/device-diagnostics.mjs"), "--directory", exportedDirectory],
+    { cwd: process.cwd(), timeout: 20000 }), (error) => error.code === 1);
+  const exported = JSON.parse(await readFile(path.join(exportedDirectory, "device-diagnostics.json"), "utf8"));
+  assert.equal(exported.executionStatus, "passed");
+  assert.equal(exported.collectionStatus, "failed");
+  assert.equal(exported.secondary[0].phase, "fixture");
+  assert.equal(exported.secondary[0].case.class.name, "dev.devpocket.app.FixtureFlowTest");
+  assert.ok(!JSON.stringify(exported).includes("PRIVATE_FIXTURE_WORKER"));
+  const { projectDeviceDiagnostics, deviceSourceCatalogue } = await import("../device-diagnostics.mjs");
+  const untrusted = projectDeviceDiagnostics({ ...caseBlocked.deviceDiagnostics,
+    secondary: [{ operation: "case-log", phase: "PRIVATE_PHASE",
+      case: { name: "PRIVATE_CASE", class: { name: "PRIVATE_CLASS", file: "PRIVATE_FILE", line: 1 } } }],
+  }, await deviceSourceCatalogue(process.cwd()), caseBlocked.runId);
+  assert.equal(untrusted.secondary[0].phase, "unknown");
+  assert.equal(untrusted.secondary[0].case.name, "unknown");
+  assert.equal(untrusted.secondary[0].case.class, "unknown");
+  assert.ok(!JSON.stringify(untrusted).includes("PRIVATE_"));
 });
 
 test("startup report publication failure preserves the original owned preparation failure snapshot", async (t) => {

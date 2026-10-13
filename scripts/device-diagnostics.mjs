@@ -100,6 +100,7 @@ export function projectDeviceDiagnostics(value, catalogue, expectedRunId) {
   const secondary = ownValue(value, "secondary");
   for (const item of Array.isArray(secondary) ? secondary.slice(0, 16) : []) {
     output.secondary.push({ operation: issueOperations.includes(ownValue(item, "operation")) ? ownValue(item, "operation") : "unknown",
+      phase: phase(ownValue(item, "phase")), case: ownValue(item, "case") ? caseRef(ownValue(item, "case")) : null,
       ...projectFailureDetails(item) });
   }
   const cases = ownValue(value, "cases");
@@ -419,6 +420,7 @@ export async function createDeviceDiagnostics({ root = process.cwd(), runId, onS
     if (!["cleanup", "layout-reset"].includes(operation)) state.collectionFailed = true;
     if (state.secondary.length < 16) state.secondary.push({
       operation: issueOperations.includes(operation) ? operation : "unknown",
+      phase: state.phase, case: state.currentCase ? { name: state.currentCase.name, class: state.currentCase.class } : null,
       ...failureDetails(error, ["cleanup", "layout-reset"].includes(operation) ? "cleanup-failed" : "collector-failed"),
     });
     else state.truncated = true;

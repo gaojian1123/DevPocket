@@ -60,12 +60,13 @@ export async function runNativeCase(device, name, testClass, extra = [], directo
   const instrumentation = attempted ? instrumentationDiagnostics(stdout, fullClass, diagnostics.catalogue) : undefined;
   diagnostics.caseFinished(name, result, failure, instrumentation);
   try {
-    const retained = await writeBoundedWorkerLog(path.join(directory, `${name}.log`),
+    const retained = await writeBoundedWorkerLog(path.join(directory, `case-${name}.log`),
       `${typeof stdout === "string" ? stdout : ""}${typeof stderr === "string" ? stderr : ""}`);
     diagnostics.log("case", retained);
   } catch (error) {
     diagnostics.issue("case-log", error);
-    failure ??= diagnosticError("report-write", error);
+    // Only the run-level recorder's owner can defer qualification until cleanup.
+    if (!device.diagnostics) failure ??= diagnosticError("report-write", error);
   }
   if (!failure) return result;
   if (attempted && !result) {
@@ -73,7 +74,7 @@ export async function runNativeCase(device, name, testClass, extra = [], directo
     try {
       const crash = await device.adb(["logcat", "-d", "-b", "crash", "-t", "250"]);
       operation = "crash-log-write";
-      diagnostics.log("crash", await writeBoundedWorkerLog(path.join(directory, `${name}-crash.log`), crash.stdout + crash.stderr));
+      diagnostics.log("crash", await writeBoundedWorkerLog(path.join(directory, `case-${name}-crash.log`), crash.stdout + crash.stderr));
     } catch (collectionError) {
       const issue = { operation, ...failureDetails(collectionError, "collector-failed") };
       failure.diagnosticIssues = [...(failure.diagnosticIssues ?? []), issue];

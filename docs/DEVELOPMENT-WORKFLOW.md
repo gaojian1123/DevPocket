@@ -202,6 +202,13 @@ unknown rather than an invented I/O failure.
 An otherwise passing native sequence retains `executionStatus: passed` and passed cases, but
 verification becomes blocked; diagnostic collectors exit nonzero after cleanup.
 The success-only APK artifact cannot qualify that run.
+Private case/crash logs use the `case-<id>` prefix so they cannot collide with
+the live fixture worker's `fixture.log`. In the automated run, a case-log write
+failure keeps a passed instrumentation result intact and latches failed
+collection instead; its secondary record retains the trusted phase/case.
+Other native checks and cleanup still run, but the final qualification remains
+blocked and existing files are never overwritten. Standalone/manual callers
+without a run-level recorder retain immediate error propagation.
 
 Instrumentation projection reads only bounded output from the owned invocation.
 It matches class/method identities and relative source frames against the
