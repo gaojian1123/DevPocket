@@ -157,6 +157,21 @@ test("linked worktrees share project identity without changing the original runt
   }
 });
 
+test("refresh receipts omit unavailable workspace metadata without changing runtime capabilities", async (t) => {
+  const f = await capabilityFixture(t);
+  delete f.session.rpc.contentExclusion;
+  const initial = await f.runtime.connect();
+  const receipt = await f.runtime.execute({ type: "refresh" });
+  assert.equal(receipt.status, "completed");
+  const summary = SessionSummary.parse(receipt.result?.summary);
+  assert.equal(Object.hasOwn(summary, "workspace"), false);
+  assert.equal(Object.hasOwn(f.runtime.summary, "workspace"), false);
+  assert.equal(summary.sessionId, initial.sessionId);
+  assert.equal(summary.projectId, initial.projectId);
+  assert.deepEqual(summary.capabilities, { ...allCapabilities, files: false, git: false });
+  assert.deepEqual(receipt.result?.requests, f.events.filter((event) => event.kind === "requests").at(-1)?.data.items);
+});
+
 test("project metadata refresh follows the live branch and clears stale Git identity when policy is unavailable", async (t) => {
   const f = await gitFixture(t), peer = runtimePeer(f.worktree);
   const runtime = new CopilotRuntime(peer.session, () => {});
@@ -169,8 +184,10 @@ test("project metadata refresh follows the live branch and clears stale Git iden
 
   const check = peer.session.rpc.contentExclusion!.checkPaths!;
   peer.session.rpc.contentExclusion!.checkPaths = async () => ({ available: false, checks: [] });
-  const denied = await runtime.refresh();
-  assert.equal(denied.workspace, undefined);
+  const deniedReceipt = await runtime.execute({ type: "refresh" });
+  assert.equal(deniedReceipt.status, "completed");
+  const denied = SessionSummary.parse(deniedReceipt.result?.summary);
+  assert.equal(Object.hasOwn(denied, "workspace"), false);
   assert.equal(denied.projectId, hash(process.platform === "win32" ? f.worktree.toLowerCase() : f.worktree));
   assert.equal(denied.projectName, "task-worktree");
   assert.equal(denied.capabilities.files, false);
@@ -180,7 +197,9 @@ test("project metadata refresh follows the live branch and clears stale Git iden
   assert.ok(denied.warnings.some((warning) => /File and Git views/.test(warning)));
 
   peer.session.rpc.contentExclusion!.checkPaths = check;
-  const recovered = await runtime.refresh();
+  const recoveredReceipt = await runtime.execute({ type: "refresh" });
+  assert.equal(recoveredReceipt.status, "completed");
+  const recovered = SessionSummary.parse(recoveredReceipt.result?.summary);
   assert.equal(recovered.projectId, initial.projectId);
   assert.deepEqual(recovered.workspace, detached.workspace);
   assert.equal(recovered.capabilities.files, true);

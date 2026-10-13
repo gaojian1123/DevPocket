@@ -87,6 +87,11 @@ receive the original ready shape, and old Android clients ignore the optional
 summary field. A new bridge on an old relay still groups by repository but warns
 that workspace labels require a relay update.
 
+Unavailable workspace metadata is omitted from summaries and refresh receipts.
+Pending-request synchronization remains available when file/Git policy or
+repository identity cannot be verified. File/Git access still requires its own
+live capability and policy checks.
+
 Existing persisted sessions remain readable without a migration. Old bridges
 and offline records keep their previous grouping until the original runtime
 registers through an updated bridge; DevPocket does not scan or resume them.

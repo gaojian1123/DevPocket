@@ -317,8 +317,10 @@ export class CopilotRuntime {
 
   get summary(): SessionSummary {
     if (!this.current) throw new Fault("NOT_ATTACHED", "The original runtime has not finished registering.", 503);
+    const { workspace, ...summary } = this.current;
     return {
-      ...this.current,
+      ...summary,
+      ...(workspace === undefined ? {} : { workspace }),
       state: this.cancelRequested ? "cancel_requested" : this.observedActiveWork === undefined ? "unsupported" :
         this.requests.size ? "waiting" : this.observedActiveWork ? "running" : "idle",
     };
