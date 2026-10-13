@@ -65,14 +65,16 @@ const reasoningEfforts = z.array(z.string().min(1).max(60));
 const modelCatalogue = z.object({ list: z.array(z.object({
   id: z.string().min(1).max(200), name: z.string().optional(),
   supportedReasoningEfforts: reasoningEfforts.optional(), supported_reasoning_efforts: reasoningEfforts.optional(),
-  capabilities: z.object({ supports: z.object({ reasoning_efforts: reasoningEfforts.optional() }).optional() }).optional(),
+  capabilities: z.object({ supports: z.object({
+    reasoning_effort: reasoningEfforts.optional(), reasoning_efforts: reasoningEfforts.optional(),
+  }).optional() }).optional(),
   policy: z.object({ state: z.enum(["enabled", "disabled", "unconfigured"]) }).optional(),
   disabled: z.boolean().optional(), isDisabled: z.boolean().optional(), model_picker_enabled: z.boolean().optional(),
 })).min(1) })
   .refine(({ list }) => new Set(list.map((model) => model.id)).size === list.length, "Model IDs must be unique.")
   .transform(({ list }) => list.map((model) => {
   const efforts = model.supportedReasoningEfforts ?? model.supported_reasoning_efforts ??
-    model.capabilities?.supports?.reasoning_efforts ?? [];
+    model.capabilities?.supports?.reasoning_effort ?? model.capabilities?.supports?.reasoning_efforts ?? [];
   return {
     id: model.id, name: redact(model.name || model.id, 200), reasoningEfforts: efforts,
     reasoningManual: efforts.length === 0,

@@ -204,5 +204,5 @@ fun timeline(events: List<WireEvent>): List<TimelineItem> {
             "notice" -> result[event.id] = TimelineItem(event.id, "notice", data.text("message"), event.at)
         }
     }
-    return result.values.toList()
+    return result.values.filter { it.role != "assistant" || it.streaming || it.text.isNotBlank() }
 }

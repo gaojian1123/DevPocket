@@ -30,16 +30,27 @@ Dev Box extension -> joinSession() -> original Copilot terminal
 | Git | Read-only status, branch, staged/unstaged per-path diffs; no commit, staging, checkout or push; no shell interpolation |
 | Notifications | Opt-in foreground-service background monitoring of all paired hosts' unarchived sessions, generic local reminders and a Stop notification; optional FCM remains separate and **unconfigured** until provisioned |
 
+Error messages keep their text, normal display duration and dismiss action, but
+reserve space below the page content rather than covering it. Session cards
+remain reachable by normal scrolling and tapping while an error is visible,
+including in landscape and short windows. The error area is height-bounded;
+long messages scroll within it without truncating their text, while the dismiss
+action remains outside the scrolling text. The session toolbar, search and
+filters scroll with the cards, so those controls cannot consume the entire
+session viewport in a short window.
+
 Current limitations:
 
 - Only registered live sessions can be controlled. No automatic scan/resume of unregistered CLI history; no "create CLI session" command.
 - The recorded CLI version is diagnostic only, not an allowlist. Each control requires its own live evidence and supported response/request shapes through the CLI-bundled SDK. Missing or incompatible evidence disables only the affected controls; an unfamiliar or missing version does not disable otherwise supported controls. CLI **1.0.90-0** remains a historical acceptance target, not proof of compatibility for every build.
 - Pending tool permissions can be reconstructed at attachment. The bundled CLI does not expose a pending-question snapshot; a question already open at *first* attachment may require the terminal. Live questions and simple string/choice elicitation forms are supported. Complex elicitation, URL redirects, sandbox-bypass, plan-exit, limit and unknown permission forms require the terminal.
 - Incoming messages use CLI `mode: "enqueue"`. Sending during a tool does **not** immediately change or kill that tool. `queued` is reported only when observed in the runtime's public queue; `admitted` alone means delivery is acknowledged but execution has not been confirmed. The CLI's plain abort also clears queued input; the confirmation dialog warns about this and known cleared messages become cancelled after runtime idle evidence. Text and attachment metadata can be manually restored as a new draft.
+- The composer has one primary Send/Stop button. Nonblank draft text always selects Send, including while work is running. With no text, running, waiting and cancellation-requested sessions show Stop in that same position; idle sessions never show Stop. Offline/capability/upload restrictions still govern availability, and Stop opens the existing confirmation before requesting cancellation.
 - Renaming/pinning/archiving changes DevPocket metadata, not CLI storage or running work.
 - Git and files fail closed if the runtime cannot evaluate content exclusion (observed in this non-Git disposable runtime). Secrets/private configuration, `.git`, runtime directories, symlinks and junctions are not exposed. Text preview <=256 KiB; image/PDF <=2 MiB; 200 directory entries/300 Git entries per response.
-- Some CLI model catalogs do not enumerate reasoning levels. The app then offers explicit text entry **validated by the original runtime** rather than inventing a supported list; rejected values remain errors.
+- Reasoning choices come from each model's live catalog, including the native CLI's `capabilities.supports.reasoning_effort` array and supported SDK/legacy field variants. Only when no levels are enumerated does the app offer explicit text entry **validated by the original runtime** rather than inventing a supported list; malformed lists disable model controls instead of becoming manual input.
 - History imports the latest 15,000 runtime events; relay keeps the latest 20,000 visible events per session. Replay pages are byte-bounded (512 KiB). Android stores the latest 6,000 events and bounds decoded history text to 8 MiB. Cursor reset is shown when retention changes. Original history remains in the terminal.
+- Android hides completed assistant messages with no visible text after merging their events, including cached history. Tool-only turns no longer leave empty Copilot bubbles; streaming placeholders, normal replies and separate tool cards remain. The underlying events and delivery bookkeeping are retained, so late deltas cannot revive a completed empty message.
 - Attachments expire after seven days, with a 20 MiB per-session relay quota. Private Dev Box attachment staging remains until the operator removes its isolated bridge data; do not remove attachments while the CLI is using them.
 - The separately authorized Azure relay is running with publicly trusted HTTPS. Public checks, a temporary simulated controller, and the sealed native Android build's actual pairing/message roundtrip on a visible isolated emulator passed against the same ordinary CLI. The emulator login is retained for user trial; physical-phone/cellular acceptance is still pending. FCM, release signing and store distribution remain unprovisioned. Opt-in background monitoring is best-effort, **not** a system-push or vehicle-wake guarantee, and is not part of sealed build 002's acceptance.
 
