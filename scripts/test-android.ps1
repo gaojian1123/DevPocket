@@ -6,10 +6,18 @@ param(
     [string]$RunDirectory,
     [string]$Owner,
     [ValidateRange(1, 86400)][int]$QueueTimeoutSeconds = 900,
-    [switch]$Layouts
+    [switch]$Layouts,
+    [switch]$StartupDiagnostic,
+    [string]$Base,
+    [ValidateSet('same-build', 'without-build')][string]$Variant = 'same-build'
 )
 $ErrorActionPreference = 'Stop'
-$arguments = @((Join-Path $PSScriptRoot 'android-runner.mjs'))
+if ($StartupDiagnostic) {
+    if (-not $Base -or $Layouts) { throw 'Startup diagnostics require an explicit base and do not run layout acceptance.' }
+    $arguments = @((Join-Path $PSScriptRoot 'native-startup.mjs'), '--execute', '--base', $Base, '--variant', $Variant)
+} else {
+    $arguments = @((Join-Path $PSScriptRoot 'android-runner.mjs'))
+}
 if ($Jdk) { $arguments += @('--jdk', $Jdk) }
 if ($Sdk) { $arguments += @('--sdk', $Sdk) }
 if ($Image) { $arguments += @('--image', $Image) }

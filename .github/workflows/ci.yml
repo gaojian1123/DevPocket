@@ -8,6 +8,10 @@ on:
         description: Base commit or ref to compare with the selected workflow ref
         type: string
         required: true
+      backend_diagnostic:
+        description: Run the normal backend job only with bounded diagnostics; never acceptance
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -30,11 +34,11 @@ jobs:
       android: ${{ steps.plan.outputs.android }}
       device: ${{ steps.plan.outputs.device }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - id: plan
@@ -51,6 +55,21 @@ jobs:
           "backend=$([bool]($plan.requiredChecks | Where-Object { $_ -notin @('android-build', 'android-device') }))".ToLowerInvariant() >> $env:GITHUB_OUTPUT
           "android=$($plan.requiredChecks -contains 'android-build')".ToLowerInvariant() >> $env:GITHUB_OUTPUT
           "device=$($plan.requiredChecks -contains 'android-device')".ToLowerInvariant() >> $env:GITHUB_OUTPUT
+      - name: Explain plan outcome
+        id: diagnostics
+        if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
+        shell: pwsh
+        env:
+          STEP_RESULT: ${{ steps.plan.outcome }}
+        run: |
+          node scripts/verification-diagnostics.mjs --directory .data/ci --job plan --step-result $env:STEP_RESULT --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.diagnostics.outputs.report_ready == 'true'
+        with:
+          name: check-diagnostics-plan
+          path: .data/ci/verification-diagnostics.json
+          if-no-files-found: error
 
   backend:
     needs: plan
@@ -58,48 +77,80 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: npm ci --no-audit --no-fund
       - run: npm --prefix deployment\azure ci --no-audit --no-fund
       - run: python -m pip install -r deployment\azure\probe\requirements-test.txt
       - name: Verify backend and operational fixtures
+        id: verify
         shell: pwsh
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
         run: |
-          node scripts\verify.mjs --base $env:BASE_SHA --group backend --report .data\ci\backend\report.json
+          $env:DEVPOCKET_PROBE_PYTHON = (Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+          node scripts\verify.mjs --base $env:BASE_SHA --group backend --backend-diagnostics --report .data\ci\backend\report.json
           exit $LASTEXITCODE
-      - uses: actions/upload-artifact@v4
+      - name: Explain backend check outcomes
+        id: diagnostics
+        if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
+        shell: pwsh
+        env:
+          STEP_RESULT: ${{ steps.verify.outcome }}
+        run: |
+          node scripts/verification-diagnostics.mjs --directory .data/ci/backend --job backend --step-result $env:STEP_RESULT --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.diagnostics.outputs.report_ready == 'true'
+        with:
+          name: check-diagnostics-backend
+          path: .data/ci/backend/verification-diagnostics.json
+          if-no-files-found: error
+      - name: Export bounded backend test diagnostics
+        id: backend_diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          node scripts\backend-diagnostics.mjs --directory .data\ci\backend --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: verification-backend
-          path: .data\ci\backend\report.json
+          path: |
+            .data\ci\backend\report.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.backend_diagnostics.outputs.report_ready == 'true'
+        with:
+          name: backend-test-diagnostics
+          path: |
+            .data\ci\backend\backend-diagnostics.json
           if-no-files-found: error
 
   android:
     needs: plan
-    if: needs.plan.outputs.android == 'true'
+    if: needs.plan.outputs.android == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic)
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
@@ -107,62 +158,128 @@ jobs:
         shell: pwsh
         run: .\scripts\prepare-android.ps1 -ExistingSdk $env:ANDROID_HOME
       - name: Verify native build, JVM contracts and lint
+        id: verify
         shell: pwsh
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
         run: |
           node scripts\verify.mjs --base $env:BASE_SHA --group android --jdk $env:JAVA_HOME --sdk .tools\android-sdk --report .data\ci\android\report.json
           exit $LASTEXITCODE
-      - uses: actions/upload-artifact@v4
+      - name: Explain Android check outcome
+        id: diagnostics
+        if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
+        shell: pwsh
+        env:
+          STEP_RESULT: ${{ steps.verify.outcome }}
+        run: |
+          node scripts/verification-diagnostics.mjs --directory .data/ci/android --job android --step-result $env:STEP_RESULT --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.diagnostics.outputs.report_ready == 'true'
+        with:
+          name: check-diagnostics-android
+          path: .data/ci/android/verification-diagnostics.json
+          if-no-files-found: error
+      - name: Export bounded Android failure diagnostics
+        id: android_diagnostics
+        if: failure()
+        shell: pwsh
+        run: |
+          node scripts\android-diagnostics.mjs --directory .data\ci\android --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: verification-android
-          path: .data\ci\android\report.json
+          path: |
+            .data\ci\android\report.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.android_diagnostics.outputs.report_ready == 'true'
+        with:
+          name: android-test-diagnostics
+          path: .data/ci/android/android-diagnostics.json
           if-no-files-found: error
 
   device:
     needs: [plan, android]
     if: >-
       needs.plan.outputs.device == 'true' &&
-      vars.DEVPOCKET_ANDROID_RUNNER_ENABLED == 'true' &&
+      !(github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic) &&
       (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, Windows, X64, devpocket-android-ci]
-    environment: devpocket-android-ci
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci --no-audit --no-fund
+      - uses: ./.github/actions/prepare-native
       - name: Run the required isolated emulator cases
+        id: verify
         shell: pwsh
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
         run: |
-          if (-not $env:DEVPOCKET_JDK -or -not $env:DEVPOCKET_ANDROID_SDK -or -not $env:DEVPOCKET_ANDROID_IMAGE) {
-            throw 'The disposable runner must declare its provisioned JDK, SDK and system image.'
-          }
-          .\scripts\verify.ps1 -Base $env:BASE_SHA -Group device -Report .data\ci\device\report.json
+          ./scripts/verify.ps1 -Base $env:BASE_SHA -Group device -Jdk $env:JAVA_HOME -Sdk $env:ANDROID_HOME `
+            -Image system-images/android-35/google_apis/x86_64 -Report .data/ci/device/report.json
           exit $LASTEXITCODE
-      - uses: actions/upload-artifact@v4
+      - name: Explain device check outcome
+        id: diagnostics
+        if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
+        shell: pwsh
+        env:
+          STEP_RESULT: ${{ steps.verify.outcome }}
+        run: |
+          node scripts/verification-diagnostics.mjs --directory .data/ci/device --job device --step-result $env:STEP_RESULT --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.diagnostics.outputs.report_ready == 'true'
+        with:
+          name: check-diagnostics-device
+          path: .data/ci/device/verification-diagnostics.json
+          if-no-files-found: error
+      - name: Export bounded owned-worker diagnostics
+        id: worker_diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          node scripts/worker-diagnostics.mjs --directory .data/ci/device --github
+          exit $LASTEXITCODE
+      - name: Export device phases and instrumentation failures
+        id: device_diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          node scripts/device-diagnostics.mjs --directory .data/ci/device --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: verification-device
-          path: .data\ci\device\report.json
+          path: |
+            .data/ci/device/report.json
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.worker_diagnostics.outputs.report_ready == 'true'
+        with:
+          name: owned-worker-diagnostics
+          path: .data/ci/device/worker-diagnostics.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.device_diagnostics.outputs.report_ready == 'true'
+        with:
+          name: device-test-diagnostics
+          path: .data/ci/device/device-diagnostics.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
         if: success()
         with:
           name: emulator-tested-debug-${{ github.sha }}
           path: |
-            android\app\build\outputs\apk\debug\app-debug.apk
-            android\app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk
-            .data\ci\device\device\device-report.json
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            .data/ci/device/device/device-report.json
           if-no-files-found: error
 
   gate:
@@ -171,33 +288,67 @@ jobs:
     if: always()
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: verification-*
           path: .data\ci\inputs
       - name: Require every selected check for this exact source
+        id: verify
         shell: pwsh
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
           PLAN_RESULT: ${{ needs.plan.result }}
+          BACKEND_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic }}
+          BACKEND_REQUIRED: ${{ needs.plan.outputs.backend }}
+          ANDROID_REQUIRED: ${{ needs.plan.outputs.android }}
+          DEVICE_REQUIRED: ${{ needs.plan.outputs.device }}
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          ANDROID_RESULT: ${{ needs.android.result }}
+          DEVICE_RESULT: ${{ needs.device.result }}
         run: |
           if ($env:PLAN_RESULT -ne 'success') { throw 'The required check plan did not complete.' }
+          if ($env:BACKEND_ONLY -eq 'true') {
+            node scripts\verify.mjs --base $env:BASE_SHA --plan --report .data\ci\gate.json
+            throw 'A backend diagnostic cannot satisfy Required verification. Run full verification for acceptance.'
+          }
           $arguments = @('scripts\verify.mjs', '--base', $env:BASE_SHA, '--combine', '--report', '.data\ci\gate.json')
+          foreach ($group in @('backend', 'android', 'device')) {
+            if ([Environment]::GetEnvironmentVariable("$($group.ToUpperInvariant())_REQUIRED") -eq 'true') {
+              $result = [Environment]::GetEnvironmentVariable("$($group.ToUpperInvariant())_RESULT")
+              if (-not $result) { $result = 'unknown' }
+              $arguments += @('--upstream', "${group}:$result")
+            }
+          }
           if (Test-Path -LiteralPath .data\ci\inputs) {
             Get-ChildItem -LiteralPath .data\ci\inputs -Filter report.json -File -Recurse | ForEach-Object {
               $arguments += @('--input', $_.FullName)
             }
           }
           node @arguments
-          if ($LASTEXITCODE -ne 0) { throw 'Required verification is incomplete. An absent device runner is a blocker, not a skipped success.' }
-      - uses: actions/upload-artifact@v4
+          if ($LASTEXITCODE -ne 0) { throw 'Required verification is incomplete. Missing or failed device evidence is a blocker, not a skipped success.' }
+      - name: Explain aggregate outcome
+        id: diagnostics
+        if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
+        shell: pwsh
+        env:
+          STEP_RESULT: ${{ steps.verify.outcome }}
+        run: |
+          node scripts/verification-diagnostics.mjs --directory .data/ci --job gate --step-result $env:STEP_RESULT --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.diagnostics.outputs.report_ready == 'true'
+        with:
+          name: check-diagnostics-gate
+          path: .data/ci/verification-diagnostics.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: verification-summary

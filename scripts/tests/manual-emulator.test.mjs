@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 
@@ -28,6 +28,31 @@ test("manual commands address one live owned run and stop is acknowledged only a
   assert.equal(acknowledged, false);
   await controller.finish({ status: "stopped", cleanup: "completed" });
   assert.equal((await stop).cleanup, "completed");
+});
+
+test("manual layout requests still reject case-log collection failures without a run-level recorder", async (t) => {
+  const { openManualControl, requestManualEmulator } = await import("../manual-emulator.mjs");
+  const { runNativeLayouts } = await import("../android-runner.mjs");
+  await mkdir(".data/tests", { recursive: true });
+  const root = process.cwd(), directory = await mkdtemp(path.resolve(".data/tests/manual-case-log-"));
+  const priorLog = path.join(directory, "case-layout-compact.log");
+  await writeFile(priorLog, "preserve prior case evidence");
+  const device = { root, directory, runId: randomUUID(), leaseId: randomUUID(), ports: {},
+    adb: async (args) => ({
+      stdout: args.includes("instrument") ? "INSTRUMENTATION_STATUS: class=dev.devpocket.app.AdaptiveLayoutTest\n" +
+        "INSTRUMENTATION_STATUS_CODE: 0\nOK (1 test)\nINSTRUMENTATION_CODE: -1\n" : "Success\n",
+      stderr: "",
+    }) };
+  const controller = await openManualControl(device, {
+    layouts: async () => {
+      const cases = await runNativeLayouts(device, { all: false, directory });
+      return { status: "passed", tests: cases.reduce((sum, item) => sum + item.tests, 0), cases };
+    },
+  });
+  t.after(async () => { await controller.finish({ status: "stopped" }); await rm(directory, { recursive: true, force: true }); });
+  await assert.rejects(requestManualEmulator({ root, directory, command: "layouts" }), /report could not be published|collection/i);
+  await controller.drain();
+  assert.equal(await readFile(priorLog, "utf8"), "preserve prior case evidence");
 });
 
 test("unknown manual operation acknowledgements cannot be reported as success", async (t) => {

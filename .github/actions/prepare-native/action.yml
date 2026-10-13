@@ -1,0 +1,52 @@
+name: Prepare native verification
+description: Shared hosted Ubuntu SDK, KVM and owned-process prerequisites
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 24
+        cache: npm
+    - uses: actions/setup-java@v6
+      with:
+        distribution: temurin
+        java-version: '21'
+    - shell: bash
+      run: npm ci --no-audit --no-fund
+    - name: Prepare hosted KVM and stable SDK packages without accepting new licenses
+      shell: bash
+      run: |
+        set -euo pipefail
+        test -c /dev/kvm || { echo "::error title=Native preparation::KVM_DEVICE_MISSING"; exit 78; }
+        if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
+          if sudo setfacl -m "u:$(id -u):rw" /dev/kvm; then :; else
+            code=$?; echo "::error title=Native preparation::KVM_ACCESS_SETUP_FAILED"; exit "$code"
+          fi
+        fi
+        test -r /dev/kvm && test -w /dev/kvm || { echo "::error title=Native preparation::KVM_ACCESS_UNAVAILABLE"; exit 78; }
+        test -s "$ANDROID_HOME/licenses/android-sdk-license" || { echo "::error title=Native preparation::SDK_LICENSE_MISSING"; exit 78; }
+        if "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --channel=0 \
+          "platforms;android-35" "build-tools;35.0.0" "platform-tools" "emulator" \
+          "system-images;android-35;google_apis;x86_64" </dev/null; then :; else
+          code=$?; echo "::error title=Native preparation::SDK_PACKAGE_PREPARATION_FAILED"; exit "$code"
+        fi
+        test -s "$ANDROID_HOME/platforms/android-35/android.jar" || { echo "::error title=Native preparation::SDK_PLATFORM_MISSING"; exit 78; }
+        test -x "$ANDROID_HOME/build-tools/35.0.0/aapt" || { echo "::error title=Native preparation::SDK_BUILD_TOOLS_MISSING"; exit 78; }
+        test -x "$ANDROID_HOME/platform-tools/adb" || { echo "::error title=Native preparation::ADB_MISSING"; exit 78; }
+        test -x "$ANDROID_HOME/emulator/emulator" || { echo "::error title=Native preparation::EMULATOR_MISSING"; exit 78; }
+        test -s "$ANDROID_HOME/system-images/android-35/google_apis/x86_64/system.img" || { echo "::error title=Native preparation::SYSTEM_IMAGE_MISSING"; exit 78; }
+    - name: Verify Linux process, ownership and build entry points
+      id: platform_tests
+      shell: bash
+      run: node scripts/platform-diagnostics.mjs --github
+    - uses: actions/upload-artifact@v7
+      if: always() && steps.platform_tests.outputs.report_ready == 'true'
+      with:
+        name: native-platform-diagnostics
+        path: .data/ci/preparation/platform-diagnostics.json
+        if-no-files-found: error
+    - name: Check the emulator loader and resolve only its approved missing runtime dependency
+      shell: pwsh
+      run: |
+        node scripts/linux-runtime.mjs
+        exit $LASTEXITCODE

@@ -1,17 +1,34 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { StringDecoder } from "node:string_decoder";
+import { failureDetails } from "./diagnostic-errors.mjs";
 
 const exec = promisify(execFile);
 
+export function ownedCommandLaunch(platform = process.platform, privileged = false, env = process.env) {
+  if (!["win32", "linux"].includes(platform)) throw new Error("Owned command execution requires Windows or Linux.");
+  if (privileged && (platform !== "linux" || env.GITHUB_ACTIONS !== "true" ||
+      env.RUNNER_ENVIRONMENT !== "github-hosted")) {
+    throw new Error("Privileged command ownership requires the configured hosted Linux job.");
+  }
+  const linux = platform === "linux";
+  const launcher = fileURLToPath(new URL(linux ? "./owned-command-linux.py" : "./owned-command.ps1", import.meta.url));
+  if (privileged) return { file: "sudo", args: ["-n", "python3", "-u", launcher] };
+  return linux ? { file: "python3", args: ["-u", launcher] }
+    : { file: "pwsh", args: ["-NoProfile", "-NonInteractive", "-File", launcher] };
+}
+
 export function spawnOwnedCommand(file, args, {
-  cwd, env = process.env, timeoutMs = 30_000, graceMs = 5000, persistent = false,
+  cwd, env = process.env, timeoutMs = 30_000, graceMs = 5000, persistent = false, privileged = false, nativeLifecycle = false,
 } = {}) {
-  if (process.platform !== "win32") throw new Error("Owned command execution requires the Windows development executor.");
-  const launcher = fileURLToPath(new URL("./owned-command.ps1", import.meta.url));
-  const child = spawn("pwsh", ["-NoProfile", "-NonInteractive", "-File", launcher],
-    { cwd, env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
-  child.stdin.write(JSON.stringify({ file, arguments: args, timeoutMs, graceMs, persistent, ownerPid: process.pid }) + "\n");
+  if (nativeLifecycle && (process.platform !== "linux" || privileged)) {
+    throw new Error("Native lifecycle pipes require an ordinary Linux command owner.");
+  }
+  const launch = ownedCommandLaunch(process.platform, privileged, env);
+  const child = spawn(launch.file, launch.args,
+    { cwd, env, windowsHide: true, stdio: nativeLifecycle ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"] });
+  child.stdin.write(JSON.stringify({ file, arguments: args, timeoutMs, graceMs, persistent, nativeLifecycle, ownerPid: process.pid }) + "\n");
   return child;
 }
 
@@ -40,46 +57,67 @@ export async function stopOwnedProcess(child) {
   }
 }
 
-export function runCommand(file, args, { cwd, env = process.env, timeoutMs = 30_000, graceMs = 5000, signal } = {}) {
+export function runCommand(file, args, {
+  cwd, env = process.env, timeoutMs = 30_000, graceMs = 5000, signal, privileged = false,
+} = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawnOwnedCommand(file, args, { cwd, env, timeoutMs, graceMs });
-    let stdout = "", stderr = "", failure, stopping = false, hardStop;
-    child.stdin.on("error", (error) => { if (error.code !== "EPIPE") failure = error; });
-    const stop = (error) => {
+    const child = spawnOwnedCommand(file, args, { cwd, env, timeoutMs, graceMs, privileged });
+    let stdout = "", stderr = "", failure, failureReason, cleanupFailure, stopping = false, hardStop, capturedBytes = 0;
+    let outputTruncated = false;
+    const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
+    child.stdin.on("error", (error) => {
+      if (error.code !== "EPIPE") { failure ??= error; failureReason ??= "io"; }
+    });
+    const stop = (error, reason) => {
       if (stopping) return;
       stopping = true;
-      failure = error;
+      failure ??= error;
+      failureReason ??= reason;
       if (!child.stdin.destroyed) child.stdin.write("cancel\n");
       hardStop = setTimeout(() => {
         void stopOwnedProcess(child).catch((cleanupError) => {
-          failure = new Error(`Owned process cleanup failed: ${cleanupError.message}`);
+          cleanupFailure = cleanupError;
         });
       }, graceMs + 1000);
     };
-    const timer = setTimeout(() => stop(new Error("Command timed out; its owned process tree was stopped.")), timeoutMs);
-    const abort = () => stop(new Error("Command cancelled."));
+    const timer = setTimeout(() => stop(new Error("Command timed out; its owned process tree was stopped."), "timeout"), timeoutMs);
+    const abort = () => stop(new Error("Command cancelled."), "cancelled");
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) abort();
     const capture = (chunk, target) => {
-      if (stdout.length + stderr.length > 16 * 1024 * 1024) {
-        stop(new Error("Command output exceeded the private diagnostic budget."));
-      } else if (target === "stdout") stdout += chunk;
-      else stderr += chunk;
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const retained = bytes.subarray(0, Math.max(0, 16 * 1024 * 1024 - capturedBytes));
+      capturedBytes += retained.length;
+      const text = decoders[target].write(retained);
+      if (target === "stdout") stdout += text;
+      else stderr += text;
+      if (retained.length !== bytes.length) {
+        outputTruncated = true;
+        stop(new Error("Command output exceeded the private diagnostic budget."), "output-limit");
+      }
     };
     child.stdout.on("data", (chunk) => capture(chunk, "stdout"));
     child.stderr.on("data", (chunk) => capture(chunk, "stderr"));
-    child.once("error", (error) => { failure = error; });
-    child.once("close", (code) => {
+    child.once("error", (error) => { failure ??= error; failureReason ??= "spawn"; });
+    child.once("close", (code, signalCode) => {
       clearTimeout(timer);
       clearTimeout(hardStop);
       signal?.removeEventListener("abort", abort);
-      const processTreeStopped = /DEVPOCKET_OWNERSHIP_ACTIVE/.test(stderr);
+      stdout += decoders.stdout.end();
+      stderr += decoders.stderr.end();
+      const processTreeStopped = (process.platform === "linux"
+        ? /DEVPOCKET_OWNED_TREE_STOPPED/ : /DEVPOCKET_OWNERSHIP_ACTIVE/).test(stderr);
       stderr = stderr.replace(/^DEVPOCKET_(?:OWNERSHIP_ACTIVE|OWNED_TREE_STOPPED)\r?\n/gm, "");
+      const commandOutcome = {
+        observedProcess: "owned-command-supervisor", reason: failureReason ?? (signalCode ? "signal" : "exit"),
+        exitCode: code, signal: signalCode, outputTruncated, capturedBytes,
+        cleanupFailure: cleanupFailure ? failureDetails(cleanupFailure, "cleanup-failed") : null,
+      };
       if (failure || code !== 0) {
         const error = failure ?? new Error(`${file} exited with ${code}.`);
-        Object.assign(error, { code: failure ? failure.code : code, stdout, stderr, processTreeStopped });
+        Object.assign(error, { code: failure ? failure.code : code, stdout, stderr, processTreeStopped, commandOutcome });
         reject(error);
-      } else resolve({ stdout, stderr });
+      } else resolve({ stdout, stderr, processTreeStopped, commandOutcome });
     });
   });
 }

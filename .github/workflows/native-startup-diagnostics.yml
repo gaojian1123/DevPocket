@@ -1,0 +1,82 @@
+name: Native startup diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Base commit or ref to compare with the selected workflow ref
+        type: string
+        required: true
+      variant:
+        description: The one controlled startup-preparation factor
+        type: choice
+        options:
+          - same-build
+          - without-build
+        default: same-build
+
+permissions:
+  contents: read
+
+env:
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: core.autocrlf
+  GIT_CONFIG_VALUE_0: 'false'
+
+concurrency:
+  group: devpocket-native-startup-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  startup:
+    name: Native startup diagnostic only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve comparison base
+        id: base
+        shell: pwsh
+        env:
+          BASE_REF: ${{ inputs.base }}
+        run: |
+          $base = git merge-base -- HEAD $env:BASE_REF
+          if ($LASTEXITCODE -ne 0 -or -not $base) { throw 'Cannot resolve the comparison base.' }
+          "sha=$base" >> $env:GITHUB_OUTPUT
+      - uses: ./.github/actions/prepare-native
+      - name: Diagnose the same owned native startup
+        id: probe
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          STARTUP_VARIANT: ${{ inputs.variant }}
+        run: |
+          node scripts/native-startup.mjs --base $env:BASE_SHA --variant $env:STARTUP_VARIANT `
+            --directory .data/ci/native-startup --jdk $env:JAVA_HOME --sdk $env:ANDROID_HOME `
+            --image system-images/android-35/google_apis/x86_64 --github
+          exit $LASTEXITCODE
+      - name: Explain native startup outcome
+        id: diagnostics
+        if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
+        shell: pwsh
+        env:
+          STEP_RESULT: ${{ steps.probe.outcome }}
+          CURRENT_OWNER: ${{ steps.probe.outputs.startup_run_id }}
+        run: |
+          node scripts/verification-diagnostics.mjs --directory .data/ci/native-startup --job startup --step-result $env:STEP_RESULT --owner=$env:CURRENT_OWNER --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.diagnostics.outputs.startup_report_ready == 'true'
+        with:
+          name: native-startup-diagnostic
+          path: .data/ci/native-startup/public/startup-report.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.diagnostics.outputs.report_ready == 'true'
+        with:
+          name: check-diagnostics-startup
+          path: .data/ci/native-startup/verification-diagnostics.json
+          if-no-files-found: error

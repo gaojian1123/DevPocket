@@ -6,7 +6,8 @@ param(
     [string]$Sdk = $env:DEVPOCKET_ANDROID_SDK,
     [string]$Image = $env:DEVPOCKET_ANDROID_IMAGE,
     [switch]$Plan,
-    [switch]$All
+    [switch]$All,
+    [switch]$BackendDiagnostics
 )
 $ErrorActionPreference = 'Stop'
 $arguments = @((Join-Path $PSScriptRoot 'verify.mjs'), '--base', $Base, '--group', $Group)
@@ -16,5 +17,6 @@ if ($Sdk) { $arguments += @('--sdk', $Sdk) }
 if ($Image) { $arguments += @('--image', $Image) }
 if ($Plan) { $arguments += '--plan' }
 if ($All) { $arguments += '--all' }
+if ($BackendDiagnostics) { $arguments += '--backend-diagnostics' }
 & node @arguments
 exit $LASTEXITCODE

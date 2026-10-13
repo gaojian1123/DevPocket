@@ -8,6 +8,38 @@ import { runCommand } from "../process.mjs";
 
 const exec = promisify(execFile);
 
+test("owned command failure metadata retains the observed exit separately from private output", async () => {
+  const { failureDetails } = await import("../diagnostic-errors.mjs");
+  let failure;
+  try {
+    await runCommand(process.execPath, ["-e", "console.error('PRIVATE_COMMAND_CANARY');process.exitCode=37"], { timeoutMs: 10000 });
+  } catch (error) { failure = error; }
+  assert.equal(failure?.code, 37);
+  assert.equal(failure.commandOutcome.observedProcess, "owned-command-supervisor");
+  assert.equal(failure.commandOutcome.exitCode, 37);
+  assert.equal(failure.commandOutcome.reason, "exit");
+  assert.equal(failureDetails(failure).exitCode, 37);
+  assert.ok(!JSON.stringify(failureDetails(failure)).includes("PRIVATE_COMMAND_CANARY"));
+});
+
+test("owned command deadlines preserve their explicit reason and actual supervisor termination", async () => {
+  const { failureDetails } = await import("../diagnostic-errors.mjs");
+  let failure;
+  try {
+    await runCommand(process.execPath, ["-e", "setInterval(()=>{},1000)"], { timeoutMs: 500, graceMs: 250 });
+  } catch (error) { failure = error; }
+  assert.ok(failure);
+  assert.equal(failure.commandOutcome.reason, "timeout");
+  assert.ok(failure.commandOutcome.exitCode === null || Number.isInteger(failure.commandOutcome.exitCode));
+  assert.equal(failureDetails(failure).reason, "command-timeout");
+});
+
+test("successful owned commands expose the cleanup receipt before callers reclaim scratch data", async () => {
+  const result = await runCommand(process.execPath, ["-e", "process.stdout.write('completed')"], { timeoutMs: 5000 });
+  assert.equal(result.stdout, "completed");
+  assert.equal(result.processTreeStopped, true);
+});
+
 test("an exited launcher cannot strand a descendant or keep a bounded command unresolved", async (t) => {
   await mkdir(".data/tests", { recursive: true });
   const directory = await mkdtemp(path.resolve(".data/tests/process-owner-"));

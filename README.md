@@ -122,6 +122,11 @@ Extension loading and the App's run approvals remain explicit; unavailable
 prerequisites are reported rather than silently bypassed.
 Android-affecting changes require actual emulator
 instrumentation against a local test adapter, not just a successful APK build.
+CI runs this device gate on a standard GitHub-hosted Ubuntu 24.04 VM with KVM;
+no self-hosted runner registration, runner-enable variable or custom environment
+is needed. Windows local/manual emulator entry points retain their shared
+resource pool. Missing acceleration, failed fixtures and missing reports still
+block the required gate; moving CI does not repair historical Windows UI failures.
 See [development workflow](docs/DEVELOPMENT-WORKFLOW.md) for task input,
 `npm run verify`, explicit extension activation, runner prerequisites and CI
 rules. Missing required device evidence blocks acceptance. Repository files do
@@ -416,6 +421,24 @@ Or pass existing installations:
 ```powershell
 .\scripts\build-android.ps1 -Jdk C:\YourJdk21 -Sdk C:\YourAndroidSdk -Lint
 ```
+
+The entrypoint selects `JAVA_HOME` and **both** `ANDROID_HOME` and
+`ANDROID_SDK_ROOT` for its Gradle child. An inherited SDK root cannot disagree
+with `-Sdk`. The Gradle cache stays worktree-local under `.tools\gradle-cache`,
+even when `GRADLE_USER_HOME` was inherited. The caller's environment and working
+directory are restored after success or failure; no machine/user environment or
+other SDK installation is changed. Add `-Instrumentation` to assemble the test
+APK as well; assembly is not device acceptance.
+On Linux, PowerShell 7 invokes the same pinned wrapper JAR through the selected
+`bin/java`; Windows keeps `gradlew.bat`. The Linux CI job uses its existing SDK
+and stable packages with already accepted runner licenses, not the Windows
+preparation script or automatic license acceptance.
+
+Android CI retains the machine report and a bounded, allowlisted diagnostic
+projection on failure, not the raw build/JVM/lint log. See
+[Android failure diagnostics](docs/DEVELOPMENT-WORKFLOW.md#android-failure-diagnostics)
+for the public regression commands, limits and the distinction between the local
+SDK-conflict reproduction and PR #7's still-unconfirmed remote Gradle cause.
 
 Output: `android\app\build\outputs\apk\debug\app-debug.apk`, application ID `dev.devpocket.app.debug`, versionName **0.1.0**, versionCode **1**. It is a development debug build, not a signed release or authorization to distribute.
 
