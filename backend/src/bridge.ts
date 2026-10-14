@@ -197,7 +197,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     recordedCliVersion: runtime.summary.cliVersion, capabilities: runtime.summary.capabilities,
   }, null, 2), { mode: 0o600 });
   let ws: WebSocket | undefined, stopped = false, ready = false, permanentFailure = false;
-  let workspaceMetadata: boolean | undefined;
+  let workspaceMetadata: boolean | undefined, questionHistory: boolean | undefined;
   let retry: NodeJS.Timeout | undefined, attempts = 0, eventInFlight = false, closed = false;
   const summaries: {
     through: number; summary: SessionSummary; receiptIds: string[]; nextReceipt: number; sent: boolean;
@@ -215,13 +215,15 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     return true;
   }
   function summaryForRelay(summary: SessionSummary): SessionSummary {
-    if (workspaceMetadata === true) return summary;
     const { workspace, ...legacy } = summary;
-    if (workspace && workspaceMetadata === false) legacy.warnings = [
-      ...legacy.warnings.slice(0, 19),
-      "This relay does not support workspace labels. Update the relay to display branches and working trees.",
-    ];
-    return legacy;
+    const projected = workspaceMetadata === true ? { ...summary } : legacy;
+    const warnings: string[] = [];
+    if (workspace && workspaceMetadata === false)
+      warnings.push("This relay does not support workspace labels. Update the relay to display branches and working trees.");
+    if (questionHistory === false)
+      warnings.push("This relay does not support question history. Update the relay to retain runtime-confirmed answers across clients.");
+    if (warnings.length) projected.warnings = [...summary.warnings.slice(0, 20 - warnings.length), ...warnings];
+    return projected;
   }
   function queueSummary(): void {
     if (!ready || stopped) return;
@@ -238,7 +240,11 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     const snapshot = summaries[0];
     let awaitingEvents = eventInFlight;
     if (!eventInFlight && !snapshot?.sent) {
-      const items = journal.events(snapshot?.through);
+      const items = journal.events(snapshot?.through).map((event): UserEvent =>
+        event.kind === "question" && questionHistory !== true ? {
+          id: event.id, at: event.at, kind: "notice",
+          data: { code: "QUESTION_HISTORY_UNAVAILABLE", message: "Question history requires an updated relay. Pending questions and controls are unchanged." },
+        } : event);
       if (items.length) {
         eventInFlight = send({ type: "events", items });
         awaitingEvents = true;
@@ -307,7 +313,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
       const attachments = command.action.type === "message"
         ? await Promise.all(command.action.attachmentIds.map(attachment)) : [];
       invoked = true;
-      const result = await runtime.execute(command.action, attachments);
+      const result = await runtime.execute(command.action, attachments, command.commandId);
       journal.save({ commandId: command.commandId, ...result });
     } catch (error) {
       const uncertain = invoked && !(error instanceof Fault) &&
@@ -323,10 +329,12 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   function connect(): void {
     if (stopped || permanentFailure) return;
     workspaceMetadata = undefined;
+    questionHistory = undefined;
     const url = new URL("/v1/host/stream", origin);
     url.protocol = origin.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("sessionId", session.sessionId);
     url.searchParams.set("workspaceMetadata", "1");
+    url.searchParams.set("questionHistory", "1");
     ws = new WebSocket(url, { headers: { Authorization: `Bearer ${config.token}` },
       maxPayload: 4 * 1024 * 1024, perMessageDeflate: false, handshakeTimeout: 15_000,
       ...(proofAgent ? { agent: proofAgent } : {}) });
@@ -339,6 +347,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
         if (frame.type === "ready") {
           if (frame.hostId !== config.hostId || frame.sessionId !== session.sessionId) throw new Fault("SCOPE_MISMATCH", "Relay registered a different session.");
           workspaceMetadata = frame.workspaceMetadata === true;
+          questionHistory = frame.questionHistory === true;
           ready = true; eventInFlight = false; attempts = 0;
           queueSummary();
           resolveReady(); flush();

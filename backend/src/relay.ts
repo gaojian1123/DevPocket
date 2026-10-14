@@ -205,7 +205,8 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
                   clearTimeout(deadline);
                   connection.ready = true;
                   send(ws, { type: "ready", protocol: PROTOCOL, hostId: host.id, sessionId,
-                    ...(url.searchParams.get("workspaceMetadata") === "1" ? { workspaceMetadata: true } : {}) });
+                    ...(url.searchParams.get("workspaceMetadata") === "1" ? { workspaceMetadata: true } : {}),
+                    ...(url.searchParams.get("questionHistory") === "1" ? { questionHistory: true } : {}) });
                   if (knownSession) publish(host.id, sessionId, {
                     id: randomUUID(), at: new Date().toISOString(), kind: "runtime.state", data: { state: frame.summary.state },
                   });

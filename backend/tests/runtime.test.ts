@@ -302,6 +302,169 @@ test("simple native elicitation questions survive permission refresh and resolve
   assert.deepEqual(answer, { requestId: "form-1", result: { action: "accept", content: { selection: "Alpha" } } });
 });
 
+test("question refresh remains JSON-safe when optional model and workspace evidence is unavailable", async (t) => {
+  const f = await capabilityFixture(t);
+  delete f.session.rpc.model;
+  delete f.session.rpc.contentExclusion;
+  await f.runtime.connect();
+  f.emit("user_input.requested", { requestId: "refresh-question", question: "Free text", choices: [], allowFreeform: true });
+  const receipt = await f.runtime.execute({ type: "refresh" });
+  assert.equal(receipt.status, "completed");
+  const requests = PendingRequest.array().parse(receipt.result?.requests);
+  assert.ok(requests.some((item) => item.requestId === "refresh-question" && item.supported));
+  assert.equal(SessionSummary.parse(receipt.result?.summary).workspace, undefined);
+  assert.doesNotThrow(() => JSON.stringify(receipt));
+});
+
+test("confirmed phone ask_user answers remain in visible history after the pending request disappears", async (t) => {
+  const f = await capabilityFixture(t);
+  const question = "这是一条 ask_user 测试：你正在从哪个客户端回答这个问题？请优先在手机上的 DevPocket 中选择。";
+  const answer = "我正在手机上的 DevPocket 中回答";
+  f.session.rpc.ui = { handlePendingElicitation: async () => ({ success: true }) };
+  await f.runtime.connect();
+  f.emit("elicitation.requested", {
+    requestId: "phone-question", message: question, mode: "form",
+    requestedSchema: { type: "object", properties: {
+      selection: { type: "string", enum: [answer, "我只能在原来的 Copilot 客户端中回答"] },
+    }, required: ["selection"] },
+  });
+  assert.ok(f.events.some((event) => event.kind === "requests" &&
+    event.data.items.some((item) => item.requestId === "phone-question" && item.supported)));
+  assert.equal((await f.runtime.execute({ type: "answer", requestId: "phone-question", answer })).status, "completed");
+  f.emit("elicitation.completed", { requestId: "phone-question" });
+  await f.runtime.refresh();
+  assert.ok(!f.events.filter((event) => event.kind === "requests").at(-1)?.data.items
+    .some((item) => item.requestId === "phone-question"));
+  const history = f.events.filter((event) => !["requests", "assistant.message", "assistant.delta"].includes(event.kind));
+  assert.ok(history.some((event) => JSON.stringify(event.data).includes(question) &&
+    "answer" in event.data && event.data.answer === answer),
+  "The full question and runtime-confirmed answer must remain in chat history, without an assistant repeating them.");
+  const completed = f.events.filter((event) => event.kind === "question" && event.data.status === "confirmed");
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0]?.data.request.requestId, "phone-question");
+  assert.ok(completed[0]?.data.request.detail.includes(question));
+  assert.equal(completed[0]?.data.status, "confirmed");
+});
+
+test("choice and freeform answers retain only the safe question projection and exact confirmed value", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  for (const [requestId, choices, answer] of [
+    ["choice-history", ["Alpha", "Beta"], "Beta"],
+    ["freeform-history", [], "一段自由文本\nwith another line"],
+  ] as const) {
+    const commandId = randomUUID();
+    f.emit("user_input.requested", {
+      requestId, question: "Full visible question", choices: [...choices], allowFreeform: choices.length === 0,
+      toolCallId: "PRIVATE_TOOL_CORRELATION",
+    });
+    await f.runtime.execute({ type: "answer", requestId, answer }, [], commandId);
+    const history = f.events.filter((event) => event.kind === "question" && event.data.request.requestId === requestId);
+    assert.deepEqual(history.map((event) => event.data.status), ["pending", "confirmed"]);
+    const completed = history.at(-1)!;
+    assert.equal(completed.data.status === "confirmed" && completed.data.answer, answer);
+    assert.equal(completed.data.status === "confirmed" && completed.data.commandId, commandId);
+    assert.equal(completed.data.request.detail, "Full visible question");
+    assert.equal(history[0]?.data.questionId, completed.data.questionId);
+    assert.ok(!JSON.stringify(history).includes("PRIVATE_TOOL_CORRELATION"));
+    await assert.rejects(f.runtime.execute({ type: "answer", requestId, answer }), { code: "REQUEST_STALE" });
+  }
+});
+
+test("completion or another client winning never confirms the phone's attempted answer", async (t) => {
+  for (const outcome of ["other-client", "malformed", "accepted"] as const) {
+    await t.test(outcome, async (t) => {
+      const f = await capabilityFixture(t), commandId = randomUUID();
+      f.session.rpc.ui = {
+        handlePendingUserInput: async () => {
+          f.emit("user_input.completed", { requestId: "race", answer: "PRIVATE_UNVALIDATED_COMPLETION_VALUE" });
+          return outcome === "malformed" ? { accepted: true } : { success: outcome === "accepted" };
+        },
+      };
+      await f.runtime.connect();
+      f.emit("user_input.requested", { requestId: "race", question: "Which client?", choices: ["Phone", "Original"] });
+      const submitted = f.runtime.execute({ type: "answer", requestId: "race", answer: "Phone" }, [], commandId);
+      if (outcome === "other-client") await assert.rejects(submitted, { code: "REQUEST_STALE" });
+      else if (outcome === "malformed") await assert.rejects(submitted, { name: "ZodError" });
+      else assert.equal((await submitted).status, "completed");
+      const history = f.events.filter((event) => event.kind === "question");
+      assert.deepEqual(history.map((event) => event.data.status),
+        outcome === "accepted" ? ["pending", "unknown", "confirmed"] : ["pending", "unknown"]);
+      assert.ok(!JSON.stringify(history).includes("PRIVATE_UNVALIDATED_COMPLETION_VALUE"));
+      assert.equal(new Set(history.map((event) => event.data.questionId)).size, 1);
+      if (outcome !== "accepted") assert.ok(history.every((event) => !("answer" in event.data)));
+    });
+  }
+});
+
+test("a late confirmed answer stays attached to its question without removing a replacement request", async (t) => {
+  const f = await capabilityFixture(t);
+  f.session.rpc.ui = { handlePendingUserInput: async () => {
+    f.emit("user_input.requested", { requestId: "reused", question: "Replacement question", choices: ["New"] });
+    return { success: true };
+  } };
+  await f.runtime.connect();
+  f.emit("user_input.requested", { requestId: "reused", question: "Original question", choices: ["Old"] });
+  await f.runtime.execute({ type: "answer", requestId: "reused", answer: "Old" });
+  const history = f.events.filter((event) => event.kind === "question");
+  const confirmed = history.find((event) => event.data.status === "confirmed")!;
+  assert.equal(confirmed.data.request.detail, "Original question");
+  assert.equal(confirmed.data.status === "confirmed" && confirmed.data.answer, "Old");
+  assert.notEqual(confirmed.data.questionId, history.filter((event) => event.data.status === "pending").at(-1)?.data.questionId);
+  const pending = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items;
+  assert.equal(pending?.find((item) => item.requestId === "reused")?.detail, "Replacement question");
+});
+
+test("a stale RPC result without a completion event closes history with an unknown answer", async (t) => {
+  const f = await capabilityFixture(t);
+  f.session.rpc.ui = { handlePendingUserInput: async () => ({ success: false }) };
+  await f.runtime.connect();
+  f.emit("user_input.requested", { requestId: "stale-history", question: "Choose", choices: ["One", "Two"] });
+  await assert.rejects(f.runtime.execute({ type: "answer", requestId: "stale-history", answer: "One" }), { code: "REQUEST_STALE" });
+  assert.equal(f.events.filter((event) => event.kind === "question").at(-1)?.data.status, "unknown");
+  assert.ok(!f.events.filter((event) => event.kind === "requests").at(-1)?.data.items
+    .some((item) => item.requestId === "stale-history"));
+});
+
+test("confirmed free text is redacted and unsupported question forms do not become history approvals", async (t) => {
+  const f = await capabilityFixture(t);
+  await f.runtime.connect();
+  f.emit("user_input.requested", { requestId: "redacted-answer", question: "Your label?", allowFreeform: true });
+  const secret = "ghp_" + "a".repeat(36);
+  await f.runtime.execute({ type: "answer", requestId: "redacted-answer", answer: `label ${secret}` });
+  f.emit("elicitation.requested", { requestId: "unsupported-history", requestedSchema: { anything: true } });
+  const history = f.events.filter((event) => event.kind === "question");
+  assert.ok(!JSON.stringify(history).includes(secret));
+  assert.ok(JSON.stringify(history).includes("[REDACTED]"));
+  assert.ok(history.every((event) => event.data.request.requestId !== "unsupported-history"));
+});
+
+test("a confirmed answer fully removed by redaction retains success and an explicit safe history marker", async (t) => {
+  for (const [name, answer] of [["ANSI-only", "\u001b[31m"], ["controls with whitespace", " \n\t\u0000\u001b[31m "]]) {
+    await t.test(name, async (t) => {
+      const f = await capabilityFixture(t);
+      let accepted: string | undefined;
+      f.session.rpc.ui = { handlePendingUserInput: async ({ requestId, response }) => {
+        accepted = response.answer;
+        f.emit("user_input.completed", { requestId });
+        return { success: true };
+      } };
+      await f.runtime.connect();
+      f.emit("user_input.requested", { requestId: "control-answer", question: "Your label?", allowFreeform: true });
+      const receipt = await f.runtime.execute({ type: "answer", requestId: "control-answer", answer }, [], randomUUID());
+      assert.equal(accepted, answer, "History projection must not change the original runtime's submitted answer.");
+      assert.equal(receipt.status, "completed");
+      assert.equal(receipt.result?.resolved, true);
+      const confirmed = f.events.filter((event) => event.kind === "question" && event.data.status === "confirmed");
+      assert.equal(confirmed.length, 1);
+      assert.equal(confirmed[0]?.data.status === "confirmed" && confirmed[0].data.answer, "[REDACTED]");
+      assert.ok(!JSON.stringify(confirmed).includes("\\u001b"));
+      assert.ok(!f.events.filter((event) => event.kind === "requests").at(-1)?.data.items
+        .some((request) => request.requestId === "control-answer"));
+    });
+  }
+});
+
 test("a message observed in the runtime queue is reported queued rather than processing", async (t) => {
   await mkdir(".data/tests", { recursive: true });
   const root = await mkdtemp(path.resolve(".data/tests/queue-"));

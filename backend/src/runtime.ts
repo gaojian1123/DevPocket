@@ -3,8 +3,8 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
-  actionCapability, Json, PendingRequest, RequestId, SessionSummary, UserEvent,
-  type Action, type Receipt,
+  actionCapability, Id, Json, PendingRequest, RequestId, SessionSummary, UserEvent,
+  type Action, type QuestionRecord, type Receipt,
 } from "./protocol.js";
 import { Fault, hash, redact } from "./security.js";
 import { contentExclusionDecisions, ProjectFiles } from "./files.js";
@@ -287,6 +287,7 @@ const capabilityGroup = {
 } as const satisfies Record<Capability, ProbeGroup>;
 export class CopilotRuntime {
   private readonly requests = new Map<string, PendingRequest>();
+  private readonly questions = new Map<string, Extract<QuestionRecord, { status: "pending" }>>();
   private readonly permissionIds = new Set<string>();
   private readonly livePermissions = new Map<string, ReturnType<typeof livePermission>>();
   private permissionSnapshotChanges?: Set<string>;
@@ -593,6 +594,30 @@ export class CopilotRuntime {
     this.emit({ id, at, kind: "requests", data: { items } });
   }
 
+  private questionEvent(data: QuestionRecord, id: string = randomUUID(), at = new Date().toISOString()): void {
+    if (!this.closed) this.emit(UserEvent.parse({ id, at, kind: "question", data }));
+  }
+
+  private rememberQuestion(request: PendingRequest, event: { id: string; timestamp: string }): void {
+    const previous = this.questions.get(request.requestId);
+    const questionId = `question:${hash(event.id)}`;
+    if (previous?.questionId === questionId) return;
+    if (previous) this.questionEvent({ ...previous, status: "unknown" });
+    this.questions.delete(request.requestId);
+    if (request.type !== "question" || !request.supported) return;
+    const question = { questionId, request: { ...request, type: "question" as const }, status: "pending" as const };
+    this.questions.set(request.requestId, question);
+    this.questionEvent(question, questionId, event.timestamp);
+  }
+
+  private forgetQuestion(requestId: string, id?: string, at?: string): void {
+    const question = this.questions.get(requestId);
+    if (question) {
+      this.questionEvent({ ...question, status: "unknown" }, id, at);
+      this.questions.delete(requestId);
+    }
+  }
+
   private consume(raw: unknown, historical = false): void {
     if (this.closed) return;
     const parsed = runtimeEvent.safeParse(raw);
@@ -667,6 +692,8 @@ export class CopilotRuntime {
         case "permission.completed":
         case "user_input.completed":
         case "elicitation.completed":
+          if (!historical && event.type !== "permission.completed")
+            this.forgetQuestion(text(data.requestId), `question:${hash(event.id)}`, event.timestamp);
           this.permissionSnapshotChanges?.add(text(data.requestId));
           this.requests.delete(text(data.requestId));
           this.permissionIds.delete(text(data.requestId));
@@ -690,6 +717,7 @@ export class CopilotRuntime {
               choices.every((choice, index) => choice === question.choices?.[index]),
           });
           this.requests.set(item.requestId, item);
+          this.rememberQuestion(item, event);
           if (!historical) this.emitRequests(event.id, event.timestamp);
           break;
         }
@@ -737,6 +765,7 @@ export class CopilotRuntime {
               choices: [], allowFreeform: false, supported: false,
             });
           }
+          this.rememberQuestion(this.requests.get(requestId)!, event);
           this.emitRequests(event.id, event.timestamp);
           break;
         }
@@ -798,7 +827,8 @@ export class CopilotRuntime {
     return this.modelItems;
   }
 
-  async execute(action: Action, attachments: LocalAttachment[] = []): Promise<Omit<Receipt, "commandId">> {
+  async execute(action: Action, attachments: LocalAttachment[] = [], commandId?: string): Promise<Omit<Receipt, "commandId">> {
+    if (commandId !== undefined) Id.parse(commandId);
     const rpc = this.session.rpc ?? {};
     const capability = actionCapability[action.type];
     if (capability) {
@@ -853,6 +883,7 @@ export class CopilotRuntime {
           throw new Fault("TERMINAL_REQUIRED", "This request must be answered in the terminal.", 409);
         if (!item.allowFreeform && !item.choices.includes(action.answer))
           throw new Fault("INVALID_CHOICE", "Choose an exact answer offered by the runtime.");
+        const question = this.questions.get(action.requestId);
         let raw: unknown;
         if (form) {
           if (typeof rpc.ui?.handlePendingElicitation !== "function")
@@ -871,9 +902,29 @@ export class CopilotRuntime {
             response: { answer: action.answer, wasFreeform: !item.choices.includes(action.answer) } });
         }
         const result = requestResolution.parse(raw);
-        if (result.success !== true) throw new Fault("REQUEST_STALE", "Another client already answered this question.", 409);
-        this.requests.delete(action.requestId); this.emitRequests();
-        this.elicitationFields.delete(action.requestId);
+        if (result.success !== true) {
+          if (this.requests.get(action.requestId) === item) {
+            this.forgetQuestion(action.requestId);
+            this.requests.delete(action.requestId);
+            this.elicitationFields.delete(action.requestId);
+            this.emitRequests();
+          }
+          throw new Fault("REQUEST_STALE", "Another client already answered this question.", 409);
+        }
+        if (question) {
+          const visibleAnswer = redact(action.answer, 8000);
+          this.questionEvent({
+            ...question, status: "confirmed", answer: visibleAnswer.trim() ? visibleAnswer : "[REDACTED]",
+            ...(commandId ? { commandId } : {}),
+          });
+        }
+        // A completion or a replacement request may arrive while the RPC is in flight.
+        if (this.questions.get(action.requestId) === question) this.questions.delete(action.requestId);
+        if (this.requests.get(action.requestId) === item) {
+          this.requests.delete(action.requestId);
+          this.elicitationFields.delete(action.requestId);
+        }
+        this.emitRequests();
         return { status: "completed", result: { resolved: true } };
       }
       case "models":
@@ -908,11 +959,14 @@ export class CopilotRuntime {
           message: redact(text(result.message), 2000), reasoningEffort: this.summary.reasoningEffort,
         } };
       }
-      case "refresh":
+      case "refresh": {
         await this.refresh();
         this.requestsHash = "";
         this.emitRequests();
-        return { status: "completed", result: { summary: Json.parse(this.summary), requests: Json.parse(this.visibleRequests()) } };
+        const summary = { ...this.summary };
+        if (summary.workspace === undefined) delete summary.workspace;
+        return { status: "completed", result: { summary: Json.parse(summary), requests: Json.parse(this.visibleRequests()) } };
+      }
       case "files.list":
         return { status: "completed", result: await this.projectFiles().list(action.path) };
       case "files.read":

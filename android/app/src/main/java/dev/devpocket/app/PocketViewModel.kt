@@ -41,6 +41,7 @@ data class PocketUi(
     val events: List<WireEvent> = emptyList(),
     val draft: Draft = Draft(),
     val outbox: List<Outbox> = emptyList(),
+    val submittingAnswers: Set<String> = emptySet(),
     val requests: List<PendingRequest> = emptyList(),
     val connection: String = "未连接",
     val busy: Boolean = false,
@@ -84,6 +85,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     private var refreshJob: Job? = null
     private var notificationJob: Job? = null
     private val staging = mutableSetOf<Pair<String, Long>>()
+    private val answerStaging = mutableSetOf<Pair<String, String>>()
     private val api: RelayApi get() = apiFor(mutable.value.selected ?: error("没有选择会话。"))
     private fun apiFor(scope: Scope) = RelayApi(mutable.value.accounts.first { it.id == scope.accountId })
 
@@ -274,7 +276,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
                 try {
                     mutable.update { it.copy(connection = "正在同步历史") }
                     catchUp(scope)
-                    recoverMessages(scope)
+                    recoverCommands(scope)
                     synchronizeRequests(scope)
                     val cursor = withContext(Dispatchers.IO) { local.cursor(scope) }
                     apiFor(scope).stream(scope, cursor) {
@@ -371,9 +373,13 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         loadLocal(entry.scope)
     }
 
-    private suspend fun recoverMessages(scope: Scope) {
+    private suspend fun recoverCommands(scope: Scope) {
         val pending = withContext(Dispatchers.IO) { local.outbox(scope) }
-            .filter { it.command.action is Action.Message && it.status !in setOf("completed", "cancelled", "failed", "uncertain") }
+            .filter {
+                (it.command.action is Action.Message || it.command.action is Action.Answer) &&
+                    (it.status !in setOf("completed", "cancelled", "failed", "uncertain") ||
+                        (it.command.action is Action.Answer && it.status == "completed" && !it.hasConfirmedAnswer()))
+            }
         for (entry in pending) {
             try {
                 val receipt = apiFor(scope).receipt(scope, entry.command.commandId)
@@ -391,7 +397,95 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
 
     fun retry(entry: Outbox) {
         if (entry.status !in setOf("delivery_unknown", "not_received", "sending")) return
+        if (entry.command.action is Action.Answer) {
+            val state = mutable.value
+            val session = state.session ?: return
+            if (state.selected != entry.scope || !session.online || state.busy || !session.capabilities.questions) return
+            val current = state.outbox.find { it.command == entry.command && it.scope == entry.scope } ?: return
+            if (current.status !in setOf("delivery_unknown", "not_received", "sending")) return
+            val question = current.question ?: return
+            if (state.requests.none { it.sameQuestion(question.request) && it.supportedBy(session.capabilities) }) return
+            val history = questionHistory(state.events, state.outbox, entry.scope).find { it.record.questionId == question.questionId }
+            if (history?.record?.status == "confirmed") return
+            launchAnswer(entry.scope, current.command, question, current) {}
+            return
+        }
         viewModelScope.launch { attempt { transmit(entry) } }
+    }
+
+    private fun answer(action: Action.Answer, done: (Receipt) -> Unit) {
+        val state = mutable.value
+        val scope = state.selected ?: return
+        val session = state.session ?: return
+        if (!session.online || state.busy) return
+        val request = state.requests.find { it.requestId == action.requestId && it.type == "question" } ?: return
+        if (!request.supportedBy(session.capabilities)) return
+        val history = questionHistory(state.events, state.outbox, scope).lastOrNull {
+            it.record.request.sameQuestion(request) && it.record.status == "pending"
+        }
+        if (history == null) {
+            mutable.update { it.copy(error = "问题详情尚未同步，请等待同步后再回答。") }
+            return
+        }
+        if (history.blocksNewAnswer) return
+        val context = AnswerContext(history.record.questionId, request, history.at, history.cursor)
+        launchAnswer(scope, Command(UUID.randomUUID().toString(), action), context, null, done)
+    }
+
+    private fun launchAnswer(scope: Scope, command: Command, question: AnswerContext,
+        previous: Outbox?, done: (Receipt) -> Unit) {
+        val key = scope.key to question.questionId
+        if (!answerStaging.add(key)) return
+        mutable.update { it.copy(busy = true, submittingAnswers = it.submittingAnswers + command.commandId) }
+        viewModelScope.launch {
+            var staged = previous
+            try {
+                val entry = previous ?: withContext(Dispatchers.IO) { local.stageAnswer(scope, command, question) }
+                staged = entry
+                loadLocal(scope)
+                transmitAnswer(entry, done)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                mutable.update { it.copy(error = if (staged == null) "本机保存失败，回答未发送：${error.message}"
+                    else "无法恢复回答状态，请在原始客户端核实：${error.message}") }
+            } finally {
+                answerStaging.remove(key)
+                mutable.update { it.copy(busy = false, submittingAnswers = it.submittingAnswers - command.commandId) }
+            }
+        }
+    }
+
+    private suspend fun transmitAnswer(entry: Outbox, done: (Receipt) -> Unit) {
+        var submitted = false
+        try {
+            var receipt = apiFor(entry.scope).submit(entry.scope, entry.command)
+            submitted = true
+            var polls = 0
+            while (true) {
+                withContext(Dispatchers.IO) { local.applyReceipt(entry.scope, receipt) }
+                loadLocal(entry.scope)
+                if (receipt.status in setOf("completed", "failed", "uncertain", "cancelled")) break
+                if (polls++ >= 90) {
+                    withContext(Dispatchers.IO) { local.transportFailure(entry, "delivery_unknown", "回答结果尚未确认，请在原始客户端核实。") }
+                    break
+                }
+                delay(500)
+                receipt = apiFor(entry.scope).receipt(entry.scope, entry.command.commandId)
+            }
+            if (receipt.status in setOf("failed", "uncertain"))
+                mutable.update { it.copy(error = receipt.error?.message ?: "回答结果未确认，请在原始客户端核实。") }
+            if (receipt.status == "completed" && mutable.value.selected == entry.scope) done(receipt)
+        } catch (error: CancellationException) { throw error }
+        catch (error: Exception) {
+            val rejected = !submitted && error is ApiFailure && error.status in listOf(400, 401, 403, 404, 409, 413, 415, 429, 503)
+            withContext(Dispatchers.IO) {
+                local.transportFailure(entry, if (rejected) "failed" else "delivery_unknown", error.message)
+            }
+            mutable.update { it.copy(error = if (rejected) error.message else "回答结果不确定；保留同一请求编号，不会自动提交新的答案。") }
+        }
+        loadLocal(entry.scope)
+        if (mutable.value.selected == entry.scope) attempt { catchUp(entry.scope) }
+        refresh()
     }
 
     fun restoreDraft(entry: Outbox) {
@@ -420,6 +514,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun action(action: Action, done: (Receipt) -> Unit = {}) {
+        if (action is Action.Answer) { answer(action, done); return }
         val scope = mutable.value.selected ?: return
         viewModelScope.launch {
             mutable.update { it.copy(busy = true) }

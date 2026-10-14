@@ -99,5 +99,63 @@
       "commandId": "11111111-1111-4111-8111-111111111111", "status": "uncertain",
       "error": { "code": "DELIVERY_UNCERTAIN", "message": "Inspect the original runtime; do not repeat the operation." }
     }
+  },
+  {
+    "id": "confirmed-question-retains-complete-safe-content",
+    "shape": "question",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": {
+      "questionId": "question-history-1",
+      "request": {
+        "requestId": "question-1", "type": "question", "title": "Choose a client",
+        "detail": "Where are you answering?", "choices": ["DevPocket", "Original client"],
+        "allowFreeform": false, "supported": true
+      },
+      "status": "confirmed", "answer": "DevPocket",
+      "commandId": "11111111-1111-4111-8111-111111111111"
+    }
+  },
+  {
+    "id": "other-client-answer-is-unknown",
+    "shape": "question",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": {
+      "questionId": "question-history-2",
+      "request": {
+        "requestId": "question-2", "type": "question", "title": "Your label",
+        "detail": "Enter the complete label.", "choices": [], "allowFreeform": true, "supported": true
+      },
+      "status": "unknown"
+    }
+  },
+  {
+    "id": "unknown-question-cannot-carry-a-guessed-answer",
+    "shape": "question",
+    "backendValid": false,
+    "androidValid": false,
+    "wire": {
+      "questionId": "question-history-3",
+      "request": {
+        "requestId": "question-3", "type": "question", "title": "Question",
+        "detail": "Choose one.", "choices": ["One"], "allowFreeform": false, "supported": true
+      },
+      "status": "unknown", "answer": "One"
+    }
+  },
+  {
+    "id": "confirmed-question-requires-an-actual-answer",
+    "shape": "question",
+    "backendValid": false,
+    "androidValid": false,
+    "wire": {
+      "questionId": "question-history-4",
+      "request": {
+        "requestId": "question-4", "type": "question", "title": "Question",
+        "detail": "Choose one.", "choices": ["One"], "allowFreeform": false, "supported": true
+      },
+      "status": "confirmed"
+    }
   }
 ]

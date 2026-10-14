@@ -559,6 +559,17 @@ qualify all supported devices. Run directly with:
 npm run test:android -- -Layouts
 ```
 
+On Windows, `sys.boot_completed=1` is not sufficient input readiness. The same
+600-second boot budget also covers read-only confirmation that the resolved
+HOME activity is resumed, visible, fully drawn, and owns the focused window.
+The runner sends no unlock input or application operations before that evidence.
+This prevents MENU input racing a first-boot Launcher whose activity has been
+created but whose first frame is still pending. Missing or unfamiliar evidence
+does not pass. A visible or recorded HOME ANR stops admission without dismissing
+the dialog; the owned run retains its fixed readiness status and bounded
+system-ANR/window diagnostics before cleanup. No image, renderer, host limit or
+Launcher enablement is changed, and Linux keeps its existing boot path.
+
 Each run owns a new directory, AVD, ADB server and port pair. It checks the live
 AVD identity before installation, builds both APKs, and runs `NativeFlowTest`,
 `AdaptiveLayoutTest`, and `FixtureFlowTest`. The layout matrix includes compact,

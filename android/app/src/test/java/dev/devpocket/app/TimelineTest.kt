@@ -1,6 +1,9 @@
 package dev.devpocket.app
 
 import dev.devpocket.app.data.WireEvent
+import dev.devpocket.app.data.PendingRequest
+import dev.devpocket.app.data.QuestionRecord
+import dev.devpocket.app.data.WireJson
 import dev.devpocket.app.data.text
 import dev.devpocket.app.data.timeline
 import kotlinx.serialization.json.JsonObject
@@ -8,6 +11,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.encodeToJsonElement
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -23,6 +27,25 @@ class TimelineTest {
             put("messageId", id)
             put("content", text)
         })
+
+    @Test fun confirmedQuestionAndAnswerRemainAfterPendingCardDisappearsWithoutAssistantRepetition() {
+        val request = PendingRequest("phone-question", "question", "The CLI needs your answer",
+            "你正在从哪个客户端回答这个问题？", choices = listOf("DevPocket", "原来的客户端"), supported = true)
+        val pending = QuestionRecord("question-history", request, "pending")
+        val confirmed = pending.copy(status = "confirmed", answer = "DevPocket")
+        val events = listOf(
+            event(1, "question", WireJson.encodeToJsonElement(pending) as JsonObject),
+            event(2, "requests", buildJsonObject { put("items", WireJson.encodeToJsonElement(listOf(request))) }),
+            event(3, "question", WireJson.encodeToJsonElement(confirmed) as JsonObject),
+            event(4, "requests", buildJsonObject { put("items", buildJsonArray {}) }),
+        )
+        val history = timeline(events)
+        assertEquals("The completed question must stay in the production chat timeline.", 1, history.size)
+        assertEquals("question", history.single().role)
+        assertTrue(history.single().text.contains(request.detail))
+        assertTrue(history.single().text.contains("DevPocket"))
+        assertFalse(history.single().streaming)
+    }
 
     @Test fun completedBlankAssistantMessagesDoNotCreateChatRows() {
         val events = listOf(
