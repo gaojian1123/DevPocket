@@ -73,12 +73,8 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "devpocket-cache.
     @Synchronized fun outbox(scope: Scope): List<Outbox> =
         readableDatabase.rawQuery("SELECT body FROM outbox WHERE scope=? ORDER BY created_at DESC LIMIT 100", arrayOf(scope.key)).use {
             buildList {
-                var characters = 0
                 while (it.moveToNext()) {
-                    val body = it.getString(0)
-                    if (characters + body.length > 4 * 1024 * 1024 && isNotEmpty()) break
-                    characters += body.length
-                    add(WireJson.decodeFromString<Outbox>(body))
+                    add(WireJson.decodeFromString<Outbox>(it.getString(0)))
                 }
             }
         }

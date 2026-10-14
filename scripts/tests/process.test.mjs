@@ -25,8 +25,9 @@ async function ownerFixture(t) {
 
 async function rawOwner(t, root, { deadlineUnixMs = Date.now() + 15000, input = "", file = process.execPath,
   args = ["-e", "process.stdout.write('completed')"], onOutput, env = process.env,
-  entry = path.join(root, "scripts", "owned-command-windows.mjs") } = {}) {
-  const child = spawn(process.execPath, [entry],
+  entry = path.join(root, "scripts", "owned-command-windows.mjs"), preparationOwner = false } = {}) {
+  const child = spawn(preparationOwner ? "pwsh" : process.execPath,
+    preparationOwner ? ["-NoProfile", "-NonInteractive", "-File", path.join(root, "scripts", "owned-command.ps1")] : [entry],
     { env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   child.stdout.on("data", (bytes) => { stdout += bytes; });
@@ -42,6 +43,117 @@ async function rawOwner(t, root, { deadlineUnixMs = Date.now() + 15000, input = 
   const [code] = await done;
   return { code, stdout, stderr };
 }
+
+test("fragmented cancellation is accepted while the PowerShell preparation mutex remains held",
+  { skip: process.platform !== "win32" }, async (t) => {
+    const root = await ownerFixture(t);
+    assert.equal((await rawOwner(t, root, { preparationOwner: true })).code, 0);
+    const cache = path.join(root, ".tools", "command-owner-v1");
+    const [key] = await readdir(cache);
+    const mutexKey = createHash("sha256").update(path.join(cache, key).toLowerCase()).digest("hex");
+    const holder = await heldProcess(t, "pwsh", ["-NoProfile", "-NonInteractive", "-Command",
+      `$mutex=[Threading.Mutex]::new($false,'Local\\DevPocketCommandOwner_${mutexKey}');` +
+      "$null=$mutex.WaitOne();[Console]::Out.WriteLine('locked');[Console]::In.ReadLine()|Out-Null;$mutex.ReleaseMutex();$mutex.Dispose()"],
+    "locked");
+    const marker = path.join(root, "must-not-start");
+    let waiting = false, secondFragment;
+    const result = await rawOwner(t, root, {
+      preparationOwner: true, deadlineUnixMs: Date.now() + 8000,
+      args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'started')`],
+      onOutput(stderr, child) {
+        if (!waiting && stderr.includes(":preparation-wait\u001f")) {
+          waiting = true;
+          child.stdin.write("can");
+          secondFragment = setTimeout(() => child.stdin.write("cel\n"), 100);
+        }
+      },
+    });
+    clearTimeout(secondFragment);
+    assert.equal(waiting, true, "The first fragment must arrive after the owner starts its real preparation wait.");
+    assert.equal(result.code, 130, "Fragmented cancellation must be accepted before the unchanged startup deadline.");
+    assert.match(result.stderr, /:cancel-accepted\u001f/);
+    assert.match(result.stderr, /:tree-stopped\u001f/);
+    assert.doesNotMatch(result.stderr, /:active\u001f/);
+    await assert.rejects(access(marker), { code: "ENOENT" });
+    holder.child.stdin.end("\n");
+    assert.equal((await holder.done)[0], 0);
+  });
+
+test("a partial preparation control line survives the handoff to the native parser",
+  { skip: process.platform !== "win32" }, async (t) => {
+    const root = await ownerFixture(t);
+    assert.equal((await rawOwner(t, root, { preparationOwner: true })).code, 0);
+    const cache = path.join(root, ".tools", "command-owner-v1");
+    const [key] = await readdir(cache);
+    const mutexKey = createHash("sha256").update(path.join(cache, key).toLowerCase()).digest("hex");
+    const holder = await heldProcess(t, "pwsh", ["-NoProfile", "-NonInteractive", "-Command",
+      `$mutex=[Threading.Mutex]::new($false,'Local\\DevPocketCommandOwner_${mutexKey}');` +
+      "$null=$mutex.WaitOne();[Console]::Out.WriteLine('locked');[Console]::In.ReadLine()|Out-Null;$mutex.ReleaseMutex();$mutex.Dispose()"],
+    "locked");
+    let waiting = false, active = false, release;
+    const result = await rawOwner(t, root, {
+      preparationOwner: true,
+      args: ["-e", "process.stdin.once('data',()=>process.exit(0))"],
+      onOutput(stderr, child) {
+        if (!waiting && stderr.includes(":preparation-wait\u001f")) {
+          waiting = true;
+          child.stdin.write("can");
+          release = setTimeout(() => holder.child.stdin.end("\n"), 100);
+        }
+        if (!active && stderr.includes(":active\u001f")) {
+          active = true;
+          child.stdin.write("cel\n");
+        }
+      },
+    });
+    clearTimeout(release);
+    assert.equal(waiting, true);
+    assert.equal(active, true, "The incomplete line is not itself an accepted cancellation.");
+    assert.equal(result.code, 130, result.stderr);
+    assert.match(result.stderr, /:cancel-accepted\u001f/);
+    assert.match(result.stderr, /:tree-stopped\u001f/);
+    assert.equal((await holder.done)[0], 0);
+  });
+
+test("PowerShell preparation rejects oversized or unknown control input before target execution",
+  { skip: process.platform !== "win32" }, async (t) => {
+    for (const [name, input, message] of [
+      ["oversized", "x".repeat(65537), /Owned command input exceeded its bound/],
+      ["unknown", "notcancel\n", /Unsupported owned-command control message/],
+      ["eof", "can", /:cancel-accepted\u001f/],
+    ]) {
+      await t.test(name, async (t) => {
+        const root = await ownerFixture(t), marker = path.join(root, "must-not-start");
+        assert.equal((await rawOwner(t, root, { preparationOwner: true })).code, 0);
+        const cache = path.join(root, ".tools", "command-owner-v1");
+        const [key] = await readdir(cache);
+        const mutexKey = createHash("sha256").update(path.join(cache, key).toLowerCase()).digest("hex");
+        const holder = await heldProcess(t, "pwsh", ["-NoProfile", "-NonInteractive", "-Command",
+          `$mutex=[Threading.Mutex]::new($false,'Local\\DevPocketCommandOwner_${mutexKey}');` +
+          "$null=$mutex.WaitOne();[Console]::Out.WriteLine('locked');[Console]::In.ReadLine()|Out-Null;$mutex.ReleaseMutex();$mutex.Dispose()"],
+        "locked");
+        let waiting = false;
+        const result = await rawOwner(t, root, {
+          preparationOwner: true, deadlineUnixMs: Date.now() + 8000,
+          args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'started')`],
+          onOutput(stderr, child) {
+            if (!waiting && stderr.includes(":preparation-wait\u001f")) {
+              waiting = true;
+              if (name === "eof") child.stdin.end(input);
+              else child.stdin.write(input);
+            }
+          },
+        });
+        assert.equal(waiting, true);
+        assert.notEqual(result.code, 0);
+        assert.match(result.stderr, message);
+        assert.doesNotMatch(result.stderr, /:active\u001f/);
+        await assert.rejects(access(marker), { code: "ENOENT" });
+        holder.child.stdin.end("\n");
+        assert.equal((await holder.done)[0], 0);
+      });
+    }
+  });
 
 async function heldProcess(t, file, args, ready) {
   const child = spawn(file, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });

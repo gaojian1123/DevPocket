@@ -15,6 +15,8 @@ if (-not $request.file -or $request.timeoutMs -le 0 -or $request.timeoutMs -gt 8
 $deadline = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$request.deadlineUnixMs).UtcDateTime
 $buffer = [byte[]]::new(4096)
 $pending = $inputStream.ReadAsync($buffer, 0, $buffer.Length)
+$controlLine = [Collections.Generic.List[byte]]::new()
+$controlCancelled = [bool]$request.cancelled
 $owner = [Diagnostics.Process]::GetProcessById([int]$request.ownerPid)
 $null = $owner.Handle
 $exitCode = 124
@@ -27,16 +29,25 @@ function Write-Control([string]$phase) {
     [Console]::Error.Write("$([char]30)DEVPOCKET:$($request.receiptId):$phase$([char]31)")
 }
 function Test-StartupStopped {
-    $cancelLine = $false
-    if ($pending.IsCompleted -and $pending.GetAwaiter().GetResult() -gt 0) {
-        $text = [Text.Encoding]::UTF8.GetString($buffer, 0, $pending.Result)
-        $completeLines = $text.Split("`n")
-        for ($index = 0; $index -lt $completeLines.Length - 1; $index++) {
-            if ($completeLines[$index].Trim() -eq 'cancel') { $cancelLine = $true; break }
+    while (-not $controlCancelled -and $pending.IsCompleted) {
+        $count = $pending.GetAwaiter().GetResult()
+        if ($count -eq 0) { $script:controlCancelled = $true; break }
+        for ($index = 0; $index -lt $count; $index++) {
+            if ($buffer[$index] -eq 10) {
+                if ([Text.Encoding]::UTF8.GetString($controlLine.ToArray()).Trim() -ne 'cancel') {
+                    throw [IO.InvalidDataException]::new('Unsupported owned-command control message.')
+                }
+                $script:controlCancelled = $true
+                break
+            }
+            if ($controlLine.Count -ge 65536) {
+                throw [IO.InvalidDataException]::new('Owned command input exceeded its bound.')
+            }
+            $controlLine.Add($buffer[$index])
         }
+        if (-not $controlCancelled) { $script:pending = $inputStream.ReadAsync($buffer, 0, $buffer.Length) }
     }
-    if ($request.cancelled -or ($pending.IsCompleted -and
-        ($pending.GetAwaiter().GetResult() -eq 0 -or $cancelLine))) {
+    if ($controlCancelled) {
         Write-Control 'cancel-accepted'
         $script:exitCode = 130
         return $true
@@ -121,7 +132,7 @@ try {
     Assert-OrdinaryPath $sourcePath $false
     if ((Get-Digest ([IO.File]::ReadAllBytes($sourcePath))) -ne $sourceHash) { throw 'Ownership helper source changed before loading.' }
     $null = [Reflection.Assembly]::Load($assembly)
-    $control = [DevPocketCommandInput]::new($inputStream, $buffer, $pending, [bool]$request.cancelled)
+    $control = [DevPocketCommandInput]::new($inputStream, $buffer, $pending, $controlCancelled, $controlLine.ToArray())
     $owned = [DevPocketOwnedCommand]::new($owner, $control, $deadline, [string]$request.receiptId)
     $executable = (Get-Command -Name $request.file -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     if ($owned.Start($executable, [string[]]$request.arguments, (Get-Location).Path)) {

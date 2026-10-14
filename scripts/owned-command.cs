@@ -19,9 +19,13 @@ public sealed class DevPocketCommandInput {
     readonly List<byte> line = new List<byte>();
     Task<int> pending;
     public bool Cancelled { get; private set; }
-    public DevPocketCommandInput(Stream input, byte[] buffer, Task<int> pending, bool cancelled) {
+    public DevPocketCommandInput(Stream input, byte[] buffer, Task<int> pending, bool cancelled, byte[] prefix = null) {
         this.input = input; this.buffer = buffer; this.pending = pending;
         Cancelled = cancelled;
+        if (prefix != null) {
+            if (prefix.Length > 65536) throw new InvalidDataException("Owned command input exceeded its bound.");
+            line.AddRange(prefix);
+        }
     }
     public void Poll() {
         while (!Cancelled && pending.IsCompleted) {

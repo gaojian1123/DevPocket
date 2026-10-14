@@ -91,6 +91,9 @@ This safe display projection never changes the answer submitted to the runtime.
 Receipt-only Android recovery applies the same display sanitization without
 rewriting the stored immutable command. A marker never supplies missing
 confirmation or another client's unknown answer.
+Command recovery loads all of the latest 100 scoped outbox records, including
+large question snapshots, without applying the separate event-display text
+budget. A newer large snapshot cannot hide an older retained unresolved command.
 Question records use the existing relay event retention and Android SQLite
 cache, including replay, scope checks, cache reset, account removal and backup
 exclusion. Reopening a session or rebuilding the Activity does not remove them.
@@ -209,6 +212,8 @@ and received cancellation before creating or resuming a target, assigns its
 Job atomically while suspended, and confirms actual tree exit before returning
 a command-specific cleanup receipt. Managed device cleanup requires that
 receipt; an ownership-start marker or target-written output is not enough.
+Preparation accumulates bounded control lines across partial pipe reads and
+carries an unfinished line into the native owner rather than dropping its prefix.
 Windows control frames are bound to a fresh per-command nonce withheld from
 the target. Only those frames are consumed: literal marker-like target stderr,
 UTF-8 split across chunks, original newlines and unterminated text are retained.
