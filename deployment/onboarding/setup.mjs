@@ -72,9 +72,9 @@ function instructions(ui, configPath, config, bundle) {
   const quote = (value) => `'${value.replaceAll("'", "''")}'`;
   ui.log(`Setup complete. Private host configuration: ${configPath}`);
   ui.log(`Relay: ${config.relayUrl}`);
-  ui.log("All projects' CLI sessions that load the user extension connect automatically, subject to normal CLI trust and permission prompts.");
-  ui.log("Existing CLI sessions were not restarted or reloaded. Explicitly invoke extensions_reload in each existing session you want to attach.");
-  ui.log("Project extensions named devpocket still take precedence. No project files or CLI permission settings were changed.");
+  ui.log("All projects' GitHub Copilot sessions that load the user extension connect automatically, subject to the original client's normal trust and permission prompts.");
+  ui.log("Existing GitHub Copilot sessions were not restarted or reloaded. Explicitly invoke extensions_reload in each existing session's original client (CLI or desktop app) to attach it.");
+  ui.log("Project extensions named devpocket still take precedence. No project files or GitHub Copilot permission settings were changed.");
   ui.log(`When Android is ready, generate its one-use pairing code:\nnode ${quote(path.join(bundle, "devpocket.mjs"))} pair --config ${quote(configPath)}`);
 }
 
@@ -162,7 +162,7 @@ export async function runSetup(input = {}, adapters = {}) {
       `User extension: ${userExtensionDirectory(state.copilotHome)}`,
       "Authorize read-only relay discovery through Azure Run Command, one host registration and encrypted handoff cleanup, and user-wide extension installation.",
       "All sessions that load the extension will publish visible history to this relay and become accessible to its paired phones.",
-      "No relay deployment/restart, infrastructure or permission changes, or existing CLI reload will occur.",
+      "No relay deployment/restart, infrastructure or permission changes, or existing GitHub Copilot session reload will occur.",
     ].join("\n");
     requireValue(await ui.confirm(confirmation), "SETUP_CANCELLED: No new cloud operation or installation was performed.");
     if (!resuming) {

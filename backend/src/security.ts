@@ -74,5 +74,6 @@ export function redact(value: string, limit = 64_000): string {
     .replace(/(?:github_pat_|gh[pousr]_|dp[hdp]_)[A-Za-z0-9_]*/g, "[REDACTED]")
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]+/gi, "$1[REDACTED]")
     .replace(/((?:api[_-]?key|password|secret|access[_-]?token|cookie)\s*["']?\s*[:=]\s*["']?)[^\s"',;]+/gi, "$1[REDACTED]");
-  return clean.length <= limit ? clean : clean.slice(0, Math.max(0, limit - 28)) + "\n[truncated; use terminal]";
+  const suffix = "\n[truncated; see original client]";
+  return clean.length <= limit ? clean : clean.slice(0, Math.max(0, limit - suffix.length)) + suffix;
 }

@@ -4,9 +4,9 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { startAndroidFixture } from "../integration/android-fixture.js";
-import type { EventPage, Receipt } from "../src/protocol.js";
+import { SessionSummary, type EventPage, type Receipt } from "../src/protocol.js";
 
-test("the Android fixture pairs over real HTTP and preserves one invocation across retry and reconnect", async (t) => {
+test("the Android fixture refreshes requests and preserves one invocation across retry and reconnect", async (t) => {
   await mkdir(".data/tests", { recursive: true });
   const directory = await mkdtemp(path.resolve(".data/tests/android-fixture-"));
   const fixture = await startAndroidFixture(path.join(directory, "owned"));
@@ -19,6 +19,24 @@ test("the Android fixture pairs over real HTTP and preserves one invocation acro
   const phone = await paired.json() as { token: string; hostId: string };
   const headers = { Authorization: `Bearer ${phone.token}`, "Content-Type": "application/json" };
   const scoped = `${fixture.url}/v1/hosts/${phone.hostId}/sessions/${fixture.sessionId}`;
+  async function refreshRequests() {
+    const refresh = { commandId: randomUUID(), action: { type: "refresh" } };
+    const response = await fetch(`${scoped}/commands`, { method: "POST", headers, body: JSON.stringify(refresh) });
+    assert.equal(response.status, 202);
+    let receipt: Receipt | undefined;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      receipt = await (await fetch(`${scoped}/commands/${refresh.commandId}`, { headers })).json() as Receipt;
+      if (["completed", "failed", "uncertain"].includes(receipt.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(receipt?.status, "completed", receipt?.error?.message);
+    const summary = SessionSummary.parse(receipt?.result?.summary);
+    assert.equal(summary.sessionId, fixture.sessionId);
+    assert.equal(summary.capabilities.messages, true);
+    assert.equal(Object.hasOwn(summary, "workspace"), false);
+    assert.deepEqual(receipt?.result?.requests, []);
+  }
+  await refreshRequests();
   const command = { commandId: randomUUID(), action: { type: "message", text: "fixture hello", attachmentIds: [] } };
   for (let attempt = 0; attempt < 2; attempt++) {
     const response = await fetch(`${scoped}/commands`, { method: "POST", headers, body: JSON.stringify(command) });
@@ -32,6 +50,7 @@ test("the Android fixture pairs over real HTTP and preserves one invocation acro
   }
   assert.equal(receipt?.status, "completed");
   await fixture.reconnect();
+  await refreshRequests();
   const replay = await (await fetch(`${scoped}/events`, { headers })).json() as EventPage;
   assert.equal(replay.events.filter((event) => event.kind === "user.message" && event.data.content === "fixture hello").length, 1);
   assert.ok(replay.events.some((event) => event.kind === "assistant.message" && event.data.content === "Fixture reply: fixture hello"));

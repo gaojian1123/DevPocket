@@ -66,12 +66,12 @@ fun SessionPane(state: PocketUi, model: PocketViewModel, expanded: Boolean) {
         )
         if (!session.online || state.connection != "实时连接") {
             Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()) {
-                Text(if (!session.online) "原始 CLI 当前离线。历史与草稿已保留，未完成任务不会被标记完成。" else state.connection,
+                Text(if (!session.online) "原始 GitHub Copilot 会话当前离线。历史与草稿已保留，未完成任务不会被标记完成。" else state.connection,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.bodySmall)
             }
         }
         if (session.state == "cancel_requested") {
-            Text("停止请求已发送。只有运行时发出空闲/终止证据后才算停止；后台或脱离的子进程请在终端核实。",
+            Text("停止请求已发送。只有运行时发出空闲/终止证据后才算停止；后台或脱离的子进程请在原始客户端核实。",
                 color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp))
         }
@@ -105,7 +105,7 @@ fun SessionPane(state: PocketUi, model: PocketViewModel, expanded: Boolean) {
     }
     if (confirmStop) AlertDialog(
         onDismissRequest = { confirmStop = false }, title = { Text("停止当前工作？") },
-        text = { Text("向当前原始 CLI 发送取消请求，不关闭终端。CLI 也会清空等待处理的消息队列；消息文本仍保留在本机，可手动恢复为草稿。仅收到请求确认不代表所有子进程已退出。") },
+        text = { Text("向当前 GitHub Copilot 会话发送取消请求，不关闭原始客户端。运行时也会清空等待处理的消息队列；消息文本仍保留在本机，可手动恢复为草稿。仅收到请求确认不代表所有子进程已退出。") },
         confirmButton = { TextButton(
             enabled = session.online && session.capabilities.abort && session.state in setOf("running", "waiting", "cancel_requested"),
             onClick = { confirmStop = false; model.action(Action.Abort) }) { Text("请求停止") } },
@@ -116,7 +116,7 @@ fun SessionPane(state: PocketUi, model: PocketViewModel, expanded: Boolean) {
             text = { LazyColumn { item {
                 Text(request.title, fontWeight = FontWeight.SemiBold)
                 SelectionContainer { Text(request.detail, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
-                Text("此内容由工具/模型产生，可能不可信。组织策略仍由原始 CLI 执行。")
+                Text("此内容由工具/模型产生，可能不可信。组织策略仍由原始 GitHub Copilot 运行时执行。")
             } } },
             confirmButton = { TextButton(modifier = Modifier.testTag("confirm_permission"),
                 enabled = !state.busy && session.online && state.requests.any { it == request && it.supportedBy(session.capabilities) },
@@ -132,9 +132,9 @@ fun SessionPane(state: PocketUi, model: PocketViewModel, expanded: Boolean) {
             session.workspace?.let { workspace ->
                 item { Text("工作区：${workspace.name}\n分支：${workspace.branch.ifBlank { "分离 HEAD" }}") }
             }
-            item { Text("连接：${state.connection}\nCLI：${session.cliVersion}\n权限模式：${session.permissionMode}\n模型：${session.modelId}\n推理：${session.reasoningEffort.ifBlank { "运行时默认" }}") }
+            item { Text("连接：${state.connection}\n运行时版本：${session.cliVersion}\n权限模式：${session.permissionMode}\n模型：${session.modelId}\n推理：${session.reasoningEffort.ifBlank { "运行时默认" }}") }
             item { SelectionContainer { Text("会话 ${session.sessionId}", style = MaterialTheme.typography.bodySmall) } }
-            item { Text("手机只提供单次批准/拒绝，不修改终端权限模式，也不持有 GitHub 凭据。消息采用 CLI 原生排队：正在运行的工具不会因新消息立刻被改写。") }
+            item { Text("手机只提供单次批准/拒绝，不修改原始运行时的权限模式，也不持有 GitHub 凭据。消息采用 GitHub Copilot 原生排队：正在运行的工具不会因新消息立刻被改写。") }
             items(session.warnings) { warning -> Text(warning, style = MaterialTheme.typography.bodySmall) }
         } }, confirmButton = { TextButton(onClick = { info = false }) { Text("关闭") } })
     if (modelPicker) ModelDialog(state, onDismiss = { modelPicker = false }) { option, effort ->
@@ -266,7 +266,7 @@ private fun ChatHistory(state: PocketUi, model: PocketViewModel,
             }
         }
         if (messages.isEmpty() && requests.isEmpty()) {
-            Text("发送消息，继续这一个终端会话。\n可在手机和终端之间切换，既有历史会同步到这里。",
+            Text("发送消息，继续这一个 GitHub Copilot 会话。\n可在手机和原始客户端之间切换，既有历史会同步到这里。",
                 modifier = Modifier.align(Alignment.Center).padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (!followTail && total > 0) FilledTonalButton(onClick = { followTail = true },
@@ -321,7 +321,7 @@ private fun RequestCard(request: PendingRequest, disabled: Boolean,
                 if (history?.record?.status != "confirmed")
                     Text("未确认的尝试不代表运行时接受了该答案；请在原始客户端核实。", style = MaterialTheme.typography.bodySmall)
             } else if (!request.supported || request.type == "terminal") {
-                Text("请在原始终端处理。此形式不支持远程确认，不会自动接受。",
+                Text("请在原始 GitHub Copilot 客户端处理。此形式不支持远程确认，不会自动接受。",
                     color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
             } else if (request.type == "permission") {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -383,7 +383,7 @@ internal fun ComposeBar(
                 OutlinedTextField(state.draft.text, editDraft,
                     modifier = Modifier.weight(1f).heightIn(max = 180.dp).testTag("message_input"), maxLines = 5,
                     label = { Text(if (session.online) "继续原始会话" else "离线草稿") },
-                    supportingText = { Text("CLI 排队处理 · 不立即中断工具", style = MaterialTheme.typography.labelSmall) })
+                    supportingText = { Text("原始会话排队处理 · 不立即中断工具", style = MaterialTheme.typography.labelSmall) })
                 FilledIconButton(onClick = if (showStop) stop else send,
                     enabled = if (showStop) session.online && session.capabilities.abort
                         else hasMessage && session.online && session.capabilities.messages && !state.uploading,
@@ -392,7 +392,7 @@ internal fun ComposeBar(
                     ) else IconButtonDefaults.filledIconButtonColors(),
                     modifier = Modifier.padding(bottom = 28.dp).size(48.dp).testTag("composer_action")) {
                     if (showStop) Icon(Icons.Default.Stop, contentDescription = "请求停止当前任务")
-                    else Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送到原始 CLI")
+                    else Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送到原始 GitHub Copilot 会话")
                 }
             }
         }
@@ -402,7 +402,7 @@ internal fun ComposeBar(
 @Composable
 private fun FilesPane(state: PocketUi, model: PocketViewModel, modifier: Modifier) {
     if (state.session?.capabilities?.files != true) {
-        Text("文件浏览需要原始 CLI 可用的内容排除策略。当前不可用，请在终端查看。", modifier.padding(24.dp))
+        Text("文件浏览需要原始 GitHub Copilot 运行时可用的内容排除策略。当前不可用，请在原始客户端查看。", modifier.padding(24.dp))
         return
     }
     Column(modifier.fillMaxWidth()) {
@@ -414,7 +414,7 @@ private fun FilesPane(state: PocketUi, model: PocketViewModel, modifier: Modifie
             IconButton(onClick = { model.listFiles(state.filePath) }, enabled = state.session.online) { Icon(Icons.Default.Refresh, contentDescription = "刷新文件") }
         }
         LazyColumn {
-            if (state.fileTruncated) item { Text("当前目录仅显示前 200 项，请在终端查看其余内容。", Modifier.padding(16.dp)) }
+            if (state.fileTruncated) item { Text("当前目录仅显示前 200 项，请在原始客户端查看其余内容。", Modifier.padding(16.dp)) }
             items(state.files, key = { it.path }) { file ->
                 ListItem(
                     headlineContent = { Text(file.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
@@ -432,7 +432,7 @@ private fun FilesPane(state: PocketUi, model: PocketViewModel, modifier: Modifie
 @Composable
 private fun GitPane(state: PocketUi, model: PocketViewModel, modifier: Modifier) {
     if (state.session?.capabilities?.git != true) {
-        Text("Git 只读视图当前不可用。需要原始 CLI 的项目目录、Git 和内容排除策略。", modifier.padding(24.dp))
+        Text("Git 只读视图当前不可用。需要原始 GitHub Copilot 运行时的项目目录、Git 和内容排除策略。", modifier.padding(24.dp))
         return
     }
     LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -494,7 +494,7 @@ internal fun ModelDialog(state: PocketUi, onDismiss: () -> Unit, select: (ModelO
         properties = DialogProperties(usePlatformDefaultWidth = false),
         modifier = Modifier.padding(horizontal = 24.dp).widthIn(max = 560.dp).fillMaxWidth(),
         text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("选择来自这台 Dev Box 的实时 CLI 能力。组织策略与订阅不变；运行中的模型切换可能排队生效。", style = MaterialTheme.typography.bodySmall)
+            Text("选择这台 Dev Box 上 GitHub Copilot 实时提供的模型。组织策略与订阅不变；运行中的模型切换可能排队生效。", style = MaterialTheme.typography.bodySmall)
             Box(Modifier.fillMaxWidth()) {
                 OutlinedButton(onClick = { modelMenu = true }, enabled = enabled && state.models.isNotEmpty(),
                     modifier = Modifier.fillMaxWidth().testTag("model_picker")) {
@@ -524,7 +524,7 @@ internal fun ModelDialog(state: PocketUi, onDismiss: () -> Unit, select: (ModelO
                     }
                 }
                 if (option.reasoningManual) {
-                    Text("此 CLI 目录未列出可选推理级别。可输入级别交由原始运行时校验；不支持或策略禁止时会明确拒绝，不会猜测支持。",
+                    Text("此模型目录未列出可选推理级别。可输入级别交由原始运行时校验；不支持或策略禁止时会明确拒绝，不会猜测支持。",
                         style = MaterialTheme.typography.bodySmall)
                     OutlinedTextField(effortText, { effortEdited = true; effortInput = it.take(60) },
                         enabled = enabled && option.enabled, label = { Text("推理级别（留空为默认）") }, singleLine = true,
@@ -535,7 +535,7 @@ internal fun ModelDialog(state: PocketUi, onDismiss: () -> Unit, select: (ModelO
                         color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }
             }
-            if (state.models.isEmpty() && !state.busy) Text("模型目录未能加载，请在原始终端查看。")
+            if (state.models.isEmpty() && !state.busy) Text("模型目录未能加载，请在原始客户端查看。")
         } }, confirmButton = { TextButton(
             enabled = selected?.enabled == true && validEffort && enabled, modifier = Modifier.testTag("apply_model"),
             onClick = { selected?.let { select(it, effort) } }) { Text("应用") } },

@@ -56,7 +56,7 @@ export async function wireHost(socket: WebSocket, sessionId: string) {
   });
   const hello = nextFrame(socket, "ready");
   socket.send(JSON.stringify({ type: "hello", protocol: 1, summary: {
-    sessionId, projectId: "test-project", projectName: "Test project", title: "Existing CLI",
+    sessionId, projectId: "test-project", projectName: "Test project", title: "Existing GitHub Copilot session",
     cliVersion: "1.0.90-0", state: "idle", permissionMode: "manual", modelId: "test-model",
     reasoningEffort: "", capabilities: {
       messages: true, abort: true, permissions: true, questions: true, models: true, files: true, git: true,

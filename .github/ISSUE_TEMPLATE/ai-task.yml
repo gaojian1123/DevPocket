@@ -6,8 +6,8 @@ body:
     attributes:
       value: |
         An issue describes work; it does not authorize a deployment, installation,
-        real CLI experiment, device enrollment, or release. Start the approved
-        task in a new Copilot worktree using the development workflow.
+        real GitHub Copilot experiment, device enrollment, or release. Start the
+        approved task in a new GitHub Copilot worktree using the development workflow.
   - type: textarea
     id: goal
     attributes:

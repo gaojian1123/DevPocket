@@ -49,7 +49,7 @@ class Journal {
         return { fresh: false, receipt: Receipt.parse(JSON.parse(existing.receipt)) };
       }
       const receipt: Receipt = { commandId: command.commandId, status: "uncertain",
-        error: { code: "DELIVERY_UNCERTAIN", message: "The bridge restarted during this operation. Inspect the original terminal; it will not be executed again automatically." } };
+        error: { code: "DELIVERY_UNCERTAIN", message: "The bridge restarted during this operation. Inspect the original client; it will not be executed again automatically." } };
       this.save(receipt);
       return { fresh: false, receipt };
     }
@@ -126,7 +126,7 @@ class Journal {
     if (event.kind === "tool.output" && event.data.complete) this.db.prepare("DELETE FROM outbox WHERE entity=?").run(`tool:${event.data.toolCallId}`);
     const size = this.db.prepare("SELECT COALESCE(SUM(length(body)),0) AS size FROM outbox").get()?.size;
     if (typeof size === "number" && size > 64 * 1024 * 1024)
-      throw new Fault("BRIDGE_BUFFER_FULL", "Offline event buffer exceeded 64 MiB. The original terminal is unaffected; inspect the bridge log.");
+      throw new Fault("BRIDGE_BUFFER_FULL", "Offline event buffer exceeded 64 MiB. The original GitHub Copilot session is unaffected; inspect the bridge log.");
     this.db.prepare("INSERT OR IGNORE INTO outbox (id,entity,body) VALUES (?,?,?)").run(event.id, entity, JSON.stringify(event));
   }
 
@@ -319,7 +319,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
       const uncertain = invoked && !(error instanceof Fault) &&
         ["message", "abort", "permission", "answer", "model.set"].includes(command.action.type);
       journal.save({ commandId: command.commandId, status: uncertain ? "uncertain" : "failed",
-        error: uncertain ? { code: "DELIVERY_UNCERTAIN", message: "The runtime may have accepted this operation. Inspect the terminal; DevPocket will not execute it again automatically." } : publicError(error) });
+        error: uncertain ? { code: "DELIVERY_UNCERTAIN", message: "The runtime may have accepted this operation. Inspect the original client; DevPocket will not execute it again automatically." } : publicError(error) });
       console.error("[DevPocket] Command failed:", error instanceof Fault ? error.code : "runtime error");
     }
     if (needsSummary) queueSummary();
@@ -382,7 +382,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
       response.resume();
       socket.terminate();
     });
-    socket.on("error", () => console.error("[DevPocket] Relay connection interrupted; the terminal is unaffected."));
+    socket.on("error", () => console.error("[DevPocket] Relay connection interrupted; the original GitHub Copilot session is unaffected."));
     socket.on("close", () => {
       if (socket !== ws) return;
       ready = false; eventInFlight = false;

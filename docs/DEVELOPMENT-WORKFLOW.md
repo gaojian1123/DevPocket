@@ -1,6 +1,6 @@
 # Development workflow
 
-The **devpocket-development** Copilot extension is development tooling,
+The **devpocket-development** GitHub Copilot extension is development tooling,
 not the shipped phone/runtime extension. It uses the host's bundled SDK and
 `joinSession()` to register tools and a workflow. It does not replace the current
 runtime, change its permission handler, or request credentials. `AGENTS.md`
@@ -42,9 +42,9 @@ The tool uses the App's native `create_session` tool to create a new worktree
 session, preserving the parent. The child invokes `run_dynamic_workflow` with
 name `devpocket-development` and those arguments. A task already in a clean linked
 worktree can invoke that workflow directly. The primary checkout and dirty
-starting worktrees are refused. The App/CLI must support Dynamic Workflows and
-eligible execution credentials; an unavailable capability is a blocker, not
-permission to substitute a different runtime.
+starting worktrees are refused. The GitHub Copilot host (desktop app or CLI) must
+support Dynamic Workflows and eligible execution credentials; an unavailable
+capability is a blocker, not permission to substitute a different runtime.
 If the task depends on uncommitted work or a particular in-progress branch,
 resolve that dependency before dispatch rather than silently starting from a
 base that omits it. Preserve the current checkout's changes.
@@ -67,7 +67,7 @@ as the authoritative review. The SDK's durable step journal holds the final
 controller result. Each repair gets a fresh review invocation and source-bound
 evidence. Runtime credit/time limits are chosen at invocation; the workflow does
 not guess them or override model preferences.
-Registration uses only Node built-ins and the CLI-bundled SDK, so a fresh
+Registration uses only Node built-ins and the runtime-bundled SDK, so a fresh
 worktree can load it before restoring application dependencies. Provision the
 runner toolchain once; normal missing repository dependencies can be restored
 from their lockfiles after an actual missing-dependency failure.

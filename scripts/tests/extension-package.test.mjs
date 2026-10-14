@@ -59,7 +59,9 @@ test("standalone archive installs without a checkout and connects all projects t
   const env = { ...process.env, NODE_OPTIONS: "", NODE_PATH: "", COPILOT_HOME: home };
   const cli = (...args) => run(process.execPath, [path.join(extracted, "devpocket.mjs"), ...args],
     { cwd: root, env, timeout: 15_000 });
-  assert.match((await cli("--help")).stdout, /install --user/);
+  const help = (await cli("--help")).stdout;
+  assert.match(help, /install --user/);
+  assert.match(help, /GitHub Copilot sessions/);
   assert.match((await cli("setup", "--help")).stdout, /setup \[--tenant-id/);
   await assert.rejects(cli("setup"), /SETUP_INTERACTIVE_REQUIRED/);
   await assert.rejects(cli("install", "--user", "--config", configPath), /OPT_IN_REQUIRED/);
@@ -71,7 +73,9 @@ test("standalone archive installs without a checkout and connects all projects t
   const host = provisionHost(relayData, "Isolated package test");
   const config = { hostId: host.hostId, token: host.token, relayUrl: relay.url, dataDir: bridgeData, allowInsecureLoopback: true };
   await writeFile(configPath, JSON.stringify(config), { mode: 0o600 });
-  assert.match((await cli("install", "--user", "--config", configPath, "--confirm-install")).stdout, /Installed user extension/);
+  const installation = (await cli("install", "--user", "--config", configPath, "--confirm-install")).stdout;
+  assert.match(installation, /Installed user extension/);
+  assert.match(installation, /GitHub Copilot CLI and desktop app sessions/);
   assert.match((await cli("install", "--user", "--config", configPath, "--confirm-install")).stdout, /Updated user extension/);
   const installed = path.join(home, "extensions", "devpocket");
   assert.deepEqual(JSON.parse(await readFile(path.join(installed, "connection.local.json"), "utf8")),
@@ -86,7 +90,9 @@ test("standalone archive installs without a checkout and connects all projects t
   await cli("install", "--project", legacy, "--config", configPath, "--confirm-install");
   await access(path.join(legacy, ".github", "extensions", "devpocket", "extension.mjs"));
   await cli("install", "--plugin-dir", plugin, "--config", configPath, "--confirm-install");
-  assert.equal(JSON.parse(await readFile(path.join(plugin, "plugin.json"), "utf8")).name, "devpocket");
+  const pluginMetadata = JSON.parse(await readFile(path.join(plugin, "plugin.json"), "utf8"));
+  assert.equal(pluginMetadata.name, "devpocket");
+  assert.equal(pluginMetadata.description, "Opt-in access to the original GitHub Copilot session");
   const pairing = JSON.parse((await cli("pair", "--config", configPath)).stdout);
   const paired = await fetch(`${relay.url}/v1/pair`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: pairing.code, name: "Package test phone" }),
@@ -166,6 +172,7 @@ export async function joinSession(options) {
   assert.deepEqual(catalog.sessions.map((session) => session.sessionId).sort(), [...sessionIds].sort());
   assert.deepEqual(catalog.sessions.map((session) => session.projectName).sort(), ["project-0", "project-1"]);
   assert.ok(catalog.sessions.every((session) => session.permissionMode === "manual"));
+  assert.ok(catalog.sessions.every((session) => session.title === "GitHub Copilot"));
   assert.ok(catalog.sessions.every((session) => session.cliVersion === "future-runtime-build" && session.capabilities.messages));
   const route = `/v1/hosts/${host.hostId}/sessions/${sessionIds[0]}`;
   await until(async () => (await request(`${route}/events`)).events.some((event) => event.data.content === "Earlier history in project-0"));

@@ -566,7 +566,7 @@ test("bridge restart and duplicate submissions never send a task twice, includin
   assert.ok(events.events.some((e: { kind: string }) => e.kind === "assistant.message"));
 });
 
-test("retry after execution and loss of the HTTP response executes the original CLI operation exactly once", async (t) => {
+test("retry after execution and loss of the HTTP response executes the original runtime operation exactly once", async (t) => {
   let bridge: Awaited<ReturnType<typeof startBridge>> | undefined;
   const forwarded: { route: string; body: string }[] = [];
   let executions = 0;

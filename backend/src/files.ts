@@ -87,7 +87,7 @@ export class ProjectFiles {
       const binaryMime: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".pdf": "application/pdf" };
       const mime = binaryMime[ext];
       const limit = mime ? MAX_UPLOAD : MAX_PREVIEW;
-      if (stat.size > limit) throw new Fault("FILE_TOO_LARGE", `Preview limit is ${limit / 1024} KiB. Use the terminal for larger files.`, 413);
+      if (stat.size > limit) throw new Fault("FILE_TOO_LARGE", `Preview limit is ${limit / 1024} KiB. Use the original client for larger files.`, 413);
       const bytes = Buffer.alloc(stat.size);
       const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
       const content = bytes.subarray(0, bytesRead);
@@ -125,7 +125,7 @@ export class ProjectFiles {
       const details = error instanceof Error && "stderr" in error && typeof error.stderr === "string" ? error.stderr : "";
       if (/not a git repository/i.test(details)) throw new Fault("NOT_GIT_PROJECT", "The registered directory is not a Git repository.", 409);
       if (isMissing(error)) throw new Fault("GIT_UNAVAILABLE", "Git is not installed on this Dev Box.", 409);
-      throw new Fault("GIT_READ_FAILED", "Read-only Git query failed or exceeded its time/output limit. Check the terminal.", 409);
+      throw new Fault("GIT_READ_FAILED", "Read-only Git query failed or exceeded its time/output limit. Check the original client.", 409);
     }
   }
 

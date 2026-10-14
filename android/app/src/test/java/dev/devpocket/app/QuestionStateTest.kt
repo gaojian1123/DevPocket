@@ -110,6 +110,13 @@ class QuestionStateTest {
         }
     }
 
+    @Test fun receiptFallbackTruncationUsesTheOriginalClientAndKeepsItsWireLimit() {
+        val safe = answerHistoryText("ghp_x ".repeat(1200))
+        assertEquals(8000, safe.length)
+        assertTrue(safe.endsWith("\n[truncated; see original client]"))
+        assertFalse(safe.contains("ghp_x"))
+    }
+
     @Test fun scopesAndReusedIdsStaySeparate() {
         val replacement = pending.copy(questionId = "replacement", request = request.copy(detail = "Different question"))
         val events = listOf(question(1, pending), question(2, pending.copy(status = "unknown")),

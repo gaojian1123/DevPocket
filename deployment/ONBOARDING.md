@@ -54,7 +54,7 @@ The host configuration is synced to a sibling temporary file and published
 atomically without replacing an existing file. An interrupted write therefore
 retains the encrypted handoff and key for recovery instead of exposing a partial
 configuration. Keep `host.local.json` and `bridge` there. Configure `COPILOT_HOME` before setup if
-the intended CLI uses a custom user directory. Old project extensions still
+the intended GitHub Copilot runtime uses a custom user directory. Old project extensions still
 shadow a same-named user extension and are never removed automatically.
 
 Each management phase is journaled and synced **before** dispatch, with
@@ -79,8 +79,9 @@ remains an explicit operator task. For a completed enrollment, use the regular
 not another registration.
 
 No pairing code is generated before the phone is ready. Use the printed `pair`
-command at that time. An existing CLI is never restarted or silently reloaded:
-explicitly invoke its `extensions_reload` tool and retain normal CLI consent.
+command at that time. An existing GitHub Copilot session is never restarted or
+silently reloaded: explicitly invoke its `extensions_reload` tool in the original
+client (CLI or desktop app) and retain that client's normal consent.
 
 ## Historical scoped trial
 

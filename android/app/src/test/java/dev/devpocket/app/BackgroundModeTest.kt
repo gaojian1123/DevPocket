@@ -159,6 +159,7 @@ class BackgroundModeTest {
         val manager = app.getSystemService(NotificationManager::class.java)
         val first = manager.activeNotifications.single().notification
         assertFalse(first.extras.getString(Notification.EXTRA_TEXT).orEmpty().contains("session"))
+        assertTrue(first.extras.getString(Notification.EXTRA_TEXT).orEmpty().contains("GitHub Copilot"))
         assertEquals(Notification.VISIBILITY_PRIVATE, first.visibility)
         val intent = shadowOf(first.contentIntent).savedIntent
         assertEquals(scope, WireJson.decodeFromString<Scope>(intent.getStringExtra(MainActivity.NOTIFICATION_SCOPE)!!))

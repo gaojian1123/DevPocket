@@ -56,7 +56,7 @@ export class FcmPush implements PushSender {
       headers: { Authorization: `Bearer ${await this.token()}`, "Content-Type": "application/json" },
       body: JSON.stringify({ message: {
         token, data: notice,
-        notification: { title: "DevPocket", body: notice.kind === "attention" ? "Your CLI session needs attention." : "Your CLI session has an update." },
+        notification: { title: "DevPocket", body: notice.kind === "attention" ? "Your GitHub Copilot session needs attention." : "Your GitHub Copilot session has an update." },
         android: { priority: notice.kind === "attention" ? "high" : "normal", ttl: "300s",
           notification: { channel_id: "devpocket_attention", tag: `${notice.hostId}:${notice.sessionId}`,
             visibility: "PRIVATE", default_sound: true } },

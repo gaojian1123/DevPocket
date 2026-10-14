@@ -18,7 +18,8 @@ fun answerHistoryText(value: String): String {
         .replace(answerTokens, "[REDACTED]").replace(answerBearer, "\$1[REDACTED]")
         .replace(answerSecrets, "\$1[REDACTED]")
     if (clean.isBlank()) return "[REDACTED]"
-    return if (clean.length <= 8000) clean else clean.take(8000 - 28) + "\n[truncated; use terminal]"
+    val suffix = "\n[truncated; see original client]"
+    return if (clean.length <= 8000) clean else clean.take(8000 - suffix.length) + suffix
 }
 
 data class QuestionHistory(
