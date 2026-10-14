@@ -227,6 +227,22 @@ class QuestionHistoryLayoutTest {
         }
     }
 
+    @Test fun followTailKeepsTheSameLastMessageVisibleWhenAnEarlierQuestionExpands() {
+        val short = QuestionRecord("last-question", request, "pending")
+        val initial = history.copy(events = events.dropLast(1) +
+            event(31, "question", WireJson.encodeToJsonElement(short) as JsonObject) + later)
+        withHistory(initial) { replayed ->
+            compose.onNodeWithText("Later live message").assertIsDisplayed()
+            compose.runOnIdle {
+                val completed = short.copy(status = "confirmed",
+                    answer = (1..80).joinToString("\n") { "Confirmed answer detail $it" })
+                replayed.value = initial.copy(events = events.dropLast(1) +
+                    event(31, "question", WireJson.encodeToJsonElement(completed) as JsonObject) + later)
+            }
+            compose.onNodeWithText("Later live message").assertIsDisplayed()
+        }
+    }
+
     @Test fun explicitHistoryNavigationAndReadGesturesPreserveTargetsAcrossLateEvents() = withHistory { replayed ->
         compose.onNodeWithTag("confirmed_answer_last-question").assertIsDisplayed()
         compose.onNodeWithTag("chat_history").performScrollToNode(hasText("Earlier message 10"))

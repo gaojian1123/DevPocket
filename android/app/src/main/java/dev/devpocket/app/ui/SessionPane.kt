@@ -154,7 +154,9 @@ fun SessionPane(state: PocketUi, model: PocketViewModel, expanded: Boolean) {
 @Composable
 private fun ChatHistory(state: PocketUi, model: PocketViewModel,
     decide: (PendingRequest, String) -> Unit, modifier: Modifier) {
-    val messages = remember(state.events, state.outbox, state.selected) { timeline(state.events, state.outbox, state.selected) }
+    val messages = remember(state.events, state.outbox, state.selected, state.firstRetainedEventCursor) {
+        timeline(state.events, state.outbox, state.selected, state.firstRetainedEventCursor)
+    }
     val questions = messages.mapNotNull { it.question }
     val requests = state.requests.filter { request ->
         request.type != "question" || questions.none { it.record.request.sameQuestion(request) }
@@ -171,7 +173,7 @@ private fun ChatHistory(state: PocketUi, model: PocketViewModel,
             }
         }
     }
-    LaunchedEffect(messages.lastOrNull()?.text, total, state.selected, followTail) {
+    LaunchedEffect(messages, requests, outstanding, state.selected, followTail) {
         if (followTail && total > 0) {
             var positioned = false
             snapshotFlow {
@@ -182,8 +184,9 @@ private fun ChatHistory(state: PocketUi, model: PocketViewModel,
             }.collect { (tailSize, viewport, scrolling) ->
                 if (!scrolling) {
                     if (tailSize != null) {
+                        val requestPosition = !positioned || listState.canScrollForward
                         positioned = true
-                        if (listState.canScrollForward)
+                        if (requestPosition)
                             listState.requestScrollToItem(total - 1, (tailSize - viewport).coerceAtLeast(0))
                     } else if (!positioned) {
                         positioned = true

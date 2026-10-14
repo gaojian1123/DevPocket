@@ -132,6 +132,25 @@ class QuestionStateTest {
         }
     }
 
+    @Test fun truncatedDisplayUsesRetainedAttemptIdentityButNotForANewQuestionGeneration() {
+        val attempted = entry("delivery_unknown")
+        val sameRequest = listOf(requests(80, request))
+        val retained = questionHistory(sameRequest, listOf(attempted), scope, firstRetainedCursor = 1).single()
+        assertEquals(pending.questionId, retained.record.questionId)
+        assertEquals(command, retained.attempts.single().command)
+        assertTrue(retained.blocksNewAnswer)
+        assertNull(retained.record.answer)
+        val replacement = pending.copy(questionId = "replacement-generation")
+        val histories = questionHistory(listOf(question(81, replacement), requests(82, request)),
+            listOf(attempted), scope, firstRetainedCursor = 1)
+        assertTrue(histories.single { it.record.questionId == pending.questionId }.blocksNewAnswer)
+        assertFalse(histories.single { it.record.questionId == replacement.questionId }.blocksNewAnswer)
+        assertTrue(histories.single { it.record.questionId == replacement.questionId }.attempts.isEmpty())
+        val pruned = questionHistory(sameRequest, listOf(attempted), scope, firstRetainedCursor = 80).single()
+        assertTrue(pruned.attempts.isEmpty())
+        assertNotEquals(pending.questionId, pruned.record.questionId)
+    }
+
     @Test fun legacyHistoryNeverInventsAnswers() {
         val events = listOf(requests(1, request), requests(2, request), requests(3))
         val history = timeline(events).single().question!!

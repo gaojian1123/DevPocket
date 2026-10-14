@@ -91,6 +91,44 @@ test("HOME readiness preserves cancellation, uncertain cleanup and a reported AN
   assert.equal(calls, 4);
 });
 
+test("HOME readiness retries a transient cleanup-confirmed probe within its original deadline", async () => {
+  const { waitForAndroidHome } = await import("../android-home.mjs");
+  const observations = [];
+  let reads = 0;
+  const deadline = Date.now() + 2000;
+  const result = await waitForAndroidHome(async (args) => {
+    if (++reads === 1) throw Object.assign(new Error("Synthetic transient ADB failure"), { processTreeStopped: true });
+    if (args.includes("resolve-activity")) return { stdout: homeComponent };
+    if (args.includes("activities")) return { stdout: homeActivity };
+    if (args.includes("displays")) return { stdout: homeWindows };
+    return { stdout: "" };
+  }, { deadline, observe: (state) => { observations.push(state); } });
+  assert.equal(result.status, "ready");
+  assert.equal(reads, 5);
+  assert.deepEqual(observations.map((state) => state.status), ["pending", "ready"]);
+  assert.ok(Date.now() < deadline);
+});
+
+test("HOME readiness cannot retry a visible ANR or extend the deadline with transient failures", async () => {
+  const { waitForAndroidHome } = await import("../android-home.mjs");
+  let reads = 0;
+  await assert.rejects(waitForAndroidHome(async (args) => {
+    reads++;
+    if (args.includes("resolve-activity")) return { stdout: homeComponent };
+    if (args.includes("activities")) return { stdout: homeActivity };
+    if (args.includes("displays")) return { stdout: " Display: mDisplayId=0\n mCurrentFocus=Window{123 u0 Application Not Responding: com.example.launcher}" };
+    throw new Error("Must not wait for a later probe after observing an ANR.");
+  }, { deadline: Date.now() + 1000 }), { readinessReason: "launcher-anr" });
+  assert.equal(reads, 3);
+  const observations = [];
+  await assert.rejects(waitForAndroidHome(async () => {
+    throw Object.assign(new Error("Transient probe"), { processTreeStopped: true });
+  }, { deadline: Date.now() + 80, observe: (state) => { observations.push(state); } }),
+  { diagnosticCode: "readiness-timeout" });
+  assert.ok(observations.length > 0);
+  assert.ok(observations.every((state) => state.status === "pending" && state.reason === "probe-unavailable"));
+});
+
 test("missing emulator prerequisites produce blocked evidence without touching an existing run", async (t) => {
   await mkdir(".data/tests", { recursive: true });
   const parent = await mkdtemp(path.resolve(".data/tests/emulator-runner-"));

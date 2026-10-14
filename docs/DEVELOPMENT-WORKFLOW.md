@@ -569,6 +569,9 @@ does not pass. A visible or recorded HOME ANR stops admission without dismissing
 the dialog; the owned run retains its fixed readiness status and bounded
 system-ANR/window diagnostics before cleanup. No image, renderer, host limit or
 Launcher enablement is changed, and Linux keeps its existing boot path.
+Transient read-probe failures with no cleanup uncertainty remain unavailable
+evidence and are retried within that same absolute deadline. Cancellation,
+unconfirmed process cleanup and an observed ANR still stop admission immediately.
 
 Each run owns a new directory, AVD, ADB server and port pair. It checks the live
 AVD identity before installation, builds both APKs, and runs `NativeFlowTest`,

@@ -199,7 +199,8 @@ data class TimelineItem(
 
 fun JsonObject.text(name: String): String = get(name)?.jsonPrimitive?.contentOrNull.orEmpty()
 
-fun timeline(events: List<WireEvent>, outbox: List<Outbox> = emptyList(), scope: Scope? = null): List<TimelineItem> {
+fun timeline(events: List<WireEvent>, outbox: List<Outbox> = emptyList(), scope: Scope? = null,
+    firstRetainedCursor: Long? = null): List<TimelineItem> {
     val result = linkedMapOf<String, TimelineItem>()
     val scopedEvents = if (scope == null) events else events.filter { it.hostId == scope.hostId && it.sessionId == scope.sessionId }
     for (event in scopedEvents.sortedBy { it.cursor }) {
@@ -230,7 +231,7 @@ fun timeline(events: List<WireEvent>, outbox: List<Outbox> = emptyList(), scope:
             "notice" -> result[event.id] = TimelineItem(event.id, "notice", data.text("message"), event.at, cursor = event.cursor)
         }
     }
-    for (question in questionHistory(scopedEvents, outbox, scope)) {
+    for (question in questionHistory(scopedEvents, outbox, scope, firstRetainedCursor)) {
         val record = question.record
         result[record.questionId] = TimelineItem(record.questionId, "question",
             record.request.detail + record.answer?.let { "\n$it" }.orEmpty(), question.at, cursor = question.cursor, question = question)

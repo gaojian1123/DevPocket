@@ -314,7 +314,8 @@ export class CopilotRuntime {
   private readonly refreshInFlight = new Map<ProbeGroup, Promise<void>>();
   private readonly warnings = new Map<string, string>();
 
-  constructor(readonly session: JoinedSession, private readonly emit: (event: UserEvent) => void) {}
+  constructor(readonly session: JoinedSession, private readonly emit: (event: UserEvent) => void,
+    private readonly persistConfirmedAnswer?: (commandId: string, event: UserEvent | undefined) => void) {}
 
   get summary(): SessionSummary {
     if (!this.current) throw new Fault("NOT_ATTACHED", "The original runtime has not finished registering.", 503);
@@ -886,6 +887,13 @@ export class CopilotRuntime {
         if (!item.allowFreeform && !item.choices.includes(action.answer))
           throw new Fault("INVALID_CHOICE", "Choose an exact answer offered by the runtime.");
         const question = this.questions.get(action.requestId);
+        const visibleAnswer = redact(action.answer, 8000);
+        const confirmedEvent = question ? UserEvent.parse({
+          id: randomUUID(), at: new Date().toISOString(), kind: "question", data: {
+            ...question, status: "confirmed", answer: visibleAnswer.trim() ? visibleAnswer : "[REDACTED]",
+            ...(commandId ? { commandId } : {}),
+          },
+        }) : undefined;
         let raw: unknown;
         if (form) {
           if (typeof rpc.ui?.handlePendingElicitation !== "function")
@@ -913,20 +921,19 @@ export class CopilotRuntime {
           }
           throw new Fault("REQUEST_STALE", "Another client already answered this question.", 409);
         }
-        if (question) {
-          const visibleAnswer = redact(action.answer, 8000);
-          this.questionEvent({
-            ...question, status: "confirmed", answer: visibleAnswer.trim() ? visibleAnswer : "[REDACTED]",
-            ...(commandId ? { commandId } : {}),
-          });
-        }
         // A completion or a replacement request may arrive while the RPC is in flight.
         if (this.questions.get(action.requestId) === question) this.questions.delete(action.requestId);
         if (this.requests.get(action.requestId) === item) {
           this.requests.delete(action.requestId);
           this.elicitationFields.delete(action.requestId);
         }
-        this.emitRequests();
+        try {
+          if (commandId) this.persistConfirmedAnswer?.(commandId, confirmedEvent);
+          if (confirmedEvent && !this.closed) this.emit(confirmedEvent);
+          this.emitRequests();
+        } catch (error) {
+          throw new Error("The runtime confirmed the answer, but its history projection could not complete.", { cause: error });
+        }
         return { status: "completed", result: { resolved: true } };
       }
       case "models":

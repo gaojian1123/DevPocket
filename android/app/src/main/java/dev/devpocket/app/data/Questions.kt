@@ -46,15 +46,29 @@ fun answerAttemptStatus(entry: Outbox, record: QuestionRecord): String = when {
     else -> "unconfirmed"
 }
 
-fun questionHistory(events: List<WireEvent>, outbox: List<Outbox> = emptyList(), scope: Scope? = null): List<QuestionHistory> {
+fun questionHistory(events: List<WireEvent>, outbox: List<Outbox> = emptyList(), scope: Scope? = null,
+    firstRetainedCursor: Long? = null): List<QuestionHistory> {
     val records = linkedMapOf<String, QuestionHistory>()
     val active = mutableMapOf<String, String>()
     val aliases = mutableMapOf<String, String>()
     val scopedEvents = (if (scope == null) events else events.filter {
         it.hostId == scope.hostId && it.sessionId == scope.sessionId
     }).sortedBy { it.cursor }
+    val attempts = outbox.filter { scope != null && it.scope == scope }.sortedBy { it.createdAt }
+    val retainedFrom = firstRetainedCursor ?: scopedEvents.firstOrNull()?.cursor ?: Long.MAX_VALUE
     fun close(id: String) {
         records[id]?.let { if (it.record.status == "pending") records[id] = it.copy(record = it.record.copy(status = "unknown")) }
+    }
+    for (entry in attempts.sortedBy { it.question?.cursor }) {
+        val answer = entry.command.action as? Action.Answer ?: continue
+        val context = entry.question ?: continue
+        if (context.request.type != "question" || context.request.requestId != answer.requestId ||
+            context.cursor < retainedFrom || context.cursor >= (scopedEvents.firstOrNull()?.cursor ?: Long.MAX_VALUE)) continue
+        if (records.containsKey(context.questionId)) continue
+        active[context.request.requestId]?.let(::close)
+        records[context.questionId] = QuestionHistory(QuestionRecord(context.questionId, context.request, "pending"),
+            context.at, context.cursor)
+        active[context.request.requestId] = context.questionId
     }
     for (event in scopedEvents) {
         when (event.kind) {
@@ -98,7 +112,7 @@ fun questionHistory(events: List<WireEvent>, outbox: List<Outbox> = emptyList(),
             }
         }
     }
-    for (entry in outbox.filter { scope != null && it.scope == scope }.sortedBy { it.createdAt }) {
+    for (entry in attempts) {
         val answer = entry.command.action as? Action.Answer ?: continue
         val context = entry.question ?: continue
         if (context.request.type != "question" || context.request.requestId != answer.requestId) continue
@@ -107,7 +121,7 @@ fun questionHistory(events: List<WireEvent>, outbox: List<Outbox> = emptyList(),
         }?.record?.questionId ?: context.questionId
         var previous = records[id]
         if (previous == null) {
-            if (context.cursor > 0 && (scopedEvents.isEmpty() || context.cursor < scopedEvents.first().cursor)) continue
+            if (context.cursor > 0 && context.cursor < retainedFrom) continue
             previous = QuestionHistory(QuestionRecord(id, context.request, "unknown"), context.at, context.cursor)
         }
         if (!previous.record.request.sameQuestion(context.request)) continue

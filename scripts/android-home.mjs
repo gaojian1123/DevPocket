@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { diagnosticError } from "./diagnostic-errors.mjs";
+import { diagnosticError, failureDetails } from "./diagnostic-errors.mjs";
 
 const componentPattern = "[A-Za-z_][\\w.]*\\/(?:\\.)?[A-Za-z_$][\\w.$]*";
 function component(value) {
@@ -45,12 +45,23 @@ export async function waitForAndroidHome(adb, { deadline, signal, observe = asyn
   let attempts = 0;
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
-    const resolved = await read(["shell", "cmd", "package", "resolve-activity", "--brief", "--user", "0",
-      "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"]);
-    const activities = await read(["shell", "dumpsys", "activity", "activities"]);
-    const windows = await read(["shell", "dumpsys", "window", "displays"]);
-    const anrs = await read(["logcat", "-d", "-b", "events", "-s", "am_anr:I", "*:S"]);
-    const state = androidHomeState({ resolved, activities, windows, anrs });
+    let state;
+    try {
+      const resolved = await read(["shell", "cmd", "package", "resolve-activity", "--brief", "--user", "0",
+        "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"]);
+      const activities = await read(["shell", "dumpsys", "activity", "activities"]);
+      const windows = await read(["shell", "dumpsys", "window", "displays"]);
+      state = androidHomeState({ resolved, activities, windows, anrs: "" });
+      if (state.status !== "blocked") {
+        const anrs = await read(["logcat", "-d", "-b", "events", "-s", "am_anr:I", "*:S"]);
+        state = androidHomeState({ resolved, activities, windows, anrs });
+      }
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (error.processTreeStopped === false || error.name === "AbortError" ||
+          error.diagnosticCode === "command-cancelled") throw error;
+      state = { status: "pending", reason: "probe-unavailable", failure: failureDetails(error) };
+    }
     await observe({ ...state, attempts: ++attempts });
     if (state.status === "blocked") {
       throw Object.assign(diagnosticError("resource-unavailable"), { readinessReason: state.reason });

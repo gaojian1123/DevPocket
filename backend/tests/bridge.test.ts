@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { createServer } from "node:http";
+import { DatabaseSync } from "node:sqlite";
 import type { AddressInfo } from "node:net";
 import WebSocket from "ws";
 import { startBridge } from "../src/bridge.js";
@@ -70,13 +71,15 @@ async function modelBridgeFixture(t: TestContext) {
       },
     },
   };
-  bridge = await startBridge(session, {
+  const config = {
     hostId: host.hostId, token: host.token, relayUrl: f.url,
     dataDir: path.join(f.dataDir, "bridge"), allowInsecureLoopback: true,
-  });
+  };
+  bridge = await startBridge(session, config);
   await eventually(() => transport.acknowledged.size > 0, "Initial events must be acknowledged before exercising flush.");
   return {
     ...f, host, phone, sid, session, bridge, transport,
+    reconnect: async () => { await bridge!.close(); bridge = await startBridge(session, config); return bridge; },
     emit: (type: string, data: object) => { const value = event(type, data); listener(value); return value.id; },
     command: async (action: Action) => {
       const route = sessionPath(host.hostId, sid) + "/commands", command = { commandId: newId(), action };
@@ -97,6 +100,90 @@ async function modelBridgeFixture(t: TestContext) {
     },
   };
 }
+
+test("a full event buffer after answer success cannot lose durable confirmation or permit a second mutation", async (t) => {
+  const f = await modelBridgeFixture(t);
+  const db = new DatabaseSync(path.join(f.dataDir, "bridge", f.host.hostId, f.sid, "bridge.sqlite"));
+  let invocations = 0;
+  f.session.rpc.ui = { handlePendingUserInput: async () => {
+    invocations++;
+    const insert = db.prepare("INSERT INTO outbox(id,entity,body) VALUES(?,NULL,?)");
+    db.exec("BEGIN");
+    try {
+      for (let index = 0; index < 1050; index++) {
+        const id = `buffer-${index}`;
+        insert.run(id, JSON.stringify({ id, at: new Date().toISOString(), kind: "assistant.message",
+          data: { messageId: id, content: "x".repeat(64000) } }));
+      }
+      db.exec("COMMIT");
+    } catch (error) { db.exec("ROLLBACK"); throw error; }
+    return { success: true };
+  } };
+  await f.bridge.runtime.refresh();
+  f.emit("user_input.requested", { requestId: "buffer-question", question: "Choose safely", choices: ["Phone", "Original"] });
+  f.transport.holdAcknowledgements = true;
+  const route = sessionPath(f.host.hostId, f.sid) + "/commands";
+  const command = { commandId: newId(), action: { type: "answer", requestId: "buffer-question", answer: "Phone" } };
+  try {
+    assert.equal((await f.request(route, f.phone.token, command)).status, 202);
+    let receipt: Receipt | undefined;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      receipt = Receipt.parse(await (await f.request(`${route}/${command.commandId}`, f.phone.token)).json());
+      if (["completed", "failed", "uncertain"].includes(receipt.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(receipt?.status, "completed", "An event-buffer error cannot undo already validated runtime success.");
+    assert.equal(receipt?.result?.resolved, true);
+    assert.equal(invocations, 1);
+    await f.bridge.close();
+    db.prepare("DELETE FROM outbox WHERE id GLOB 'buffer-*'").run();
+    f.transport.holdAcknowledgements = false;
+    f.transport.pendingAcknowledgements.length = 0;
+    await f.reconnect();
+    const replayed = await (await f.request(route, f.phone.token, command)).json() as Receipt;
+    assert.equal(replayed.status, "completed");
+    assert.equal(invocations, 1);
+    let page: EventPage | undefined;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      page = await (await f.request(sessionPath(f.host.hostId, f.sid) + "/events", f.phone.token)).json() as EventPage;
+      if (page.events.some((event) => event.kind === "question" && event.data.status === "confirmed" &&
+          event.data.commandId === command.commandId)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const confirmed = page?.events.filter((event) => event.kind === "question" && event.data.status === "confirmed" &&
+      event.data.commandId === command.commandId);
+    assert.equal(confirmed?.length, 1, "The confirmed record must survive bridge restart while event delivery was full.");
+    assert.equal(confirmed?.[0]?.data.status === "confirmed" && confirmed[0].data.answer, "Phone");
+  } finally { db.close(); }
+});
+
+test("a post-success confirmation transaction failure remains uncertain and never repeats the accepted RPC", async (t) => {
+  const f = await modelBridgeFixture(t);
+  const db = new DatabaseSync(path.join(f.dataDir, "bridge", f.host.hostId, f.sid, "bridge.sqlite"));
+  let invocations = 0;
+  f.session.rpc.ui = { handlePendingUserInput: async () => { invocations++; return { success: true }; } };
+  await f.bridge.runtime.refresh();
+  f.emit("user_input.requested", { requestId: "journal-question", question: "Choose safely", choices: ["Phone", "Original"] });
+  const route = sessionPath(f.host.hostId, f.sid) + "/commands";
+  const command = { commandId: newId(), action: { type: "answer", requestId: "journal-question", answer: "Phone" } };
+  try {
+    db.exec("CREATE TRIGGER fail_confirmation BEFORE INSERT ON answer_confirmations BEGIN SELECT RAISE(FAIL,'synthetic write failure'); END");
+    assert.equal((await f.request(route, f.phone.token, command)).status, 202);
+    let receipt: Receipt | undefined;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      receipt = Receipt.parse(await (await f.request(`${route}/${command.commandId}`, f.phone.token)).json());
+      if (["completed", "failed", "uncertain"].includes(receipt.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(receipt?.status, "uncertain");
+    assert.equal(receipt?.error?.code, "DELIVERY_UNCERTAIN");
+    assert.equal(invocations, 1);
+    db.exec("DROP TRIGGER fail_confirmation");
+    await f.reconnect();
+    assert.equal((await (await f.request(route, f.phone.token, command)).json() as Receipt).status, "uncertain");
+    assert.equal(invocations, 1);
+  } finally { db.close(); }
+});
 
 test("events resume without reconnecting after a summary crosses the socket backpressure threshold", async (t) => {
   const f = await modelBridgeFixture(t), limit = 2 * 1024 * 1024;

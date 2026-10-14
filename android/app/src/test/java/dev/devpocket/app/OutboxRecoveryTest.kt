@@ -4,6 +4,8 @@ import androidx.test.core.app.ApplicationProvider
 import dev.devpocket.app.data.*
 import java.util.UUID
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
 import org.junit.Assert.*
 import org.junit.Test
@@ -16,6 +18,48 @@ import org.robolectric.annotation.SQLiteMode
 @Config(sdk = [35], application = DevPocketApplication::class)
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
 class OutboxRecoveryTest {
+    @Test fun eventDisplayTruncationDoesNotReopenAnAlreadyAttemptedQuestion() {
+        val context = ApplicationProvider.getApplicationContext<DevPocketApplication>()
+        val scope = Scope(UUID.randomUUID().toString(), "host", "session")
+        val request = PendingRequest("pending", "question", "Question", "Choose",
+            choices = listOf("Phone", "Original"), supported = true)
+        val pending = QuestionRecord("stable-question", request, "pending")
+        val command = Command(UUID.randomUUID().toString(), Action.Answer(request.requestId, "Phone"))
+        fun event(cursor: Long, kind: String, data: JsonObject) =
+            WireEvent("event-$cursor", "2026-10-14T00:00:00.000Z", kind, data, cursor, scope.hostId, scope.sessionId)
+        val first = event(1, "question", WireJson.encodeToJsonElement(pending) as JsonObject)
+        try {
+            LocalStore(context).use { local ->
+                local.applyPage(scope, EventPage(listOf(first), 1))
+                val staged = local.stageAnswer(scope, command, AnswerContext(pending.questionId, request, first.at, 1))
+                local.transportFailure(staged, "delivery_unknown", "Awaiting the same operation")
+                for (batch in (2L..85L).chunked(7)) {
+                    val events = batch.map { cursor -> event(cursor, "assistant.message", buildJsonObject {
+                        put("messageId", "message-$cursor"); put("content", "x".repeat(64000))
+                    }) }
+                    local.applyPage(scope, EventPage(events, batch.last()))
+                }
+                local.applyPage(scope, EventPage(listOf(event(86, "requests", buildJsonObject {
+                    put("items", WireJson.encodeToJsonElement(listOf(request)))
+                })), 86))
+            }
+            LocalStore(context).use { local ->
+                val visible = local.events(scope)
+                assertTrue("Exercise the actual display byte cutoff.", visible.first().cursor > 1)
+                val history = questionHistory(visible, local.outbox(scope), scope, local.firstRetainedEventCursor(scope))
+                val active = history.single { it.record.status == "pending" }
+                assertTrue("A display cutoff cannot permit a new answer operation.", active.blocksNewAnswer)
+                assertEquals(command, active.attempts.single().command)
+                assertNull(active.record.answer)
+                local.applyPage(scope, EventPage(listOf(event(100, "requests", buildJsonObject {
+                    put("items", WireJson.encodeToJsonElement(emptyList<PendingRequest>()))
+                })), 100, reset = true))
+                assertTrue(questionHistory(local.events(scope), local.outbox(scope), scope,
+                    local.firstRetainedEventCursor(scope)).isEmpty())
+            }
+        } finally { LocalStore(context).use { it.forgetAccount(scope.accountId) } }
+    }
+
     @Test fun largeQuestionSnapshotsDoNotHideUnresolvedCommandsWithinTheRetainedHundredRows() {
         val context = ApplicationProvider.getApplicationContext<DevPocketApplication>()
         val scope = Scope(UUID.randomUUID().toString(), "host", "session")

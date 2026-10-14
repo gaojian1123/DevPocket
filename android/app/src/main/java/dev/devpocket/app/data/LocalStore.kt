@@ -103,6 +103,11 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "devpocket-cache.
             if (it.moveToFirst()) it.getLong(0) else 0L
         }
 
+    @Synchronized fun firstRetainedEventCursor(scope: Scope): Long =
+        readableDatabase.rawQuery("SELECT MIN(cursor) FROM events WHERE scope=?", arrayOf(scope.key)).use {
+            if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else Long.MAX_VALUE
+        }
+
     @Synchronized fun events(scope: Scope): List<WireEvent> =
         readableDatabase.rawQuery("SELECT body FROM events WHERE scope=? ORDER BY cursor DESC LIMIT 6000", arrayOf(scope.key)).use {
             buildList {

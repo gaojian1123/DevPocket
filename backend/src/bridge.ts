@@ -36,6 +36,9 @@ class Journal {
       );
       CREATE TABLE IF NOT EXISTS origins (id TEXT PRIMARY KEY, at INTEGER NOT NULL, idle INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS idle_marker (id INTEGER PRIMARY KEY CHECK(id=1), at INTEGER NOT NULL, aborted INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS answer_confirmations (
+        id TEXT PRIMARY KEY, command_id TEXT UNIQUE NOT NULL, event TEXT NOT NULL
+      );
     `);
   }
 
@@ -84,6 +87,26 @@ class Journal {
           if (!finalStatus(queued.status)) this.save({ ...queued, status: "cancelled" });
         }
       }
+    }
+  }
+
+  confirmAnswer(commandId: string, event: UserEvent | undefined): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.save({ commandId, status: "completed", result: { resolved: true } });
+      if (event) this.db.prepare("INSERT OR IGNORE INTO answer_confirmations VALUES(?,?,?)")
+        .run(event.id, commandId, JSON.stringify(event));
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  restoreConfirmations(): void {
+    const pending = this.db.prepare(`SELECT event FROM answer_confirmations
+      WHERE id NOT IN (SELECT id FROM outbox) ORDER BY rowid LIMIT 80`).all();
+    for (const row of pending) {
+      const size = this.db.prepare("SELECT COALESCE(SUM(length(body)),0) AS size FROM outbox").get()?.size;
+      if (typeof size === "number" && size > 64 * 1024 * 1024) break;
+      this.enqueue(UserEvent.parse(JSON.parse(z.string().parse(row.event))));
     }
   }
 
@@ -164,7 +187,8 @@ class Journal {
 
   acknowledge(ids: string[]): void {
     const statement = this.db.prepare("DELETE FROM outbox WHERE id=?");
-    for (const id of ids) statement.run(id);
+    const confirmation = this.db.prepare("DELETE FROM answer_confirmations WHERE id=?");
+    for (const id of ids) { statement.run(id); confirmation.run(id); }
   }
 
   acknowledgeResult(id: string, status: DeliveryStatus): void {
@@ -190,7 +214,8 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   const proofAgent = config.proofOwnerKey ? createProofAgent(origin, config.proofOwnerKey) : undefined;
   Id.parse(session.sessionId);
   const journal = new Journal(path.join(config.dataDir, config.hostId, session.sessionId));
-  const runtime = new CopilotRuntime(session, (event) => { journal.observe(event); journal.enqueue(event); });
+  const runtime = new CopilotRuntime(session, (event) => { journal.observe(event); journal.enqueue(event); },
+    (commandId, event) => journal.confirmAnswer(commandId, event));
   await runtime.connect();
   await writeFile(path.join(config.dataDir, config.hostId, session.sessionId, "registration.json"), JSON.stringify({
     sessionId: session.sessionId, extensionPid: process.pid, parentPid: process.ppid, attachedAt: new Date().toISOString(),
@@ -227,6 +252,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   }
   function queueSummary(): void {
     if (!ready || stopped) return;
+    journal.restoreConfirmations();
     const snapshot = {
       through: journal.eventBoundary(), summary: SessionSummary.parse(runtime.summary),
       receiptIds: journal.pendingReceiptIds(), nextReceipt: 0, sent: false,
@@ -237,6 +263,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   }
   function flush(): void {
     if (!ready || stopped) return;
+    journal.restoreConfirmations();
     const snapshot = summaries[0];
     let awaitingEvents = eventInFlight;
     if (!eventInFlight && !snapshot?.sent) {
@@ -320,7 +347,10 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
         ["message", "abort", "permission", "answer", "model.set"].includes(command.action.type);
       journal.save({ commandId: command.commandId, status: uncertain ? "uncertain" : "failed",
         error: uncertain ? { code: "DELIVERY_UNCERTAIN", message: "The runtime may have accepted this operation. Inspect the original client; DevPocket will not execute it again automatically." } : publicError(error) });
-      console.error("[DevPocket] Command failed:", error instanceof Fault ? error.code : "runtime error");
+      const retained = journal.receipt(command.commandId);
+      console.error(command.action.type === "answer" && retained.status === "completed"
+        ? "[DevPocket] Confirmed answer history delivery deferred:" : "[DevPocket] Command failed:",
+      error instanceof Fault ? error.code : "runtime error");
     }
     if (needsSummary) queueSummary();
     flush();

@@ -71,6 +71,8 @@ ongoing drag or fling; selecting Latest during a fling returns to the new tail
 after that motion finishes. A final question taller than the chat viewport
 aligns to its measured bottom instead of jumping back to its header when the
 reader reaches the answer controls.
+Following also reacts when an earlier question gains a longer confirmed answer,
+even if the last message and number of rows have not changed.
 
 Android durably stages an answer with its original command ID, immutable body,
 question snapshot and account/host/session scope before submitting. Submitting,
@@ -80,6 +82,12 @@ pending card is not proof of the chosen answer. Confirmation requires the
 original runtime's validated success for that operation, or its corresponding
 scoped full receipt. Recovery queries that same command; an explicit transport
 retry reuses its ID and body rather than submitting a fresh answer.
+After validated success, the bridge atomically retains the completed receipt
+and its safe confirmation before projecting events. A full event queue cannot
+turn that accepted operation into a deterministic failure: confirmed history
+waits for capacity and survives bridge restart until acknowledged. If that
+confirmation transaction itself cannot persist, the outcome stays uncertain
+and the same operation is not executed again.
 
 The bridge publishes only validated, redacted question projections, not raw
 SDK events, tool arguments or tool results. If the original client answers and
@@ -94,6 +102,10 @@ confirmation or another client's unknown answer.
 Command recovery loads all of the latest 100 scoped outbox records, including
 large question snapshots, without applying the separate event-display text
 budget. A newer large snapshot cannot hide an older retained unresolved command.
+Question reconstruction uses SQLite's actual retained cursor boundary, not the
+first event in a byte-limited display slice, so a still-retained answer attempt
+cannot disappear and re-enable a new submission. Actual resets and pruning still
+retire old history.
 Question records use the existing relay event retention and Android SQLite
 cache, including replay, scope checks, cache reset, account removal and backup
 exclusion. Reopening a session or rebuilding the Activity does not remove them.

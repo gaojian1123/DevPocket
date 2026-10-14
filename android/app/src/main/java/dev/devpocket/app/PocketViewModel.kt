@@ -39,6 +39,7 @@ data class PocketUi(
     val selected: Scope? = null,
     val session: SessionInfo? = null,
     val events: List<WireEvent> = emptyList(),
+    val firstRetainedEventCursor: Long? = null,
     val draft: Draft = Draft(),
     val outbox: List<Outbox> = emptyList(),
     val submittingAnswers: Set<String> = emptySet(),
@@ -221,7 +222,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     fun open(scope: Scope, session: SessionInfo) {
         streamJob?.cancel()
         prefs.edit().putString("last_scope", WireJson.encodeToString(scope)).apply()
-        mutable.update { it.copy(selected = scope, session = session, events = emptyList(), requests = emptyList(),
+        mutable.update { it.copy(selected = scope, session = session, events = emptyList(), firstRetainedEventCursor = null, requests = emptyList(),
             draft = Draft(), outbox = emptyList(), files = emptyList(), filePath = "", preview = null, git = null, diff = null,
             models = emptyList(), attachments = emptyList(), connection = "正在读取缓存") }
         viewModelScope.launch {
@@ -233,15 +234,17 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     fun closeSession() {
         streamJob?.cancel()
         prefs.edit().remove("last_scope").apply()
-        mutable.update { it.copy(selected = null, session = null, events = emptyList(), requests = emptyList()) }
+        mutable.update { it.copy(selected = null, session = null, events = emptyList(), firstRetainedEventCursor = null, requests = emptyList()) }
     }
 
     private suspend fun loadLocal(scope: Scope) {
-        val data = withContext(Dispatchers.IO) { Triple(local.events(scope), local.draft(scope), local.outbox(scope)) }
+        val (data, firstRetainedCursor) = withContext(Dispatchers.IO) {
+            Triple(local.events(scope), local.draft(scope), local.outbox(scope)) to local.firstRetainedEventCursor(scope)
+        }
         val requestEvent = data.first.lastOrNull { it.kind == "requests" }
         val requests = requestEvent?.data?.get("items")?.let { WireJson.decodeFromJsonElement<List<PendingRequest>>(it) }
         mutable.update { state ->
-            if (state.selected != scope) state else state.copy(events = data.first,
+            if (state.selected != scope) state else state.copy(events = data.first, firstRetainedEventCursor = firstRetainedCursor,
                 draft = if (data.second.revision >= state.draft.revision) data.second else state.draft,
                 outbox = data.third, requests = requests ?: state.requests)
         }
@@ -405,7 +408,8 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
             if (current.status !in setOf("delivery_unknown", "not_received", "sending")) return
             val question = current.question ?: return
             if (state.requests.none { it.sameQuestion(question.request) && it.supportedBy(session.capabilities) }) return
-            val history = questionHistory(state.events, state.outbox, entry.scope).find { it.record.questionId == question.questionId }
+            val history = questionHistory(state.events, state.outbox, entry.scope, state.firstRetainedEventCursor)
+                .find { it.record.questionId == question.questionId }
             if (history?.record?.status == "confirmed") return
             launchAnswer(entry.scope, current.command, question, current) {}
             return
@@ -420,7 +424,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         if (!session.online || state.busy) return
         val request = state.requests.find { it.requestId == action.requestId && it.type == "question" } ?: return
         if (!request.supportedBy(session.capabilities)) return
-        val history = questionHistory(state.events, state.outbox, scope).lastOrNull {
+        val history = questionHistory(state.events, state.outbox, scope, state.firstRetainedEventCursor).lastOrNull {
             it.record.request.sameQuestion(request) && it.record.status == "pending"
         }
         if (history == null) {
