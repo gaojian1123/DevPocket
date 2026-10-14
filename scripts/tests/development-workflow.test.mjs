@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
@@ -15,12 +15,13 @@ function durable(ctx) {
   } };
 }
 
-async function workspace(t) {
+async function workspace(t, { separateGitDir = false } = {}) {
   await mkdir(".data/tests", { recursive: true });
   const home = await mkdtemp(path.resolve(".data/tests/development-"));
   const main = path.join(home, "main"), root = path.join(home, "task");
   await mkdir(main);
-  await exec("git", ["init", "--quiet", main]);
+  await exec("git", ["init", "--quiet",
+    ...(separateGitDir ? ["--separate-git-dir", path.join(home, "metadata")] : []), main]);
   await writeFile(path.join(main, ".gitignore"), ".data/\n");
   await writeFile(path.join(main, "README.md"), "Before\n");
   await exec("git", ["add", "."], { cwd: main });
@@ -32,6 +33,24 @@ async function workspace(t) {
     await rm(home, { recursive: true, force: true });
   });
   return { root, main };
+}
+
+async function registeredStarter(root, {
+  names = ["create_session", "run_dynamic_workflow"],
+  execute = async () => ({ resultType: "success", textResultForLlm: "Started" }),
+} = {}) {
+  const { registerDevelopmentExtension } = await import("../workflow-extension.mjs");
+  let registration;
+  const calls = [], activity = [];
+  const session = { rpc: { tools: {
+    getCurrentMetadata: async () => { activity.push("metadata"); return { tools: names.map((name) => ({ name })) }; },
+    execute: async (request) => { activity.push("execute"); calls.push(request); return execute(request); },
+  } } };
+  await registerDevelopmentExtension({
+    defineWorkflow: (value) => value,
+    joinSession: async (value) => { registration = value; return session; },
+  }, root);
+  return { registration, calls, activity, session, start: registration.tools[0].handler };
 }
 
 test("a development run actually dispatches an independent reviewer and rechecks repaired source", async (t) => {
@@ -125,13 +144,177 @@ test("review blockers exhaust a bounded repair budget and are never relabelled a
   assert.equal(calls, 2);
 });
 
-test("extension registration is inert and its explicit start tool uses the App's isolated worktree path", async () => {
+test("starter reuses a clean linked worktree through exactly one native workflow dispatch", async (t) => {
+  const { root } = await workspace(t);
+  const task = {
+    goal: "Keep the current task session",
+    acceptance: ["复用当前干净 worktree", "Retain native run approval"],
+    nonGoals: ["Do not create a child session"],
+    maxRepairRounds: 1,
+  };
+  const result = { resultType: "success", textResultForLlm: "Workflow run: fixture-run" };
+  const starter = await registeredStarter(root, { execute: async () => result });
+  assert.deepEqual(starter.activity, [], "Registration must not inspect or dispatch through the SDK.");
+  assert.strictEqual(await starter.start(task), result);
+  assert.equal(starter.calls.filter((call) => call.name === "create_session").length, 0);
+  assert.deepEqual(starter.calls, [{
+    name: "run_dynamic_workflow", arguments: { name: "devpocket-development", args: task },
+  }]);
+});
+
+test("starter blocks dirty checkouts without dropping unresolved task dependencies", async (t) => {
+  for (const checkout of ["primary", "linked"]) {
+    for (const change of ["staged", "unstaged", "untracked"]) {
+      await t.test(`${checkout}: ${change}`, async (t) => {
+        const { main, root: linked } = await workspace(t);
+        const root = checkout === "primary" ? main : linked;
+        const starter = await registeredStarter(root);
+        const file = change === "untracked" ? path.join("pending", "new.md") : "README.md";
+        await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+        await writeFile(path.join(root, file), "Unfinished task dependency\n");
+        if (change === "staged") await exec("git", ["add", file], { cwd: root });
+        if (change === "untracked") await exec("git", ["config", "--local", "status.showUntrackedFiles", "no"], { cwd: root });
+        const status = () => exec("git", ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"], { cwd: root });
+        const before = (await status()).stdout;
+        const result = await starter.start({ goal: "Task", acceptance: ["Behavior"] });
+        assert.deepEqual(starter.calls, [], "Dirty work must not silently move to a new base.");
+        assert.equal(result.resultType, "failure");
+        assert.match(result.textResultForLlm, /dirty|clean|uncommitted/i);
+        assert.match(result.textResultForLlm, /depend/i);
+        assert.equal((await status()).stdout, before);
+        assert.equal(await readFile(path.join(root, file), "utf8"), "Unfinished task dependency\n");
+      });
+    }
+  }
+});
+
+test("starter allows ignored artifacts and inspects Git without refreshing the index", async (t) => {
+  const { root } = await workspace(t);
+  await mkdir(path.join(root, ".data"));
+  await writeFile(path.join(root, ".data", "artifact.txt"), "Ignored local artifact\n");
+  const readme = path.join(root, "README.md");
+  await writeFile(readme, await readFile(readme));
+  assert.equal((await exec("git", ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"], { cwd: root })).stdout, "");
+  const index = path.resolve(root, (await exec("git", ["rev-parse", "--git-path", "index"], { cwd: root })).stdout.trim());
+  const before = await readFile(index);
+  const starter = await registeredStarter(root, { names: ["run_dynamic_workflow"] });
+  const result = await starter.start({ goal: "Task", acceptance: ["Behavior"] });
+  assert.equal(result.resultType, "success", result.textResultForLlm);
+  assert.deepEqual(starter.calls, [{
+    name: "run_dynamic_workflow",
+    arguments: { name: "devpocket-development", args: { goal: "Task", acceptance: ["Behavior"], nonGoals: [], maxRepairRounds: 2 } },
+  }]);
+  assert.deepEqual(await readFile(index), before);
+  assert.equal(await readFile(path.join(root, ".data", "artifact.txt"), "utf8"), "Ignored local artifact\n");
+});
+
+test("starter uses actual Git identities for separate metadata and directory aliases", async (t) => {
+  const { root, main } = await workspace(t, { separateGitDir: true });
+  assert.match(await readFile(path.join(main, ".git"), "utf8"), /^gitdir: /);
+  const primary = await registeredStarter(main);
+  await primary.start({ goal: "Task", acceptance: ["Behavior"] });
+  assert.deepEqual(primary.calls.map((call) => call.name), ["create_session"]);
+  const alias = path.join(main, ".data", "linked-alias");
+  await mkdir(path.dirname(alias));
+  await symlink(root, alias, process.platform === "win32" ? "junction" : "dir");
+  const linked = await registeredStarter(alias);
+  const result = await linked.start({ goal: "Task", acceptance: ["Behavior"] });
+  assert.equal(result.resultType, "success", result.textResultForLlm);
+  assert.deepEqual(linked.calls.map((call) => call.name), ["run_dynamic_workflow"]);
+});
+
+test("starter discovers qualified native tool names for reuse and primary isolation", async (t) => {
+  const { root, main } = await workspace(t);
+  for (const names of [
+    ["functions.create_session", "functions.run_dynamic_workflow"],
+    ["functions.create_session", "run_dynamic_workflow"],
+    ["create_session", "functions.run_dynamic_workflow"],
+  ]) {
+    for (const [directory, expectedName] of [[root, names[1]], [main, names[0]]]) {
+      await t.test(`${names.join(", ")}: ${expectedName}`, async () => {
+        const starter = await registeredStarter(directory, { names });
+        await starter.start({ goal: "Task", acceptance: ["Behavior"] });
+        assert.equal(starter.calls.length, 1);
+        assert.equal(starter.calls[0].name, expectedName);
+      });
+    }
+  }
+});
+
+test("starter never creates a child when the current workflow tool is unavailable", async (t) => {
+  const { root } = await workspace(t);
+  for (const tools of [null, [], [{ name: "create_session" }], [{ name: "functions.create_session" }]]) {
+    await t.test(JSON.stringify(tools), async () => {
+      const starter = await registeredStarter(root);
+      starter.session.rpc.tools.getCurrentMetadata = async () => ({ tools });
+      const result = await starter.start({ goal: "Task", acceptance: ["Behavior"] });
+      assert.equal(result.resultType, "failure");
+      assert.match(result.textResultForLlm, /run_dynamic_workflow.*unavailable/);
+      assert.deepEqual(starter.calls, []);
+    });
+  }
+});
+
+test("starter preserves failed, rejected and uncertain workflow results without a second dispatch", async (t) => {
+  const { root } = await workspace(t);
+  for (const resultType of ["failure", "rejected", "denied"]) {
+    await t.test(resultType, async () => {
+      const result = { resultType, textResultForLlm: `Native workflow outcome: ${resultType}` };
+      const starter = await registeredStarter(root, { execute: async () => result });
+      assert.strictEqual(await starter.start({ goal: "Task", acceptance: ["Behavior"] }), result);
+      assert.equal(starter.calls.length, 1);
+      assert.equal(starter.calls[0].name, "run_dynamic_workflow");
+    });
+  }
+  await t.test("uncertain native dispatch", async () => {
+    const error = new Error("Connection lost after dispatch; the run outcome is unknown.");
+    const starter = await registeredStarter(root, { execute: async () => { throw error; } });
+    await assert.rejects(starter.start({ goal: "Task", acceptance: ["Behavior"] }), (actual) => actual === error);
+    assert.equal(starter.calls.length, 1);
+    assert.equal(starter.calls[0].name, "run_dynamic_workflow");
+  });
+  await t.test("tool discovery failed", async () => {
+    const error = new Error("Native tool discovery failed.");
+    const starter = await registeredStarter(root);
+    starter.session.rpc.tools.getCurrentMetadata = async () => { throw error; };
+    await assert.rejects(starter.start({ goal: "Task", acceptance: ["Behavior"] }), (actual) => actual === error);
+    assert.deepEqual(starter.calls, []);
+  });
+});
+
+test("starter blocks a clean primary checkout when native session creation is unavailable", async (t) => {
+  const { main } = await workspace(t);
+  const starter = await registeredStarter(main, { names: ["run_dynamic_workflow"] });
+  const result = await starter.start({ goal: "Task", acceptance: ["Behavior"] });
+  assert.equal(result.resultType, "failure");
+  assert.match(result.textResultForLlm, /create_session.*unavailable/);
+  assert.deepEqual(starter.calls, []);
+});
+
+test("starter reports invalid Git inspection without dispatching a workflow or session", async (t) => {
+  const { root } = await workspace(t);
+  for (const scenario of ["missing-directory", "invalid-gitdir", "bare", "nested-directory"]) {
+    await t.test(scenario, async () => {
+      const directory = path.join(root, ".data", scenario);
+      if (scenario !== "missing-directory") await mkdir(directory, { recursive: true });
+      if (scenario === "invalid-gitdir") await writeFile(path.join(directory, ".git"), "gitdir: missing\n");
+      if (scenario === "bare") await exec("git", ["init", "--quiet", "--bare", directory]);
+      const starter = await registeredStarter(directory);
+      const result = await starter.start({ goal: "Task", acceptance: ["Behavior"] });
+      assert.equal(result.resultType, "failure");
+      assert.match(result.textResultForLlm, /git.*inspect|inspect.*git/i);
+      assert.deepEqual(starter.calls, []);
+    });
+  }
+});
+
+test("extension registration is inert and the starter isolates a clean primary checkout", async (t) => {
   const { registerDevelopmentExtension, requireReadonlyReviewer } = await import("../workflow-extension.mjs");
   let registration, dispatched;
-  const root = path.resolve(".");
+  const { main: root } = await workspace(t);
   const session = { rpc: {
     tools: {
-      getCurrentMetadata: async () => ({ tools: [{ name: "create_session" }] }),
+      getCurrentMetadata: async () => ({ tools: [{ name: "create_session" }, { name: "run_dynamic_workflow" }] }),
       execute: async (request) => { dispatched = request; return { resultType: "success", textResultForLlm: "Created" }; },
     },
     agent: { list: async () => ({ agents: [{
@@ -157,15 +340,29 @@ test("extension registration is inert and its explicit start tool uses the App's
   await assert.rejects(requireReadonlyReviewer(session, root), /read\/search-only/);
 });
 
-test("workflow registration can load in a fresh worktree before npm dependencies are restored", async () => {
+test("workflow registration stays inert without repository dependencies or a usable checkout", async () => {
   const entry = new URL("../workflow-extension.mjs", import.meta.url).href;
   const script = [
+    "import assert from 'node:assert/strict';",
     "import {registerHooks} from 'node:module';",
     "registerHooks({resolve(specifier,context,next){",
     "if(!specifier.startsWith('node:')&&!specifier.startsWith('.')&&!specifier.startsWith('file:'))",
     "throw new Error('Repository dependency required before workflow registration: '+specifier);",
     "return next(specifier,context);}});",
-    `await import(${JSON.stringify(entry)});`,
+    `const {registerDevelopmentExtension}=await import(${JSON.stringify(entry)});`,
+    "let registration, definitions=0, joins=0;",
+    "const unexpected=()=>assert.fail('Registration must not inspect or dispatch through the SDK.');",
+    "const session={rpc:{tools:{getCurrentMetadata:unexpected,execute:unexpected},agent:{list:unexpected}}};",
+    "const result=await registerDevelopmentExtension({",
+    "defineWorkflow(value){definitions++;return value;},",
+    "async joinSession(value){joins++;registration=value;return session;}",
+    "},'a-worktree-that-does-not-exist');",
+    "assert.equal(result,session);assert.equal(definitions,1);assert.equal(joins,1);",
+    "assert.deepEqual(Object.keys(registration).sort(),['tools','workflows']);",
+    "assert.equal(registration.workflows[0].meta.name,'devpocket-development');",
+    "assert.equal(registration.workflows[0].meta.limits,undefined);",
+    "assert.equal(registration.tools.length,1);",
+    "assert.equal(registration.tools[0].name,'devpocket_start_development');",
   ].join("\n");
   await exec(process.execPath, ["--input-type=module", "-e", script]);
 });
