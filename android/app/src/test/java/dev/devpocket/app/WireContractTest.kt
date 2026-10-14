@@ -21,6 +21,7 @@ class WireContractTest {
                     "session" -> WireJson.decodeFromJsonElement<SessionInfo>(wire)
                     "request" -> WireJson.decodeFromJsonElement<PendingRequest>(wire)
                     "receipt" -> WireJson.decodeFromJsonElement<Receipt>(wire)
+                    "question" -> WireJson.decodeFromJsonElement<QuestionRecord>(wire)
                     else -> error("Unknown shared sample shape: $id")
                 }
             }
@@ -42,6 +43,7 @@ class WireContractTest {
                 }
                 is PendingRequest -> assertFalse(value.supportedBy(Capabilities(permissions = true, questions = true)))
                 is Receipt -> assertEquals("uncertain", acceptDelivery(value.status, "completed"))
+                is QuestionRecord -> assertEquals(value, WireJson.decodeFromString<QuestionRecord>(WireJson.encodeToString(value)))
             }
         }
     }

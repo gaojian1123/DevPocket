@@ -154,11 +154,17 @@ fun SessionPane(state: PocketUi, model: PocketViewModel, expanded: Boolean) {
 @Composable
 private fun ChatHistory(state: PocketUi, model: PocketViewModel,
     decide: (PendingRequest, String) -> Unit, modifier: Modifier) {
-    val messages = remember(state.events) { timeline(state.events) }
+    val messages = remember(state.events, state.outbox, state.selected, state.firstRetainedEventCursor) {
+        timeline(state.events, state.outbox, state.selected, state.firstRetainedEventCursor)
+    }
+    val questions = messages.mapNotNull { it.question }
+    val requests = state.requests.filter { request ->
+        request.type != "question" || questions.none { it.record.request.sameQuestion(request) }
+    }
     val listState = rememberLazyListState()
     var followTail by rememberSaveable { mutableStateOf(true) }
     val outstanding = state.outbox.filter { it.command.action is Action.Message }
-    val total = messages.size + state.requests.size + outstanding.size
+    val total = messages.size + requests.size + outstanding.size
     val scrollObserver = remember(listState) {
         object : NestedScrollConnection {
             override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
@@ -167,13 +173,44 @@ private fun ChatHistory(state: PocketUi, model: PocketViewModel,
             }
         }
     }
-    LaunchedEffect(messages.lastOrNull()?.text, total, state.selected, followTail) {
-        if (followTail && total > 0) listState.scrollToItem(total - 1)
+    LaunchedEffect(messages, requests, outstanding, state.selected, followTail) {
+        if (followTail && total > 0) {
+            var positioned = false
+            snapshotFlow {
+                val layout = listState.layoutInfo
+                Triple(layout.visibleItemsInfo.lastOrNull { it.index == total - 1 }?.size,
+                    (layout.viewportSize.height - layout.beforeContentPadding - layout.afterContentPadding).coerceAtLeast(0),
+                    listState.isScrollInProgress)
+            }.collect { (tailSize, viewport, scrolling) ->
+                if (!scrolling) {
+                    if (tailSize != null) {
+                        val requestPosition = !positioned || listState.canScrollForward
+                        positioned = true
+                        if (requestPosition)
+                            listState.requestScrollToItem(total - 1, (tailSize - viewport).coerceAtLeast(0))
+                    } else if (!positioned) {
+                        positioned = true
+                        listState.requestScrollToItem(total - 1)
+                    }
+                }
+            }
+        }
     }
     Box(modifier.fillMaxWidth()) {
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize().nestedScroll(scrollObserver),
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize().nestedScroll(scrollObserver).testTag("chat_history"),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             items(messages, key = { it.id }) { item ->
+                val question = item.question
+                if (question != null) {
+                    val pending = state.requests.find { it.sameQuestion(question.record.request) }
+                    val request = pending ?: question.record.request
+                    val supported = state.session?.let { request.supportedBy(it.capabilities) } == true
+                    RequestCard(request.copy(supported = supported), state.busy || state.session?.online != true, decide,
+                        history = question, pending = pending != null, submitting = state.submittingAnswers, retry = model::retry) { answer ->
+                        model.action(Action.Answer(request.requestId, answer))
+                    }
+                    return@items
+                }
                 Box(Modifier.fillMaxWidth(), contentAlignment = if (item.role == "user") Alignment.CenterEnd else Alignment.CenterStart) {
                     Surface(
                         modifier = Modifier.widthIn(max = 720.dp),
@@ -223,7 +260,7 @@ private fun ChatHistory(state: PocketUi, model: PocketViewModel,
                     }
                 }
             }
-            items(state.requests, key = { "request:${it.requestId}" }) { request ->
+            items(requests, key = { "request:${it.requestId}" }) { request ->
                 val supported = state.session?.let { request.supportedBy(it.capabilities) } == true
                 RequestCard(request.copy(supported = supported),
                     state.busy || state.session?.online != true, decide) { answer ->
@@ -231,7 +268,7 @@ private fun ChatHistory(state: PocketUi, model: PocketViewModel,
                 }
             }
         }
-        if (messages.isEmpty() && state.requests.isEmpty()) {
+        if (messages.isEmpty() && requests.isEmpty()) {
             Text("发送消息，继续这一个 GitHub Copilot 会话。\n可在手机和原始客户端之间切换，既有历史会同步到这里。",
                 modifier = Modifier.align(Alignment.Center).padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -246,14 +283,47 @@ private fun ChatHistory(state: PocketUi, model: PocketViewModel,
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RequestCard(request: PendingRequest, disabled: Boolean,
-    decide: (PendingRequest, String) -> Unit, answer: (String) -> Unit) {
+    decide: (PendingRequest, String) -> Unit, history: QuestionHistory? = null, pending: Boolean = true,
+    submitting: Set<String> = emptySet(), retry: (Outbox) -> Unit = {}, answer: (String) -> Unit) {
     var typed by rememberSaveable(request.requestId) { mutableStateOf("") }
-    ElevatedCard(Modifier.fillMaxWidth().widthIn(max = 720.dp),
+    val readOnly = history != null && (!pending || history.blocksNewAnswer)
+    ElevatedCard(Modifier.fillMaxWidth().widthIn(max = 720.dp)
+        .then(if (history != null) Modifier.testTag("question_history_${history.record.questionId}") else Modifier),
         colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(request.title, style = MaterialTheme.typography.titleMedium)
             SelectionContainer { Text(request.detail, style = MaterialTheme.typography.bodyMedium) }
-            if (!request.supported || request.type == "terminal") {
+            if (history != null) {
+                if (history.record.status == "confirmed") {
+                    Text("已确认的回答 · 只读", fontWeight = FontWeight.SemiBold)
+                    SelectionContainer { Text(history.record.answer.orEmpty(), modifier = Modifier.testTag("confirmed_answer_${history.record.questionId}")) }
+                } else if (history.record.status == "unknown" || !pending) {
+                    Text("问题已不在待处理列表；实际答案未知。", fontWeight = FontWeight.SemiBold)
+                }
+                history.attempts.forEach { attempt ->
+                    val status = answerAttemptStatus(attempt, history.record)
+                    if (status != "confirmed") {
+                        Text(when (status) {
+                            "failed" -> "回答失败 · 未确认"
+                            "cancelled" -> "回答已取消 · 未确认"
+                            "uncertain" -> "回答结果不确定"
+                            "sending" -> if (attempt.command.commandId in submitting) "正在提交回答" else "回答尚未确认"
+                            else -> "回答尚未确认"
+                        }, fontWeight = FontWeight.SemiBold)
+                        SelectionContainer { Text("尝试提交：${answerHistoryText((attempt.command.action as Action.Answer).answer)}") }
+                        attempt.error?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                        if (pending && history.record.status == "pending" &&
+                            attempt.status in setOf("sending", "delivery_unknown", "not_received")) {
+                            TextButton(enabled = !disabled && request.supported, onClick = { retry(attempt) }) { Text("重试原回答请求") }
+                        }
+                    }
+                }
+            }
+            if (readOnly) {
+                request.choices.forEach { Text("• $it", style = MaterialTheme.typography.bodyMedium) }
+                if (history?.record?.status != "confirmed")
+                    Text("未确认的尝试不代表运行时接受了该答案；请在原始客户端核实。", style = MaterialTheme.typography.bodySmall)
+            } else if (!request.supported || request.type == "terminal") {
                 Text("请在原始 GitHub Copilot 客户端处理。此形式不支持远程确认，不会自动接受。",
                     color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
             } else if (request.type == "permission") {
@@ -263,14 +333,17 @@ private fun RequestCard(request: PendingRequest, disabled: Boolean,
                     OutlinedButton(enabled = !disabled, onClick = { decide(request, "reject") }) { Text("拒绝") }
                 }
             } else {
-                request.choices.forEach { choice ->
-                    OutlinedButton(enabled = !disabled, onClick = { answer(choice) }, modifier = Modifier.fillMaxWidth()) {
+                request.choices.forEachIndexed { index, choice ->
+                    OutlinedButton(enabled = !disabled, onClick = { answer(choice) },
+                        modifier = Modifier.fillMaxWidth().testTag("question_choice_${request.requestId}_$index")) {
                         Text(choice, modifier = Modifier.fillMaxWidth())
                     }
                 }
                 if (request.allowFreeform) {
-                    OutlinedTextField(typed, { typed = it.take(8000) }, modifier = Modifier.fillMaxWidth(), label = { Text("你的回答") })
-                    Button(enabled = typed.isNotBlank() && !disabled, onClick = { answer(typed) }) { Text("回答") }
+                    OutlinedTextField(typed, { typed = it.take(8000) },
+                        modifier = Modifier.fillMaxWidth().testTag("question_input_${request.requestId}"), label = { Text("你的回答") })
+                    Button(enabled = typed.isNotBlank() && !disabled, onClick = { answer(typed) },
+                        modifier = Modifier.testTag("question_submit_${request.requestId}")) { Text("回答") }
                 }
             }
         }

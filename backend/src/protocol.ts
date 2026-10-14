@@ -43,6 +43,7 @@ export type SessionInfo = SessionSummary & {
 export const RelayReady = z.object({
   type: z.literal("ready"), protocol: z.literal(PROTOCOL), hostId: Id, sessionId: Id,
   workspaceMetadata: z.literal(true).optional(),
+  questionHistory: z.literal(true).optional(),
 }).strict();
 
 export const PendingRequest = z.object({
@@ -56,6 +57,18 @@ export const PendingRequest = z.object({
   supported: z.boolean(),
 }).strict();
 export type PendingRequest = z.infer<typeof PendingRequest>;
+
+const questionBase = {
+  questionId: RequestId,
+  request: PendingRequest.extend({ type: z.literal("question") }),
+};
+export const QuestionRecord = z.discriminatedUnion("status", [
+  z.object({ ...questionBase, status: z.literal("pending") }).strict(),
+  z.object({ ...questionBase, status: z.literal("unknown") }).strict(),
+  z.object({ ...questionBase, status: z.literal("confirmed"), answer: z.string().min(1).max(8000),
+    commandId: Id.optional() }).strict(),
+]);
+export type QuestionRecord = z.infer<typeof QuestionRecord>;
 
 const filePath = z.string().max(1000);
 export const Action = z.discriminatedUnion("type", [
@@ -113,6 +126,7 @@ export const UserEvent = z.discriminatedUnion("kind", [
   z.object({ ...eventBase, kind: z.literal("requests"), data: z.object({
     items: z.array(PendingRequest).max(100),
   }).strict() }).strict(),
+  z.object({ ...eventBase, kind: z.literal("question"), data: QuestionRecord }).strict(),
   z.object({ ...eventBase, kind: z.literal("runtime.state"), data: z.object({
     state: RuntimeState, aborted: z.boolean().optional(),
   }).strict() }).strict(),

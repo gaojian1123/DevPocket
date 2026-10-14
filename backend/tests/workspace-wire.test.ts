@@ -35,6 +35,71 @@ test("workspace wire fields are optional for legacy records and strictly bounded
   assert.deepEqual(RelayReady.parse(ready), ready);
   assert.deepEqual(RelayReady.parse({ ...ready, workspaceMetadata: true }), { ...ready, workspaceMetadata: true });
   assert.equal(RelayReady.safeParse({ ...ready, workspaceMetadata: "true" }).success, false);
+  assert.deepEqual(RelayReady.parse({ ...ready, questionHistory: true }), { ...ready, questionHistory: true });
+  assert.equal(RelayReady.safeParse({ ...ready, questionHistory: "true" }).success, false);
+});
+
+test("question history negotiates on every connection without sending new event kinds to legacy relays", async (t) => {
+  let bridge: Awaited<ReturnType<typeof startBridge>> | undefined;
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  const listening = once(server, "listening");
+  t.after(async () => {
+    await bridge?.close();
+    for (const socket of server.clients) socket.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+  const f = await fixture(t), hostId = newId(), peer = workspacePeer(f.dataDir);
+  let listener: (event: unknown) => void = () => {};
+  peer.on = (handler) => { listener = handler; return () => {}; };
+  peer.rpc.metadata = { activity: async () => ({ hasActiveWork: false }) };
+  peer.rpc.ui = { handlePendingUserInput: async () => ({ success: true }) };
+  let connections = 0, legacySummary: SessionSummary | undefined, failure: unknown;
+  const received: { connection: number; kind: string }[] = [];
+  await listening;
+  server.on("connection", (socket, request) => {
+    const connection = ++connections;
+    assert.equal(new URL(request.url!, "http://localhost").searchParams.get("questionHistory"), "1");
+    socket.on("message", (bytes) => {
+      try {
+        const frame = HostFrame.parse(JSON.parse(bytes.toString()));
+        if (frame.type === "hello") socket.send(JSON.stringify({
+          type: "ready", protocol: 1, hostId, sessionId: peer.sessionId,
+          ...(connection === 1 ? { questionHistory: true } : {}),
+        }));
+        else if (frame.type === "summary" && connection > 1) legacySummary = frame.summary;
+        else if (frame.type === "events") {
+          for (const event of frame.items) {
+            if (connection > 1) assert.notEqual(event.kind, "question", "A strict legacy relay cannot decode the new kind.");
+            received.push({ connection, kind: event.kind });
+          }
+          socket.send(JSON.stringify({ type: "eventsAck", ids: frame.items.map((event) => event.id) }));
+        }
+      } catch (error) { failure = error; socket.terminate(); }
+    });
+  });
+  bridge = await startBridge(peer, {
+    hostId, token: secret("dph"), relayUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    dataDir: path.join(f.dataDir, "history-bridge"), allowInsecureLoopback: true,
+  });
+  const waitFor = async (predicate: () => boolean) => {
+    for (let i = 0; i < 200 && !predicate() && !failure; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    if (failure) throw failure;
+    assert.ok(predicate());
+  };
+  const ask = async (requestId: string) => {
+    listener({ id: newId(), timestamp: new Date().toISOString(), type: "user_input.requested",
+      data: { requestId, question: "Choose", choices: ["One"] } });
+    await bridge!.runtime.execute({ type: "answer", requestId, answer: "One" });
+  };
+  await ask("current");
+  await waitFor(() => received.filter((event) => event.kind === "question").length === 2);
+  for (const socket of server.clients) socket.close(1001, "Simulated legacy reconnect");
+  await waitFor(() => legacySummary !== undefined);
+  await ask("legacy");
+  await waitFor(() => received.some((event) => event.connection > 1 && event.kind === "notice"));
+  assert.equal(connections, 2);
+  assert.equal(legacySummary?.sessionId, peer.sessionId);
+  assert.ok(legacySummary?.warnings.some((warning) => /does not support question history/.test(warning)));
 });
 
 test("a new relay preserves strict legacy ready frames and persisted session records", async (t) => {

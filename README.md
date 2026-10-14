@@ -25,7 +25,7 @@ Dev Box extension -> joinSession() -> original GitHub Copilot runtime (CLI or de
 | Azure setup | One interactive command uses an existing azd login to register a new Dev Box with a verified running relay, encrypt the credential handoff, and install the user extension; no old deployment checkout, new public endpoint or relay restart |
 | Sessions | Registered original runtime only; same-repository worktrees share a project group, with per-session branch/worktree labels and search; pin/rename/archive metadata; explicit offline/unsupported state |
 | Chat | Earlier visible history, live assistant/tool output, bidirectional original-client/phone messages, durable command IDs, queued/admitted/processing/completed/uncertain delivery, offline drafts and replay |
-| Human decisions | Known permission forms: approve once or reject; actual permission mode is read-only; questions with exact choices/free text; stale results are errors; unsupported forms visibly require the original client |
+| Human decisions | Known permission forms: approve once or reject; actual permission mode is read-only; questions with exact choices/free text; confirmed question/answer history is read-only; stale results are errors; unsupported forms visibly require the original client |
 | Stop | Sends `session.abort()` to the original runtime; shows **cancellation requested**, not stopped, until runtime idle evidence. Detached/background child processes must still be checked in the original client |
 | Models | Lists the original GitHub Copilot runtime's models/reasoning levels; validates the selection; does not override organization policies or automatically approve model-switch compaction |
 | Files/attachments | Policy-aware project browsing; text/image previews, bounded downloads, PDF save/open through a trusted external app; <=2 MiB upload, <=4 per message, session-scoped IDs/checksums |
@@ -55,6 +55,79 @@ Current limitations:
 - Android hides completed assistant messages with no visible text after merging their events, including cached history. Tool-only turns no longer leave empty GitHub Copilot bubbles; streaming placeholders, normal replies and separate tool cards remain. The underlying events and delivery bookkeeping are retained, so late deltas cannot revive a completed empty message.
 - Attachments expire after seven days, with a 20 MiB per-session relay quota. Private Dev Box attachment staging remains until the operator removes its isolated bridge data; do not remove attachments while GitHub Copilot is using them.
 - The separately authorized Azure relay is running with publicly trusted HTTPS. Public checks, a temporary simulated controller, and the sealed native Android build's actual pairing/message roundtrip on a visible isolated emulator passed against the same ordinary CLI. The emulator login is retained for user trial; physical-phone/cellular acceptance is still pending. FCM, release signing and store distribution remain unprovisioned. Opt-in background monitoring is best-effort, **not** a system-push or vehicle-wake guarantee, and is not part of sealed build 002's acceptance.
+
+## Question history
+
+Supported choice questions, free-text questions and simple elicitation forms
+keep their full safe question details and confirmed answer in the conversation.
+Completed records have no answer buttons or editable fields. Tool cards remain
+separate; an assistant does not have to repeat the answer for it to be retained.
+Permission approvals and unsupported/complex forms are unchanged.
+Question snapshots omit unavailable optional workspace metadata; this does
+not enable file access or relax live question-capability checks.
+History positions are applied on the next layout pass instead of forcing a
+nested measurement during cache replay. Live and cached updates preserve an
+ongoing drag or fling; selecting Latest during a fling returns to the new tail
+after that motion finishes. A final question taller than the chat viewport
+aligns to its measured bottom instead of jumping back to its header when the
+reader reaches the answer controls.
+Following also reacts when an earlier question gains a longer confirmed answer,
+even if the last message and number of rows have not changed.
+
+Android durably stages an answer with its original command ID, immutable body,
+question snapshot and account/host/session scope before submitting. Submitting,
+awaiting confirmation, failed and uncertain attempts remain distinguishable from
+a confirmed answer. A sent command, a generic delivery completion or a vanished
+pending card is not proof of the chosen answer. Confirmation requires the
+original runtime's validated success for that operation, or its corresponding
+scoped full receipt. Recovery queries that same command; an explicit transport
+retry reuses its ID and body rather than submitting a fresh answer.
+After validated success, the bridge atomically retains the completed receipt
+and its safe confirmation before projecting events. A full event queue cannot
+turn that accepted operation into a deterministic failure: confirmed history
+waits for capacity and survives bridge restart until acknowledged. If that
+confirmation transaction itself cannot persist, the outcome stays uncertain
+and the same operation is not executed again.
+
+The bridge publishes only validated, redacted question projections, not raw
+SDK events, tool arguments or tool results. If the original client answers and
+the bridge cannot establish the actual answer, history says that the answer is
+unknown; it never substitutes the phone's attempted selection.
+If a runtime-confirmed answer contains only stripped control sequences and whitespace, history
+uses the explicit `[REDACTED]` marker instead of losing that confirmation.
+This safe display projection never changes the answer submitted to the runtime.
+Receipt-only Android recovery applies the same display sanitization without
+rewriting the stored immutable command. A marker never supplies missing
+confirmation or another client's unknown answer.
+Command recovery loads all of the latest 100 scoped outbox records, including
+large question snapshots, without applying the separate event-display text
+budget. A newer large snapshot cannot hide an older retained unresolved command.
+Question reconstruction uses SQLite's actual retained cursor boundary, not the
+first event in a byte-limited display slice, so a still-retained answer attempt
+cannot disappear and re-enable a new submission. Actual resets and pruning still
+retire old history.
+Question records use the existing relay event retention and Android SQLite
+cache, including replay, scope checks, cache reset, account removal and backup
+exclusion. Reopening a session or rebuilding the Activity does not remove them.
+The existing history limits still apply; this is not an unlimited archive.
+
+Protocol v1 negotiates `questionHistory=1` on each bridge connection before
+sending the optional `question` event kind. Updated relays acknowledge
+`questionHistory: true` only when requested, preserving strict legacy ready
+frames. Older Android clients ignore that event kind. A new bridge connected
+to an old relay sends legacy-compatible notices instead and warns that shared
+confirmed question history needs a relay update; commands and their scoped
+receipts remain compatible.
+
+Old bridges and persisted records still decode without a database migration.
+Android can retain question text from old request snapshots, but cannot invent
+an answer that was never recorded. Pre-upgrade answers without a saved,
+confirmed operation, questions predating first attachment without a live
+snapshot, and history outside the retention window cannot be recovered by this
+fix. Before downgrading a relay to a strict decoder that does not recognize
+question events, restore its matching pre-upgrade database backup. Installation,
+reload, deployment and real-client acceptance remain separately authorized
+operations; a source change does not update an installed client.
 
 ## Projects and worktrees
 
@@ -143,6 +216,38 @@ Automatic and manual emulator entry points share an account-wide resource pool
 across worktrees (one emulator by default). Use `npm run emulator:status` to
 inspect it; manual layout/stop commands require the run directory printed by
 `scripts\start-test-emulator.ps1`, never a fixed ADB port or retained AVD name.
+
+Windows command deadlines include supervisor startup, ownership-helper
+preparation, execution and shutdown. A late zero exit or `completed` output
+does not turn a timeout into success. The owner checks the original deadline
+and received cancellation before creating or resuming a target, assigns its
+Job atomically while suspended, and confirms actual tree exit before returning
+a command-specific cleanup receipt. Managed device cleanup requires that
+receipt; an ownership-start marker or target-written output is not enough.
+Preparation accumulates bounded control lines across partial pipe reads and
+carries an unfinished line into the native owner rather than dropping its prefix.
+The Windows bootstrap rejects unsupported control lines even before a helper
+process exists; later cancellation, EOF or a zero child exit cannot erase that
+input failure.
+Windows control frames are bound to a fresh per-command nonce withheld from
+the target. Only those frames are consumed: literal marker-like target stderr,
+UTF-8 split across chunks, original newlines and unterminated text are retained.
+Frames are removed from the bounded byte stream before UTF-8 decoding, including
+when cancellation or a deadline interrupts a character's bytes.
+
+To avoid PowerShell startup and compilation on every command, Windows uses a
+source- and .NET-toolchain-bound native owner under ignored
+`.tools\command-owner-native-v1`. It requires the already-installed 64-bit
+.NET Framework compiler/runtime; missing tools are errors, not downloads.
+Cold preparation runs the compiler in a Job through the PowerShell owner,
+whose own source- and PowerShell/.NET-bound helper is cached under
+`.tools\command-owner-v1`. Concurrent callers share bounded preparation, and
+publication is atomic. Cold compilation and cache waits remain inside the
+caller's original deadline. Incomplete, linked, mismatched or corrupted
+artifacts fail closed instead of executing stale code or silently falling
+back to compilation. A new source/toolchain identity prepares a separate
+artifact; interrupted preparation directories are not executable cache entries.
+No global installation, concurrency limit or configuration is changed.
 
 ## Backend build and local development
 

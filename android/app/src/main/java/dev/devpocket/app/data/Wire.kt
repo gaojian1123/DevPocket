@@ -88,6 +88,19 @@ data class PendingRequest(
 }
 
 @Serializable
+data class QuestionRecord(
+    val questionId: String, val request: PendingRequest, val status: String,
+    val answer: String? = null, val commandId: String? = null,
+) {
+    init {
+        require(questionId.isNotEmpty() && questionId.length <= 200 && request.type == "question")
+        require(status in setOf("pending", "unknown", "confirmed"))
+        require(if (status == "confirmed") !answer.isNullOrEmpty() && answer.length <= 8000 else answer == null && commandId == null)
+        require(commandId == null || Regex("(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").matches(commandId))
+    }
+}
+
+@Serializable
 data class Attachment(val id: String, val name: String, val mime: String, val size: Long, val sha256: String)
 
 @Serializable
@@ -140,7 +153,15 @@ data class Outbox(
     val scope: Scope, val command: Command, val status: String, val createdAt: Long,
     val receipt: Receipt? = null, val error: String? = null,
     val attachments: List<Attachment> = emptyList(),
+    val question: AnswerContext? = null,
 )
+
+@Serializable
+data class AnswerContext(val questionId: String, val request: PendingRequest, val at: String, val cursor: Long)
+
+fun retainReceiptEvidence(previous: Receipt?, incoming: Receipt): Receipt =
+    if (previous != null && previous.commandId == incoming.commandId && previous.status == incoming.status && incoming.result == null)
+        incoming.copy(result = previous.result) else incoming
 
 @Serializable
 data class FileEntry(val name: String, val path: String, val directory: Boolean)
@@ -173,24 +194,29 @@ object RelayAddress {
 data class TimelineItem(
     val id: String, val role: String, val text: String, val at: String,
     val streaming: Boolean = false, val name: String = "", val attachments: List<String> = emptyList(),
+    val cursor: Long = 0, val question: QuestionHistory? = null,
 )
 
 fun JsonObject.text(name: String): String = get(name)?.jsonPrimitive?.contentOrNull.orEmpty()
 
-fun timeline(events: List<WireEvent>): List<TimelineItem> {
+fun timeline(events: List<WireEvent>, outbox: List<Outbox> = emptyList(), scope: Scope? = null,
+    firstRetainedCursor: Long? = null): List<TimelineItem> {
     val result = linkedMapOf<String, TimelineItem>()
-    for (event in events.sortedBy { it.cursor }) {
+    val scopedEvents = if (scope == null) events else events.filter { it.hostId == scope.hostId && it.sessionId == scope.sessionId }
+    for (event in scopedEvents.sortedBy { it.cursor }) {
         val data = event.data
         when (event.kind) {
             "user.message" -> {
                 val id = "user:${data.text("messageId")}"
                 val names = data["attachments"]?.let { WireJson.decodeFromJsonElement<List<String>>(it) }.orEmpty()
-                result[id] = TimelineItem(id, "user", data.text("content"), event.at, attachments = names)
+                result[id] = TimelineItem(id, "user", data.text("content"), event.at, attachments = names,
+                    cursor = result[id]?.cursor ?: event.cursor)
             }
             "assistant.delta", "assistant.message" -> {
                 val id = "assistant:${data.text("messageId")}"
                 if (event.kind == "assistant.message" || result[id]?.streaming != false)
-                    result[id] = TimelineItem(id, "assistant", data.text("content"), event.at, event.kind == "assistant.delta")
+                    result[id] = TimelineItem(id, "assistant", data.text("content"), event.at, event.kind == "assistant.delta",
+                        cursor = result[id]?.cursor ?: event.cursor)
             }
             "tool.start", "tool.output" -> {
                 val id = "tool:${data.text("toolCallId")}"
@@ -199,10 +225,16 @@ fun timeline(events: List<WireEvent>): List<TimelineItem> {
                     id, "tool", data.text("text"), event.at,
                     event.kind == "tool.start" || data.text("complete") == "false",
                     if (event.kind == "tool.start") data.text("name") else previous?.name.orEmpty(),
+                    cursor = previous?.cursor ?: event.cursor,
                 )
             }
-            "notice" -> result[event.id] = TimelineItem(event.id, "notice", data.text("message"), event.at)
+            "notice" -> result[event.id] = TimelineItem(event.id, "notice", data.text("message"), event.at, cursor = event.cursor)
         }
     }
-    return result.values.filter { it.role != "assistant" || it.streaming || it.text.isNotBlank() }
+    for (question in questionHistory(scopedEvents, outbox, scope, firstRetainedCursor)) {
+        val record = question.record
+        result[record.questionId] = TimelineItem(record.questionId, "question",
+            record.request.detail + record.answer?.let { "\n$it" }.orEmpty(), question.at, cursor = question.cursor, question = question)
+    }
+    return result.values.filter { it.role != "assistant" || it.streaming || it.text.isNotBlank() }.sortedBy { it.cursor }
 }

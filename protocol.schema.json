@@ -743,6 +743,141 @@
                           },
                           "kind": {
                             "type": "string",
+                            "const": "question"
+                          },
+                          "data": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "questionId": {
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                  },
+                                  "request": {
+                                    "type": "object",
+                                    "properties": {
+                                      "requestId": {
+                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                      },
+                                      "type": {
+                                        "type": "string",
+                                        "const": "question"
+                                      },
+                                      "title": {
+                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/5/properties/data/properties/items/items/properties/title"
+                                      },
+                                      "detail": {
+                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/5/properties/data/properties/items/items/properties/detail"
+                                      },
+                                      "permissionKind": {
+                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/5/properties/data/properties/items/items/properties/permissionKind"
+                                      },
+                                      "choices": {
+                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/5/properties/data/properties/items/items/properties/choices"
+                                      },
+                                      "allowFreeform": {
+                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/5/properties/data/properties/items/items/properties/allowFreeform"
+                                      },
+                                      "supported": {
+                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/5/properties/data/properties/items/items/properties/supported"
+                                      }
+                                    },
+                                    "required": [
+                                      "requestId",
+                                      "type",
+                                      "title",
+                                      "detail",
+                                      "choices",
+                                      "allowFreeform",
+                                      "supported"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "const": "pending"
+                                  }
+                                },
+                                "required": [
+                                  "questionId",
+                                  "request",
+                                  "status"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "questionId": {
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                  },
+                                  "request": {
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/6/properties/data/anyOf/0/properties/request"
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "const": "unknown"
+                                  }
+                                },
+                                "required": [
+                                  "questionId",
+                                  "request",
+                                  "status"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "questionId": {
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                  },
+                                  "request": {
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/6/properties/data/anyOf/0/properties/request"
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "const": "confirmed"
+                                  },
+                                  "answer": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 8000
+                                  },
+                                  "commandId": {
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/attachmentIds/items"
+                                  }
+                                },
+                                "required": [
+                                  "questionId",
+                                  "request",
+                                  "status",
+                                  "answer"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "at",
+                          "kind",
+                          "data"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                          },
+                          "at": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
+                          },
+                          "kind": {
+                            "type": "string",
                             "const": "runtime.state"
                           },
                           "data": {
@@ -821,13 +956,13 @@
                                     {
                                       "type": "array",
                                       "items": {
-                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/7/properties/data/properties/result/additionalProperties"
+                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/8/properties/data/properties/result/additionalProperties"
                                       }
                                     },
                                     {
                                       "type": "object",
                                       "additionalProperties": {
-                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/7/properties/data/properties/result/additionalProperties"
+                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/8/properties/data/properties/result/additionalProperties"
                                       }
                                     }
                                   ]
@@ -929,13 +1064,13 @@
                   "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/attachmentIds/items"
                 },
                 "status": {
-                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/7/properties/data/properties/status"
+                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/8/properties/data/properties/status"
                 },
                 "result": {
-                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/7/properties/data/properties/result"
+                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/8/properties/data/properties/result"
                 },
                 "error": {
-                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/7/properties/data/properties/error"
+                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/8/properties/data/properties/error"
                 }
               },
               "required": [
@@ -951,7 +1086,7 @@
           "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/5/properties/data/properties/items/items"
         },
         "receipt": {
-          "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/7/properties/data"
+          "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/8/properties/data"
         },
         "relayReady": {
           "type": "object",
@@ -971,6 +1106,10 @@
               "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/attachmentIds/items"
             },
             "workspaceMetadata": {
+              "type": "boolean",
+              "const": true
+            },
+            "questionHistory": {
               "type": "boolean",
               "const": true
             }

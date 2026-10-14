@@ -52,6 +52,19 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "devpocket-cache.
         return entry
     }
 
+    @Synchronized fun stageAnswer(scope: Scope, command: Command, question: AnswerContext): Outbox {
+        require(command.action is Action.Answer && command.action.requestId == question.request.requestId)
+        require(question.request.type == "question")
+        val previous = readableDatabase.rawQuery("SELECT body FROM outbox WHERE id=?", arrayOf(command.commandId)).use {
+            if (it.moveToFirst()) WireJson.decodeFromString<Outbox>(it.getString(0)) else null
+        }
+        if (previous != null) {
+            require(previous.scope == scope && previous.command == command && previous.question == question) { "回答请求编号和内容不能更改。" }
+            return previous
+        }
+        return Outbox(scope, command, "sending", System.currentTimeMillis(), question = question).also(::saveOutbox)
+    }
+
     @Synchronized fun saveOutbox(entry: Outbox) {
         writableDatabase.execSQL("INSERT INTO outbox VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body",
             arrayOf<Any>(entry.command.commandId, entry.scope.key, entry.createdAt, WireJson.encodeToString(entry)))
@@ -59,7 +72,11 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "devpocket-cache.
 
     @Synchronized fun outbox(scope: Scope): List<Outbox> =
         readableDatabase.rawQuery("SELECT body FROM outbox WHERE scope=? ORDER BY created_at DESC LIMIT 100", arrayOf(scope.key)).use {
-            buildList { while (it.moveToNext()) add(WireJson.decodeFromString<Outbox>(it.getString(0))) }
+            buildList {
+                while (it.moveToNext()) {
+                    add(WireJson.decodeFromString<Outbox>(it.getString(0)))
+                }
+            }
         }
 
     @Synchronized fun applyReceipt(scope: Scope, receipt: Receipt) {
@@ -67,7 +84,8 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "devpocket-cache.
             if (it.moveToFirst()) WireJson.decodeFromString<Outbox>(it.getString(0)) else null
         } ?: return
         val status = acceptDelivery(previous.status, receipt.status)
-        if (status == receipt.status) saveOutbox(previous.copy(status = status, receipt = receipt, error = receipt.error?.message))
+        if (status == receipt.status) saveOutbox(previous.copy(status = status,
+            receipt = retainReceiptEvidence(previous.receipt, receipt), error = receipt.error?.message))
     }
 
     @Synchronized fun transportFailure(entry: Outbox, status: String, message: String?) {
@@ -75,13 +93,19 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "devpocket-cache.
             arrayOf(entry.command.commandId, entry.scope.key)).use {
             if (it.moveToFirst()) WireJson.decodeFromString<Outbox>(it.getString(0)) else null
         } ?: return
-        if (current.receipt != null || current.status in setOf("completed", "cancelled", "uncertain")) return
+        if ((current.receipt != null && current.command.action !is Action.Answer) ||
+            current.status in setOf("completed", "cancelled", "uncertain", "failed")) return
         saveOutbox(current.copy(status = status, error = message))
     }
 
     @Synchronized fun cursor(scope: Scope): Long =
         readableDatabase.rawQuery("SELECT value FROM cursors WHERE scope=?", arrayOf(scope.key)).use {
             if (it.moveToFirst()) it.getLong(0) else 0L
+        }
+
+    @Synchronized fun firstRetainedEventCursor(scope: Scope): Long =
+        readableDatabase.rawQuery("SELECT MIN(cursor) FROM events WHERE scope=?", arrayOf(scope.key)).use {
+            if (it.moveToFirst() && !it.isNull(0)) it.getLong(0) else Long.MAX_VALUE
         }
 
     @Synchronized fun events(scope: Scope): List<WireEvent> =

@@ -17,7 +17,9 @@ export async function startAndroidFixture(directory: string) {
   const sessionId = randomUUID(), title = "DevPocket automated fixture";
   const history: { id: string; type: string; timestamp: string; data: object }[] = [];
   let listener: (event: unknown) => void = () => {};
-  let active = false, closed = false, count = 0;
+  let active = false, closed = false, count = 0, answerCount = 0;
+  type QuestionKind = "choice" | "text" | "form" | "race" | "uncertain";
+  const questions = new Map<string, QuestionKind>();
   const emit = (type: string, data: object) => {
     const event = { id: randomUUID(), type, timestamp: new Date().toISOString(), data };
     history.push(event);
@@ -25,6 +27,20 @@ export async function startAndroidFixture(directory: string) {
   };
   emit("session.start", { sessionId, copilotVersion: "automated-test-adapter", context: { cwd: workspace } });
   emit("assistant.message", { messageId: "fixture-history", content: "Fixture history before attachment" });
+  const answer = async (requestId: string, value: string) => {
+    const kind = questions.get(requestId);
+    if (!kind) return { success: false };
+    if (!value || (kind !== "text" && !["Alpha", "Beta"].includes(value))) throw new Error("Invalid fixture answer.");
+    answerCount++;
+    questions.delete(requestId);
+    emit(kind === "form" ? "elicitation.completed" : "user_input.completed", { requestId });
+    emit("tool.execution_complete", { toolCallId: requestId, success: true, result: { content: "Private tool details" } });
+    emit("assistant.message", { messageId: randomUUID(), content: `Fixture continued after ${kind} question` });
+    active = false;
+    emit("session.idle", {});
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return kind === "uncertain" ? { accepted: true } : { success: kind !== "race" };
+  };
   const session: JoinedSession = {
     sessionId, getEvents: async () => [...history],
     on: (handler) => { listener = handler; return () => { listener = () => {}; }; },
@@ -36,6 +52,24 @@ export async function startAndroidFixture(directory: string) {
       const messageId = randomUUID();
       emit("assistant.turn_start", {});
       emit("user.message", { messageId, content: prompt });
+      const kind = /^native fixture ask (choice|text|form|race|uncertain)$/.exec(prompt)?.[1] as QuestionKind | undefined;
+      if (kind) {
+        const requestId = `fixture-${kind}-${count}`;
+        questions.set(requestId, kind);
+        emit("tool.execution_start", { toolCallId: requestId, toolName: "ask_user", arguments: { private: "NOT_EXPORTED" } });
+        if (kind === "form") emit("elicitation.requested", {
+          requestId, message: "Fixture form question\n" +
+            Array.from({ length: 16 }, (_, index) => `Full safe form detail ${index + 1}`).join("\n"), mode: "form",
+          requestedSchema: { type: "object", properties: {
+            selection: { type: "string", title: "Fixture form", enum: ["Alpha", "Beta"] },
+          }, required: ["selection"] },
+        });
+        else emit("user_input.requested", {
+          requestId, question: `Fixture ${kind} question`,
+          choices: kind === "text" ? [] : ["Alpha", "Beta"], allowFreeform: kind === "text",
+        });
+        return messageId;
+      }
       emit("assistant.message", { messageId: randomUUID(), content: `Fixture reply: ${prompt}`, originatingMessageId: messageId });
       active = false;
       emit("session.idle", {});
@@ -49,6 +83,10 @@ export async function startAndroidFixture(directory: string) {
         paths: { list: async () => ({ primary: workspace }) } },
       name: { get: async () => ({ name: title }) },
       queue: { pendingItems: async () => ({ items: [] }) },
+      ui: {
+        handlePendingUserInput: async ({ requestId, response }) => answer(requestId, response.answer),
+        handlePendingElicitation: async ({ requestId, result }) => answer(requestId, result.content.selection ?? ""),
+      },
     },
   };
   const config = { hostId: host.hostId, token: host.token, relayUrl: relay.url,
@@ -64,6 +102,7 @@ export async function startAndroidFixture(directory: string) {
     return {
       url: relay.url, sessionId, title, pairingCode: pairing.code,
       invocations: () => count,
+      answers: () => answerCount,
       reconnect: async () => {
         await bridge.close();
         bridge = await startBridge(session, config);

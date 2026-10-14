@@ -51,7 +51,8 @@ test("privileged hosted commands elevate their supervisor, not an unowned child 
   assert.match(launch.args[3], /owned-command-linux\.py$/);
   assert.throws(() => ownedCommandLaunch("linux", true, {}), /hosted/i);
   assert.throws(() => ownedCommandLaunch("win32", true, environment), /hosted/i);
-  assert.equal(ownedCommandLaunch("win32", false, {}).file, "pwsh");
+  assert.equal(ownedCommandLaunch("win32", false, {}).file, process.execPath);
+  assert.match(ownedCommandLaunch("win32", false, {}).args[0], /owned-command-windows\.mjs$/);
 });
 
 test("unknown loader failures and failed repairs stop without another install or retry", async () => {

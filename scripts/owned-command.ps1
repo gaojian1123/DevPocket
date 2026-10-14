@@ -1,187 +1,161 @@
 $ErrorActionPreference = 'Stop'
-$request = [Console]::In.ReadLine() | ConvertFrom-Json
-if (-not $request.file -or $request.timeoutMs -le 0 -or $request.ownerPid -le 0) { throw 'Invalid owned-command request.' }
-$executable = (Get-Command -Name $request.file -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
-
-# Assign the job atomically at process creation, including cancellation during startup.
-Add-Type -TypeDefinition @'
-using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-using System.Text;
-
-public sealed class DevPocketOwnedCommand : IDisposable {
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    struct Startup {
-        public int cb; public string reserved, desktop, title;
-        public uint x,y,xSize,ySize,xChars,yChars,fill,flags;
-        public short show,reservedSize;
-        public IntPtr reservedData,input,output,error;
-    }
-    [StructLayout(LayoutKind.Sequential)]
-    struct StartupEx { public Startup startup; public IntPtr attributes; }
-    [StructLayout(LayoutKind.Sequential)]
-    struct ProcessInfo { public IntPtr process,thread; public uint processId,threadId; }
-    [StructLayout(LayoutKind.Sequential)]
-    struct BasicLimits {
-        public long processTime,jobTime;
-        public uint flags;
-        public UIntPtr minWork,maxWork;
-        public uint active;
-        public UIntPtr affinity;
-        public uint priority,scheduling;
-    }
-    [StructLayout(LayoutKind.Sequential)]
-    struct IoCounters { public ulong a,b,c,d,e,f; }
-    [StructLayout(LayoutKind.Sequential)]
-    struct ExtendedLimits {
-        public BasicLimits basic; public IoCounters io;
-        public UIntPtr processMemory,jobMemory,peakProcess,peakJob;
-    }
-    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-    static extern IntPtr CreateJobObjectW(IntPtr attributes, string name);
-    [DllImport("kernel32.dll", SetLastError=true)]
-    static extern bool SetInformationJobObject(IntPtr job, int kind, ref ExtendedLimits value, int size);
-    [DllImport("kernel32.dll", SetLastError=true)]
-    static extern bool QueryInformationJobObject(IntPtr job, int kind, IntPtr value, int size, IntPtr returned);
-    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-    static extern bool CreateProcessW(string file, StringBuilder command, IntPtr processAttributes,
-        IntPtr threadAttributes, bool inherit, uint flags, IntPtr environment, string cwd,
-        ref StartupEx startup, out ProcessInfo process);
-    [DllImport("kernel32.dll", SetLastError=true)]
-    static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
-    [DllImport("kernel32.dll", SetLastError=true)]
-    static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute,
-        IntPtr value, IntPtr size, IntPtr previous, IntPtr returned);
-    [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
-    [DllImport("kernel32.dll", SetLastError=true)] static extern uint ResumeThread(IntPtr thread);
-    [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
-    [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
-    [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateProcess(IntPtr process, uint code);
-    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
-    [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int id);
-    [DllImport("kernel32.dll", SetLastError=true)]
-    static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
-    IntPtr job, process, owner;
-    static string Quote(string value) {
-        var result = new StringBuilder("\"");
-        int slashes = 0;
-        foreach (char c in value) {
-            if (c == '\\') { slashes++; continue; }
-            result.Append('\\', c == '"' ? slashes * 2 + 1 : slashes);
-            result.Append(c); slashes = 0;
-        }
-        return result.Append('\\', slashes * 2).Append('"').ToString();
-    }
-    public DevPocketOwnedCommand(string file, string[] args, string cwd, int ownerPid) {
-        owner = OpenProcess(0x00100000, false, (uint)ownerPid);
-        if (owner == IntPtr.Zero) throw new Win32Exception();
-        if (!OwnerAlive) { Dispose(); throw new InvalidOperationException("Command owner exited before startup."); }
-        job = CreateJobObjectW(IntPtr.Zero, null);
-        if (job == IntPtr.Zero) { var error = new Win32Exception(); Dispose(); throw error; }
-        var limits = new ExtendedLimits(); limits.basic.flags = 0x2000;
-        if (!SetInformationJobObject(job, 9, ref limits, Marshal.SizeOf(limits))) {
-            var error = new Win32Exception(); Dispose(); throw error;
-        }
-        var command = new StringBuilder(Quote(file));
-        foreach (string arg in args) command.Append(' ').Append(Quote(arg));
-        var startup = new StartupEx { startup = new Startup {
-            cb = Marshal.SizeOf(typeof(StartupEx)), flags = 0x100,
-            input = GetStdHandle(-10), output = GetStdHandle(-11), error = GetStdHandle(-12)
-        } };
-        IntPtr bytes = IntPtr.Zero;
-        InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref bytes);
-        startup.attributes = Marshal.AllocHGlobal(bytes);
-        IntPtr jobValue = Marshal.AllocHGlobal(IntPtr.Size);
-        ProcessInfo info;
-        bool initialized = false;
-        try {
-            if (!InitializeProcThreadAttributeList(startup.attributes, 1, 0, ref bytes)) throw new Win32Exception();
-            initialized = true;
-            Marshal.WriteIntPtr(jobValue, job);
-            if (!UpdateProcThreadAttribute(startup.attributes, 0, new IntPtr(0x2000d),
-                    jobValue, new IntPtr(IntPtr.Size), IntPtr.Zero, IntPtr.Zero)) throw new Win32Exception();
-            if (!CreateProcessW(file, command, IntPtr.Zero, IntPtr.Zero, true, 0x08080004,
-                    IntPtr.Zero, cwd, ref startup, out info)) throw new Win32Exception();
-        } catch {
-            Dispose(); throw;
-        } finally {
-            if (initialized) DeleteProcThreadAttributeList(startup.attributes);
-            Marshal.FreeHGlobal(startup.attributes); Marshal.FreeHGlobal(jobValue);
-        }
-        process = info.process;
-        try {
-            if (ResumeThread(info.thread) == 0xffffffff) throw new Win32Exception();
-        } catch {
-            TerminateProcess(process, 1); Dispose(); throw;
-        } finally { CloseHandle(info.thread); }
-    }
-    public bool Wait(int milliseconds) {
-        uint status = WaitForSingleObject(process, (uint)milliseconds);
-        if (status == 0xffffffff) throw new Win32Exception();
-        return status == 0;
-    }
-    public int ExitCode {
-        get { uint code; if (!GetExitCodeProcess(process, out code)) throw new Win32Exception(); return unchecked((int)code); }
-    }
-    public bool OwnerAlive {
-        get {
-            uint status = WaitForSingleObject(owner, 0);
-            if (status == 0xffffffff) throw new Win32Exception();
-            return status == 258;
-        }
-    }
-    public int[] ProcessIds() {
-        for (int bytes = 4096; bytes <= 1048576; bytes *= 2) {
-            IntPtr buffer = Marshal.AllocHGlobal(bytes);
-            try {
-                if (!QueryInformationJobObject(job, 3, buffer, bytes, IntPtr.Zero)) {
-                    if (Marshal.GetLastWin32Error() == 234) continue;
-                    throw new Win32Exception();
-                }
-                int count = Marshal.ReadInt32(buffer, 4);
-                var ids = new List<int>();
-                for (int i = 0; i < count; i++) ids.Add((int)Marshal.ReadIntPtr(buffer, 8 + i * IntPtr.Size));
-                return ids.ToArray();
-            } finally { Marshal.FreeHGlobal(buffer); }
-        }
-        throw new InvalidOperationException("Owned process list exceeded its bound.");
-    }
-    public void Dispose() {
-        if (job != IntPtr.Zero) { CloseHandle(job); job = IntPtr.Zero; }
-        if (process != IntPtr.Zero) { CloseHandle(process); process = IntPtr.Zero; }
-        if (owner != IntPtr.Zero) { CloseHandle(owner); owner = IntPtr.Zero; }
-    }
+$inputStream = [Console]::OpenStandardInput()
+$line = [Collections.Generic.List[byte]]::new()
+while ($line.Count -le 1048576) {
+    $value = $inputStream.ReadByte()
+    if ($value -lt 0) { throw 'Owned-command input closed before its request.' }
+    if ($value -eq 10) { break }
+    $line.Add([byte]$value)
 }
-'@
-
-$owned = [DevPocketOwnedCommand]::new($executable, [string[]]$request.arguments, (Get-Location).Path, [int]$request.ownerPid)
-[Console]::Error.WriteLine('DEVPOCKET_OWNERSHIP_ACTIVE')
-$watch = [Diagnostics.Stopwatch]::StartNew()
+if ($line.Count -gt 1048576) { throw 'Owned-command request exceeded its bound.' }
+$request = [Text.Encoding]::UTF8.GetString($line.ToArray()) | ConvertFrom-Json
+if (-not $request.file -or $request.timeoutMs -le 0 -or $request.timeoutMs -gt 86400000 -or
+    $request.graceMs -lt 0 -or $request.graceMs -gt 60000 -or $request.ownerPid -le 0 -or
+    $request.deadlineUnixMs -le 0 -or $request.receiptId -notmatch '^[a-f0-9-]{36}$') { throw 'Invalid owned-command request.' }
+$deadline = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$request.deadlineUnixMs).UtcDateTime
+$buffer = [byte[]]::new(4096)
+$pending = $inputStream.ReadAsync($buffer, 0, $buffer.Length)
+$controlLine = [Collections.Generic.List[byte]]::new()
+$controlCancelled = [bool]$request.cancelled
+$owner = [Diagnostics.Process]::GetProcessById([int]$request.ownerPid)
+$null = $owner.Handle
 $exitCode = 124
-try {
-    while ($true) {
-        if (-not $owned.OwnerAlive) { break }
-        if ($request.persistent) {
-            if (-not $owned.ProcessIds().Count) { break }
-            Start-Sleep -Milliseconds 100
-        } elseif ($owned.Wait(100)) { break }
-        if ($watch.ElapsedMilliseconds -gt ($request.timeoutMs + $request.graceMs)) { break }
+$owned = $null
+$mutex = $null
+$locked = $false
+$temporary = $null
+$confirmed = $false
+function Write-Control([string]$phase) {
+    [Console]::Error.Write("$([char]30)DEVPOCKET:$($request.receiptId):$phase$([char]31)")
+}
+function Test-StartupStopped {
+    while (-not $controlCancelled -and $pending.IsCompleted) {
+        $count = $pending.GetAwaiter().GetResult()
+        if ($count -eq 0) { $script:controlCancelled = $true; break }
+        for ($index = 0; $index -lt $count; $index++) {
+            if ($buffer[$index] -eq 10) {
+                if ([Text.Encoding]::UTF8.GetString($controlLine.ToArray()).Trim() -ne 'cancel') {
+                    throw [IO.InvalidDataException]::new('Unsupported owned-command control message.')
+                }
+                $script:controlCancelled = $true
+                break
+            }
+            if ($controlLine.Count -ge 65536) {
+                throw [IO.InvalidDataException]::new('Owned command input exceeded its bound.')
+            }
+            $controlLine.Add($buffer[$index])
+        }
+        if (-not $controlCancelled) { $script:pending = $inputStream.ReadAsync($buffer, 0, $buffer.Length) }
     }
-    if ($owned.Wait(0)) { $exitCode = $owned.ExitCode }
-} finally {
-    foreach ($childId in $owned.ProcessIds()) {
-        try { Stop-Process -Id $childId -Force -ErrorAction Stop }
-        catch {
-            if (Get-Process -Id $childId -ErrorAction SilentlyContinue) { throw }
+    if ($controlCancelled) {
+        Write-Control 'cancel-accepted'
+        $script:exitCode = 130
+        return $true
+    }
+    if ($owner.HasExited) { $script:exitCode = 125; return $true }
+    if ([DateTime]::UtcNow -ge $deadline) {
+        Write-Control 'deadline-expired'
+        return $true
+    }
+    return $false
+}
+function Get-Digest([byte[]]$bytes) {
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+}
+function Assert-OrdinaryPath([string]$path, [bool]$directory) {
+    $item = Get-Item -LiteralPath $path -Force
+    if ([bool]$item.PSIsContainer -ne $directory -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Linked or invalid ownership helper path.' }
+}
+try {
+    if (Test-StartupStopped) { $confirmed = $true; exit $exitCode }
+    $sourcePath = Join-Path $PSScriptRoot 'owned-command.cs'
+    Assert-OrdinaryPath $sourcePath $false
+    $source = [IO.File]::ReadAllBytes($sourcePath)
+    if ($source.Length -gt 131072) { throw 'Ownership helper source exceeded its bound.' }
+    $sourceHash = Get-Digest $source
+    $toolchain = @($PSHOME, $PSVersionTable.PSVersion.ToString(),
+        [Runtime.InteropServices.RuntimeInformation]::FrameworkDescription,
+        [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString(),
+        [object].Assembly.ManifestModule.ModuleVersionId.ToString(),
+        [System.Management.Automation.PSObject].Assembly.ManifestModule.ModuleVersionId.ToString()) -join "`n"
+    $toolchainHash = Get-Digest ([Text.Encoding]::UTF8.GetBytes($toolchain))
+    $key = Get-Digest ([Text.Encoding]::UTF8.GetBytes("$sourceHash`n$toolchainHash"))
+    $tools = Join-Path (Split-Path -Parent $PSScriptRoot) '.tools'
+    $cache = Join-Path $tools 'command-owner-v1'
+    foreach ($directory in @($tools, $cache)) {
+        $null = [IO.Directory]::CreateDirectory($directory)
+        Assert-OrdinaryPath $directory $true
+    }
+    $destination = Join-Path $cache $key
+    $mutexKey = Get-Digest ([Text.Encoding]::UTF8.GetBytes($destination.ToLowerInvariant()))
+    $mutex = [Threading.Mutex]::new($false, "Local\DevPocketCommandOwner_$mutexKey")
+    $reportedWaiting = $false
+    while (-not $locked) {
+        if (Test-StartupStopped) { $confirmed = $true; exit $exitCode }
+        try { $locked = $mutex.WaitOne(20) }
+        catch [Threading.AbandonedMutexException] { $locked = $true }
+        if (-not $locked -and -not $reportedWaiting) {
+            Write-Control 'preparation-wait'
+            $reportedWaiting = $true
         }
     }
-    $deadline = [DateTime]::UtcNow.AddSeconds(10)
-    while ($owned.ProcessIds().Count -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 50 }
-    $remaining = $owned.ProcessIds().Count
-    $owned.Dispose()
-    if ($remaining) { throw 'Owned command descendants did not confirm exit.' }
-    [Console]::Error.WriteLine('DEVPOCKET_OWNED_TREE_STOPPED')
+    if (-not (Test-Path -LiteralPath $destination)) {
+        $temporary = Join-Path $cache ("prepare-" + [Guid]::NewGuid().ToString('N'))
+        $null = [IO.Directory]::CreateDirectory($temporary)
+        $assemblyPath = Join-Path $temporary 'owner.dll'
+        Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString($source)) -OutputAssembly $assemblyPath
+        if (Test-StartupStopped) { $confirmed = $true; exit $exitCode }
+        if ((Get-Digest ([IO.File]::ReadAllBytes($sourcePath))) -ne $sourceHash) { throw 'Ownership helper source changed during preparation.' }
+        $assembly = [IO.File]::ReadAllBytes($assemblyPath)
+        $manifest = @{ version = 1; source = $sourceHash; toolchain = $toolchainHash; assembly = (Get-Digest $assembly) }
+        [IO.File]::WriteAllText((Join-Path $temporary 'manifest.json'), ($manifest | ConvertTo-Json -Compress))
+        [IO.Directory]::Move($temporary, $destination)
+        $temporary = $null
+    }
+    Assert-OrdinaryPath $destination $true
+    $manifestPath = Join-Path $destination 'manifest.json'
+    $assemblyPath = Join-Path $destination 'owner.dll'
+    Assert-OrdinaryPath $manifestPath $false
+    Assert-OrdinaryPath $assemblyPath $false
+    if ((Get-Item -LiteralPath $manifestPath).Length -gt 4096 -or
+        (Get-Item -LiteralPath $assemblyPath).Length -gt 2097152) { throw 'Ownership helper artifact exceeded its bound.' }
+    $manifest = [IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
+    $assembly = [IO.File]::ReadAllBytes($assemblyPath)
+    if ($manifest.version -ne 1 -or $manifest.source -ne $sourceHash -or
+        $manifest.toolchain -ne $toolchainHash -or $manifest.assembly -ne (Get-Digest $assembly)) {
+        throw 'Ownership helper artifact does not match its source and toolchain.'
+    }
+    $mutex.ReleaseMutex()
+    $locked = $false
+    if (Test-StartupStopped) { $confirmed = $true; exit $exitCode }
+    Assert-OrdinaryPath $sourcePath $false
+    if ((Get-Digest ([IO.File]::ReadAllBytes($sourcePath))) -ne $sourceHash) { throw 'Ownership helper source changed before loading.' }
+    $null = [Reflection.Assembly]::Load($assembly)
+    $control = [DevPocketCommandInput]::new($inputStream, $buffer, $pending, $controlCancelled, $controlLine.ToArray())
+    $owned = [DevPocketOwnedCommand]::new($owner, $control, $deadline, [string]$request.receiptId)
+    $executable = (Get-Command -Name $request.file -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    if ($owned.Start($executable, [string[]]$request.arguments, (Get-Location).Path)) {
+        $exitCode = $owned.Monitor([bool]$request.persistent, [int]$request.graceMs)
+    } else { $exitCode = $owned.Interruption }
+} finally {
+    if ($locked) { $mutex.ReleaseMutex() }
+    if ($mutex) { $mutex.Dispose() }
+    if ($temporary) {
+        foreach ($name in @('owner.dll', 'manifest.json')) {
+            $file = Join-Path $temporary $name
+            if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
+        }
+        [IO.Directory]::Delete($temporary)
+    }
+    try {
+        if ($owned) { $owned.StopAndConfirm(); $confirmed = $true }
+        if ($confirmed) {
+            Write-Control 'tree-stopped'
+        }
+    } finally {
+        if ($owned) { $owned.Dispose() }
+        $owner.Dispose()
+    }
 }
 exit $exitCode

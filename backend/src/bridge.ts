@@ -36,6 +36,9 @@ class Journal {
       );
       CREATE TABLE IF NOT EXISTS origins (id TEXT PRIMARY KEY, at INTEGER NOT NULL, idle INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS idle_marker (id INTEGER PRIMARY KEY CHECK(id=1), at INTEGER NOT NULL, aborted INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS answer_confirmations (
+        id TEXT PRIMARY KEY, command_id TEXT UNIQUE NOT NULL, event TEXT NOT NULL
+      );
     `);
   }
 
@@ -84,6 +87,26 @@ class Journal {
           if (!finalStatus(queued.status)) this.save({ ...queued, status: "cancelled" });
         }
       }
+    }
+  }
+
+  confirmAnswer(commandId: string, event: UserEvent | undefined): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.save({ commandId, status: "completed", result: { resolved: true } });
+      if (event) this.db.prepare("INSERT OR IGNORE INTO answer_confirmations VALUES(?,?,?)")
+        .run(event.id, commandId, JSON.stringify(event));
+      this.db.exec("COMMIT");
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
+
+  restoreConfirmations(): void {
+    const pending = this.db.prepare(`SELECT event FROM answer_confirmations
+      WHERE id NOT IN (SELECT id FROM outbox) ORDER BY rowid LIMIT 80`).all();
+    for (const row of pending) {
+      const size = this.db.prepare("SELECT COALESCE(SUM(length(body)),0) AS size FROM outbox").get()?.size;
+      if (typeof size === "number" && size > 64 * 1024 * 1024) break;
+      this.enqueue(UserEvent.parse(JSON.parse(z.string().parse(row.event))));
     }
   }
 
@@ -164,7 +187,8 @@ class Journal {
 
   acknowledge(ids: string[]): void {
     const statement = this.db.prepare("DELETE FROM outbox WHERE id=?");
-    for (const id of ids) statement.run(id);
+    const confirmation = this.db.prepare("DELETE FROM answer_confirmations WHERE id=?");
+    for (const id of ids) { statement.run(id); confirmation.run(id); }
   }
 
   acknowledgeResult(id: string, status: DeliveryStatus): void {
@@ -190,14 +214,15 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   const proofAgent = config.proofOwnerKey ? createProofAgent(origin, config.proofOwnerKey) : undefined;
   Id.parse(session.sessionId);
   const journal = new Journal(path.join(config.dataDir, config.hostId, session.sessionId));
-  const runtime = new CopilotRuntime(session, (event) => { journal.observe(event); journal.enqueue(event); });
+  const runtime = new CopilotRuntime(session, (event) => { journal.observe(event); journal.enqueue(event); },
+    (commandId, event) => journal.confirmAnswer(commandId, event));
   await runtime.connect();
   await writeFile(path.join(config.dataDir, config.hostId, session.sessionId, "registration.json"), JSON.stringify({
     sessionId: session.sessionId, extensionPid: process.pid, parentPid: process.ppid, attachedAt: new Date().toISOString(),
     recordedCliVersion: runtime.summary.cliVersion, capabilities: runtime.summary.capabilities,
   }, null, 2), { mode: 0o600 });
   let ws: WebSocket | undefined, stopped = false, ready = false, permanentFailure = false;
-  let workspaceMetadata: boolean | undefined;
+  let workspaceMetadata: boolean | undefined, questionHistory: boolean | undefined;
   let retry: NodeJS.Timeout | undefined, attempts = 0, eventInFlight = false, closed = false;
   const summaries: {
     through: number; summary: SessionSummary; receiptIds: string[]; nextReceipt: number; sent: boolean;
@@ -215,16 +240,19 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     return true;
   }
   function summaryForRelay(summary: SessionSummary): SessionSummary {
-    if (workspaceMetadata === true) return summary;
     const { workspace, ...legacy } = summary;
-    if (workspace && workspaceMetadata === false) legacy.warnings = [
-      ...legacy.warnings.slice(0, 19),
-      "This relay does not support workspace labels. Update the relay to display branches and working trees.",
-    ];
-    return legacy;
+    const projected = workspaceMetadata === true ? { ...summary } : legacy;
+    const warnings: string[] = [];
+    if (workspace && workspaceMetadata === false)
+      warnings.push("This relay does not support workspace labels. Update the relay to display branches and working trees.");
+    if (questionHistory === false)
+      warnings.push("This relay does not support question history. Update the relay to retain runtime-confirmed answers across clients.");
+    if (warnings.length) projected.warnings = [...summary.warnings.slice(0, 20 - warnings.length), ...warnings];
+    return projected;
   }
   function queueSummary(): void {
     if (!ready || stopped) return;
+    journal.restoreConfirmations();
     const snapshot = {
       through: journal.eventBoundary(), summary: SessionSummary.parse(runtime.summary),
       receiptIds: journal.pendingReceiptIds(), nextReceipt: 0, sent: false,
@@ -235,10 +263,15 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   }
   function flush(): void {
     if (!ready || stopped) return;
+    journal.restoreConfirmations();
     const snapshot = summaries[0];
     let awaitingEvents = eventInFlight;
     if (!eventInFlight && !snapshot?.sent) {
-      const items = journal.events(snapshot?.through);
+      const items = journal.events(snapshot?.through).map((event): UserEvent =>
+        event.kind === "question" && questionHistory !== true ? {
+          id: event.id, at: event.at, kind: "notice",
+          data: { code: "QUESTION_HISTORY_UNAVAILABLE", message: "Question history requires an updated relay. Pending questions and controls are unchanged." },
+        } : event);
       if (items.length) {
         eventInFlight = send({ type: "events", items });
         awaitingEvents = true;
@@ -307,14 +340,17 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
       const attachments = command.action.type === "message"
         ? await Promise.all(command.action.attachmentIds.map(attachment)) : [];
       invoked = true;
-      const result = await runtime.execute(command.action, attachments);
+      const result = await runtime.execute(command.action, attachments, command.commandId);
       journal.save({ commandId: command.commandId, ...result });
     } catch (error) {
       const uncertain = invoked && !(error instanceof Fault) &&
         ["message", "abort", "permission", "answer", "model.set"].includes(command.action.type);
       journal.save({ commandId: command.commandId, status: uncertain ? "uncertain" : "failed",
         error: uncertain ? { code: "DELIVERY_UNCERTAIN", message: "The runtime may have accepted this operation. Inspect the original client; DevPocket will not execute it again automatically." } : publicError(error) });
-      console.error("[DevPocket] Command failed:", error instanceof Fault ? error.code : "runtime error");
+      const retained = journal.receipt(command.commandId);
+      console.error(command.action.type === "answer" && retained.status === "completed"
+        ? "[DevPocket] Confirmed answer history delivery deferred:" : "[DevPocket] Command failed:",
+      error instanceof Fault ? error.code : "runtime error");
     }
     if (needsSummary) queueSummary();
     flush();
@@ -323,10 +359,12 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
   function connect(): void {
     if (stopped || permanentFailure) return;
     workspaceMetadata = undefined;
+    questionHistory = undefined;
     const url = new URL("/v1/host/stream", origin);
     url.protocol = origin.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("sessionId", session.sessionId);
     url.searchParams.set("workspaceMetadata", "1");
+    url.searchParams.set("questionHistory", "1");
     ws = new WebSocket(url, { headers: { Authorization: `Bearer ${config.token}` },
       maxPayload: 4 * 1024 * 1024, perMessageDeflate: false, handshakeTimeout: 15_000,
       ...(proofAgent ? { agent: proofAgent } : {}) });
@@ -339,6 +377,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
         if (frame.type === "ready") {
           if (frame.hostId !== config.hostId || frame.sessionId !== session.sessionId) throw new Fault("SCOPE_MISMATCH", "Relay registered a different session.");
           workspaceMetadata = frame.workspaceMetadata === true;
+          questionHistory = frame.questionHistory === true;
           ready = true; eventInFlight = false; attempts = 0;
           queueSummary();
           resolveReady(); flush();

@@ -11,6 +11,124 @@ import { PassThrough } from "node:stream";
 const exec = promisify(execFile);
 const entry = path.resolve("scripts/android-runner.mjs");
 
+const homeComponent = "com.example.launcher/.Home";
+const homeActivity = [
+  "  topResumedActivity=ActivityRecord{123 u0 com.example.launcher/.Home t7}",
+  "  * Hist #0: ActivityRecord{123 u0 com.example.launcher/.Home t7}",
+  "    mActivityComponent=com.example.launcher/.Home",
+  "    state=RESUMED delayedResume=false finishing=false",
+  "    mVisibleRequested=true mVisible=true mClientVisible=true reportedDrawn=true reportedVisible=true",
+  "    mNumInterestingWindows=1 mNumDrawnWindows=1 allDrawn=true lastAllDrawn=false)",
+  "    startingData=null firstWindowDrawn=true mIsExiting=false",
+].join("\n");
+const homeWindows = "  Display: mDisplayId=0 (organized)\n" +
+  "  mCurrentFocus=Window{123 u0 com.example.launcher/com.example.launcher.Home}\n";
+const homeProbe = { resolved: homeComponent, activities: homeActivity, windows: homeWindows, anrs: "" };
+
+test("boot completion and nominal focus do not admit an undrawn HOME window", async () => {
+  const { androidHomeState } = await import("../android-home.mjs");
+  assert.equal(androidHomeState(homeProbe).status, "ready");
+  for (const activities of [
+    homeActivity.replace("reportedDrawn=true", "reportedDrawn=false"),
+    homeActivity.replace("allDrawn=true", "allDrawn=false"),
+    homeActivity.replace("mVisible=true", "mVisible=false"),
+    homeActivity.replace("firstWindowDrawn=true", "firstWindowDrawn=false"),
+    homeActivity.replace("state=RESUMED", "state=PAUSED"),
+    homeActivity.replace("mActivityComponent=com.example.launcher/.Home", "mActivityComponent=com.example.foreign/.Other"),
+  ]) assert.equal(androidHomeState({ ...homeProbe, activities }).status, "pending");
+  assert.equal(androidHomeState({ ...homeProbe, windows: homeWindows.replace("com.example.launcher.Home", "com.example.launcher.Other") }).status, "pending");
+  assert.equal(androidHomeState({ ...homeProbe, resolved: "No activity found" }).status, "pending");
+  assert.equal(androidHomeState({ ...homeProbe, activities: "" }).status, "pending");
+});
+
+test("a visible or already recorded HOME ANR cannot be hidden by later focused-window evidence", async () => {
+  const { androidHomeState } = await import("../android-home.mjs");
+  for (const evidence of [
+    { ...homeProbe, windows: " Display: mDisplayId=0\n mCurrentFocus=Window{123 u0 Application Not Responding: com.example.launcher}" },
+    { ...homeProbe, anrs: "01-01 00:00:00 1 2 I am_anr : [0,123,com.example.launcher,123,Input dispatching timed out]" },
+  ]) assert.deepEqual(androidHomeState(evidence), { status: "blocked", reason: "launcher-anr" });
+});
+
+test("the real readiness driver uses only read probes and shares the original absolute boot deadline", async () => {
+  const { waitForAndroidHome } = await import("../android-home.mjs");
+  const reads = [], observations = [];
+  let attempts = 0;
+  const deadline = Date.now() + 3000;
+  const result = await waitForAndroidHome(async (args, timeout) => {
+    reads.push({ args, timeout, remaining: deadline - Date.now() });
+    if (args.includes("resolve-activity")) return { stdout: homeComponent };
+    if (args.includes("activities")) return { stdout: attempts++ === 0 ? homeActivity.replace("reportedDrawn=true", "reportedDrawn=false") : homeActivity };
+    if (args.includes("displays")) return { stdout: homeWindows };
+    return { stdout: "" };
+  }, { deadline, observe: (state) => { observations.push(state); } });
+  assert.equal(result.status, "ready");
+  assert.deepEqual(observations.map((state) => state.reason), ["home-undrawn", "home-drawn-focused"]);
+  assert.ok(reads.every(({ args, timeout, remaining }) =>
+    !args.includes("input") && !args.includes("settings") && timeout <= remaining + 5));
+  let called = false;
+  await assert.rejects(waitForAndroidHome(async () => { called = true; },
+    { deadline: Date.now() - 1 }), { diagnosticCode: "readiness-timeout" });
+  assert.equal(called, false);
+});
+
+test("HOME readiness preserves cancellation, uncertain cleanup and a reported ANR without retrying it", async () => {
+  const { waitForAndroidHome } = await import("../android-home.mjs");
+  const cancelled = new AbortController();
+  cancelled.abort(new Error("Owned probe cancelled"));
+  await assert.rejects(waitForAndroidHome(async () => assert.fail("Cannot probe after cancellation"),
+    { deadline: Date.now() + 1000, signal: cancelled.signal }), /Owned probe cancelled/);
+  const failure = Object.assign(new Error("Unconfirmed cleanup"), { processTreeStopped: false });
+  await assert.rejects(waitForAndroidHome(async () => { throw failure; },
+    { deadline: Date.now() + 1000 }), (error) => error === failure);
+  let calls = 0;
+  await assert.rejects(waitForAndroidHome(async (args) => {
+    calls++;
+    if (args.includes("resolve-activity")) return { stdout: homeComponent };
+    if (args.includes("activities")) return { stdout: homeActivity };
+    if (args.includes("displays")) return { stdout: homeWindows };
+    return { stdout: "01-01 I am_anr : [0,123,com.example.launcher,0,No focused window]" };
+  }, { deadline: Date.now() + 1000 }), { diagnosticCode: "resource-unavailable", readinessReason: "launcher-anr" });
+  assert.equal(calls, 4);
+});
+
+test("HOME readiness retries a transient cleanup-confirmed probe within its original deadline", async () => {
+  const { waitForAndroidHome } = await import("../android-home.mjs");
+  const observations = [];
+  let reads = 0;
+  const deadline = Date.now() + 2000;
+  const result = await waitForAndroidHome(async (args) => {
+    if (++reads === 1) throw Object.assign(new Error("Synthetic transient ADB failure"), { processTreeStopped: true });
+    if (args.includes("resolve-activity")) return { stdout: homeComponent };
+    if (args.includes("activities")) return { stdout: homeActivity };
+    if (args.includes("displays")) return { stdout: homeWindows };
+    return { stdout: "" };
+  }, { deadline, observe: (state) => { observations.push(state); } });
+  assert.equal(result.status, "ready");
+  assert.equal(reads, 5);
+  assert.deepEqual(observations.map((state) => state.status), ["pending", "ready"]);
+  assert.ok(Date.now() < deadline);
+});
+
+test("HOME readiness cannot retry a visible ANR or extend the deadline with transient failures", async () => {
+  const { waitForAndroidHome } = await import("../android-home.mjs");
+  let reads = 0;
+  await assert.rejects(waitForAndroidHome(async (args) => {
+    reads++;
+    if (args.includes("resolve-activity")) return { stdout: homeComponent };
+    if (args.includes("activities")) return { stdout: homeActivity };
+    if (args.includes("displays")) return { stdout: " Display: mDisplayId=0\n mCurrentFocus=Window{123 u0 Application Not Responding: com.example.launcher}" };
+    throw new Error("Must not wait for a later probe after observing an ANR.");
+  }, { deadline: Date.now() + 1000 }), { readinessReason: "launcher-anr" });
+  assert.equal(reads, 3);
+  const observations = [];
+  await assert.rejects(waitForAndroidHome(async () => {
+    throw Object.assign(new Error("Transient probe"), { processTreeStopped: true });
+  }, { deadline: Date.now() + 80, observe: (state) => { observations.push(state); } }),
+  { diagnosticCode: "readiness-timeout" });
+  assert.ok(observations.length > 0);
+  assert.ok(observations.every((state) => state.status === "pending" && state.reason === "probe-unavailable"));
+});
+
 test("missing emulator prerequisites produce blocked evidence without touching an existing run", async (t) => {
   await mkdir(".data/tests", { recursive: true });
   const parent = await mkdtemp(path.resolve(".data/tests/emulator-runner-"));
@@ -178,7 +296,7 @@ test("caller cancellation during ownership inspection is not latched as an unexp
   guard.close();
 });
 
-test("unconfirmed Linux supervisor exit cannot be accepted as completed resource cleanup", async () => {
+test("unconfirmed supervisor exit cannot be accepted as completed resource cleanup", async () => {
   const { trackManagedCommand, requireManagedCleanup } = await import("../android-emulator.mjs");
   for (const [platform, acknowledged] of [["linux", false], ["linux", true], ["win32", false]]) {
     const child = Object.assign(new EventEmitter(), {
@@ -190,7 +308,7 @@ test("unconfirmed Linux supervisor exit cannot be accepted as completed resource
     child.stderr.write(acknowledged ? "DEVPOCKET_OWNED_TREE_STOPPED\n" : "Owned descendants did not confirm exit.\n");
     child.emit("close", 1);
     await state.done;
-    if (platform === "linux" && !acknowledged) assert.throws(() => requireManagedCleanup(state), /cleanup.*confirm/i);
+    if (!acknowledged) assert.throws(() => requireManagedCleanup(state), /cleanup.*confirm/i);
     else assert.doesNotThrow(() => requireManagedCleanup(state));
   }
 });

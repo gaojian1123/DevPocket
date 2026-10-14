@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { Action, Command, PendingRequest, Receipt, SessionSummary } from "../src/protocol.js";
+import { Action, Command, PendingRequest, QuestionRecord, Receipt, SessionSummary } from "../src/protocol.js";
 
 type Sample = {
   id: string;
-  shape: "command" | "session" | "request" | "receipt";
+  shape: "command" | "session" | "request" | "receipt" | "question";
   wire: Record<string, unknown>;
   backendValid: boolean;
   androidValid: boolean;
@@ -25,7 +25,8 @@ test("shared protocol-v1 samples retain deliberate server and Android decoding c
       assert.equal(typeof lastSeen, "number");
       value = summary;
     }
-    const schema = { command: Command, session: SessionSummary, request: PendingRequest, receipt: Receipt }[sample.shape];
+    const schema = { command: Command, session: SessionSummary, request: PendingRequest, receipt: Receipt,
+      question: QuestionRecord }[sample.shape];
     assert.equal(schema.safeParse(value).success, sample.backendValid, sample.id);
     if (sample.shape === "command" && sample.backendValid) {
       const decoded = Command.parse(value);
