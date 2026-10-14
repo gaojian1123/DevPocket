@@ -6,9 +6,11 @@ Use `README.md` for setup and build instructions. Consult `VALIDATION.md` for re
 
 For new user requests to implement a feature or fix a bug, use the registered
 `devpocket-development` workflow by default. No special workflow phrase is
-required. Before implementation, follow `docs\DEVELOPMENT-WORKFLOW.md` for the
-task contract, entry point and activation requirements. Use that guide also for
-missing verification evidence or interrupted-run recovery.
+required. Prefer the current session in a freshly inspected clean linked
+worktree. Before implementation, follow `docs\DEVELOPMENT-WORKFLOW.md` for the
+task contract, current-session-first routing, isolation and activation
+requirements. Use that guide also for missing verification evidence or
+interrupted-run recovery.
 
 Continue the existing task for follow-ups. Workflow-dispatched implementers and
 reviewers perform their assigned step, rather than dispatching another workflow.

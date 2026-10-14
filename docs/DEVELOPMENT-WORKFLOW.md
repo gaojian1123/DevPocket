@@ -26,39 +26,66 @@ to migrate it; report that it is outside the registered workflow. Explicit
 requests for a different route still retain applicable checks and authorization
 boundaries and must not be labelled as workflow runs.
 
+### Choose the entry point: current session first
+
 After explicitly authorizing this repository's development extension to load in
-the current session, use `devpocket_start_development` for a new task with:
+the current session, freshly inspect the starting checkout before dispatch.
+Use bounded read-only Git inspection, as the starter does through the existing
+Git helper: confirm the repository root, compare the resolved `--git-dir` and
+`--git-common-dir`, and inspect
+`git --no-optional-locks status --porcelain --untracked-files=all --ignore-submodules=none`.
+Check staged, unstaged and non-ignored untracked changes; ignored artifacts do
+not make a checkout dirty. Session names and the presence of a `.git` file alone
+do not establish linked-worktree identity.
+
+- **Clean linked worktree:** prefer `run_dynamic_workflow` in the **current
+  session**, using the invocation below. There is no need for a child session.
+  Calling `devpocket_start_development` here also invokes that workflow exactly
+  once through the App's native tool boundary, without `create_session`.
+- **Clean primary checkout:** use `devpocket_start_development`, passing only
+  the `args` object below. It uses the App's native `create_session` with
+  `workspace_type: "worktree"` to isolate the task; that child invokes the
+  workflow directly. The controller still refuses the primary checkout.
+- **Dirty checkout or failed inspection:** stop and preserve the checkout.
+  The starter dispatches neither a workflow nor a child. Resolve any dependency
+  on existing changes before choosing a clean workspace; do not silently
+  start from a base that drops them. Dependencies on a particular in-progress
+  branch also require an explicit choice before dispatch, even when clean.
+
+Direct invocation of `run_dynamic_workflow` in an eligible current worktree:
 
 ```json
 {
-  "goal": "Describe the user-visible change",
-  "acceptance": ["An observable success case", "An observable failure case"],
-  "nonGoals": ["Behavior that must remain unchanged"],
-  "maxRepairRounds": 2
+  "name": "devpocket-development",
+  "args": {
+    "goal": "Describe the user-visible change",
+    "acceptance": ["An observable success case", "An observable failure case"],
+    "nonGoals": ["Behavior that must remain unchanged"],
+    "maxRepairRounds": 2
+  }
 }
 ```
 
-The tool uses the App's native `create_session` tool to create a new worktree
-session, preserving the parent. The child invokes `run_dynamic_workflow` with
-name `devpocket-development` and those arguments. A task already in a clean linked
-worktree can invoke that workflow directly. The primary checkout and dirty
-starting worktrees are refused. The GitHub Copilot host (desktop app or CLI) must
-support Dynamic Workflows and eligible execution credentials; an unavailable
-capability is a blocker, not permission to substitute a different runtime.
-If the task depends on uncommitted work or a particular in-progress branch,
-resolve that dependency before dispatch rather than silently starting from a
-base that omits it. Preserve the current checkout's changes.
+Discover the available native tool names; the starter supports both unqualified
+names and the existing `functions.`-qualified forms. It forwards the validated
+task arguments without adding model overrides or guessed workflow limits.
+If current-session workflow invocation is unavailable, rejected, fails or has an
+uncertain outcome, preserve/report that result. Never fall back to creating a
+child or dispatch the task a second time. Inspect an uncertain run before
+choosing a continuation.
 
 Loading/reloading the extension and the repository's read/search-only
 `devpocket-reviewer` profile is explicit. Reloading extensions may also reload
 other extensions in that session. Merely adding these files does not activate
-them in an already-running session. If the starter, workflow or read-only
-reviewer is unavailable, report the missing prerequisite and request the
-specific setup/loading authorization needed before proceeding. An explicit
-eligible-worktree entry point above may replace an unavailable starter, but
-direct coding or implementer self-review is not a substitute for the workflow.
-Honor the App's per-run approval and credit/time controls; default routing does
-not bypass them.
+them in an already-running session. The GitHub Copilot host (desktop app or CLI)
+must support Dynamic Workflows and eligible execution credentials. The preferred
+direct entry does not require the starter, but still requires the native workflow
+tool, loaded workflow and read-only reviewer. For missing prerequisites, including
+session creation when isolation is needed, report the blocker and request the
+specific setup/loading authorization needed before proceeding. Direct coding or
+implementer self-review is not a substitute. Honor the App's per-run approval and
+credit/time controls; default routing does not bypass them or authorize a
+replacement runtime.
 
 The controller dispatches implementation, executes verification itself, and
 dispatches a separate read-only reviewer against the actual diff and added files.
