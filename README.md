@@ -214,6 +214,9 @@ a command-specific cleanup receipt. Managed device cleanup requires that
 receipt; an ownership-start marker or target-written output is not enough.
 Preparation accumulates bounded control lines across partial pipe reads and
 carries an unfinished line into the native owner rather than dropping its prefix.
+The Windows bootstrap rejects unsupported control lines even before a helper
+process exists; later cancellation, EOF or a zero child exit cannot erase that
+input failure.
 Windows control frames are bound to a fresh per-command nonce withheld from
 the target. Only those frames are consumed: literal marker-like target stderr,
 UTF-8 split across chunks, original newlines and unterminated text are retained.

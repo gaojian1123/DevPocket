@@ -11,7 +11,7 @@ const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const cancellation = new AbortController();
 let request, child, timer, buffer = "", received = 0, stopping = false, started = false, requestReceived = false;
 let preparationCleanupConfirmed = true;
-let stopReason;
+let stopReason, inputFailure;
 function control(phase) {
   process.stderr.write(`\u001eDEVPOCKET:${request.receiptId}:${phase}\u001f`);
 }
@@ -21,6 +21,14 @@ function stop(reason = "cancelled") {
   stopReason = reason;
   cancellation.abort();
   if (child && !child.stdin.destroyed) child.stdin.write("cancel\n");
+}
+function rejectInput(message) {
+  if (!inputFailure) {
+    inputFailure = new Error(message);
+    console.error(inputFailure.message);
+  }
+  process.exitCode = 1;
+  stop("invalid-input");
 }
 async function ordinary(file, directory = false, maximum = 2097152) {
   const info = await lstat(file);
@@ -169,15 +177,16 @@ async function main(value) {
       child.stdin.write(JSON.stringify({ ...request, bootstrapPid: process.pid }) + "\n");
     });
     if (spawnError) throw spawnError;
-    process.exitCode = code === 0 && stopping ? (stopReason === "timeout" ? 124 : 130) : code ?? 1;
+    if (inputFailure) process.exitCode = 1;
+    else process.exitCode = code === 0 && stopping ? (stopReason === "timeout" ? 124 : 130) : code ?? 1;
   } finally { clearTimeout(timer); }
 }
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (text) => {
   received += Buffer.byteLength(text);
   if (received > 1048576) {
-    console.error("Owned-command input exceeded its bound.");
-    stop(); process.exitCode = 1; process.stdin.destroy(); return;
+    rejectInput("Owned-command input exceeded its bound.");
+    process.stdin.destroy(); return;
   }
   buffer += text;
   let end;
@@ -189,15 +198,15 @@ process.stdin.on("data", (text) => {
       void main(line).catch((error) => {
         if ((error === cancellation.signal.reason || error.cause === cancellation.signal.reason) &&
             stopping && !started && preparationCleanupConfirmed) {
-          process.exitCode = stopReason === "timeout" ? 124 : 130;
-          control(process.exitCode === 124 ? "deadline-expired" : "cancel-accepted");
+          process.exitCode = inputFailure ? 1 : stopReason === "timeout" ? 124 : 130;
+          if (!inputFailure) control(process.exitCode === 124 ? "deadline-expired" : "cancel-accepted");
           control("tree-stopped");
         } else {
           console.error(error); process.exitCode = 1;
         }
       }).finally(() => { clearTimeout(timer); process.stdin.destroy(); });
     } else if (line.trim() === "cancel") stop();
-    else if (child && !child.stdin.destroyed) child.stdin.write(line + "\n");
+    else rejectInput("Unsupported owned-command control message.");
   }
 });
 process.stdin.once("end", stop);

@@ -339,6 +339,94 @@ test("queued startup cancellation is accepted without preparing or starting the 
     await assert.rejects(access(path.join(root, ".tools")), { code: "ENOENT" });
   });
 
+test("the Windows bootstrap rejects unsupported startup control lines before launching the target",
+  { skip: process.platform !== "win32" }, async (t) => {
+    for (const prepared of [false, true]) {
+      for (const followedByCancel of [false, true]) {
+        await t.test(`${prepared ? "prepared" : "cold"}${followedByCancel ? " then cancel" : ""}`, async (t) => {
+          const root = await ownerFixture(t), marker = path.join(root, "must-not-start");
+          if (prepared) assert.equal((await rawOwner(t, root)).code, 0);
+          const result = await rawOwner(t, root, {
+            input: "notcancel\n" + (followedByCancel ? "cancel\n" : ""),
+            args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'started')`],
+          });
+          assert.equal(result.code, 1, "Unsupported input must remain a failure, not success or accepted cancellation.");
+          assert.match(result.stderr, /Unsupported owned-command control message/);
+          assert.doesNotMatch(result.stderr, /notcancel|:active\u001f|:cancel-accepted\u001f/);
+          assert.match(result.stderr, /:tree-stopped\u001f/);
+          await assert.rejects(access(marker), { code: "ENOENT" });
+        });
+      }
+    }
+  });
+
+test("unsupported fragmented bootstrap input stops a preparation wait without launching a target",
+  { skip: process.platform !== "win32" }, async (t) => {
+    const root = await ownerFixture(t);
+    assert.equal((await rawOwner(t, root)).code, 0);
+    const cache = path.join(root, ".tools", "command-owner-native-v1");
+    const [key] = await readdir(cache);
+    const mutexKey = createHash("sha256").update(path.join(cache, key).toLowerCase()).digest("hex");
+    const holder = net.createServer((socket) => socket.destroy());
+    await new Promise((resolve, reject) => {
+      holder.once("error", reject);
+      holder.listen(`\\\\.\\pipe\\DevPocketNativeOwner_${mutexKey}`, resolve);
+    });
+    t.after(() => new Promise((resolve) => holder.close(resolve)));
+    const marker = path.join(root, "must-not-start");
+    let waiting = false, secondFragment;
+    t.after(() => clearTimeout(secondFragment));
+    const result = await rawOwner(t, root, {
+      deadlineUnixMs: Date.now() + 5000,
+      args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'started')`],
+      onOutput(stderr, child) {
+        if (!waiting && stderr.includes(":preparation-wait\u001f")) {
+          waiting = true;
+          child.stdin.write("notcan");
+          secondFragment = setTimeout(() => child.stdin.end("cel\ncancel\n"), 100);
+        }
+      },
+    });
+    assert.equal(waiting, true, "Exercise the real asynchronous preparation wait.");
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Unsupported owned-command control message/);
+    assert.match(result.stderr, /:tree-stopped\u001f/);
+    assert.doesNotMatch(result.stderr, /notcancel|:active\u001f|:cancel-accepted\u001f|:deadline-expired\u001f/);
+    await assert.rejects(access(marker), { code: "ENOENT" });
+  });
+
+test("bootstrap input failure is not overwritten by an active child's graceful cancellation",
+  { skip: process.platform !== "win32" }, async (t) => {
+    const root = await ownerFixture(t);
+    let running = false;
+    const result = await rawOwner(t, root, {
+      args: ["-e", "process.stdin.once('data',()=>process.exit(0));process.stderr.write('target-started\\n');"],
+      onOutput(stderr, child) {
+        if (!running && stderr.includes("target-started\n")) {
+          running = true;
+          child.stdin.end("notcancel\ncancel\n");
+        }
+      },
+    });
+    assert.equal(running, true);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Unsupported owned-command control message/);
+    assert.match(result.stderr, /:tree-stopped\u001f/);
+  });
+
+test("the bootstrap input budget stays a failure without launching a target",
+  { skip: process.platform !== "win32" }, async (t) => {
+    const root = await ownerFixture(t), marker = path.join(root, "must-not-start");
+    const result = await rawOwner(t, root, {
+      input: "x".repeat(1048577),
+      args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'started')`],
+    });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Owned-command input exceeded its bound/);
+    assert.doesNotMatch(result.stderr, /:active\u001f|:cancel-accepted\u001f/);
+    await assert.rejects(access(marker), { code: "ENOENT" });
+  });
+
 test("cold ownership preparation is atomic across concurrent callers and invalidates changed source",
   { skip: process.platform !== "win32" }, async (t) => {
     const root = await ownerFixture(t);
