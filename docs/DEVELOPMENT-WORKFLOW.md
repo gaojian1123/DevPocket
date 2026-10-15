@@ -1,30 +1,49 @@
 # Development workflow
 
+## Default: skill-led development
+
+`AGENTS.md` routes ordinary implementation requests to the **devpocket-development
+skill** at `.github\skills\devpocket-development\SKILL.md`. That file is the
+authoritative recipe for the task contract, workspace selection, implementation,
+verification, independent review, bounded repair and recovery. Invoke the skill
+when available; otherwise read the same file directly. A clean linked worktree
+stays in the current session. Follow-ups retain their task/workspace and evidence.
+
+The skill distinguishes working-tree implementation from authorized commit/PR
+delivery. Its candidate-commit step precedes final verification and independent
+review; the task's original base remains unchanged. This ordering does not grant
+publication permission or relax evidence identity. The optional controller below
+still stops at reviewed changes and does not acquire a commit phase.
+
+This route does not require extension loading, the starter tool or Dynamic
+Workflows. It uses the existing verifier and read/search-only
+`devpocket-reviewer`; unavailable required checks or independent review still
+block completion. The skill is agent guidance, not a durable controller or a
+guarantee that an agent cannot skip a step. Verification remains executable;
+appropriately configured protected CI and human review must guard publication
+and changes to the checks. Adding the skill does not configure repository rules.
+
+An in-conversation task contract is sufficient; the AI task issue template is
+optional. Issue text alone does not start work or authorize privileged operations.
+Discussion, planning, read-only review and documentation-only work do not start
+the implementation pipeline. Dispatched agents perform only their assigned phase.
+
+## Optional: registered workflow
+
+Use this route only when the user explicitly selects controller-managed
+execution, or to continue an already recorded workflow run. Ordinary requests
+to implement a feature or fix a bug do not opt in. Pre-existing skill-led work
+stays with its current owner unless the user chooses to migrate it; preserve its
+contract, changes and evidence rather than starting from a base that omits them.
+
 The **devpocket-development** GitHub Copilot extension is development tooling,
 not the shipped phone/runtime extension. It uses the host's bundled SDK and
 `joinSession()` to register tools and a workflow. It does not replace the current
-runtime, change its permission handler, or request credentials. `AGENTS.md`
-defines when agents use this workflow by default. This is an agent routing rule,
-not a background message listener or automatic extension activation.
+runtime, change its permission handler, or request credentials.
 
-## Start a task
-
-Form a task contract from the user's implementation request: goal, observable
-acceptance criteria and non-goals. Reuse decisions already made and state the
-criteria before dispatch. Ask only for unresolved scope, behavior or acceptance
-decisions; a clear implementation request does not need an additional question
-about whether to use the default workflow. An in-conversation contract is
-sufficient; the AI development issue template is optional. Issue text alone
-does not start work or authorize privileged operations.
-
-First distinguish a new task from a continuation. For an existing workflow,
-route feedback to its current owner or resume its recorded run; preserve its
-workspace, task contract and evidence. A dispatched implementation/review agent
-performs only that assigned phase. Neither case calls the starter recursively.
-Pre-existing direct work stays in its current workspace unless the user chooses
-to migrate it; report that it is outside the registered workflow. Explicit
-requests for a different route still retain applicable checks and authorization
-boundaries and must not be labelled as workflow runs.
+State the goal, observable acceptance criteria and non-goals before dispatch.
+Reuse decisions already made; ask only about unresolved scope, behavior or
+authority. An implementation request alone does not select this optional route.
 
 ### Choose the entry point: current session first
 
@@ -82,10 +101,11 @@ must support Dynamic Workflows and eligible execution credentials. The preferred
 direct entry does not require the starter, but still requires the native workflow
 tool, loaded workflow and read-only reviewer. For missing prerequisites, including
 session creation when isolation is needed, report the blocker and request the
-specific setup/loading authorization needed before proceeding. Direct coding or
-implementer self-review is not a substitute. Honor the App's per-run approval and
-credit/time controls; default routing does not bypass them or authorize a
-replacement runtime.
+specific setup/loading authorization needed before proceeding. Silently switching
+an opted-in run to skill-led work or implementer self-review is not a substitute.
+The user can choose a different route explicitly. Honor the App's per-run
+approval and credit/time controls; opting in does not bypass them or authorize
+a replacement runtime.
 
 The controller dispatches implementation, executes verification itself, and
 dispatches a separate read-only reviewer against the actual diff and added files.
@@ -98,6 +118,10 @@ Registration uses only Node built-ins and the runtime-bundled SDK, so a fresh
 worktree can load it before restoring application dependencies. Provision the
 runner toolchain once; normal missing repository dependencies can be restored
 from their lockfiles after an actual missing-dependency failure.
+
+For an existing run, route feedback to its current owner or inspect/resume its
+recorded run. Dispatched implementers/reviewers perform their assigned phase,
+rather than calling the starter recursively.
 
 The automatic endpoint is **ready for a PR**, with changes in the worktree and
 `handoff.json` under `.data\development\<run-id>`. It does not commit, push, open a
@@ -129,8 +153,9 @@ review. Documentation-only changes select no application build.
 The verifier reuses the commands in `package.json`. Android changes and affected
 runtime/wire changes require JVM/build checks **and** native emulator evidence.
 Changes to control tooling select its regressions and conservative downstream
-checks. The workflow pauses before executing modified gate/dependency policy;
-review that policy explicitly before another run.
+checks. The optional workflow pauses before executing modified gate/dependency
+policy; review that policy explicitly before another run. Skill-led development
+also retains explicit policy review and the plan's human-review requirement.
 
 For CI shards, use `-Group backend`, `-Group android` or `-Group device` with a
 separate `-Report` for each. A successful shard is `partial` unless it covers the
@@ -867,12 +892,15 @@ approvals, code-owner review for protected paths and dismissal of stale
 approvals in the repository ruleset. `CODEOWNERS` alone does not enforce these.
 Runner migration does not configure branch protection or enable automatic merge.
 
-CI and reviewer profiles in a PR are themselves changeable code. This workflow
-is not a sandbox or a cryptographic attestation service. A protected review
+CI, skill instructions and reviewer profiles in a PR are themselves changeable
+code. Neither development route is a sandbox or a cryptographic attestation
+service. A protected review
 process (or an organization-controlled required workflow) must guard changes to
-the checks themselves. The local AI workflow's independent review is enforced by
-its controller; this commit does not create a separately authenticated GitHub
-review/check publisher for PRs that bypass that workflow.
+the checks themselves. The optional workflow enforces independent review through
+its controller; skill-led development relies on the agent to request that review.
+The verifier checks source-bound test evidence, not the authenticity of an AI
+review. Neither route creates a separately authenticated GitHub review/check
+publisher for PRs.
 
 The device job uploads only its tested candidate APKs and device report. A
 candidate is not a signed release, full real-CLI/physical-device acceptance, or
@@ -881,6 +909,10 @@ separate. `save-debug-artifact.ps1`, sealed build 002 and frozen release evidenc
 are not repurposed for CI candidates.
 
 ## Stops and recovery
+
+For skill-led work, follow the recovery steps in
+`.github\skills\devpocket-development\SKILL.md`. The remaining rules apply to
+recorded runs of the optional workflow.
 
 The controller stops for missing prerequisites, agent failure, inconsistent
 review results, changed source during verification/review, protected policy

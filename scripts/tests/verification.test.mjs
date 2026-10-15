@@ -54,11 +54,12 @@ test("a documentation plan identifies the exact source without claiming checks r
   assert.match(result.report.source.fingerprint, /^[a-f0-9]{64}$/);
 });
 
-test("app, wire and unknown changes cannot omit device checks or lower their risk", async (t) => {
+test("app, wire, skill and unknown changes cannot omit device checks or lower their risk", async (t) => {
   for (const file of [
     "android/app/src/main/java/Screen.kt",
     "backend/src/protocol.ts",
     "scripts/verify.mjs",
+    ".github/skills/devpocket-development/SKILL.md",
     "new-unclassified-file",
   ]) {
     await t.test(file, async (t) => {
@@ -70,6 +71,10 @@ test("app, wire and unknown changes cannot omit device checks or lower their ris
       assert.ok(result.report.requiredChecks.includes("android-device"));
       assert.ok(result.report.requiredChecks.includes("android-build"));
       if (!file.startsWith("android/")) assert.equal(result.report.requiresHumanReview, true);
+      if (file.startsWith(".github/skills/")) {
+        const { CHECKS } = await import("../verification.mjs");
+        assert.deepEqual(result.report.requiredChecks, CHECKS.map((check) => check.id));
+      }
     });
   }
 });

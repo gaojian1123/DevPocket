@@ -30,7 +30,7 @@ export async function registerDevelopmentExtension({ defineWorkflow, joinSession
   const workflow = defineWorkflow({
     meta: {
       name: "devpocket-development",
-      description: "Implement one explicitly requested DevPocket task in an isolated worktree, verify it, independently review it, and repair at most twice. No merge or deployment.",
+      description: "Optional controller-managed DevPocket development. Use only when the user explicitly selects this workflow, or to continue its recorded run; normal implementation uses the devpocket-development skill. Verify, independently review and repair at most twice in an isolated worktree. No merge or deployment.",
       argsSchema: taskSchema,
       phases: [{ title: "Implement" }, { title: "Verify" }, { title: "Review" }],
     },
@@ -43,7 +43,7 @@ export async function registerDevelopmentExtension({ defineWorkflow, joinSession
     workflows: [workflow],
     tools: [{
       name: "devpocket_start_development",
-      description: "Start a NEW DevPocket implementation task, current-session first: reuse a freshly inspected clean linked worktree via the App's devpocket-development workflow; isolate a clean primary checkout in a new App worktree. Dirty/unknown checkouts block. Settle goal, acceptance and dependencies first; follow-ups stay with their existing run. See docs\\DEVELOPMENT-WORKFLOW.md for direct invocation and prerequisites. No real GitHub Copilot runtime control, installation, cloud, merge or release authority.",
+      description: "Start a NEW task with the optional devpocket-development workflow, only when the user explicitly selects the workflow. Reuse a freshly inspected clean linked worktree in the current session; isolate a clean primary checkout in a new App worktree. Dirty/unknown checkouts block. Settle goal, acceptance and dependencies first; follow-ups stay with their recorded run. Normal implementation uses the devpocket-development skill. See docs\\DEVELOPMENT-WORKFLOW.md for direct invocation and prerequisites. No real GitHub Copilot runtime control, installation, cloud, merge or release authority.",
       parameters: taskSchema,
       handler: async (input) => {
         const task = parseTask(input);
@@ -83,7 +83,7 @@ export async function registerDevelopmentExtension({ defineWorkflow, joinSession
             kickoff: {
               mode: "interactive",
               prompt: [
-                "Implement the user's DevPocket task using the registered devpocket-development workflow in this new worktree.",
+                "The user explicitly selected the optional devpocket-development workflow; implement that task in this new worktree.",
                 "Read AGENTS.md. Invoke run_dynamic_workflow with name devpocket-development and the JSON arguments below.",
                 "If the workflow/reviewer is not loaded, request scoped loading; do not replace the workflow with unchecked self-review.",
                 "The workflow stops at reviewed, source-bound handoff. Preserve any blocked/needs_human outcome.",
