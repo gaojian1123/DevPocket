@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, lstat, mkdtemp, open, readFile, readdir, readlink, realpath, rename, rm, rmdir } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, copyFile, lstat, mkdtemp, open, readFile, readlink, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,7 +65,7 @@ async function gitMutation(root, args, input, environment = {}) {
       throw Object.assign(new Error("Git completed but hook-exit evidence is unavailable; inspect before continuing.", { cause }),
         { candidateFailure: "hook-evidence", code: 0, stderr: output.stderr });
     }
-    // Git ignores some hook exits (including post-commit); observe them without rerunning or replacing hooks.
+    // Git ignores some hook exits (including post-commit); observe them without replaying hook code.
     if (failed.length) throw Object.assign(new Error("A Git hook failed; retain the completed Git operation for inspection."),
       { candidateFailure: "hook-failed", code: 0, hookFailures: failed, stderr: output.stderr });
   } catch (error) { failure = error; }
@@ -99,6 +100,16 @@ export async function changedPaths(root, base) {
 }
 
 export async function activeHookSnapshot(root) {
+  const { execFile } = await import("node:child_process");
+  const { createHash } = await import("node:crypto");
+  const { lstat, readFile, readdir, readlink, realpath } = await import("node:fs/promises");
+  const { default: path } = await import("node:path");
+  const { promisify } = await import("node:util");
+  const execute = promisify(execFile);
+  const git = async (cwd, args) => (await execute("git", ["--no-pager", ...args],
+    { cwd, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 30_000 })).stdout;
+  const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  const fail = (message) => { throw Object.assign(new Error(message), { candidateFailure: "candidate-changed" }); };
   const directory = path.resolve(root, (await git(root, ["rev-parse", "--git-path", "hooks"])).trim());
   const entries = [], visited = new Set();
   let totalBytes = 0;
@@ -161,7 +172,7 @@ export async function inspectWorktree(root) {
   if (top !== physicalRoot || gitDirectory === commonDirectory) fail("Use the root of an isolated linked worktree, not the primary checkout.");
   const branch = (await git(root, ["symbolic-ref", "--quiet", "HEAD"])).trim();
   if (!branch.startsWith("refs/heads/")) fail("An attached task branch is required.");
-  for (const marker of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "BISECT_START"]) {
+  for (const marker of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "AUTO_MERGE", "rebase-merge", "rebase-apply", "BISECT_START"]) {
     const file = path.join(gitDirectory, marker);
     try { await lstat(file); }
     catch (error) { if (error.code === "ENOENT") continue; throw error; }
@@ -191,6 +202,11 @@ export async function assertCandidate(root, workspace, candidate) {
       current.source.head !== candidate.commit ||
       (await git(root, ["rev-parse", "HEAD^{tree}"])).trim() !== candidate.tree) {
     fail("The candidate HEAD, source or index changed; a clean, exact committed candidate is required.");
+  }
+  if (candidate.created && (candidate.reference?.version !== 1 ||
+      candidate.reference.branch !== workspace.identity.branch ||
+      candidate.reference.parent !== candidate.parent || candidate.reference.commit !== candidate.commit)) {
+    fail("Candidate reference-transaction evidence is missing or inconsistent.");
   }
   return current;
 }
@@ -235,7 +251,7 @@ export async function prepareCandidate(root, before, source, ownedFiles, session
   if (!execution || execution.version !== 2) fail("A current captured native implementation is required for candidate execution.");
   const title = `DevPocket: ${goal.replace(/\s+/g, " ").trim()}`.slice(0, 100);
   return { request: {
-    version: 3, root: path.resolve(root), expected: current, files, sessionId, hooks: { ...hooks },
+    version: 4, root: path.resolve(root), expected: current, files, sessionId, hooks: { ...hooks },
     execution: structuredClone(execution),
     content: await contentFingerprint(root),
     message: `${title}\n\nCo-authored-by: ${coauthor}\nCopilot-Session: ${sessionId}\n`,
@@ -266,11 +282,202 @@ export async function validateCandidateCommit(root, request, candidate) {
   return candidate;
 }
 
+async function referenceGuard(specification, observeHooks) {
+  const { createHash, randomUUID } = await import("node:crypto");
+  const { execFileSync } = await import("node:child_process");
+  const { readSync } = await import("node:fs");
+  const { readFile, realpath, writeFile } = await import("node:fs/promises");
+  const { default: path } = await import("node:path");
+  const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  let context;
+  try {
+    const encoded = process.env[specification.context];
+    if (typeof encoded !== "string" || encoded.length > 32768) throw new Error("Reference context is unavailable.");
+    const bytes = Buffer.from(encoded, "base64");
+    if (hash(bytes) !== specification.hash) throw new Error("Reference context changed.");
+    context = JSON.parse(bytes);
+    if ((process.env.GIT_CONFIG_PARAMETERS !== undefined) !== context.parametersPresent ||
+        hash(process.env.GIT_CONFIG_PARAMETERS ?? "") !== context.parametersHash) throw new Error("Original Git command configuration was not preserved.");
+    const environment = { ...process.env };
+    delete environment[specification.context];
+    const query = (args, input) => execFileSync("git", ["--no-pager", "--no-replace-objects", ...args],
+      { cwd: context.root, env: environment, encoding: "utf8", input, stdio: ["pipe", "pipe", "pipe"],
+        timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
+    const autoMergeAbsent = () => {
+      try { query(["show-ref", "--exists", "AUTO_MERGE"]); return false; }
+      catch (error) {
+        if (error.status === 2 && !error.signal) return true;
+        throw new Error("Native ref-state inspection is unavailable.", { cause: error });
+      }
+    };
+    const chunks = [], buffer = Buffer.alloc(4096);
+    let size = 0;
+    for (let count; (count = readSync(0, buffer, 0, buffer.length, null)) > 0;) {
+      size += count;
+      if (size > 1024 * 1024) throw new Error("Hook input exceeds the supported bound.");
+      chunks.push(Buffer.from(buffer.subarray(0, count)));
+    }
+    const input = Buffer.concat(chunks), args = process.argv.slice(1);
+    let approved;
+    try { approved = JSON.parse(await readFile(path.join(context.directory, "prepared.json"), "utf8")); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (approved && (approved.context !== specification.hash || approved.parent !== context.parent ||
+        approved.branch !== context.branch || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(approved.commit))) {
+      throw new Error("Prepared reference evidence changed.");
+    }
+    const identity = async () => {
+      const locations = query(["rev-parse", "--absolute-git-dir", "--git-common-dir", "--show-toplevel"]).trimEnd().split(/\r?\n/);
+      if (locations.length !== 3 ||
+          await realpath(locations[0]) !== context.gitDirectory ||
+          await realpath(path.resolve(context.root, locations[1])) !== context.commonDirectory ||
+          await realpath(locations[2]) !== context.physicalRoot ||
+          query(["symbolic-ref", "--quiet", "HEAD"]).trim() !== context.branch) {
+        throw new Error("Expected worktree or attached branch changed.");
+      }
+      const head = query(["rev-parse", "--verify", "HEAD"]).trim();
+      if (head !== context.parent && head !== approved?.commit) throw new Error("Expected parent changed.");
+      if (hash(query(["config", "--null", "--list", "--show-origin", "--show-scope"])) !== context.configuration) {
+        throw new Error("Git configuration changed before hook execution.");
+      }
+      const hooks = await observeHooks(context.root);
+      if (hooks.directory !== context.hooks.directory || hooks.fingerprint !== context.hooks.fingerprint) {
+        throw new Error("Approved hook inputs changed.");
+      }
+    };
+    if (specification.hook === "reference-transaction") {
+      if (args.length !== 1 || !["prepared", "committed", "aborted"].includes(args[0]) ||
+          !input.length || input.at(-1) !== 10) throw new Error("Unrecognized reference transaction shape.");
+      const text = input.toString("utf8");
+      if (!Buffer.from(text, "utf8").equals(input)) throw new Error("Unsupported reference encoding.");
+      const rows = text.trimEnd().split("\n").map((line) => {
+        const match = /^([a-f0-9]{40}|[a-f0-9]{64}) ([a-f0-9]{40}|[a-f0-9]{64}) ([^\s]+)$/.exec(line);
+        if (!match) throw new Error("Unsupported reference update.");
+        return { old: match[1], next: match[2], name: match[3] };
+      });
+      const zero = "0".repeat(context.parent.length);
+      const probe = rows.length === 1 && rows[0].name === context.branch &&
+        rows[0].old === context.parent && rows[0].next === zero;
+      if (probe) {
+        if (args[0] === "prepared") {
+          await identity();
+          if (!autoMergeAbsent()) throw new Error("Unexpected AUTO_MERGE requires inspection.");
+          await writeFile(path.join(context.directory, "probe.json"), JSON.stringify({ context: specification.hash, veto: true, absenceLookup: true }),
+            { flag: "wx", mode: 0o600 });
+          process.exitCode = 19;
+        } else process.exitCode = 77;
+        return;
+      }
+      const cleanup = rows.length === 1 && rows[0].name === "AUTO_MERGE" && rows[0].old === zero && rows[0].next === zero;
+      if (cleanup) {
+        if (args[0] === "prepared") {
+          await identity();
+          if (!autoMergeAbsent()) throw new Error("Refusing to delete an unexpectedly present AUTO_MERGE.");
+          await writeFile(path.join(context.directory, "cleanup-prepared.json"),
+            JSON.stringify({ context: specification.hash, absent: true }), { flag: "wx", mode: 0o600 });
+        } else if (args[0] === "committed") {
+          const cleanupProof = JSON.parse(await readFile(path.join(context.directory, "cleanup-prepared.json"), "utf8"));
+          if (cleanupProof.context !== specification.hash || cleanupProof.absent !== true) {
+            throw new Error("Cleanup completion lacks its locked absence proof.");
+          }
+        }
+      } else {
+        const branch = rows.filter((row) => row.name === context.branch);
+        if (branch.length !== 1 || rows.length > 2 || branch[0].old !== context.parent ||
+            branch[0].next.length !== context.parent.length || [zero, context.parent].includes(branch[0].next) ||
+            rows.some((row) => ![context.branch, "HEAD"].includes(row.name) ||
+              row.old !== context.parent || row.next !== branch[0].next)) throw new Error("Reference update is not bound to the expected branch and parent.");
+        if (args[0] === "prepared") {
+          await identity();
+          const object = query(["cat-file", "--batch"], `${branch[0].next}\n`);
+          const newline = object.indexOf("\n"), header = object.slice(0, newline).split(" ");
+          if (header.length !== 3 || header[0] !== branch[0].next || header[1] !== "commit") throw new Error("Expected a native commit object.");
+          const parents = object.slice(newline + 1).split("\n\n", 1)[0].split("\n")
+            .filter((line) => line.startsWith("parent ")).map((line) => line.slice(7));
+          if (JSON.stringify(parents) !== JSON.stringify([context.parent])) throw new Error("Native commit has a different parent.");
+          await writeFile(path.join(context.directory, "prepared.json"),
+            JSON.stringify({ context: specification.hash, branch: context.branch, parent: context.parent, commit: branch[0].next }),
+            { flag: "wx", mode: 0o600 });
+        } else if (!approved || approved.commit !== branch[0].next) throw new Error("Reference completion lacks its prepared binding.");
+      }
+      if (specification.original) await identity();
+    } else await identity();
+    if (!specification.original) { process.exitCode = 77; return; }
+    const file = path.join(context.directory, `input-${randomUUID()}`);
+    await writeFile(file, input, { flag: "wx", mode: 0o600 });
+    process.stdout.write(file);
+  } catch (error) {
+    if (context) {
+      try { await writeFile(path.join(context.directory, "rejected.json"), JSON.stringify({ context: specification.hash, rejected: true }),
+        { flag: "wx", mode: 0o600 }); }
+      catch (recordError) { if (recordError.code !== "EEXIST") console.error("Reference refusal evidence could not be recorded."); }
+    }
+    console.error(`Native reference guard refused: ${error.message}`);
+    process.exitCode = 1;
+  }
+}
+
+async function prepareReferenceGuard(root, request, directory) {
+  const token = `DEVPOCKET_REF_${randomUUID().replaceAll("-", "")}`;
+  const parameters = `${token}_PARAMETERS`, present = `${token}_PRESENT`;
+  if ([token, parameters, present].some((name) => process.env[name] !== undefined)) fail("Reference guard environment ownership is unavailable.");
+  const original = new Set();
+  for (const hook of hookNames) {
+    for (const suffix of process.platform === "win32" ? ["", ".exe"] : [""]) {
+      try { await access(path.join(request.hooks.directory, hook + suffix), constants.X_OK); original.add(hook); break; }
+      catch (error) { if (!["ENOENT", "EACCES"].includes(error.code)) throw error; }
+    }
+  }
+  const context = { version: 1, root, directory, physicalRoot: await realpath(root),
+    gitDirectory: request.expected.identity.gitDirectory, commonDirectory: request.expected.identity.commonDirectory,
+    branch: request.expected.identity.branch, parent: request.expected.source.head,
+    configuration: request.expected.configuration, hooks: request.hooks,
+    parametersPresent: process.env.GIT_CONFIG_PARAMETERS !== undefined,
+    parametersHash: sha256(process.env.GIT_CONFIG_PARAMETERS ?? "") };
+  const content = JSON.stringify(context), hash = sha256(content);
+  const quote = (text) => `'${text.replaceAll("'", "'\"'\"'")}'`;
+  for (const hook of new Set([...original, "pre-commit", "reference-transaction"])) {
+    const source = `await (${referenceGuard.toString()})(${JSON.stringify({ context: token, hash, hook, original: original.has(hook) })}, ${activeHookSnapshot.toString()});`;
+    const script = [
+      "#!/bin/sh",
+      'if test -n "${NODE_OPTIONS:-}"; then printf "%s\\n" "Unbound Node startup options in reference guard." >&2; exit 78; fi',
+      `if test "$${present}" = 1; then GIT_CONFIG_PARAMETERS="$${parameters}"; export GIT_CONFIG_PARAMETERS; else unset GIT_CONFIG_PARAMETERS; fi`,
+      `unset ${parameters} ${present}`,
+      `if input_file=$(${quote(process.execPath.replaceAll("\\", "/"))} --input-type=module --eval ${quote(source)} -- "$@"); then`,
+      `  unset ${token}`,
+      `  exec git --no-pager hook run --ignore-missing --to-stdin="$input_file" ${quote(hook)} -- "$@"`,
+      "else",
+      "  code=$?",
+      "  if test \"$code\" = 77; then exit 0; fi",
+      "  exit \"$code\"",
+      "fi",
+      "",
+    ].join("\n");
+    await writeFile(path.join(directory, hook), script, { flag: "wx", mode: 0o700 });
+  }
+  return { hash, directory, environment: { [token]: Buffer.from(content).toString("base64"),
+    [parameters]: process.env.GIT_CONFIG_PARAMETERS ?? "", [present]: context.parametersPresent ? "1" : "0" } };
+}
+
+async function proveReferenceVeto(root, request, guard) {
+  let failure;
+  try {
+    await gitMutation(root, ["-c", `core.hooksPath=${guard.directory}`, "update-ref", "--stdin"],
+      `start\nverify ${request.expected.identity.branch} ${request.expected.source.head}\nprepare\nabort\n`, guard.environment);
+  } catch (error) { failure = error; }
+  let proof;
+  try { proof = JSON.parse(await readFile(path.join(guard.directory, "probe.json"), "utf8")); }
+  catch { /* Missing evidence cannot authorize a ref-mutating command. */ }
+  if (failure?.code !== 128 || failure.killed || failure.signal || failure.traceCleanupFailed ||
+      proof?.context !== guard.hash || proof.veto !== true || proof.absenceLookup !== true) {
+    fail("Git reference-transaction veto support was not proven; no candidate commit is permitted.");
+  }
+}
+
 async function commitInspectedIndex(root, request) {
   const index = path.resolve(root, (await git(root, ["rev-parse", "--git-path", "index"])).trim());
   const lockPath = `${index}.lock`;
   const owner = JSON.stringify({ pid: process.pid, token: randomUUID() }) + "\n";
-  let lock, lockIdentity, directory, failure, published = false, candidate;
+  let lock, lockIdentity, directory, referenceDirectory, failure, published = false, candidate;
   const requireLock = async () => {
     const current = await lstat(lockPath, { bigint: true });
     if (!current.isFile() || current.isSymbolicLink() || current.dev !== lockIdentity.dev || current.ino !== lockIdentity.ino) {
@@ -299,6 +506,10 @@ async function commitInspectedIndex(root, request) {
     if (lockIdentity.ino === 0n) fail("Candidate index lock identity is unavailable.");
     await lock.writeFile(owner);
     await check();
+    referenceDirectory = await mkdtemp(path.join(tmpdir(), "devpocket-ref-guard-"));
+    const reference = await prepareReferenceGuard(root, request, referenceDirectory);
+    await proveReferenceVeto(root, request, reference);
+    await check();
     directory = await mkdtemp(path.join(tmpdir(), "devpocket-candidate-index-"));
     const isolated = path.join(directory, "index");
     await copyFile(index, isolated);
@@ -321,9 +532,23 @@ async function commitInspectedIndex(root, request) {
     const tree = (await gitMutation(root, ["write-tree"], undefined, environment)).trim();
     const stagedIndex = sha256(await gitMutation(root, ["ls-files", "--stage", "-z"], undefined, environment));
     await check();
-    await gitMutation(root, ["commit", "--file=-"], request.message, environment);
+    try {
+      await gitMutation(root, ["-c", `core.hooksPath=${reference.directory}`, "commit", "--file=-"], request.message,
+        { ...environment, ...reference.environment });
+    } catch (error) {
+      try {
+        const refusal = JSON.parse(await readFile(path.join(reference.directory, "rejected.json"), "utf8"));
+        if (refusal.context === reference.hash && refusal.rejected === true) error.candidateFailure = "candidate-changed";
+      } catch { /* The native command outcome remains authoritative when no refusal was recorded. */ }
+      throw error;
+    }
     const after = await inspectWorktree(root);
     assertIdentity(after, request.expected);
+    const preparedReference = JSON.parse(await readFile(path.join(reference.directory, "prepared.json"), "utf8"));
+    if (preparedReference.context !== reference.hash || preparedReference.branch !== request.expected.identity.branch ||
+        preparedReference.parent !== request.expected.source.head || preparedReference.commit !== after.source.head) {
+      fail("Native commit lacks its expected prepared reference transaction.");
+    }
     const ancestry = (await git(root, ["rev-list", "--parents", "-n", "1", after.source.head])).trim().split(" ");
     if (after.index !== request.expected.index ||
         JSON.stringify(ancestry) !== JSON.stringify([after.source.head, request.expected.source.head]) ||
@@ -353,11 +578,13 @@ async function commitInspectedIndex(root, request) {
     published = true;
     const final = await inspectWorktree(root);
     candidate = { created: true, parent: request.expected.source.head, commit: after.source.head,
-      source: final.source, tree, index: stagedIndex };
+      source: final.source, tree, index: stagedIndex, reference: { version: 1, branch: request.expected.identity.branch,
+        parent: request.expected.source.head, commit: after.source.head } };
     await requireCommitResult(root, request, candidate);
   } catch (error) { failure = error; }
   for (const cleanup of [
     async () => { if (directory) await rm(directory, { recursive: true, force: true }); },
+    async () => { if (referenceDirectory) await rm(referenceDirectory, { recursive: true, force: true }); },
     async () => {
       if (published) return;
       if (lock) await lock.close();
@@ -381,7 +608,7 @@ async function commitInspectedIndex(root, request) {
 }
 
 export async function commitCandidate(request) {
-  if (request?.version !== 3 || !request.expected || !request.hooks || !request.execution || path.resolve(request.root) !== request.expected.identity?.root ||
+  if (request?.version !== 4 || !request.expected || !request.hooks || !request.execution || path.resolve(request.root) !== request.expected.identity?.root ||
       !/^[A-Za-z0-9-]{1,100}$/.test(request.sessionId ?? "") || !taskPaths(request.files).length) {
     fail("Invalid candidate commit request.");
   }

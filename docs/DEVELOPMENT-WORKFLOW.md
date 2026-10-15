@@ -160,9 +160,20 @@ explicitly; disappearing inputs, unreadable, changing or unsupported hook eviden
 blocks execution rather than silently allowing it.
 Hooks may invoke programs outside that directory; these snapshots do not parse
 arbitrary hook dependencies or replace the original native permission policy.
-Candidate requests and controller journals use version 3 to bind hook and
-executable-input snapshots. Older requests/results require inspected recovery;
+Candidate requests and controller journals use version 4 to bind hook,
+executable-input and prepared reference-transaction evidence. Older requests/results require inspected recovery;
 they are not replayed as approval for the new controller.
+An operation-private hook route uses Git's `reference-transaction` prepared phase,
+while Git holds its ref locks, to bind the actual branch update and new commit's
+parent to the request. A verify-only transaction first proves the native veto
+works without advancing a ref or invoking user hooks. User hooks are forwarded
+once through `git hook run`, with original arguments, input, configuration and
+exit status; user hook files and persistent Git settings are not replaced.
+The operation-private routing exists only for the candidate command. Unknown ref
+shapes, changed context and missing prepared evidence stop explicitly. Zero OIDs
+alone do not establish a no-op: `AUTO_MERGE` cleanup requires an actual absence
+check while the prepared transaction holds its lock, plus matching completion
+evidence. A ref created later is retained for inspection rather than deleted.
 The captured executable manifest uses version 2 and includes the local development
 policy module separately from CI impact policy. Earlier input sets cannot qualify
 the current native launcher or publication checks.

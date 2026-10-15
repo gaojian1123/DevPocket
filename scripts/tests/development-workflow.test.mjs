@@ -120,7 +120,7 @@ test("the skill freezes an authorized delivery candidate before final verificati
 function durable(ctx) {
   const journal = new Map();
   return { session: nativeSession(), phase() {}, log() {}, ...ctx, step: async (key, producer) => {
-    assert.equal(key, "devpocket-development-v3", "Older journals must not be replayed as current execution-policy evidence.");
+    assert.equal(key, "devpocket-development-v4", "Older journals must not be replayed as current execution-policy evidence.");
     if (!journal.has(key)) journal.set(key, JSON.parse(JSON.stringify(await producer())));
     return journal.get(key);
   } };
@@ -1246,6 +1246,133 @@ test("the native candidate boundary rejects concurrent changes instead of commit
       if (scenario === "index") assert.match(await git(root, ["diff", "--cached", "--name-only"]), /README.md/);
       if (scenario === "existing-receipt") assert.equal(await readFile(path.join(root, ".data", "development",
         "candidate-test", "candidate-0.json.result.json"), "utf8"), '{"status":"committed","candidate":{"commit":"forged"}}\n');
+    });
+  }
+});
+
+test("late AUTO_MERGE creation cannot be deleted as an assumed no-op", async (t) => {
+  const { root, main } = await workspace(t);
+  const expected = (await git(root, ["rev-parse", "HEAD^{tree}"])).trim();
+  await writeFile(path.join(main, ".git", "hooks", "commit-msg"),
+    "#!/bin/sh\ngit update-ref AUTO_MERGE \"$(git rev-parse HEAD^{tree})\"\n", { mode: 0o755 });
+  const before = await inspectWorktree(root);
+  await writeFile(path.join(root, "README.md"), "Inspected task change\n");
+  const { request } = await prepareCandidate(root, before, await sourceSnapshot(root),
+    ["README.md"], "fixture-session", "Preserve newly created metadata", undefined, await captureCandidateImplementation());
+  await mkdir(path.join(root, ".data"));
+  const file = path.join(root, ".data", "candidate-request.json"), bytes = JSON.stringify(request) + "\n";
+  await writeFile(file, bytes);
+  let failure;
+  try {
+    await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", nativeCandidateCommand(file, sha256(bytes))],
+      { cwd: root, timeout: 60_000 });
+  } catch (error) { failure = error; }
+  let retained;
+  try { retained = (await git(root, ["rev-parse", "--verify", "--quiet", "AUTO_MERGE"])).trim(); }
+  catch (error) { if (error.code !== 1) throw error; }
+  assert.equal(retained, expected, "A hook-created ref must survive an unconditional zero-old cleanup.");
+  assert.equal(failure?.code, 1);
+  const receipt = JSON.parse(await readFile(`${file}.result.json`, "utf8"));
+  assert.equal(receipt.status, "blocked");
+});
+
+test("transaction guards preserve configured hooks, original configuration and hook vetoes", async (t) => {
+  for (const veto of [false, true]) {
+    await t.test(veto ? "reference veto" : "normal reference hooks", async (t) => {
+      const { root } = await workspace(t);
+      const hooks = path.join(root, ".githooks"), data = path.join(root, ".data");
+      await mkdir(hooks); await mkdir(data);
+      await git(root, ["config", "--local", "core.hooksPath", ".githooks"]);
+      await writeFile(path.join(hooks, "pre-commit"),
+        "#!/bin/sh\ngit config --null --list --show-origin --show-scope > .data/hook-config\nprintf pre >> .data/pre-count\n",
+        { mode: 0o755 });
+      await writeFile(path.join(hooks, "reference-transaction"), [
+        "#!/bin/sh",
+        'printf "%s\\n" "$1" >> .data/reference-phases',
+        'cat >> .data/reference-phases',
+        veto ? 'if test "$1" = prepared && test -e .data/enable-veto; then exit 19; fi' : "exit 0",
+        "",
+      ].join("\n"), { mode: 0o755 });
+      await git(root, ["add", "--", ".githooks"]);
+      await git(root, ["commit", "--quiet", "-m", "Configure original hooks"]);
+      await rm(path.join(data, "pre-count"), { force: true });
+      await rm(path.join(data, "reference-phases"), { force: true });
+      if (veto) await writeFile(path.join(data, "enable-veto"), "yes");
+      const before = await inspectWorktree(root);
+      const result = await runDevelopment(documentationTask(root), { root });
+      assert.equal(result.status, veto ? "blocked" : "ready", result.reason);
+      assert.equal(await readFile(path.join(data, "pre-count"), "utf8"), "pre");
+      assert.equal(sha256(await readFile(path.join(data, "hook-config"))), before.configuration);
+      assert.equal((await inspectWorktree(root)).configuration, before.configuration);
+      if (veto) assert.equal((await sourceSnapshot(root)).head, before.source.head);
+      else {
+        const phases = await readFile(path.join(data, "reference-phases"), "utf8");
+        assert.equal(phases.match(/refs\/heads\/task\n/g)?.length, 2, "Forward the actual prepared/committed update once; the capability probe is private.");
+        assert.equal(result.candidate.reference.branch, "refs/heads/task");
+        assert.equal(result.candidate.reference.parent, before.source.head);
+      }
+    });
+  }
+});
+
+test("ref changes at commit admission cannot advance an unintended branch or parent", async (t) => {
+  for (const scenario of ["branch", "parent", "commit-hook-branch"]) {
+    await t.test(scenario, async (t) => {
+      const { root, main } = await workspace(t);
+      const parent = (await sourceSnapshot(root)).head;
+      const tree = (await git(root, ["rev-parse", "HEAD^{tree}"])).trim();
+      const otherParent = scenario === "commit-hook-branch" ? parent
+        : (await git(root, ["commit-tree", tree, "-p", parent, "-m", "Other fixture parent"])).trim();
+      await git(root, ["branch", "other", otherParent]);
+      if (scenario === "commit-hook-branch") {
+        await writeFile(path.join(main, ".git", "hooks", "commit-msg"),
+          "#!/bin/sh\ngit symbolic-ref HEAD refs/heads/other\n", { mode: 0o755 });
+      }
+      const before = await inspectWorktree(root);
+      await writeFile(path.join(root, "README.md"), "Inspected task change\n");
+      const { request } = await prepareCandidate(root, before, await sourceSnapshot(root),
+        ["README.md"], "fixture-session", "Keep the expected ref transaction", undefined, await captureCandidateImplementation());
+      await mkdir(path.join(root, ".data"));
+      const file = path.join(root, ".data", "candidate-request.json"), bytes = JSON.stringify(request) + "\n";
+      await writeFile(file, bytes);
+      let command = nativeCandidateCommand(file, sha256(bytes));
+      if (scenario !== "commit-hook-branch") {
+        const preload = path.join(root, ".data", "concurrent-ref.mjs");
+        const action = scenario === "branch" ? ["symbolic-ref", "HEAD", "refs/heads/other"]
+          : ["update-ref", "refs/heads/task", otherParent, parent];
+        await writeFile(preload, [
+          "import childProcess from 'node:child_process';",
+          "import { syncBuiltinESMExports } from 'node:module';",
+          "import { promisify } from 'node:util';",
+          "import { writeFileSync } from 'node:fs';",
+          `const target = ${JSON.stringify(root)}, action = ${JSON.stringify(action)};`,
+          "const original = childProcess.execFile, execute = promisify(original);",
+          "const intercepted = (...args) => original(...args); let changed = false;",
+          "intercepted[promisify.custom] = (program, args, options) => {",
+          "  if (!changed && program === 'git' && options?.cwd === target && args.includes('commit')) {",
+          "    changed = true; childProcess.execFileSync('git', action, { cwd: target });",
+          `    writeFileSync(${JSON.stringify(path.join(root, ".data", "ref-change-observed"))}, "changed");`,
+          "  }",
+          "  return execute(program, args, options);",
+          "}; childProcess.execFile = intercepted; syncBuiltinESMExports();",
+          "",
+        ].join("\n"));
+        command = command.replace(" --input-type=module",
+          ` --import '${pathToFileURL(preload).href.replaceAll("'", "''")}' --input-type=module`);
+      }
+      await assert.rejects(exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", command],
+        { cwd: root, timeout: 60_000 }));
+      if (scenario !== "commit-hook-branch") {
+        assert.equal(await readFile(path.join(root, ".data", "ref-change-observed"), "utf8"), "changed");
+      }
+      assert.equal((await git(root, ["symbolic-ref", "HEAD"])).trim(),
+        scenario === "parent" ? "refs/heads/task" : "refs/heads/other", "Preserve the concurrent actor's HEAD selection.");
+      assert.equal((await git(root, ["rev-parse", "refs/heads/other"])).trim(), otherParent,
+        "The candidate must not advance the other branch.");
+      assert.equal((await git(root, ["rev-parse", "refs/heads/task"])).trim(),
+        scenario === "parent" ? otherParent : parent, "The candidate must not replace the concurrent parent update.");
+      const receipt = JSON.parse(await readFile(`${file}.result.json`, "utf8"));
+      assert.equal(receipt.status, "blocked");
     });
   }
 });

@@ -128,7 +128,7 @@ const blocked = (reason) => ({ status: "blocked", reason });
 
 // Call only with the controller's durable result, never an editable handoff file.
 export async function checkDevelopmentReadiness(root, result) {
-  if (result?.version !== 3 || result.status !== "ready" || !result.candidate || !result.workspace || !result.hooks || !result.execution) {
+  if (result?.version !== 4 || result.status !== "ready" || !result.candidate || !result.workspace || !result.hooks || !result.execution) {
     return blocked("No committed, controller-journaled PR-ready result is available.");
   }
   try {
@@ -208,7 +208,7 @@ export async function runDevelopment(ctx, { root = process.cwd(), verify = execu
   catch (error) { return { status: "needs_human", reason: error.message }; }
   if (!/^[A-Za-z0-9-]{1,100}$/.test(ctx.runId)) throw new Error("Invalid workflow run identity.");
   if (typeof ctx.step !== "function") throw new Error("The runtime's durable workflow journal is required.");
-  const outcome = await ctx.step("devpocket-development-v3", async () => ({
+  const outcome = await ctx.step("devpocket-development-v4", async () => ({
     root, task, result: await runAttempt(ctx, root, task, verify),
   }));
   if (outcome.root !== root || JSON.stringify(outcome.task) !== JSON.stringify(task)) {
@@ -261,7 +261,7 @@ async function runAttempt(ctx, root, task, verify) {
       return blocked("A development run must start with a clean worktree; existing changes are never overwritten.");
     }
     const base = workspace.source.head;
-    state = { version: 3, task, base, workspace: workspace.identity, hooks: { ...approvedHooks }, execution: loadedImplementation, runId: ctx.runId,
+    state = { version: 4, task, base, workspace: workspace.identity, hooks: { ...approvedHooks }, execution: loadedImplementation, runId: ctx.runId,
       round: 0, stage: "prepared", source: workspace.source };
     await save(statePath, state);
     let feedback = null;
@@ -270,7 +270,7 @@ async function runAttempt(ctx, root, task, verify) {
       try { source = await sourceSnapshot(root); }
       catch { result = blocked(`${result.reason ?? result.status} Source inspection also failed; inspect the retained state.`); }
       state.source = source ?? null;
-      state.result = { ...result, version: 3, runId: ctx.runId, workspace: workspace.identity, hooks: { ...approvedHooks }, execution: loadedImplementation, base,
+      state.result = { ...result, version: 4, runId: ctx.runId, workspace: workspace.identity, hooks: { ...approvedHooks }, execution: loadedImplementation, base,
         ...(source ? { source } : {}), ...(state.candidate ? { candidate: state.candidate } : {}), round: state.round };
       if (state.result.status === "ready") {
         const checked = await checkDevelopmentReadiness(root, state.result);
