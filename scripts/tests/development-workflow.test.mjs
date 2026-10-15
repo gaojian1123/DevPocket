@@ -1460,11 +1460,15 @@ test("high-risk review and protected policy boundaries remain distinct from comm
         return syntheticReport(plan);
       } });
       assert.equal(result.status, "needs_human");
+      assert.deepEqual(result.policyReview, {
+        requiresHumanReview: true, protectedPaths: policy ? [file] : [], source: result.source,
+      });
       if (policy) assert.equal((await sourceSnapshot(root)).head, original);
       else {
         assert.notEqual(result.candidate.commit, original);
         assert.equal(result.review.verdict, "pass");
-        assert.match(result.reason, /High-risk/);
+        assert.match(result.reason, /Local development policy requires human review/);
+        assert.equal(Object.hasOwn(result.verification, "requiresHumanReview"), false);
       }
       assert.equal((await checkDevelopmentReadiness(root, result)).status, "blocked");
     });
