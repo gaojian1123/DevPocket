@@ -26,39 +26,66 @@ to migrate it; report that it is outside the registered workflow. Explicit
 requests for a different route still retain applicable checks and authorization
 boundaries and must not be labelled as workflow runs.
 
+### Choose the entry point: current session first
+
 After explicitly authorizing this repository's development extension to load in
-the current session, use `devpocket_start_development` for a new task with:
+the current session, freshly inspect the starting checkout before dispatch.
+Use bounded read-only Git inspection, as the starter does through the existing
+Git helper: confirm the repository root, compare the resolved `--git-dir` and
+`--git-common-dir`, and inspect
+`git --no-optional-locks status --porcelain --untracked-files=all --ignore-submodules=none`.
+Check staged, unstaged and non-ignored untracked changes; ignored artifacts do
+not make a checkout dirty. Session names and the presence of a `.git` file alone
+do not establish linked-worktree identity.
+
+- **Clean linked worktree:** prefer `run_dynamic_workflow` in the **current
+  session**, using the invocation below. There is no need for a child session.
+  Calling `devpocket_start_development` here also invokes that workflow exactly
+  once through the App's native tool boundary, without `create_session`.
+- **Clean primary checkout:** use `devpocket_start_development`, passing only
+  the `args` object below. It uses the App's native `create_session` with
+  `workspace_type: "worktree"` to isolate the task; that child invokes the
+  workflow directly. The controller still refuses the primary checkout.
+- **Dirty checkout or failed inspection:** stop and preserve the checkout.
+  The starter dispatches neither a workflow nor a child. Resolve any dependency
+  on existing changes before choosing a clean workspace; do not silently
+  start from a base that drops them. Dependencies on a particular in-progress
+  branch also require an explicit choice before dispatch, even when clean.
+
+Direct invocation of `run_dynamic_workflow` in an eligible current worktree:
 
 ```json
 {
-  "goal": "Describe the user-visible change",
-  "acceptance": ["An observable success case", "An observable failure case"],
-  "nonGoals": ["Behavior that must remain unchanged"],
-  "maxRepairRounds": 2
+  "name": "devpocket-development",
+  "args": {
+    "goal": "Describe the user-visible change",
+    "acceptance": ["An observable success case", "An observable failure case"],
+    "nonGoals": ["Behavior that must remain unchanged"],
+    "maxRepairRounds": 2
+  }
 }
 ```
 
-The tool uses the App's native `create_session` tool to create a new worktree
-session, preserving the parent. The child invokes `run_dynamic_workflow` with
-name `devpocket-development` and those arguments. A task already in a clean linked
-worktree can invoke that workflow directly. The primary checkout and dirty
-starting worktrees are refused. The GitHub Copilot host (desktop app or CLI) must
-support Dynamic Workflows and eligible execution credentials; an unavailable
-capability is a blocker, not permission to substitute a different runtime.
-If the task depends on uncommitted work or a particular in-progress branch,
-resolve that dependency before dispatch rather than silently starting from a
-base that omits it. Preserve the current checkout's changes.
+Discover the available native tool names; the starter supports both unqualified
+names and the existing `functions.`-qualified forms. It forwards the validated
+task arguments without adding model overrides or guessed workflow limits.
+If current-session workflow invocation is unavailable, rejected, fails or has an
+uncertain outcome, preserve/report that result. Never fall back to creating a
+child or dispatch the task a second time. Inspect an uncertain run before
+choosing a continuation.
 
 Loading/reloading the extension and the repository's read/search-only
 `devpocket-reviewer` profile is explicit. Reloading extensions may also reload
 other extensions in that session. Merely adding these files does not activate
-them in an already-running session. If the starter, workflow or read-only
-reviewer is unavailable, report the missing prerequisite and request the
-specific setup/loading authorization needed before proceeding. An explicit
-eligible-worktree entry point above may replace an unavailable starter, but
-direct coding or implementer self-review is not a substitute for the workflow.
-Honor the App's per-run approval and credit/time controls; default routing does
-not bypass them.
+them in an already-running session. The GitHub Copilot host (desktop app or CLI)
+must support Dynamic Workflows and eligible execution credentials. The preferred
+direct entry does not require the starter, but still requires the native workflow
+tool, loaded workflow and read-only reviewer. For missing prerequisites, including
+session creation when isolation is needed, report the blocker and request the
+specific setup/loading authorization needed before proceeding. Direct coding or
+implementer self-review is not a substitute. Honor the App's per-run approval and
+credit/time controls; default routing does not bypass them or authorize a
+replacement runtime.
 
 The controller follows **implement → local candidate commit → final verification
 → independent review**:
@@ -139,8 +166,11 @@ not repository gates.
 
 ## Verification
 
-Run from the checkout with Node 24 and PowerShell 7. Operational fixture checks
-also need Python 3.12 and the existing pinned
+Run from the checkout with Node 24 and PowerShell 7. The complete workflow
+regression suite also needs Git, Python 3.12 (standard-library checks), the
+root npm dependencies (including TypeScript/tsx), and the existing Windows
+owned-command compiler support. It uses synthetic toolchains, not an Android
+SDK/JDK or emulator. Operational fixture checks additionally need the pinned
 `deployment\azure\probe\requirements-test.txt` dependencies; use an isolated
 environment rather than changing the machine's Python packages.
 
@@ -152,27 +182,95 @@ npm run verify -- -Base BASE_COMMIT
 The base is explicit; it is not guessed from a branch name. Planning is not
 acceptance. The source fingerprint includes tracked and non-ignored untracked
 inputs, including deletions. Required checks come from the actual diff, not an
-agent's risk label. Unclassified paths select the full check set and human
-review. Documentation-only changes select no application build.
+agent's risk label. The planner and `scripts\verification-policy.mjs` catalogue
+are shared by local verification, the development controller and CI. Each
+selected check defines its group; `requiredGroups` is derived from those
+definitions, never from "non-Android means backend."
+
+Impact rules are explicit and ordered:
+
+- `README.md`, `VALIDATION.md` and `docs/**/*.md` select no checks.
+- Exactly `scripts/workflow-extension.mjs` and
+  `scripts/tests/development-workflow.test.mjs` select `workflow-tests`, in the
+  independent `tooling` group. These are task-start/session-routing tooling and
+  its regressions, not the shipped runtime extension or verification controller.
+- `AGENTS.md` selects the same tooling regressions and retains protected human
+  review, without automatically selecting application checks. Thus the five-path
+  PR #10 change set (these three paths, README and the workflow guide) selects
+  only `workflow-tests`; either tooling path also does so independently.
+- Verification policy/engine, CI definitions, build tooling, shared execution
+  and cleanup infrastructure, and dependency configuration select **all** checks,
+  layouts and human review. This includes `scripts/verification-policy.mjs`,
+  `scripts/verification.mjs`, `scripts/verify.mjs`,
+  `scripts/development-workflow.mjs`, other scripts/tests, `.github` definitions,
+  package/lock/npm/TypeScript/Python dependency inputs and Android build inputs.
+  There is no scripts-directory exemption.
+- Existing backend, runtime-extension, operations, shared wire/fixture and
+  Android rules retain their downstream coverage. Backend checks still include
+  workflow regressions, now in the tooling lane. Runtime/wire changes still
+  require native compatibility evidence; Android UI/resource changes select
+  layouts. Unclassified paths select the full set, layouts and human review.
+
+Mixed changes take the union; no narrow rule cancels another path's requirements.
+`--all` explicitly selects every check. Plan JSON and CLI output include
+`requiredChecks`, `requiredGroups`, `requiresHumanReview`, `layouts`, and
+`selectionReasons`: fixed rule descriptions, selected checks/groups and sorted
+changed-path examples (at most 16 paths of 240 characters per rule, with
+`omittedPaths` for unsampled/unsupported names). Omission affects explanations
+only, not selection. Diagnostic projections rebuild fixed descriptions and
+allow at most 16 current source-indexed path examples overall; raw/private log
+fields cannot become explanation text.
 
 The verifier reuses the commands in `package.json`. Android changes and affected
 runtime/wire changes require JVM/build checks **and** native emulator evidence.
-Changes to control tooling select its regressions and conservative downstream
-checks. The workflow pauses before executing modified gate/dependency policy;
-review that policy explicitly before another run.
+Protection is separate from impact selection. The controller's existing
+`isVerificationPolicyPath` stop still covers **all** scripts, `.github` and
+`AGENTS.md`, including tooling-only changes. The workflow pauses before
+executing modified gate/dependency policy; review that policy explicitly before
+another run. A change implementing these planner/CI rules itself has full
+impact and does not bypass that stop. Targeted synthetic regressions are not a
+completed source-bound gate or independent-review approval.
 
-For CI shards, use `-Group backend`, `-Group android` or `-Group device` with a
-separate `-Report` for each. A successful shard is `partial` unless it covers the
-whole plan. Aggregate the reports using:
+For CI shards, use `-Group tooling`, `-Group backend`, `-Group android` or
+`-Group device` with a separate `-Report` for each. The tooling check remains
+the **complete** `npm run test:workflow` suite, not a per-test-file selection.
+A successful shard is `partial` unless it covers the whole plan. For a full
+plan, aggregate all four reports using:
 
 ```powershell
 node scripts\verify.mjs --base BASE_COMMIT --combine `
+  --input .data\verification\tooling\report.json `
   --input .data\verification\backend\report.json --input .data\verification\android\report.json `
   --input .data\verification\device\report.json --report .data\verification\combined\report.json
 ```
 
+Supply only the selected reports for narrower plans. For example, after
+protected-policy review, a tooling-only plan can use:
+
+```powershell
+npm run verify -- -Base BASE_COMMIT -Group tooling -Report .data\verification\tooling\report.json
+node scripts\verify.mjs --base BASE_COMMIT --combine `
+  --input .data\verification\tooling\report.json `
+  --report .data\verification\combined\report.json
+```
+
+CI additionally supplies `--upstream group:outcome` for each lane, for example
+`--upstream tooling:success --upstream backend:skipped` only when those are
+the actual job outcomes, not invented attestations. When any
+job outcomes are supplied, every selected group needs `success`; missing,
+failed, cancelled, skipped or unknown selected jobs block acceptance even with
+passing check reports. Unselected skipped lanes do not block tooling-only or
+documentation-only plans. Local aggregation can omit upstream outcomes; it
+still requires all selected checks. A documentation-only plan needs no shards.
+
 Aggregation rejects missing checks, failed/blocked/planned evidence, duplicate
-results, mismatched policy, and stale base/source identities. A required check
+results, wrong-group checks, mismatched policy, and stale base/source identities.
+Verification reports are now **version 2**, with required `requiredGroups`
+matching the current catalogue. Version-1 reports, absent group policy and
+reports that place `workflow-tests` in backend cannot qualify; rerun rather
+than relabel old evidence. Non-acceptance diagnostic exporters can still read
+version-1 reports, using their legacy workflow-test group. Device/startup
+evidence formats are unchanged. A required check
 that did not run is never equivalent to passing. Schema generation that changes
 source also invalidates that run; review the generated change and verify again.
 Detailed logs remain private in ignored run directories. Share only the
@@ -199,7 +297,7 @@ invented exit values for an unobserved descendant.
 
 Every job with available checkout/runtime can publish a bounded
 `verification-diagnostics.json` and a GitHub step summary. These include the
-job/check/phase, original exit facts, collection availability and safe source-aware
+job/check/phase, selected groups and bounded plan causes, original exit facts, collection availability and safe source-aware
 hints from failed private check logs. Hints are not a proved root cause. A required
 upstream job failure also prevents a passing aggregate, even when an earlier
 check report survived a later exporter or artifact failure; that does not relabel
@@ -300,9 +398,9 @@ unconditional failure artifact.
 
 Artifacts are explicit and separate:
 
-- `verification-backend`, `verification-android`, `verification-device`: the
+- `verification-tooling`, `verification-backend`, `verification-android`, `verification-device`: the
   original `report.json` only; `verification-summary`: `gate.json`.
-- `check-diagnostics-plan/backend/android/device/gate`: their bounded
+- `check-diagnostics-plan/tooling/backend/android/device/gate`: their bounded
   `verification-diagnostics.json`.
 - `backend-test-diagnostics`, `android-test-diagnostics`,
   `device-test-diagnostics`, `owned-worker-diagnostics`: only their corresponding
@@ -343,13 +441,15 @@ markers cannot satisfy aggregation.
 ### Backend failure diagnostics
 
 CI retains the normal owned PowerShell `npm test` invocation, test discovery,
-default concurrency and predecessor checks. `--backend-diagnostics` (or
+default concurrency and selected predecessor checks. `--backend-diagnostics` (or
 `-BackendDiagnostics` through PowerShell) adds a check-scoped Node test reporter
 through npm's lifecycle `node-options`; it does not replace the command with a
 selected-test proxy. Before any predecessor runs, diagnostic preflight checks
 inherited Node/npm options and reads effective project/user npm `node-options`
 with a bounded owned `npm config get node-options` command. Conflicting
-reporter settings are refused before they can affect workflow-test predecessors.
+reporter settings are refused before they can affect predecessors, including
+workflow regressions in a local all-group run. CI runs those regressions in
+the independent tooling job; the backend job no longer executes them.
 For the backend check only, the effective benign options are retained and the
 reporter is appended through npm's own configuration channel, so npm cannot
 silently replace the protected child configuration. The npm parent's original
@@ -396,7 +496,7 @@ unexecuted later checks and source-bound aggregate remain authoritative.
 
 For a reviewed investigation, manual `backend_diagnostic: true` reuses the
 normal Windows backend job and toolchain/setup/entry chain, without starting
-unrelated Android/device jobs. Native-startup diagnostics use a separate workflow.
+tooling or unrelated Android/device jobs. Native-startup diagnostics use a separate workflow.
 **Required verification deliberately fails in this mode**, even if all backend
 checks pass. Normal PR/full manual mode still requires current native/source/APK
 evidence and every other selected check. Record the new question before each run;
@@ -868,16 +968,29 @@ artifacts match; recursive `report.json` discovery also handles a single match
 extracted directly into the destination. Keep
 [v8's failing digest-mismatch default](https://github.com/actions/download-artifact/releases/tag/v8.0.0):
 do not merge same-named reports or downgrade integrity failures to warnings.
-An empty download still cannot satisfy the source-bound combiner.
+An empty download cannot satisfy a nonempty required-check plan; a
+documentation-only plan legitimately needs no check artifacts.
 These compatibility checks do not prove a remote Actions run succeeded or that
 its warnings disappeared. The separate extension-release workflow is unchanged.
 
-`ci.yml` plans every PR and runs selected backend and Android checks on hosted
-Windows runners. The required device job uses hosted Ubuntu for same-repository
+`ci.yml` plans every PR and runs selected tooling, backend and Android checks
+in separate hosted Windows jobs. The tooling job installs only Node/root npm
+dependencies and Python; it uses the hosted PowerShell/Git/compiler support,
+does not run application builds, and does not provision JDK/SDK/emulators or
+operational Python/deployment npm dependencies. The required device job uses hosted Ubuntu for same-repository
 PRs or explicit dispatch. It no longer depends on `DEVPOCKET_ANDROID_RUNNER_ENABLED`,
 self-hosted labels or the `devpocket-android-ci` environment. Fork PRs do not
-gain device execution through an unsafe checkout. Missing or failed device
-evidence still blocks **Required verification**, never counts as skipped success.
+gain device execution through an unsafe checkout. When device checks are
+selected, missing or failed evidence still blocks **Required verification**,
+never counts as skipped success.
+
+The unchanged, always-run **Required verification** job depends on plan and all
+four lanes, downloads `verification-*` artifacts, and forwards every lane's
+actual outcome to the source-bound combiner. Required lanes come only from
+the current planner. Tooling-only changes run plan/tooling/gate and skip
+backend/android/device; documentation-only changes run plan/gate; full-impact
+changes require all four lanes. Artifact/collector failure in a selected job
+cannot be hidden by an earlier passing check report.
 
 The backend job binds `DEVPOCKET_PROBE_PYTHON` to the first Python application
 selected on PATH. Command discovery may return multiple installations; the

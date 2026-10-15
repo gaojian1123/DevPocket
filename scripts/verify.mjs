@@ -4,6 +4,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { combineVerification, executeVerification, verificationPlan, verificationFailure, verificationFault, requirePlanCollection } from "./verification.mjs";
 import { readDiagnosticReport } from "./worker-diagnostics.mjs";
+import { CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "./verification-policy.mjs";
 
 let entryPhase = "arguments";
 
@@ -48,6 +49,7 @@ async function main() {
     try {
       plan = await verificationPlan(root, values.base, values.all);
       requirePlanCollection(plan);
+      if (!["all", ...CHECK_GROUPS].includes(values.group)) throw verificationFault("configuration");
       if (values.plan && values.combine) throw verificationFault("configuration");
       if (values.combine) {
         phase = "aggregate";
@@ -60,10 +62,16 @@ async function main() {
           return value;
         }));
         report = combineVerification(plan, reports);
+        const upstream = new Map();
         for (const result of values.upstream) {
-          const match = /^(backend|android|device):(success|failure|cancelled|skipped|unknown)$/.exec(result);
-          if (!match) throw verificationFault("configuration");
-          if (match[2] !== "success") throw verificationFault("upstream-job-failed", { group: match[1], outcome: match[2] });
+          const [group, outcome, extra] = result.split(":");
+          if (!CHECK_GROUPS.includes(group) || extra !== undefined || upstream.has(group) ||
+              !["success", "failure", "cancelled", "skipped", "unknown"].includes(outcome)) throw verificationFault("configuration");
+          upstream.set(group, outcome);
+        }
+        if (upstream.size) for (const group of plan.requiredGroups) {
+          const outcome = upstream.get(group) ?? "unknown";
+          if (outcome !== "success") throw verificationFault("upstream-job-failed", { group, outcome });
         }
       } else {
         if (values.upstream.length) throw verificationFault("configuration");
@@ -75,7 +83,7 @@ async function main() {
       if (["failed", "blocked"].includes(report.status)) process.exitCode = 1;
     } catch (error) {
       const failure = verificationFailure(error, error.verificationContext?.phase ?? phase);
-      report = { ...plan, version: 1, status: "blocked", complete: false, failure,
+      report = { ...plan, version: VERIFICATION_REPORT_VERSION, status: "blocked", complete: false, failure,
         error: failure.summary + (failure.missingChecks?.length ? ` Missing checks: ${failure.missingChecks.join(", ")}.` : ""),
         checks: [] };
       process.exitCode = 1;
@@ -104,6 +112,10 @@ async function main() {
     process.off("SIGTERM", cancel);
   }
   console.log(`Verification ${report.status}: ${path.relative(root, reportPath).replaceAll("\\", "/")}`);
+  if (report.status === "planned") console.log(JSON.stringify({
+    kind: "verification-plan", requiredChecks: report.requiredChecks, requiredGroups: report.requiredGroups,
+    requiresHumanReview: report.requiresHumanReview, layouts: report.layouts, selectionReasons: report.selectionReasons,
+  }));
   if (report.failure) console.error(JSON.stringify({ kind: "verification-failure", ...report.failure }));
 }
 

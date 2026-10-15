@@ -195,8 +195,10 @@ After the user finished the trial, its dedicated local emulator, ADB server and 
 
 The developer-only GitHub Copilot workflow is the default agent route for new feature
 implementation and bug-fix requests under `AGENTS.md`; no special workflow phrase
-is needed. It creates an isolated worktree, implements the task with targeted
-checks, makes a task-scoped local candidate commit through the original tool
+is needed. New tasks prefer the current clean linked worktree rather than opening
+another session; the guide below defines primary-checkout isolation and blockers.
+The workflow implements the task with targeted checks, makes a task-scoped local
+candidate commit through the original tool
 permissions, then runs final source-bound verification and an independent
 read-only review against that exact clean commit. Repairs create new commits
 and fresh evidence; failed commits and reports remain history. The automatic
@@ -204,9 +206,19 @@ endpoint is a committed PR-ready handoff, not remote publication.
 Before separately authorized push/PR creation, a read-only readiness check
 reuses the durable evidence for an unchanged candidate without repeating local
 final verification. Changed source, HEAD, branch or index invalidates readiness.
+Follow-ups continue the existing task.
 Discussion, planning and documentation-only tasks do not start implementation.
 Extension loading and the App's run approvals remain explicit; unavailable
 prerequisites are reported rather than silently bypassed.
+Verification classifies changed paths centrally and derives CI lanes from the
+selected check definitions. Task-start/session-routing tooling and its regression
+file select the complete workflow regression suite in an independent **tooling**
+lane, without application builds or Android provisioning. `AGENTS.md` selects
+those regressions and retains protected human review. README, validation and
+docs Markdown changes alone select no application checks. Verification/CI/build
+infrastructure, dependency policy and unknown paths remain conservative full
+impact; mixed changes take the union. Plans include bounded path/rule explanations.
+Narrower check selection never authorizes execution of modified protected policy.
 Android-affecting changes require actual emulator
 instrumentation against a local test adapter, not just a successful APK build.
 CI runs this device gate on a standard GitHub-hosted Ubuntu 24.04 VM with KVM;

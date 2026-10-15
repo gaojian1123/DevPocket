@@ -30,6 +30,7 @@ jobs:
     runs-on: windows-latest
     outputs:
       base: ${{ steps.plan.outputs.base }}
+      tooling: ${{ steps.plan.outputs.tooling }}
       backend: ${{ steps.plan.outputs.backend }}
       android: ${{ steps.plan.outputs.android }}
       device: ${{ steps.plan.outputs.device }}
@@ -52,9 +53,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Verification planning failed.' }
           $plan = Get-Content -LiteralPath .data\ci\plan.json -Raw | ConvertFrom-Json
           "base=$($plan.base)" >> $env:GITHUB_OUTPUT
-          "backend=$([bool]($plan.requiredChecks | Where-Object { $_ -notin @('android-build', 'android-device') }))".ToLowerInvariant() >> $env:GITHUB_OUTPUT
-          "android=$($plan.requiredChecks -contains 'android-build')".ToLowerInvariant() >> $env:GITHUB_OUTPUT
-          "device=$($plan.requiredChecks -contains 'android-device')".ToLowerInvariant() >> $env:GITHUB_OUTPUT
+          foreach ($group in @('tooling', 'backend', 'android', 'device')) {
+            "$group=$($plan.requiredGroups -contains $group)".ToLowerInvariant() >> $env:GITHUB_OUTPUT
+          }
       - name: Explain plan outcome
         id: diagnostics
         if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
@@ -69,6 +70,54 @@ jobs:
         with:
           name: check-diagnostics-plan
           path: .data/ci/verification-diagnostics.json
+          if-no-files-found: error
+
+  tooling:
+    needs: plan
+    if: needs.plan.outputs.tooling == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: npm ci --no-audit --no-fund
+      - name: Verify complete workflow regression suite
+        id: verify
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ needs.plan.outputs.base }}
+        run: |
+          node scripts\verify.mjs --base $env:BASE_SHA --group tooling --report .data\ci\tooling\report.json
+          exit $LASTEXITCODE
+      - name: Explain tooling check outcome
+        id: diagnostics
+        if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
+        shell: pwsh
+        env:
+          STEP_RESULT: ${{ steps.verify.outcome }}
+        run: |
+          node scripts/verification-diagnostics.mjs --directory .data/ci/tooling --job tooling --step-result $env:STEP_RESULT --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.diagnostics.outputs.report_ready == 'true'
+        with:
+          name: check-diagnostics-tooling
+          path: .data/ci/tooling/verification-diagnostics.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: verification-tooling
+          path: .data\ci\tooling\report.json
           if-no-files-found: error
 
   backend:
@@ -284,7 +333,7 @@ jobs:
 
   gate:
     name: Required verification
-    needs: [plan, backend, android, device]
+    needs: [plan, tooling, backend, android, device]
     if: always()
     runs-on: windows-latest
     steps:
@@ -306,9 +355,7 @@ jobs:
           BASE_SHA: ${{ needs.plan.outputs.base }}
           PLAN_RESULT: ${{ needs.plan.result }}
           BACKEND_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic }}
-          BACKEND_REQUIRED: ${{ needs.plan.outputs.backend }}
-          ANDROID_REQUIRED: ${{ needs.plan.outputs.android }}
-          DEVICE_REQUIRED: ${{ needs.plan.outputs.device }}
+          TOOLING_RESULT: ${{ needs.tooling.result }}
           BACKEND_RESULT: ${{ needs.backend.result }}
           ANDROID_RESULT: ${{ needs.android.result }}
           DEVICE_RESULT: ${{ needs.device.result }}
@@ -319,12 +366,10 @@ jobs:
             throw 'A backend diagnostic cannot satisfy Required verification. Run full verification for acceptance.'
           }
           $arguments = @('scripts\verify.mjs', '--base', $env:BASE_SHA, '--combine', '--report', '.data\ci\gate.json')
-          foreach ($group in @('backend', 'android', 'device')) {
-            if ([Environment]::GetEnvironmentVariable("$($group.ToUpperInvariant())_REQUIRED") -eq 'true') {
-              $result = [Environment]::GetEnvironmentVariable("$($group.ToUpperInvariant())_RESULT")
-              if (-not $result) { $result = 'unknown' }
-              $arguments += @('--upstream', "${group}:$result")
-            }
+          foreach ($group in @('tooling', 'backend', 'android', 'device')) {
+            $result = [Environment]::GetEnvironmentVariable("$($group.ToUpperInvariant())_RESULT")
+            if (-not $result) { $result = 'unknown' }
+            $arguments += @('--upstream', "${group}:$result")
           }
           if (Test-Path -LiteralPath .data\ci\inputs) {
             Get-ChildItem -LiteralPath .data\ci\inputs -Filter report.json -File -Recurse | ForEach-Object {

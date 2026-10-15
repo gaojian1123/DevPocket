@@ -1,5 +1,7 @@
+import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { checkDevelopmentReadiness, parseTask, runDevelopment, taskSchema } from "./development-workflow.mjs";
+import { git } from "./verification.mjs";
 
 const readinessSchema = {
   type: "object", required: ["runId"], properties: { runId: { type: "string" } },
@@ -23,6 +25,16 @@ export async function checkRecordedReadiness(session, root, input) {
   return { status: "ready", runId: input.runId, commit: result.candidate.commit,
     base: result.base, source: result.source,
     reason: "The verified and independently reviewed candidate is unchanged. Publication still requires separate authorization; no verification or publication was executed." };
+}
+
+async function inspectStartingWorktree(root) {
+  root = await realpath(root);
+  const topLevel = await realpath((await git(root, ["rev-parse", "--show-toplevel"])).trim());
+  if (topLevel !== root) throw new Error("Expected the repository worktree root.");
+  const gitDirectory = await realpath(path.resolve(root, (await git(root, ["rev-parse", "--git-dir"])).trim()));
+  const commonDirectory = await realpath(path.resolve(root, (await git(root, ["rev-parse", "--git-common-dir"])).trim()));
+  const dirty = Boolean(await git(root, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"]));
+  return { linked: gitDirectory !== commonDirectory, dirty };
 }
 
 export async function requireReadonlyReviewer(session, root) {
@@ -55,15 +67,37 @@ export async function registerDevelopmentExtension({ defineWorkflow, joinSession
     workflows: [workflow],
     tools: [{
       name: "devpocket_start_development",
-      description: "Start an explicitly requested DevPocket task in a NEW isolated GitHub Copilot desktop app worktree. Use after the goal and acceptance criteria are chosen, not for advice/planning. The workflow makes task-scoped local candidate commits through original native permissions before final verification and independent review. No runtime control, installation, cloud, push, PR creation, merge or release authority.",
+      description: "Start a NEW DevPocket task, current-session first: reuse a freshly inspected clean linked worktree via the App's devpocket-development workflow; isolate a clean primary checkout in a new App worktree. Dirty/unknown checkouts block. Settle goal, acceptance and dependencies first; follow-ups stay with their existing run. The workflow makes task-scoped local candidate commits through original native permissions before final verification and independent review. See docs\\DEVELOPMENT-WORKFLOW.md for direct invocation and prerequisites. No runtime control, installation, cloud, push, PR creation, merge or release authority.",
       parameters: taskSchema,
       handler: async (input) => {
         const task = parseTask(input);
         const metadata = await session.rpc.tools.getCurrentMetadata();
+        let checkout;
+        try { checkout = await inspectStartingWorktree(root); }
+        catch {
+          return {
+            resultType: "failure",
+            textResultForLlm: "Git worktree inspection failed. No workflow or child session was started. Confirm the repository root, Git availability and repository access before choosing an entry point.",
+          };
+        }
+        if (checkout.dirty) return {
+          resultType: "failure",
+          textResultForLlm: "The starting checkout is dirty. Resolve the task's dependency on existing changes before choosing a clean linked worktree; no workflow or child session was started and existing work was preserved.",
+        };
+        if (checkout.linked) {
+          const run = metadata.tools?.find((tool) => ["run_dynamic_workflow", "functions.run_dynamic_workflow"].includes(tool.name));
+          if (!run) return {
+            resultType: "failure",
+            textResultForLlm: "The current session's run_dynamic_workflow tool is unavailable. No child session was created. Request the missing workflow capability; do not retry through create_session.",
+          };
+          return session.rpc.tools.execute({
+            name: run.name, arguments: { name: "devpocket-development", args: task },
+          });
+        }
         const create = metadata.tools?.find((tool) => ["create_session", "functions.create_session"].includes(tool.name));
         if (!create) return {
           resultType: "failure",
-          textResultForLlm: "The App's create_session tool is unavailable. Open an isolated repository worktree session and run devpocket-development there; the primary checkout will be refused.",
+          textResultForLlm: "The App's create_session tool is unavailable for this clean primary checkout. Choose an isolated repository worktree session through the App; the workflow refuses the primary checkout.",
         };
         return session.rpc.tools.execute({
           name: create.name,

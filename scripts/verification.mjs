@@ -9,31 +9,13 @@ import { projectWorkerDiagnostics, readDiagnosticReport } from "./worker-diagnos
 import { deviceSourceCatalogue, projectDeviceDiagnostics, deviceDiagnosticsFromOutput } from "./device-diagnostics.mjs";
 import { diagnosticError, failureDetails, ownValue, commandDetails, diagnosticVersion } from "./diagnostic-errors.mjs";
 import { boundedDiagnosticBytes } from "./bounded-worker-log.mjs";
+import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationGroups, verificationImpact } from "./verification-policy.mjs";
+export { CHECKS, isVerificationPolicyPath } from "./verification-policy.mjs";
 
 const exec = promisify(execFile);
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const splitPaths = (value) => value.split("\0").filter(Boolean);
 const baselineDeviceClasses = ["NativeFlowTest", "AdaptiveLayoutTest", "FixtureFlowTest"].map((name) => `dev.devpocket.app.${name}`);
-
-export const isVerificationPolicyPath = (file) =>
-  /^(?:\.github\/|scripts\/|AGENTS\.md$|android\/gradle\/|android\/gradlew(?:\.bat)?$)/i.test(file) ||
-  /(?:^|\/)\.npmrc$/i.test(file) ||
-  /(?:^|\/)(?:package(?:-lock)?\.json|npm-shrinkwrap\.json|tsconfig(?:\.[^/]+)?\.json|requirements[^/]*\.txt)$/i.test(file) ||
-  /^android\/.*(?:\.gradle(?:\.kts)?|gradle\.properties)$/i.test(file);
-
-export const CHECKS = [
-  { id: "workflow-tests", group: "backend", npm: "run test:workflow" },
-  { id: "typecheck", group: "backend", npm: "run typecheck" },
-  { id: "backend-tests", group: "backend", npm: "test" },
-  { id: "backend-build", group: "backend", npm: "run build" },
-  { id: "schema", group: "backend", npm: "run schema" },
-  { id: "extension-package", group: "backend", npm: "run test:extension-package" },
-  { id: "setup", group: "backend", npm: "run test:setup" },
-  { id: "azure-tests", group: "backend", npm: "--prefix deployment\\azure test" },
-  { id: "operations-tests", group: "backend", npm: "run test:operations" },
-  { id: "android-build", group: "android", script: "build-android.ps1", args: ["-Lint", "-Instrumentation"] },
-  { id: "android-device", group: "device", script: "test-android.ps1", args: [] },
-];
 
 export function verificationFault(reason, context = {}, cause) {
   return Object.assign(diagnosticError(reason, cause), { verificationContext: context });
@@ -49,7 +31,7 @@ export function verificationFailure(error, phase = "command") {
     phase: ["arguments", "plan", "preflight", "command", "device-validation", "artifact-validation",
       "source-validation", "log", "aggregate", "report"].includes(phase) ? phase : "unknown",
     ...(CHECKS.some((item) => item.id === check) ? { check } : {}),
-    ...(["all", "backend", "android", "device"].includes(group) ? { group } : {}),
+    ...(["all", ...CHECK_GROUPS].includes(group) ? { group } : {}),
     ...(["success", "failure", "cancelled", "skipped", "unknown"].includes(outcome) ? { outcome } : {}),
     ...(Number.isSafeInteger(index) && index >= 0 && index < 128 ? { inputIndex: index } : {}),
     ...(["app", "instrumentation"].includes(artifact) ? { artifact } : {}),
@@ -101,48 +83,12 @@ export async function verificationPlan(root, base, all = false) {
     ...splitPaths(await git(root, ["--no-optional-locks", "diff", "--no-ext-diff", "--no-textconv", "--name-only", "--no-renames", "-z", baseSha, "--"])),
     ...splitPaths(await git(root, ["ls-files", "--others", "--exclude-standard", "-z"])),
   ])].sort();
-  const selected = new Set();
-  let requiresHumanReview = false, layouts = false;
-  const add = (...ids) => ids.forEach((id) => selected.add(id));
-  const backend = () => add("workflow-tests", "typecheck", "backend-tests", "backend-build", "schema");
-  const android = () => add("android-build", "android-device");
-  for (const file of changedFiles) {
-    requiresHumanReview ||= isVerificationPolicyPath(file);
-    if (["README.md", "VALIDATION.md"].includes(file) || /^docs\/.*\.md$/.test(file)) continue;
-    if (file.startsWith("android/")) {
-      android();
-      layouts ||= /\/ui\/|\/res\/|Manifest|\.gradle|gradle\.properties/.test(file);
-      requiresHumanReview ||= /\/data\/|Manifest|\.gradle|gradle\.properties/.test(file);
-    } else if (file.startsWith("backend/")) {
-      backend();
-      if (file.startsWith("backend/src/")) {
-        add("extension-package", "setup");
-        android();
-        requiresHumanReview = true;
-      } else if (file.startsWith("backend/integration/")) android();
-    } else if (file.startsWith("extension/")) {
-      backend();
-      add("extension-package", "setup");
-      requiresHumanReview = true;
-    } else if (file.startsWith("deployment/") || file.startsWith("infra/") || file === "azure.yaml") {
-      backend();
-      add("setup", "azure-tests", "operations-tests");
-      requiresHumanReview = true;
-    } else if (file.startsWith("test-fixtures/") || file === "protocol.schema.json") {
-      backend();
-      android();
-      requiresHumanReview = true;
-    } else {
-      for (const check of CHECKS) selected.add(check.id);
-      requiresHumanReview = true;
-      layouts = true;
-    }
-  }
-  if (all) for (const check of CHECKS) selected.add(check.id);
+  const impact = verificationImpact(changedFiles, all);
+  const device = impact.requiredChecks.includes("android-device");
   let trustedDeviceClasses = baselineDeviceClasses;
   let deviceClassCatalogueAvailable = false;
   let deviceClassCatalogueFailure;
-  if (selected.has("android-device")) {
+  if (device) {
     try {
       const catalogue = await deviceSourceCatalogue(root);
       trustedDeviceClasses = [...new Set([...baselineDeviceClasses,
@@ -152,9 +98,8 @@ export async function verificationPlan(root, base, all = false) {
     } catch (error) { deviceClassCatalogueFailure = failureDetails(error, "collector-failed"); }
   }
   return {
-    version: 1, base: baseSha, source, changedFiles, requiresHumanReview, layouts,
-    requiredChecks: CHECKS.filter((check) => selected.has(check.id)).map((check) => check.id),
-    ...(selected.has("android-device") ? { trustedDeviceClasses, deviceClassCatalogueAvailable,
+    version: VERIFICATION_REPORT_VERSION, base: baseSha, source, changedFiles, ...impact,
+    ...(device ? { trustedDeviceClasses, deviceClassCatalogueAvailable,
       deviceClassCatalogueFailure: deviceClassCatalogueFailure ?? null } : {}),
   };
 }
@@ -186,8 +131,9 @@ export function requirePlanCollection(plan) {
 
 export async function executeVerification(root, plan, options = {}) {
   requirePlanCollection(plan);
+  requireCheckPolicy(plan);
   const group = options.group ?? "all";
-  if (!["all", "backend", "android", "device"].includes(group)) throw new Error("Unknown verification group.");
+  if (!["all", ...CHECK_GROUPS].includes(group)) throw verificationFault("configuration");
   const checks = plan.requiredChecks.map((id) => ({ id, status: "not_run" }));
   const backendDiagnostics = options.backendDiagnostics ? await import("./backend-diagnostics.mjs") : undefined;
   const backendDiagnosticRunId = backendDiagnostics && ["all", "backend"].includes(group) &&
@@ -418,13 +364,23 @@ export async function executeVerification(root, plan, options = {}) {
   };
 }
 
+function requireCheckPolicy(plan) {
+  if (plan.version !== VERIFICATION_REPORT_VERSION || !Array.isArray(plan.requiredChecks) ||
+      JSON.stringify(plan.requiredChecks) !== JSON.stringify(CHECKS.filter((check) => plan.requiredChecks.includes(check.id)).map((check) => check.id)) ||
+      JSON.stringify(plan.requiredGroups) !== JSON.stringify(verificationGroups(plan.requiredChecks))) {
+    throw verificationFault("policy-mismatch");
+  }
+}
+
 export function combineVerification(plan, reports) {
   requirePlanCollection(plan);
+  requireCheckPolicy(plan);
   const passed = new Map();
   for (const [inputIndex, report] of reports.entries()) {
     const context = { inputIndex, group: report?.group };
     if (!report || typeof report !== "object" || !Array.isArray(report.checks)) throw verificationFault("report-invalid", context);
-    if (report.version !== plan.version || report.base !== plan.base ||
+    if (report.version !== plan.version) throw verificationFault("policy-mismatch", context);
+    if (report.base !== plan.base ||
         report.source?.head !== plan.source.head || report.source?.fingerprint !== plan.source.fingerprint) {
       throw verificationFault("source-mismatch", context);
     }
@@ -433,11 +389,12 @@ export function combineVerification(plan, reports) {
         ["failed", "blocked"].includes(item.status));
       throw verificationFault("check-failed", { ...context, check: failed?.id });
     }
-    if (JSON.stringify(report.requiredChecks) !== JSON.stringify(plan.requiredChecks)) throw verificationFault("policy-mismatch", context);
-    if (!["all", "backend", "android", "device"].includes(report.group)) throw verificationFault("check-group", context);
+    if (JSON.stringify(report.requiredChecks) !== JSON.stringify(plan.requiredChecks) ||
+        JSON.stringify(report.requiredGroups) !== JSON.stringify(plan.requiredGroups)) throw verificationFault("policy-mismatch", context);
+    if (!["all", ...CHECK_GROUPS].includes(report.group)) throw verificationFault("check-group", context);
     const seen = new Set();
     for (const check of report.checks ?? []) {
-      const definition = CHECKS.find((item) => item.id === check.id);
+      const definition = CHECKS.find((item) => item.id === check?.id);
       if (!definition || !plan.requiredChecks.includes(check.id)) throw verificationFault("check-unexpected", context);
       if (seen.has(check.id)) throw verificationFault("check-duplicate", { ...context, check: check.id });
       seen.add(check.id);
