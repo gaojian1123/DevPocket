@@ -330,11 +330,12 @@ test("CI projects actual planner groups and forwards selected and unselected job
   });
 });
 
-test("app, wire and unknown changes cannot omit device checks or lower their risk", async (t) => {
+test("app, wire, skill and unknown changes cannot omit device checks or lower their risk", async (t) => {
   for (const file of [
     "android/app/src/main/java/Screen.kt",
     "backend/src/protocol.ts",
     "scripts/verify.mjs",
+    ".github/skills/devpocket-development/SKILL.md",
     "new-unclassified-file",
   ]) {
     await t.test(file, async (t) => {
@@ -346,6 +347,10 @@ test("app, wire and unknown changes cannot omit device checks or lower their ris
       assert.ok(result.report.requiredChecks.includes("android-device"));
       assert.ok(result.report.requiredChecks.includes("android-build"));
       if (!file.startsWith("android/")) assert.equal(result.report.requiresHumanReview, true);
+      if (file.startsWith(".github/skills/")) {
+        assert.deepEqual(result.report.requiredChecks, CHECKS.map((check) => check.id));
+        assert.deepEqual(result.report.requiredGroups, CHECK_GROUPS);
+      }
     });
   }
 });

@@ -7,6 +7,67 @@ import { test } from "node:test";
 
 const exec = promisify(execFile);
 
+test("repository routing discovers the development skill without requiring workflow activation", async () => {
+  const [agents, skill, readme, issue, guide] = await Promise.all([
+    "../../AGENTS.md", "../../.github/skills/devpocket-development/SKILL.md",
+    "../../README.md", "../../.github/ISSUE_TEMPLATE/ai-task.yml", "../../docs/DEVELOPMENT-WORKFLOW.md",
+  ].map((file) => readFile(new URL(file, import.meta.url), "utf8")));
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(skill)?.[1];
+  assert.ok(frontmatter, "The default recipe must be a discoverable skill.");
+  assert.match(frontmatter, /^name: devpocket-development$/m);
+  assert.match(frontmatter, /^description: .+features and bug fixes/m);
+  assert.doesNotMatch(frontmatter, /disable-model-invocation:\s*true/);
+  assert.match(agents, /`devpocket-development` skill by default/);
+  assert.ok(agents.includes(".github\\skills\\devpocket-development\\SKILL.md"));
+  assert.match(agents, /otherwise read that file directly/);
+  assert.match(agents, /workflow only when the user explicitly/);
+  assert.doesNotMatch(agents, /`devpocket-development` workflow by default/);
+  assert.match(skill, /clean linked worktree, implement in the current session/);
+  assert.match(skill, /--no-optional-locks status --porcelain --untracked-files=all --ignore-submodules=none/);
+  assert.match(skill, /Continue an existing task in its own worktree/);
+  assert.match(skill, /npm run verify -- -Base BASE_COMMIT/);
+  assert.match(skill, /read\/search-only `devpocket-reviewer` in a separate context/);
+  assert.match(skill, /--combine/);
+  assert.match(skill, /source identity matches the review/);
+  assert.match(skill, /requiresHumanReview/);
+  assert.match(readme, /skill\*\* is the default agent route/);
+  assert.match(issue, /registered workflow is optional/);
+  const optional = guide.split("## Optional: registered workflow")[1];
+  assert.ok(optional);
+  assert.match(optional, /only when the user explicitly selects/);
+  assert.match(optional, /Calling `devpocket_start_development` here also invokes that workflow exactly\s+once/);
+  assert.match(optional, /Never fall back to creating a\s+child/);
+  const invocation = JSON.parse(/```json\r?\n([\s\S]*?)\r?\n```/.exec(optional)?.[1] ?? "null");
+  assert.equal(invocation?.name, "devpocket-development");
+  assert.ok(invocation.args.goal);
+  assert.ok(invocation.args.acceptance.length);
+});
+
+test("the skill freezes an authorized delivery candidate before final verification and review", async () => {
+  const skill = await readFile(new URL("../../.github/skills/devpocket-development/SKILL.md", import.meta.url), "utf8");
+  const sections = skill.split(/^## \d+\. /m).slice(1);
+  assert.deepEqual(sections.map((section) => section.split(/\r?\n/, 1)[0]), [
+    "Establish the task", "Select the workspace", "Implement in the owning session",
+    "Freeze the verification target", "Obtain source-bound verification",
+    "Request independent review", "Repair and recheck", "Hand off or publish",
+  ]);
+  const [contract, , , target, verification, , repair, handoff] = sections;
+  assert.match(contract, /Working-tree implementation/);
+  assert.match(contract, /PR delivery/);
+  assert.match(contract, /local commit, push and PR creation authorization separately/);
+  assert.match(target, /retain the edits without creating a commit/);
+  assert.match(target, /once local commit\s+authorization is established/);
+  assert.match(target, /clean tracked and non-ignored working tree/);
+  assert.match(target, /Keep `BASE_COMMIT` at the original task baseline; never replace/);
+  assert.match(verification, /`source.head` to equal `CANDIDATE_COMMIT`/);
+  assert.match(repair, /new authorized follow-up commit/);
+  assert.match(repair, /amend only if the user explicitly requests it/);
+  assert.match(repair, /HEAD to remain `CANDIDATE_COMMIT` before publishing/);
+  assert.match(handoff, /Pending human policy review still blocks publication/);
+  assert.match(handoff, /An unchanged push does not invalidate local source evidence/);
+  assert.match(handoff, /Required remote CI and checks of a/);
+});
+
 function durable(ctx) {
   const journal = new Map();
   return { ...ctx, step: async (key, producer) => {
@@ -52,6 +113,33 @@ async function registeredStarter(root, {
   }, root);
   return { registration, calls, activity, session, start: registration.tools[0].handler };
 }
+
+test("skill delivery verifies a committed candidate against the original task base without weakening identity", async (t) => {
+  const { verificationPlan, executeVerification, combineVerification } = await import("../verification.mjs");
+  const { root } = await workspace(t);
+  const base = (await exec("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+  await writeFile(path.join(root, "README.md"), "Completed task documentation\n");
+  await exec("git", ["add", "README.md"], { cwd: root });
+  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+    "commit", "--quiet", "-m", "Candidate"], { cwd: root });
+  const plan = await verificationPlan(root, base);
+  assert.equal(plan.base, base);
+  assert.notEqual(plan.source.head, base);
+  assert.deepEqual(plan.changedFiles, ["README.md"]);
+  assert.deepEqual((await verificationPlan(root, "HEAD")).changedFiles, [],
+    "Replacing the task base with the candidate would hide the task's changes.");
+  const report = await executeVerification(root, plan, { directory: path.join(root, ".data", "candidate") });
+  assert.equal(report.status, "passed");
+  assert.equal(report.complete, true);
+  assert.equal(combineVerification(plan, [report]).status, "passed");
+
+  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+    "commit", "--quiet", "--allow-empty", "-m", "Later commit"], { cwd: root });
+  const changedHead = await verificationPlan(root, base);
+  assert.equal(changedHead.source.fingerprint, plan.source.fingerprint);
+  assert.notEqual(changedHead.source.head, plan.source.head);
+  assert.throws(() => combineVerification(changedHead, [report]), /source|Source/);
+});
 
 test("a development run actually dispatches an independent reviewer and rechecks repaired source", async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
@@ -327,12 +415,17 @@ test("extension registration is inert and the starter isolates a clean primary c
   }, root);
   assert.equal(dispatched, undefined);
   assert.equal(registration.workflows[0].meta.name, "devpocket-development");
+  assert.match(registration.workflows[0].meta.description, /only when the user explicitly selects this workflow/);
   assert.equal(registration.workflows[0].meta.limits, undefined, "AI credit limits are chosen at invocation, not guessed.");
+  assert.match(registration.tools[0].description, /only when the user explicitly selects the workflow/);
+  assert.match(registration.tools[0].description, /clean linked worktree in the current session/);
+  assert.match(registration.tools[0].description, /isolate a clean primary checkout/);
   await registration.tools[0].handler({ goal: "Task", acceptance: ["Behavior"] });
   assert.equal(dispatched.name, "create_session");
   assert.equal(dispatched.arguments.workspace_type, "worktree");
   assert.equal(dispatched.arguments.base_branch, undefined);
   assert.match(dispatched.arguments.kickoff.prompt, /run_dynamic_workflow/);
+  assert.match(dispatched.arguments.kickoff.prompt, /explicitly selected the optional/);
   await requireReadonlyReviewer(session, root);
   session.rpc.agent.list = async () => ({ agents: [{
     id: "devpocket-reviewer", path: path.join(root, ".github", "agents", "devpocket-reviewer.agent.md"), tools: ["*"],
@@ -416,9 +509,9 @@ test("tooling-only impact retains the controller's protected-policy stop before 
   }
 });
 
-test("compiler, Gradle launcher and nested dependency policy require review before execution", async (t) => {
+test("skill, compiler, Gradle launcher and nested dependency policy require review before execution", async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
-  for (const file of [".npmrc", ".NPMRC", "backend/tsconfig.json", "android/gradlew.bat",
+  for (const file of [".github/skills/devpocket-development/SKILL.md", ".npmrc", ".NPMRC", "backend/tsconfig.json", "android/gradlew.bat",
     "android/gradle/wrapper/gradle-wrapper.properties", "deployment/azure/package.json"]) {
     await t.test(file, async (t) => {
       const { root } = await workspace(t);

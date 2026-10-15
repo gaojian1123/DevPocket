@@ -193,16 +193,28 @@ After the user finished the trial, its dedicated local emulator, ADB server and 
 
 ## AI development workflow
 
-The developer-only GitHub Copilot workflow is the default agent route for new feature
-implementation and bug-fix requests under `AGENTS.md`; no special workflow phrase
-is needed. New tasks prefer the current clean linked worktree rather than opening
-another session; the guide below defines primary-checkout isolation and blockers.
-The workflow implements the task, runs source-bound checks and requests an
-independent read-only review with bounded repairs. Follow-ups continue the
-existing task.
-Discussion, planning and documentation-only tasks do not start implementation.
-Extension loading and the App's run approvals remain explicit; unavailable
-prerequisites are reported rather than silently bypassed.
+The repository's **devpocket-development skill** is the default agent route for
+feature implementation and bug fixes under `AGENTS.md`. It keeps implementation
+in the current session when already in a suitable linked worktree, runs the
+existing source-bound verifier and requests an independent read-only reviewer.
+The recipe lives in `.github\skills\devpocket-development\SKILL.md`; an agent can
+read it directly when skill discovery has not refreshed. The default route needs
+neither the development extension nor Dynamic Workflows. Discussion, planning
+and documentation-only tasks do not start the implementation pipeline.
+
+The skill distinguishes reviewed working-tree changes from authorized commit/PR
+delivery. For the latter, it fixes a candidate commit before final verification
+and review, retaining the original task base. Implementation alone does not
+authorize publication or turn working-tree evidence into final-commit evidence.
+
+The **registered devpocket-development workflow** remains an explicit opt-in for
+controller-managed execution and bounded repairs, not the default entry point.
+Its starter also reuses a freshly inspected clean linked worktree in the current
+session, isolates a clean primary checkout and blocks dirty or unknown checkouts.
+Its extension activation and App run approvals remain explicit. Both routes
+retain the same verification requirements and scoped authorization; a skill is
+guidance, not a replacement for programmatic evidence checks or protected CI.
+
 Verification classifies changed paths centrally and derives CI lanes from the
 selected check definitions. Task-start/session-routing tooling and its regression
 file select the complete workflow regression suite in an independent **tooling**
@@ -219,8 +231,8 @@ no self-hosted runner registration, runner-enable variable or custom environment
 is needed. Windows local/manual emulator entry points retain their shared
 resource pool. Missing acceleration, failed fixtures and missing reports still
 block the required gate; moving CI does not repair historical Windows UI failures.
-See [development workflow](docs/DEVELOPMENT-WORKFLOW.md) for task input,
-`npm run verify`, explicit extension activation, runner prerequisites and CI
+See [development workflow](docs/DEVELOPMENT-WORKFLOW.md) for the skill-led route,
+`npm run verify`, optional workflow activation, runner prerequisites and CI
 rules. Missing required device evidence blocks acceptance. Repository files do
 not by themselves enable a runner, enforce branch protection or authorize
 installation, runtime control, cloud operations, merging or publication.
