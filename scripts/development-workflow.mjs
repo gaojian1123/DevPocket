@@ -1,9 +1,23 @@
 import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { combineVerification, executeVerification, git, isVerificationPolicyPath, sourceSnapshot, verificationPlan } from "./verification.mjs";
-import { assertCandidate, assertIdentity, changedPaths, inspectWorktree, prepareCandidate, sameSource,
+import { activeHookSnapshot, assertCandidate, assertIdentity, changedPaths, inspectWorktree, prepareCandidate, sameHooks, sameSource,
   sha256, taskPaths, validateCandidateCommit } from "./candidate-commit.mjs";
+import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "./native-candidate.mjs";
+
+const loadedImplementation = await captureCandidateImplementation();
+
+export async function requireDevelopmentImplementation() {
+  await requireCandidateImplementation(loadedImplementation);
+}
+
+function immutable(value) {
+  if (value && typeof value === "object") {
+    for (const child of Object.values(value)) immutable(child);
+    Object.freeze(value);
+  }
+  return value;
+}
 
 function objectFields(value, keys) {
   if (!value || typeof value !== "object" || Array.isArray(value) ||
@@ -113,11 +127,14 @@ const blocked = (reason) => ({ status: "blocked", reason });
 
 // Call only with the controller's durable result, never an editable handoff file.
 export async function checkDevelopmentReadiness(root, result) {
-  if (result?.version !== 2 || result.status !== "ready" || !result.candidate || !result.workspace) {
+  if (result?.version !== 3 || result.status !== "ready" || !result.candidate || !result.workspace || !result.hooks || !result.execution) {
     return blocked("No committed, controller-journaled PR-ready result is available.");
   }
   try {
+    await requireCandidateImplementation(loadedImplementation);
+    await requireCandidateImplementation(result.execution);
     const current = await inspectWorktree(root);
+    if (!sameHooks(await activeHookSnapshot(root), result.hooks)) throw new Error("Active Git hook policy changed after review.");
     if (JSON.stringify(current.identity) !== JSON.stringify(result.workspace) ||
         !sameSource(result.source, result.candidate.source)) throw new Error("The handoff workspace or source identity does not match.");
     await assertCandidate(root, current, result.candidate);
@@ -140,12 +157,12 @@ async function commitThroughSession(ctx, file, request) {
   const metadata = await tools.getCurrentMetadata();
   const shell = metadata.tools?.find((tool) => ["powershell", "functions.powershell"].includes(tool.name));
   if (!shell) throw new Error("The original session's PowerShell tool is unavailable; no direct Git mutation fallback is permitted.");
+  await requireCandidateImplementation(loadedImplementation);
+  request = immutable(structuredClone({ ...request, execution: loadedImplementation }));
   const hash = await record(file, request);
-  const quote = (text) => `'${text.replaceAll("'", "''")}'`;
-  const entry = fileURLToPath(new URL("./candidate-commit.mjs", import.meta.url));
   ctx.signal?.throwIfAborted();
   const response = await tools.execute({ name: shell.name, arguments: {
-    command: `& ${quote(process.execPath)} ${quote(entry)} --request ${quote(file)} --sha256 ${quote(hash)}; exit $LASTEXITCODE`,
+    command: nativeCandidateCommand(file, hash),
     description: "Commit the inspected DevPocket task candidate", mode: "sync", initial_wait: 180,
   } });
   const resultType = typeof response === "string" ? "success" : response?.resultType;
@@ -161,6 +178,9 @@ async function commitThroughSession(ctx, file, request) {
       "hook-failed": "A candidate Git hook failed even though Git returned success; inspect the retained index and history.",
       "hook-evidence": "Candidate Git hook-exit evidence or its cleanup is incomplete; inspect the retained index and history.",
       "index-cleanup": "Candidate index cleanup is incomplete; inspect the retained lock and index without removing another operation's lock.",
+      "execution-inputs-changed": "Candidate helper or imported policy changed after approval; obtain renewed approval and reload the implementation.",
+      "execution-loader-unavailable": "The native Node.js runtime cannot load captured modules; no mutable helper fallback is permitted.",
+      "execution-startup-unbound": "Unbound NODE_OPTIONS were refused before Node started, without clearing them; an explicitly approved startup environment is required.",
       "inspection-failed": "Candidate commit inspection failed; the outcome requires inspection.",
     };
     const reason = Object.hasOwn(failures, receipt.failure) ? failures[receipt.failure] : "Candidate commit failed.";
@@ -169,15 +189,18 @@ async function commitThroughSession(ctx, file, request) {
   if (resultType !== "success") throw new Error("The candidate commit tool failed or is uncertain. Inspect its output and retained index/history; do not retry automatically.");
   if (!receipt) throw new Error("The candidate commit did not produce a complete receipt. Inspect the retained index/history before recovery.");
   if (receipt.status !== "committed") throw new Error("The candidate commit or its hooks failed. Inspect the native tool output and retained index/history.");
+  await requireCandidateImplementation(loadedImplementation);
   return validateCandidateCommit(request.root, request, receipt.candidate);
 }
 
 export async function runDevelopment(ctx, { root = process.cwd(), verify = executeVerification } = {}) {
   root = path.resolve(root);
   const task = parseTask(ctx.args);
+  try { await requireCandidateImplementation(loadedImplementation); }
+  catch (error) { return { status: "needs_human", reason: error.message }; }
   if (!/^[A-Za-z0-9-]{1,100}$/.test(ctx.runId)) throw new Error("Invalid workflow run identity.");
   if (typeof ctx.step !== "function") throw new Error("The runtime's durable workflow journal is required.");
-  const outcome = await ctx.step("devpocket-development-v2", async () => ({
+  const outcome = await ctx.step("devpocket-development-v3", async () => ({
     root, task, result: await runAttempt(ctx, root, task, verify),
   }));
   if (outcome.root !== root || JSON.stringify(outcome.task) !== JSON.stringify(task)) {
@@ -191,9 +214,23 @@ export async function runDevelopment(ctx, { root = process.cwd(), verify = execu
 }
 
 async function runAttempt(ctx, root, task, verify) {
-  let workspace;
-  try { workspace = await inspectWorktree(root); }
+  let workspace, approvedHooks;
+  try {
+    workspace = await inspectWorktree(root);
+    approvedHooks = Object.freeze({ ...await activeHookSnapshot(root) });
+  }
   catch (error) { return blocked(error.message); }
+  const checkHooks = async (phase) => {
+    try {
+      if (!sameHooks(await activeHookSnapshot(root), approvedHooks)) return {
+        status: "needs_human",
+        reason: `Active Git hook policy changed ${phase}; obtain renewed human approval before continuing.`,
+      };
+      return null;
+    } catch (error) {
+      return blocked(`Active Git hook inspection failed: ${error.message}`);
+    }
+  };
   const directory = path.join(root, ".data", "development", ctx.runId);
   await mkdir(directory, { recursive: true });
   const statePath = path.join(directory, "state.json"), lockPath = path.join(root, ".data", "development.lock");
@@ -216,7 +253,7 @@ async function runAttempt(ctx, root, task, verify) {
       return blocked("A development run must start with a clean worktree; existing changes are never overwritten.");
     }
     const base = workspace.source.head;
-    state = { version: 2, task, base, workspace: workspace.identity, runId: ctx.runId,
+    state = { version: 3, task, base, workspace: workspace.identity, hooks: { ...approvedHooks }, execution: loadedImplementation, runId: ctx.runId,
       round: 0, stage: "prepared", source: workspace.source };
     await save(statePath, state);
     let feedback = null;
@@ -225,7 +262,7 @@ async function runAttempt(ctx, root, task, verify) {
       try { source = await sourceSnapshot(root); }
       catch { result = blocked(`${result.reason ?? result.status} Source inspection also failed; inspect the retained state.`); }
       state.source = source ?? null;
-      state.result = { ...result, version: 2, runId: ctx.runId, workspace: workspace.identity, base,
+      state.result = { ...result, version: 3, runId: ctx.runId, workspace: workspace.identity, hooks: { ...approvedHooks }, execution: loadedImplementation, base,
         ...(source ? { source } : {}), ...(state.candidate ? { candidate: state.candidate } : {}), round: state.round };
       if (state.result.status === "ready") {
         const checked = await checkDevelopmentReadiness(root, state.result);
@@ -238,9 +275,12 @@ async function runAttempt(ctx, root, task, verify) {
     };
     for (let round = 0; round <= task.maxRepairRounds; round++) {
       ctx.signal?.throwIfAborted();
-      let before;
+      let before, hooks;
       try {
         before = await inspectWorktree(root);
+        hooks = await activeHookSnapshot(root);
+        if (!sameHooks(hooks, approvedHooks)) return finish({ status: "needs_human",
+          reason: "Active Git hook policy changed since this run began; obtain renewed human approval before repair." });
         assertIdentity(before, workspace);
         if (before.status || !sameSource(before.source, state.source)) throw new Error("Unexpected source/history/index changes before implementation.");
       } catch (error) { return finish(blocked(error.message)); }
@@ -264,10 +304,19 @@ async function runAttempt(ctx, root, task, verify) {
       const implemented = safeResult(parseImplementation, response);
       if (!implemented.success) return finish(blocked("The implementation agent failed or returned an invalid result."));
       if (implemented.data.status === "needs_input") return finish({ status: "needs_human", reason: implemented.data.summary });
+      try { await requireCandidateImplementation(loadedImplementation); }
+      catch (error) { return finish({ status: "needs_human", reason: error.message }); }
+      let currentHooks;
+      try { currentHooks = await activeHookSnapshot(root); }
+      catch (error) { return finish(blocked(`Active Git hook inspection failed: ${error.message}`)); }
+      if (!sameHooks(hooks, currentHooks)) {
+        return finish({ status: "needs_human",
+          reason: "Active Git hook policy changed; obtain human approval before staging or committing." });
+      }
       let prepared;
       try {
         prepared = await prepareCandidate(root, before, implemented.data.source, implemented.data.ownedFiles,
-          ctx.session?.sessionId, task.goal);
+          ctx.session?.sessionId, task.goal, hooks, loadedImplementation);
       } catch (error) { return finish(blocked(error.message)); }
       const changedFiles = await changedPaths(root, base);
       if (changedFiles.some(isVerificationPolicyPath)) {
@@ -286,7 +335,7 @@ async function runAttempt(ctx, root, task, verify) {
         if (ctx.signal?.aborted || ["ResponseError", "ConnectionError"].includes(error.name)) throw error;
         return finish(blocked(error.message));
       }
-      const plan = await verificationPlan(root, base);
+      const plan = immutable(structuredClone(await verificationPlan(root, base)));
       if (!sameSource(plan.source, state.candidate.source)) return finish(blocked("Source changed after the candidate commit."));
       state.stage = "verifying";
       state.source = plan.source;
@@ -294,11 +343,17 @@ async function runAttempt(ctx, root, task, verify) {
       ctx.phase("Verify");
       try { await assertCandidate(root, workspace, state.candidate); }
       catch (error) { return finish(blocked(`Candidate changed before verification: ${error.message}`)); }
-      const verification = await verify(root, plan, {
+      const beforeVerificationHooks = await checkHooks("before verification");
+      if (beforeVerificationHooks) return finish(beforeVerificationHooks);
+      const verification = immutable(structuredClone(await verify(root, immutable(structuredClone(plan)), {
         directory: path.join(directory, `round-${round}`), signal: ctx.signal,
         jdk: process.env.DEVPOCKET_JDK, sdk: process.env.DEVPOCKET_ANDROID_SDK, image: process.env.DEVPOCKET_ANDROID_IMAGE,
-      });
+      })));
       await record(path.join(directory, `verification-${round}.json`), verification);
+      const verificationHooks = await checkHooks("during verification");
+      if (verificationHooks) return finish({ ...verificationHooks, verification });
+      try { await requireCandidateImplementation(loadedImplementation); }
+      catch (error) { return finish({ status: "needs_human", reason: error.message, verification }); }
       try { await assertCandidate(root, workspace, state.candidate); }
       catch (error) { return finish(blocked(`Source changed during verification: ${error.message}`)); }
       if (!verification.complete || verification.status !== "passed") {
@@ -319,6 +374,8 @@ async function runAttempt(ctx, root, task, verify) {
         base, state.candidate.commit, "--"]), { flag: "wx", mode: 0o600 });
       try { await assertCandidate(root, workspace, state.candidate); }
       catch (error) { return finish(blocked(`Candidate changed before review: ${error.message}`)); }
+      const beforeReviewHooks = await checkHooks("before review");
+      if (beforeReviewHooks) return finish(beforeReviewHooks);
       const reviewResponse = await ctx.agent([
         `Independently review the task in ${root}. You have read/search tools only.`,
         `Review committed candidate ${state.candidate.commit}, selected against explicit base ${base}; the controller requires the same clean index/worktree before and after review.`,
@@ -334,6 +391,10 @@ async function runAttempt(ctx, root, task, verify) {
         label: `${ctx.runId}:review:${round}:${state.candidate.commit}:${plan.source.fingerprint}`, schema: reviewSchema });
       const reviewed = safeResult(parseReview, reviewResponse);
       if (!reviewed.success) return finish(blocked("Independent review failed or returned inconsistent evidence."));
+      const reviewHooks = await checkHooks("during review");
+      if (reviewHooks) return finish({ ...reviewHooks, verification });
+      try { await requireCandidateImplementation(loadedImplementation); }
+      catch (error) { return finish({ status: "needs_human", reason: error.message, verification }); }
       try { await assertCandidate(root, workspace, state.candidate); }
       catch (error) { return finish(blocked(`Source changed during the read-only review: ${error.message}`)); }
       const review = { ...reviewed.data, source: plan.source, reviewer: "devpocket-reviewer" };

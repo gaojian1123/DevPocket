@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, lstat, mkdtemp, open, readFile, readlink, realpath, rm, rmdir } from "node:fs/promises";
+import { copyFile, lstat, mkdtemp, open, readFile, readdir, readlink, realpath, rename, rm, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { git, sourceSnapshot } from "./verification.mjs";
+import { git, sourceSnapshot } from "./git-state.mjs";
 
 const exec = promisify(execFile);
 export const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -98,6 +98,56 @@ export async function changedPaths(root, base) {
   ])].sort();
 }
 
+export async function activeHookSnapshot(root) {
+  const directory = path.resolve(root, (await git(root, ["rev-parse", "--git-path", "hooks"])).trim());
+  const entries = [], visited = new Set();
+  let totalBytes = 0;
+  const visit = async (file, relative, depth) => {
+    if (depth > 8 || entries.length >= 256) fail("Active Git hook inputs exceed the inspection bounds.");
+    let info;
+    try { info = await lstat(file); }
+    catch (error) {
+      if (error.code !== "ENOENT" || relative !== ".") throw error;
+      entries.push([relative, "missing"]);
+      return;
+    }
+    if (info.isSymbolicLink()) {
+      entries.push([relative, "link", await readlink(file)]);
+      await visit(await realpath(file), `${relative}/target`, depth + 1);
+    } else if (info.isDirectory()) {
+      const resolved = await realpath(file);
+      if (visited.has(resolved)) fail("Active Git hook directories contain a cycle.");
+      visited.add(resolved);
+      entries.push([relative, "directory", resolved]);
+      for (const name of (await readdir(file)).sort()) await visit(path.join(file, name), `${relative}/${name}`, depth + 1);
+      visited.delete(resolved);
+    } else if (info.isFile()) {
+      totalBytes += info.size;
+      if (info.size > 1024 * 1024 || totalBytes > 4 * 1024 * 1024) fail("Active Git hook inputs exceed the inspection bounds.");
+      const bytes = await readFile(file);
+      if (bytes.length !== info.size) fail("Active Git hook inputs changed during inspection.");
+      entries.push([relative, "file", info.mode & 0o111, sha256(bytes)]);
+    } else {
+      fail("Active Git hook inputs have an unsupported file type.");
+    }
+    const after = await lstat(file);
+    if (after.dev !== info.dev || after.ino !== info.ino || after.mode !== info.mode ||
+        after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs) {
+      fail("Active Git hook inputs changed during inspection.");
+    }
+  };
+  await visit(directory, ".", 0);
+  return { directory, fingerprint: sha256(JSON.stringify(entries)) };
+}
+
+export const sameHooks = (a, b) => a?.directory === b?.directory && a?.fingerprint === b?.fingerprint;
+
+async function requireHooks(root, expected) {
+  if (!expected || !sameHooks(await activeHookSnapshot(root), expected)) {
+    fail("Active Git hook policy changed; obtain approval before executing it.");
+  }
+}
+
 export async function inspectWorktree(root) {
   root = path.resolve(root);
   const [topPath, gitPath, commonPath] = await Promise.all([
@@ -161,13 +211,15 @@ async function contentFingerprint(root) {
   return sha256(JSON.stringify(entries));
 }
 
-export async function prepareCandidate(root, before, source, ownedFiles, sessionId, goal) {
+export async function prepareCandidate(root, before, source, ownedFiles, sessionId, goal, expectedHooks, execution) {
   const current = await inspectWorktree(root);
   assertIdentity(current, before);
   if (current.source.head !== before.source.head || current.index !== before.index) {
     fail("Implementation changed Git history or the index; inspect before continuing.");
   }
   if (!sameSource(current.source, source)) fail("Source changed after the implementer's inspection.");
+  const hooks = await activeHookSnapshot(root);
+  if (expectedHooks && !sameHooks(hooks, expectedHooks)) fail("Active Git hook policy changed before candidate preparation.");
   const files = taskPaths(ownedFiles);
   if (JSON.stringify(await changedPaths(root, before.source.head)) !== JSON.stringify(files)) {
     fail("Changed paths do not match the inspected task-owned changes; concurrent or unowned changes require inspection.");
@@ -180,9 +232,11 @@ export async function prepareCandidate(root, before, source, ownedFiles, session
   if (typeof sessionId !== "string" || !/^[A-Za-z0-9-]{1,100}$/.test(sessionId)) {
     fail("The original session identity is required for the candidate commit trailer.");
   }
+  if (!execution || execution.version !== 1) fail("A captured native implementation is required for candidate execution.");
   const title = `DevPocket: ${goal.replace(/\s+/g, " ").trim()}`.slice(0, 100);
   return { request: {
-    version: 1, root: path.resolve(root), expected: current, files, sessionId,
+    version: 3, root: path.resolve(root), expected: current, files, sessionId, hooks: { ...hooks },
+    execution: structuredClone(execution),
     content: await contentFingerprint(root),
     message: `${title}\n\nCo-authored-by: ${coauthor}\nCopilot-Session: ${sessionId}\n`,
   } };
@@ -212,18 +266,28 @@ export async function validateCandidateCommit(root, request, candidate) {
   return candidate;
 }
 
-async function commitInspectedIndex(root, request, staged, tree) {
+async function commitInspectedIndex(root, request) {
   const index = path.resolve(root, (await git(root, ["rev-parse", "--git-path", "index"])).trim());
   const lockPath = `${index}.lock`;
   const owner = JSON.stringify({ pid: process.pid, token: randomUUID() }) + "\n";
-  let lock, directory, failure;
+  let lock, lockIdentity, directory, failure, published = false, candidate;
+  const requireLock = async () => {
+    const current = await lstat(lockPath, { bigint: true });
+    if (!current.isFile() || current.isSymbolicLink() || current.dev !== lockIdentity.dev || current.ino !== lockIdentity.ino) {
+      fail("Candidate index lock ownership changed.");
+    }
+  };
   const check = async () => {
     const current = await inspectWorktree(root);
     assertIdentity(current, request.expected);
     if (current.source.head !== request.expected.source.head ||
-        current.index !== staged.index || !sameSource(current.source, staged.source)) {
+        current.index !== request.expected.index || !sameSource(current.source, request.expected.source) ||
+        current.status !== request.expected.status || await contentFingerprint(root) !== request.content ||
+        JSON.stringify(await changedPaths(root, current.source.head)) !== JSON.stringify(request.files)) {
       fail("The inspected candidate or expected parent changed before committing.");
     }
+    await requireHooks(root, request.hooks);
+    await requireLock();
   };
   try {
     try { lock = await open(lockPath, "wx", 0o600); }
@@ -231,24 +295,77 @@ async function commitInspectedIndex(root, request, staged, tree) {
       if (error.code === "EEXIST") fail("The candidate commit index is locked; preserve the existing lock and inspect before continuing.");
       throw error;
     }
+    lockIdentity = await lock.stat({ bigint: true });
+    if (lockIdentity.ino === 0n) fail("Candidate index lock identity is unavailable.");
     await lock.writeFile(owner);
     await check();
     directory = await mkdtemp(path.join(tmpdir(), "devpocket-candidate-index-"));
     const isolated = path.join(directory, "index");
     await copyFile(index, isolated);
     const environment = { GIT_INDEX_FILE: isolated };
-    if ((await gitMutation(root, ["write-tree"], undefined, environment)).trim() !== tree) {
-      fail("The isolated candidate index does not match the inspected tree.");
+    try {
+      for (const file of request.files) {
+        await requireHooks(root, request.hooks);
+        await gitMutation(root, ["--literal-pathspecs", "add", "--all", "--", file], undefined, environment);
+      }
+    } catch (error) { throw Object.assign(error, { candidateFailure: error.candidateFailure ?? "staging-failed" }); }
+    await check();
+    const stagedPaths = paths(await gitMutation(root, ["--no-optional-locks", "diff", "--cached",
+      "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", request.expected.source.head, "--"], undefined, environment)).sort();
+    if (JSON.stringify(stagedPaths) !== JSON.stringify(request.files) ||
+        await gitMutation(root, ["--no-optional-locks", "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "--"], undefined, environment) ||
+        await gitMutation(root, ["ls-files", "--others", "--exclude-standard", "-z"], undefined, environment)) {
+      fail("The isolated index does not contain exactly the inspected task changes.");
     }
+    await requireHooks(root, request.hooks);
+    const tree = (await gitMutation(root, ["write-tree"], undefined, environment)).trim();
+    const stagedIndex = sha256(await gitMutation(root, ["ls-files", "--stage", "-z"], undefined, environment));
     await check();
     await gitMutation(root, ["commit", "--file=-"], request.message, environment);
+    const after = await inspectWorktree(root);
+    assertIdentity(after, request.expected);
+    const ancestry = (await git(root, ["rev-list", "--parents", "-n", "1", after.source.head])).trim().split(" ");
+    if (after.index !== request.expected.index ||
+        JSON.stringify(ancestry) !== JSON.stringify([after.source.head, request.expected.source.head]) ||
+        after.source.head === request.expected.source.head ||
+        (await git(root, ["rev-parse", "HEAD^{tree}"])).trim() !== tree ||
+        sha256(await gitMutation(root, ["ls-files", "--stage", "-z"], undefined, environment)) !== stagedIndex) {
+      fail("Candidate commit history, tree or protected index changed.");
+    }
+    await requireHooks(root, request.hooks);
+    await requireLock();
+    const bytes = await readFile(isolated);
+    await lock.truncate(0);
+    for (let offset = 0; offset < bytes.length;) {
+      const { bytesWritten } = await lock.write(bytes, offset, bytes.length - offset, offset);
+      if (!bytesWritten) fail("Candidate index publication could not write the complete index.");
+      offset += bytesWritten;
+    }
+    await lock.sync();
+    await requireLock();
+    if (sha256(await git(root, ["ls-files", "--stage", "-z"])) !== request.expected.index) {
+      fail("The protected live index changed before publication.");
+    }
+    await lock.close();
+    lock = undefined;
+    await requireLock();
+    await rename(lockPath, index);
+    published = true;
+    const final = await inspectWorktree(root);
+    candidate = { created: true, parent: request.expected.source.head, commit: after.source.head,
+      source: final.source, tree, index: stagedIndex };
+    await requireCommitResult(root, request, candidate);
   } catch (error) { failure = error; }
   for (const cleanup of [
     async () => { if (directory) await rm(directory, { recursive: true, force: true }); },
     async () => {
-      if (!lock) return;
-      await lock.close();
-      if (await readFile(lockPath, "utf8") !== owner) throw new Error("Candidate index lock ownership changed.");
+      if (published) return;
+      if (lock) await lock.close();
+      if (!lockIdentity) {
+        if (lock) throw new Error("Candidate index lock identity was not established.");
+        return;
+      }
+      await requireLock();
       await rm(lockPath);
     },
   ]) {
@@ -260,10 +377,11 @@ async function commitInspectedIndex(root, request, staged, tree) {
     }
   }
   if (failure) throw failure;
+  return candidate;
 }
 
 export async function commitCandidate(request) {
-  if (request?.version !== 1 || !request.expected || path.resolve(request.root) !== request.expected.identity?.root ||
+  if (request?.version !== 3 || !request.expected || !request.hooks || !request.execution || path.resolve(request.root) !== request.expected.identity?.root ||
       !/^[A-Za-z0-9-]{1,100}$/.test(request.sessionId ?? "") || !taskPaths(request.files).length) {
     fail("Invalid candidate commit request.");
   }
@@ -275,37 +393,13 @@ export async function commitCandidate(request) {
       JSON.stringify(await changedPaths(root, current.source.head)) !== JSON.stringify(request.files)) {
     fail("Concurrent source, history or index changes detected before staging; nothing was committed.");
   }
-  try {
-    for (const file of request.files) await gitMutation(root, ["--literal-pathspecs", "add", "--all", "--", file]);
-  } catch (error) { throw Object.assign(error, { candidateFailure: error.candidateFailure ?? "staging-failed" }); }
-  current = await inspectWorktree(root);
-  assertIdentity(current, request.expected);
-  if (current.source.head !== request.expected.source.head || await contentFingerprint(root) !== request.content ||
-      (await git(root, ["--no-optional-locks", "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "--"])) ||
-      (await git(root, ["ls-files", "--others", "--exclude-standard", "-z"])) ||
-      JSON.stringify(paths(await git(root, ["--no-optional-locks", "diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames",
-        "--name-only", "-z", request.expected.source.head, "--"])).sort()) !== JSON.stringify(request.files)) {
-    fail("Concurrent changes detected during staging; inspect the retained index without resetting it.");
-  }
-  const tree = (await gitMutation(root, ["write-tree"])).trim();
-  const staged = await inspectWorktree(root);
-  assertIdentity(staged, current);
-  if (staged.index !== current.index || !sameSource(staged.source, current.source)) fail("Source or index changed before commit.");
-  try { await commitInspectedIndex(root, request, staged, tree); }
+  await requireHooks(root, request.hooks);
+  try { return await commitInspectedIndex(root, request); }
   catch (error) { throw Object.assign(error, { candidateFailure: error.candidateFailure ?? "commit-failed" }); }
-  const after = await inspectWorktree(root);
-  const candidate = { created: true, parent: request.expected.source.head, commit: after.source.head,
-    source: after.source, tree, index: current.index };
-  if (after.source.fingerprint !== current.source.fingerprint) fail("Source changed during the commit or its hooks.");
-  await requireCommitResult(root, request, candidate);
-  return candidate;
 }
 
-async function main() {
-  const [flag, file, hashFlag, hash, ...extra] = process.argv.slice(2);
-  if (flag !== "--request" || hashFlag !== "--sha256" || !/^[a-f0-9]{64}$/.test(hash ?? "") || extra.length) {
-    fail("Use --request FILE --sha256 REQUEST_HASH through the original session's native tool pipeline.");
-  }
+export async function runCandidateRequest(file, hash) {
+  if (typeof file !== "string" || !/^[a-f0-9]{64}$/.test(hash ?? "")) fail("Invalid native candidate request.");
   const input = await readFile(file);
   if (input.length > 1024 * 1024 || sha256(input) !== hash) fail("The candidate request changed before execution.");
   const receipt = await open(`${file}.result.json`, "wx", 0o600);
@@ -325,11 +419,6 @@ async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
-    console.error(error.message);
-    if (error.stderr) console.error(error.stderr);
-    if (error.traceCleanupFailed) console.error("Git hook trace cleanup also failed.");
-    if (error.indexCleanupFailed) console.error("Candidate index cleanup also failed.");
-    process.exitCode = 1;
-  });
+  console.error("Use the captured native candidate launcher; direct mutable helper execution is not supported.");
+  process.exitCode = 1;
 }

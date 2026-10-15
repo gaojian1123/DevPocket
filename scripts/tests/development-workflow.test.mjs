@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { checkDevelopmentReadiness, runDevelopment } from "../development-workflow.mjs";
 import { changedPaths, inspectWorktree, prepareCandidate, sha256 } from "../candidate-commit.mjs";
 import { executeVerification, git, sourceSnapshot } from "../verification.mjs";
+import { captureCandidateImplementation, nativeCandidateCommand } from "../native-candidate.mjs";
 
 const exec = promisify(execFile);
 
@@ -17,7 +18,8 @@ function nativeSession() {
     execute: async (request) => {
       assert.equal(request.name, "functions.powershell");
       assert.equal(request.arguments.mode, "sync");
-      assert.match(request.arguments.command, /candidate-commit\.mjs' --request /);
+      assert.match(request.arguments.command, /runFrozenCandidate/);
+      assert.match(request.arguments.command, /--request '/);
       try {
         const result = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", request.arguments.command],
           { timeout: 180_000 });
@@ -30,6 +32,18 @@ function nativeSession() {
 async function implemented(root, summary = "Changed") {
   const source = await sourceSnapshot(root);
   return { status: "implemented", summary, source, ownedFiles: await changedPaths(root, source.head) };
+}
+
+async function copiedController(root) {
+  const inputs = await captureCandidateImplementation();
+  const directory = path.join(root, ".data", "implementation");
+  await mkdir(directory, { recursive: true });
+  for (const input of inputs.files) {
+    const bytes = await readFile(path.join(inputs.directory, input.name));
+    assert.equal(sha256(bytes), input.sha256);
+    await writeFile(path.join(directory, input.name), bytes, { flag: "wx" });
+  }
+  return { directory, controller: await import(pathToFileURL(path.join(directory, "development-workflow.mjs")).href) };
 }
 
 const passingReview = { verdict: "pass", findings: [] };
@@ -103,7 +117,7 @@ test("the skill freezes an authorized delivery candidate before final verificati
 function durable(ctx) {
   const journal = new Map();
   return { session: nativeSession(), phase() {}, log() {}, ...ctx, step: async (key, producer) => {
-    assert.equal(key, "devpocket-development-v2", "Old uncommitted journals must not be replayed as candidate evidence.");
+    assert.equal(key, "devpocket-development-v3", "Older journals must not be replayed as current execution-policy evidence.");
     if (!journal.has(key)) journal.set(key, JSON.parse(JSON.stringify(await producer())));
     return journal.get(key);
   } };
@@ -606,6 +620,132 @@ test("tooling-only impact retains the controller's protected-policy stop before 
   }
 });
 
+test("configured active hooks require policy approval before staging or committing changes", async (t) => {
+  for (const [folder, hook, absolute] of [[".githooks", "pre-commit", false], ["custom-hooks", "post-index-change", true]]) {
+    for (const changed of [false, true]) {
+      await t.test(`${folder}: ${hook}: ${changed ? "changed" : "unchanged"}`, async (t) => {
+        const { root } = await workspace(t);
+        const directory = path.join(root, folder), file = path.join(directory, hook);
+        const marker = path.join(root, ".data", "hook-observation");
+        await mkdir(directory);
+        await mkdir(path.dirname(marker));
+        const baseline = "#!/bin/sh\nprintf 'baseline\\n' > .data/hook-observation\n";
+        const edited = "#!/bin/sh\nprintf 'changed\\n' > .data/hook-observation\n";
+        await writeFile(file, baseline, { mode: 0o755 });
+        await git(root, ["config", "--local", "core.hooksPath", absolute ? directory : folder]);
+        await git(root, ["add", "--", `${folder}/${hook}`]);
+        await git(root, ["commit", "--quiet", "-m", "Configure fixture hooks"]);
+        await rm(marker, { force: true });
+        const parent = (await sourceSnapshot(root)).head;
+        const session = nativeSession(), execute = session.rpc.tools.execute;
+        let mutations = 0, verifications = 0, reviews = 0;
+        session.rpc.tools.execute = async (request) => { mutations++; return execute(request); };
+        const result = await runDevelopment(documentationTask(root, {
+          session,
+          agent: async (_prompt, options) => {
+            if (options.agent === "devpocket-reviewer") { reviews++; return passingReview; }
+            if (changed) await writeFile(file, edited);
+            else await writeFile(path.join(root, "README.md"), "Inspected task change\n");
+            return implemented(root);
+          },
+        }), {
+          root,
+          verify: async (directory, plan, options) => {
+            verifications++;
+            if (changed) return { ...plan, group: "all", status: "blocked", complete: false,
+              checks: plan.requiredChecks.map((id) => ({ id, status: "blocked" })) };
+            return executeVerification(directory, plan, options);
+          },
+        });
+        if (changed) {
+          await assert.rejects(readFile(marker), { code: "ENOENT" }, "Changed active hook code must not execute before approval.");
+          assert.equal(result.status, "needs_human", result.reason);
+          assert.equal(mutations, 0);
+          assert.equal(verifications, 0);
+          assert.equal(reviews, 0);
+          assert.equal((await sourceSnapshot(root)).head, parent);
+          assert.equal(await readFile(file, "utf8"), edited);
+        } else {
+          assert.equal(result.status, "ready", result.reason);
+          assert.equal(await readFile(marker, "utf8"), "baseline\n");
+          assert.equal(mutations, 1);
+          assert.equal(verifications, 1);
+          assert.equal(reviews, 1);
+        }
+      });
+    }
+  }
+});
+
+test("a configured hook changed after candidate preparation cannot execute", async (t) => {
+  const { root } = await workspace(t);
+  const hooks = path.join(root, ".githooks"), hook = path.join(hooks, "pre-commit");
+  await mkdir(hooks);
+  await writeFile(hook, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  await git(root, ["config", "--local", "core.hooksPath", ".githooks"]);
+  await git(root, ["add", "--", ".githooks/pre-commit"]);
+  await git(root, ["commit", "--quiet", "-m", "Configure fixture hook"]);
+  const before = await inspectWorktree(root);
+  await writeFile(path.join(root, "README.md"), "Inspected task change\n");
+  const { request } = await prepareCandidate(root, before, await sourceSnapshot(root),
+    ["README.md"], "fixture-session", "Keep hook policy fixed", undefined, await captureCandidateImplementation());
+  await mkdir(path.join(root, ".data"));
+  const file = path.join(root, ".data", "candidate-request.json"), bytes = JSON.stringify(request) + "\n";
+  await writeFile(file, bytes);
+  await writeFile(hook, "#!/bin/sh\nprintf changed > .data/changed-hook-ran\n");
+  await assert.rejects(exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", nativeCandidateCommand(file, sha256(bytes))],
+    { cwd: root, timeout: 30_000 }), { code: 1 });
+  await assert.rejects(readFile(path.join(root, ".data", "changed-hook-ran")), { code: "ENOENT" });
+  const after = await inspectWorktree(root);
+  assert.equal(after.source.head, before.source.head);
+  assert.equal(after.index, before.index);
+});
+
+test("verification cannot refresh changed external hooks into a repair baseline", async (t) => {
+  const { root, main } = await workspace(t);
+  const hooks = path.join(main, ".data", "shared-hooks"), hook = path.join(hooks, "pre-commit");
+  await mkdir(hooks, { recursive: true });
+  await writeFile(hook, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  await git(root, ["config", "--local", "core.hooksPath", hooks]);
+  let implementations = 0, verifications = 0;
+  const result = await runDevelopment(documentationTask(root, {
+    args: { goal: "Keep the approved hook baseline", acceptance: ["Changed hooks stop before repair"], maxRepairRounds: 1 },
+    agent: async (_prompt, options) => {
+      if (options.agent === "devpocket-reviewer") return passingReview;
+      implementations++;
+      await writeFile(path.join(root, "README.md"), `Task revision ${implementations}\n`);
+      return implemented(root);
+    },
+  }), {
+    root,
+    verify: async (_root, plan) => {
+      verifications++;
+      await writeFile(hook, "#!/bin/sh\nprintf changed > .data/repair-hook-ran\n");
+      return { ...plan, group: "all", status: "failed", complete: false, checks: [] };
+    },
+  });
+  assert.equal(result.status, "needs_human", result.reason);
+  assert.match(result.reason, /hook policy changed/i);
+  assert.equal(implementations, 1);
+  assert.equal(verifications, 1);
+  await assert.rejects(readFile(path.join(root, ".data", "repair-hook-ran")), { code: "ENOENT" });
+});
+
+test("ready results retain their original external-hook baseline", async (t) => {
+  const { root, main } = await workspace(t);
+  const hooks = path.join(main, ".data", "shared-hooks"), hook = path.join(hooks, "pre-commit");
+  await mkdir(hooks, { recursive: true });
+  await writeFile(hook, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  await git(root, ["config", "--local", "core.hooksPath", hooks]);
+  const result = await runDevelopment(documentationTask(root), { root });
+  assert.equal(result.status, "ready", result.reason);
+  await writeFile(hook, "#!/bin/sh\nprintf changed > .data/reused-hook-ran\n");
+  const stale = await checkDevelopmentReadiness(root, result);
+  assert.equal(stale.status, "blocked");
+  assert.match(stale.reason, /hook policy changed/i);
+  await assert.rejects(readFile(path.join(root, ".data", "reused-hook-ran")), { code: "ENOENT" });
+});
+
 test("skill, compiler, Gradle launcher and nested dependency policy require review before execution", async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
   for (const file of [".github/skills/devpocket-development/SKILL.md", ".npmrc", ".NPMRC", "backend/tsconfig.json", "android/gradlew.bat",
@@ -712,6 +852,114 @@ test("signed candidates preserve signature settings while reading commit trailer
   assert.notEqual(visible.trim(), "fixture-session", "Signature display remains enabled outside machine-readable queries.");
 });
 
+test("native approval cannot execute a changed helper, import or wrapper", async (t) => {
+  for (const name of ["candidate-commit.mjs", "git-state.mjs", "native-candidate.mjs", "development-workflow.mjs", "workflow-extension.mjs"]) {
+    await t.test(name, async (t) => {
+      const { root } = await workspace(t), session = nativeSession();
+      const { directory, controller } = await copiedController(root);
+      const originalHead = (await sourceSnapshot(root)).head;
+      const marker = path.join(root, ".data", "unapproved-code-ran");
+      const execute = session.rpc.tools.execute;
+      session.rpc.tools.execute = async (request) => {
+        const file = path.join(directory, name);
+        await writeFile(file, await readFile(file, "utf8") +
+          `\nawait import("node:fs/promises").then(fs => fs.writeFile(${JSON.stringify(marker)}, "executed"));\n`);
+        return execute(request);
+      };
+      const result = await controller.runDevelopment(documentationTask(root, { session }), {
+        root, verify: async () => { assert.fail("Changed executable inputs must not reach verification."); },
+      });
+      assert.equal(result.status, "blocked");
+      assert.match(result.reason, /helper|imported|implementation/i);
+      assert.equal((await sourceSnapshot(root)).head, originalHead);
+      assert.equal(await git(root, ["diff", "--cached", "--name-only"]), "");
+      await assert.rejects(readFile(marker), { code: "ENOENT" });
+    });
+  }
+});
+
+test("native startup refuses unbound Node preloads before they can execute", async (t) => {
+  for (const option of ["import", "require"]) {
+    await t.test(option, async (t) => {
+      const { root } = await workspace(t), session = nativeSession();
+      const directory = path.join(root, ".data");
+      await mkdir(directory);
+      const preload = path.join(directory, option === "import" ? "preload.mjs" : "preload.cjs");
+      const marker = path.join(directory, "unapproved-startup-ran");
+      await writeFile(preload, option === "import" ? "export {};\n" : "");
+      const parent = (await sourceSnapshot(root)).head, originalOptions = process.env.NODE_OPTIONS;
+      const options = option === "import" ? `--import=${pathToFileURL(preload).href}`
+        : `--require=${JSON.stringify(preload.replaceAll("\\", "/"))}`;
+      session.rpc.tools.execute = async (request) => {
+        await writeFile(preload, option === "import"
+          ? `await import("node:fs/promises").then(fs => fs.writeFile(${JSON.stringify(marker)}, "executed"));\n`
+          : `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "executed");\n`);
+        try {
+          const result = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", request.arguments.command],
+            { timeout: 30_000, env: { ...process.env, NODE_OPTIONS: options } });
+          return { resultType: "success", textResultForLlm: result.stdout };
+        } catch (error) { return { resultType: "failure", textResultForLlm: error.stderr }; }
+      };
+      const result = await runDevelopment(documentationTask(root, { session }), {
+        root, verify: async () => { assert.fail("Unbound startup code must not reach verification."); },
+      });
+      assert.equal(result.status, "blocked");
+      assert.match(result.reason, /NODE_OPTIONS.*before Node started/);
+      assert.equal((await sourceSnapshot(root)).head, parent);
+      assert.equal(await git(root, ["diff", "--cached", "--name-only"]), "");
+      assert.equal(process.env.NODE_OPTIONS, originalOptions);
+      await assert.rejects(readFile(marker), { code: "ENOENT" });
+      const receipt = JSON.parse(await readFile(path.join(root, ".data", "development", "candidate-test",
+        "candidate-0.json.result.json"), "utf8"));
+      assert.equal(receipt.failure, "execution-startup-unbound");
+    });
+  }
+});
+
+test("a stale loaded controller cannot adopt a newer on-disk implementation", async (t) => {
+  const { root } = await workspace(t);
+  const { directory, controller } = await copiedController(root);
+  const file = path.join(directory, "candidate-commit.mjs");
+  await writeFile(file, await readFile(file, "utf8") + "\n// different implementation revision\n");
+  const result = await controller.runDevelopment(documentationTask(root, {
+    agent: async () => { assert.fail("Stale implementation must stop before dispatch."); },
+  }), { root });
+  assert.equal(result.status, "needs_human");
+  assert.match(result.reason, /implementation changed/);
+});
+
+test("verifiers cannot mutate the controller's source or check-selection snapshot", async (t) => {
+  for (const field of ["source", "checks"]) {
+    await t.test(field, async (t) => {
+      const { root } = await workspace(t);
+      let reviewCalls = 0, mutationBlocked = false;
+      const result = await runDevelopment(documentationTask(root, {
+        agent: async (_prompt, options) => {
+          if (options.agent === "devpocket-reviewer") { reviewCalls++; return passingReview; }
+          await mkdir(path.join(root, "backend", "tests"), { recursive: true });
+          await writeFile(path.join(root, "backend", "tests", "changed.test.ts"), "export {};\n");
+          return implemented(root);
+        },
+      }), {
+        root,
+        verify: async (_root, plan) => {
+          try {
+            if (field === "source") plan.source.head = "0".repeat(40);
+            else { plan.requiredChecks.length = 0; plan.requiredGroups.length = 0; }
+          } catch (error) { assert.ok(error instanceof TypeError); mutationBlocked = true; }
+          const report = syntheticReport(plan);
+          if (field === "source") report.source = { ...plan.source, head: "0".repeat(40) };
+          else { report.requiredChecks = []; report.requiredGroups = []; report.checks = []; }
+          return report;
+        },
+      });
+      assert.equal(mutationBlocked, true);
+      assert.equal(result.status, "blocked");
+      assert.equal(reviewCalls, 0, "A verifier cannot weaken the policy consumed by independent review.");
+    });
+  }
+});
+
 test("pre-existing user changes are preserved without dispatching or staging", async (t) => {
   const { root } = await workspace(t);
   await writeFile(path.join(root, "README.md"), "User draft\n");
@@ -758,7 +1006,8 @@ test("commit permission, native-tool and hook failures never reach final verific
         assert.notEqual(current.source.head, parent, "A failed candidate remains history; it is never reset/amended.");
       } else assert.equal(current.source.head, parent);
       if (scenario === "hook-error") {
-        assert.match(await git(root, ["diff", "--cached", "--name-only"]), /README.md/, "Failed staging is preserved for inspection.");
+        assert.equal(await git(root, ["diff", "--cached", "--name-only"]), "", "A failed isolated commit leaves the original live index intact.");
+        assert.equal(await readFile(path.join(root, "README.md"), "utf8"), "Explained\n");
         const receipt = JSON.parse(await readFile(path.join(root, ".data", "development", "candidate-test",
           "candidate-0.json.result.json"), "utf8"));
         assert.equal(receipt.failure, "commit-failed");
@@ -911,12 +1160,76 @@ test("the native candidate boundary rejects concurrent changes instead of commit
   }
 });
 
+test("a staged-only edit between preflight and staging is never overwritten", async (t) => {
+  const { root } = await workspace(t);
+  const before = await inspectWorktree(root);
+  await writeFile(path.join(root, "README.md"), "Inspected task change\n");
+  const { request } = await prepareCandidate(root, before, await sourceSnapshot(root),
+    ["README.md"], "fixture-session", "Preserve concurrent staged work", undefined, await captureCandidateImplementation());
+  const directory = path.join(root, ".data");
+  await mkdir(directory);
+  const requestFile = path.join(directory, "candidate-request.json"), bytes = JSON.stringify(request) + "\n";
+  await writeFile(requestFile, bytes);
+  const preload = path.join(directory, "concurrent-staging.mjs");
+  await writeFile(preload, [
+    "import childProcess from 'node:child_process';",
+    "import { syncBuiltinESMExports } from 'node:module';",
+    "import { promisify } from 'node:util';",
+    "import { existsSync, writeFileSync } from 'node:fs';",
+    "import path from 'node:path';",
+    `const target = ${JSON.stringify(root)};`,
+    "const original = childProcess.execFile, execute = promisify(original);",
+    "const intercepted = (...args) => original(...args);",
+    "let injected = false;",
+    "intercepted[promisify.custom] = (command, args, options) => {",
+    "  if (!injected && command === 'git' && options?.cwd === target && args.includes('add')) {",
+    "    injected = true;",
+    "    const blob = childProcess.execFileSync('git', ['hash-object', '-w', '--stdin'],",
+    "      { cwd: target, encoding: 'utf8', input: 'Concurrent staged-only change\\n' }).trim();",
+    "    const staged = childProcess.spawnSync('git', ['update-index', '--cacheinfo', `100644,${blob},README.md`],",
+    "      { cwd: target, encoding: 'utf8' });",
+    "    const index = childProcess.execFileSync('git', ['rev-parse', '--git-path', 'index'], { cwd: target, encoding: 'utf8' }).trim();",
+    "    writeFileSync(path.join(target, '.data', 'staged-only-attempt.json'), JSON.stringify({",
+    "      blob, exitCode: staged.status, lockPresent: existsSync(path.resolve(target, index) + '.lock'),",
+    "    }));",
+    "  }",
+    "  return execute(command, args, options);",
+    "};",
+    "childProcess.execFile = intercepted;",
+    "syncBuiltinESMExports();",
+    "",
+  ].join("\n"));
+  const command = nativeCandidateCommand(requestFile, sha256(bytes)).replace(" --input-type=module",
+    ` --import '${pathToFileURL(preload).href.replaceAll("'", "''")}' --input-type=module`);
+  let failure;
+  try {
+    await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", command], { cwd: root, timeout: 30_000 });
+  } catch (error) { failure = error; }
+  const attempt = JSON.parse(await readFile(path.join(directory, "staged-only-attempt.json"), "utf8"));
+  const receipt = JSON.parse(await readFile(`${requestFile}.result.json`, "utf8"));
+  assert.equal(await readFile(path.join(root, "README.md"), "utf8"), "Inspected task change\n");
+  if (attempt.exitCode === 0) {
+    assert.equal((await git(root, ["rev-parse", ":README.md"])).trim(), attempt.blob,
+      "A successful concurrent index-only edit must not be replaced by task staging.");
+    assert.equal(receipt.status, "blocked");
+    assert.equal(failure?.code, 1);
+  } else {
+    assert.equal(attempt.exitCode, 128, "Only Git's index-lock refusal can exclude the concurrent writer.");
+    assert.equal(attempt.lockPresent, true);
+    assert.equal(receipt.status, "committed", failure?.stderr);
+    assert.equal(failure, undefined);
+    assert.equal(receipt.candidate.parent, before.source.head);
+    assert.equal((await inspectWorktree(root)).status, "");
+    assert.equal(await git(root, ["show", "--no-show-signature", "HEAD:README.md"]), "Inspected task change\n");
+  }
+});
+
 test("staging after final inspection never commits an unowned file", async (t) => {
   const { root } = await workspace(t);
   const before = await inspectWorktree(root);
   await writeFile(path.join(root, "README.md"), "Inspected task change\n");
   const { request } = await prepareCandidate(root, before, await sourceSnapshot(root),
-    ["README.md"], "fixture-session", "Commit the inspected task");
+    ["README.md"], "fixture-session", "Commit the inspected task", undefined, await captureCandidateImplementation());
   const directory = path.join(root, ".data");
   await mkdir(directory);
   const requestFile = path.join(directory, "candidate-request.json");
@@ -943,10 +1256,10 @@ test("staging after final inspection never commits an unowned file", async (t) =
     "syncBuiltinESMExports();",
     "",
   ].join("\n"));
-  const entry = fileURLToPath(new URL("../candidate-commit.mjs", import.meta.url));
+  const command = nativeCandidateCommand(requestFile, sha256(bytes)).replace(" --input-type=module",
+    ` --import '${pathToFileURL(preload).href.replaceAll("'", "''")}' --input-type=module`);
   let failure;
-  await assert.rejects(exec(process.execPath, ["--import", pathToFileURL(preload).href, entry,
-    "--request", requestFile, "--sha256", sha256(bytes)], { cwd: root, timeout: 30_000 }), (error) => {
+  await assert.rejects(exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", command], { cwd: root, timeout: 30_000 }), (error) => {
     failure = error;
     return error.code === 1;
   });

@@ -1,6 +1,6 @@
 import { realpath } from "node:fs/promises";
 import path from "node:path";
-import { checkDevelopmentReadiness, parseTask, runDevelopment, taskSchema } from "./development-workflow.mjs";
+import { checkDevelopmentReadiness, parseTask, requireDevelopmentImplementation, runDevelopment, taskSchema } from "./development-workflow.mjs";
 import { git } from "./verification.mjs";
 
 const readinessSchema = {
@@ -71,6 +71,10 @@ export async function registerDevelopmentExtension({ defineWorkflow, joinSession
       parameters: taskSchema,
       handler: async (input) => {
         const task = parseTask(input);
+        try { await requireDevelopmentImplementation(); }
+        catch (error) {
+          return { resultType: "failure", textResultForLlm: error.message };
+        }
         const metadata = await session.rpc.tools.getCurrentMetadata();
         let checkout;
         try { checkout = await inspectStartingWorktree(root); }

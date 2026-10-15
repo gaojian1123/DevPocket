@@ -1,8 +1,7 @@
-import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, open, readFile, readlink } from "node:fs/promises";
+import { lstat, mkdir, open, readFile } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
+import { git, sourceSnapshot } from "./git-state.mjs";
 import { runCommand } from "./process.mjs";
 import { cleanDeviceRun } from "./device-run.mjs";
 import { projectWorkerDiagnostics, readDiagnosticReport } from "./worker-diagnostics.mjs";
@@ -11,8 +10,8 @@ import { diagnosticError, failureDetails, ownValue, commandDetails, diagnosticVe
 import { boundedDiagnosticBytes } from "./bounded-worker-log.mjs";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationGroups, verificationImpact } from "./verification-policy.mjs";
 export { CHECKS, isVerificationPolicyPath } from "./verification-policy.mjs";
+export { git, sourceSnapshot } from "./git-state.mjs";
 
-const exec = promisify(execFile);
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const splitPaths = (value) => value.split("\0").filter(Boolean);
 const baselineDeviceClasses = ["NativeFlowTest", "AdaptiveLayoutTest", "FixtureFlowTest"].map((name) => `dev.devpocket.app.${name}`);
@@ -37,40 +36,6 @@ export function verificationFailure(error, phase = "command") {
     ...(["app", "instrumentation"].includes(artifact) ? { artifact } : {}),
     ...(Array.isArray(missing) ? { missingChecks: CHECKS.filter((item) => missing.includes(item.id)).map((item) => item.id) } : {}),
   };
-}
-
-export async function git(root, args) {
-  const result = await exec("git", ["--no-pager", ...args], {
-    cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 30_000,
-  });
-  return result.stdout;
-}
-
-export async function sourceSnapshot(root) {
-  const head = (await git(root, ["rev-parse", "--verify", "HEAD"])).trim();
-  const modes = new Map();
-  for (const entry of splitPaths(await git(root, ["ls-files", "--stage", "-z"]))) {
-    const tab = entry.indexOf("\t");
-    const [mode, , stage] = entry.slice(0, tab).split(" ");
-    if (stage !== "0") throw new Error("Resolve the unmerged index before collecting source evidence.");
-    modes.set(entry.slice(tab + 1), mode);
-  }
-  const files = [...new Set(splitPaths(await git(root,
-    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])))].sort();
-  const entries = [];
-  for (const file of files) {
-    const absolute = path.join(root, file);
-    try {
-      const info = await lstat(absolute);
-      entries.push([file, modes.get(file) ?? (info.isSymbolicLink() ? "120000" : "100644"),
-        info.isSymbolicLink() ? "link" : "file",
-        digest(info.isSymbolicLink() ? await readlink(absolute) : await readFile(absolute))]);
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-      entries.push([file, "deleted"]);
-    }
-  }
-  return { head, fingerprint: digest(JSON.stringify(entries)) };
 }
 
 export async function verificationPlan(root, base, all = false) {

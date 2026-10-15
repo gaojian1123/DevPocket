@@ -118,11 +118,14 @@ The controller follows **implement → local candidate commit → final verifica
 2. The controller checks ownership, source, index, branch and Git configuration.
    Protected gate/dependency/workflow changes still stop for explicit human
    policy review **before** committing or executing the modified policy.
-   Otherwise its guarded candidate helper stages only the inspected literal paths,
-   holds the real index's exclusive lock, and commits an isolated copy of the
-   inspected index through the original session's native PowerShell tool/permission
-   pipeline. It checks the captured tree and expected parent before committing;
-   concurrent staging cannot enter that commit through the live index. Missing
+   The controller also snapshots the active Git hooks directory before implementation;
+   changed hook inputs stop for human policy approval before native mutation.
+   Otherwise its guarded candidate helper holds the real index's exclusive lock
+   before final preflight, stages only the inspected literal paths into an isolated
+   index, and commits it through the original session's native PowerShell tool/permission
+   pipeline. It checks the captured tree and expected parent before committing,
+   then publishes the verified index through its owned lock. Concurrent staged-only
+   edits cannot be overwritten by staging into the live index. Missing
    native tools or denied permission blocks the step; there is no direct mutation
    fallback. Git configuration and hooks are
    retained. The commit includes the project `Co-authored-by` trailer and a
@@ -148,6 +151,36 @@ Git Trace2 records observed hook exits during staging and commit, including
 `post-commit` failures that Git itself does not propagate. Hooks run normally,
 once per Git invocation; missing hook-exit evidence blocks rather than implying
 success. A failed post-commit hook leaves its completed local commit in place.
+Before index publication, failures leave the original live index intact; task
+working files remain available for recovery. The active hook snapshot covers the
+configured directory, including files reached through directory/file links,
+without copying hook source into reports. Inspection is bounded to 256 entries,
+eight levels, 1 MiB per file and 4 MiB total. An absent hooks directory is recorded
+explicitly; disappearing inputs, unreadable, changing or unsupported hook evidence
+blocks execution rather than silently allowing it.
+Hooks may invoke programs outside that directory; these snapshots do not parse
+arbitrary hook dependencies or replace the original native permission policy.
+Candidate requests and controller journals use version 3 to bind hook and
+executable-input snapshots. Older requests/results require inspected recovery;
+they are not replayed as approval for the new controller.
+The run retains its initial hook snapshot across verification, review, repairs
+and readiness checks. A later observation cannot become approval of changed
+hooks; any mismatch requires renewed human approval before continuing.
+Native dispatch also retains the loaded controller/helper input hashes. After
+the native permission boundary, a builtins-only bootstrap checks those bytes
+again before importing repository code. The candidate helper and its shared Git
+module execute from captured in-memory source; unclassified imports are rejected,
+not loaded from a mutable path. Direct mutable helper CLI execution is refused.
+Before Node starts, the trusted PowerShell launcher refuses nonempty `NODE_OPTIONS`.
+It does not clear or reinterpret those settings: startup preloads run before a
+JavaScript bootstrap, so an unbound startup environment requires explicit handling
+in the original client rather than a mutable-code fallback.
+An on-disk implementation change requires approval and an explicit reload rather
+than silently adopting a newer file under an older loaded controller.
+Verification receives a separate deep-frozen plan snapshot; returned evidence is
+copied/frozen and aggregated against the controller's private original plan.
+Neither verifier callbacks nor later observations can rewrite its required checks
+or source identity.
 Machine-readable trailer queries suppress signature display without changing
 commit signing or the user's Git display settings.
 Read-only status/diff inspections disable optional Git locks so they do not
