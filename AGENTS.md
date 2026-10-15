@@ -4,21 +4,23 @@ Use `README.md` for setup and build instructions. Consult `VALIDATION.md` for re
 
 ## Default development routing
 
-For new user requests to implement a feature or fix a bug, use the registered
-`devpocket-development` workflow by default. No special workflow phrase is
-required. Prefer the current session in a freshly inspected clean linked
-worktree. Before implementation, follow `docs\DEVELOPMENT-WORKFLOW.md` for the
-task contract, current-session-first routing, isolation and activation
-requirements. Use that guide also for missing verification evidence,
-interrupted-run recovery, and the readiness check before publishing an
-already-verified candidate commit.
+For new user requests to implement a feature or fix a bug, use the repository's
+`devpocket-development` skill by default. Its source of truth is
+`.github\skills\devpocket-development\SKILL.md`: invoke the skill when available,
+otherwise read that file directly. It defines workspace selection, the task
+contract, verification, independent review and same-task recovery. The default
+route does not require the development extension or Dynamic Workflows.
 
-Continue the existing task for follow-ups. Workflow-dispatched implementers and
-reviewers perform their assigned step, rather than dispatching another workflow.
+Continue the existing task and workspace for follow-ups. Dispatched implementers
+and reviewers perform their assigned step, rather than starting another pipeline.
+Use the registered `devpocket-development` workflow only when the user explicitly
+selects that optional route, or continue an already recorded workflow run.
+Follow `docs\DEVELOPMENT-WORKFLOW.md` for its entry points, activation, recovery
+and the readiness check before publishing an already-verified workflow candidate;
+unavailable optional-workflow prerequisites do not block skill-led development.
 Advice, explanations, planning, read-only reviews and documentation-only edits
-do not start an implementation workflow. A different implementation route needs
-the user's explicit choice; missing workflow prerequisites are blockers, not
-permission to silently fall back to direct implementation or self-review.
+do not start an implementation pipeline. Both routes retain required verification,
+independent review and scoped authorization; self-review is not independent review.
 
 ## Terminology
 
@@ -44,7 +46,7 @@ Preserve protocol identifiers such as `cliVersion`, `terminal` and
 
 ## Checks and operations
 
-- Use `npm run verify -- -Base BASE_COMMIT` for the diff-selected gate; planning, partial shards and skipped required tests are not completed verification. In the development workflow, final verification and independent review follow the controller's local candidate commit; targeted development checks precede it.
+- Use `npm run verify -- -Base BASE_COMMIT` for the diff-selected gate; planning, partial shards and skipped required tests are not completed verification. In the optional registered workflow, final verification and independent review follow the controller's local candidate commit; targeted development checks precede it.
 - Use the relevant checks in `package.json` for backend changes and `scripts\build-android.ps1 -Lint` for Android changes. Documentation-only edits need no application build.
 - Real GitHub Copilot checks use explicitly opted-in disposable sessions in the intended client; CLI checks use disposable terminals. Extension installation/reload, host/device enrollment and cloud operations require authorization for the specific target; previous trial approvals are not standing permission.
 - Before deployment or onboarding, read the matching runbook in `deployment\`. Keep credentials and private runtime evidence in ignored storage; preserve sealed artifacts and record new acceptance separately.

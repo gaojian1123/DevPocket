@@ -54,7 +54,7 @@ export async function registerDevelopmentExtension({ defineWorkflow, joinSession
   const workflow = defineWorkflow({
     meta: {
       name: "devpocket-development",
-      description: "Implement one DevPocket task in an isolated worktree, make a scoped local candidate commit through the original native tool/permission pipeline, then verify and independently review that exact clean commit. Repair at most twice with new commits. No push, PR creation, merge or deployment.",
+      description: "Optional controller-managed DevPocket development. Use only when the user explicitly selects this workflow, or to continue its recorded run; normal implementation uses the devpocket-development skill. Make a scoped local candidate commit through original native permissions, then verify and independently review that exact clean commit. Repair at most twice with new commits. No push, PR creation, merge or deployment.",
       argsSchema: taskSchema,
       phases: [{ title: "Implement" }, { title: "Candidate" }, { title: "Verify" }, { title: "Review" }],
     },
@@ -67,7 +67,7 @@ export async function registerDevelopmentExtension({ defineWorkflow, joinSession
     workflows: [workflow],
     tools: [{
       name: "devpocket_start_development",
-      description: "Start a NEW DevPocket task, current-session first: reuse a freshly inspected clean linked worktree via the App's devpocket-development workflow; isolate a clean primary checkout in a new App worktree. Dirty/unknown checkouts block. Settle goal, acceptance and dependencies first; follow-ups stay with their existing run. The workflow makes task-scoped local candidate commits through original native permissions before final verification and independent review. See docs\\DEVELOPMENT-WORKFLOW.md for direct invocation and prerequisites. No runtime control, installation, cloud, push, PR creation, merge or release authority.",
+      description: "Start a NEW task with the optional devpocket-development workflow, only when the user explicitly selects the workflow. Reuse a freshly inspected clean linked worktree in the current session; isolate a clean primary checkout in a new App worktree. Dirty/unknown checkouts block. Settle goal, acceptance and dependencies first; follow-ups stay with their recorded run. Normal implementation uses the devpocket-development skill. The workflow makes task-scoped local candidate commits through original native permissions before final verification and independent review. See docs\\DEVELOPMENT-WORKFLOW.md for direct invocation and prerequisites. No runtime control, installation, cloud, push, PR creation, merge or release authority.",
       parameters: taskSchema,
       handler: async (input) => {
         const task = parseTask(input);
@@ -107,7 +107,7 @@ export async function registerDevelopmentExtension({ defineWorkflow, joinSession
             kickoff: {
               mode: "interactive",
               prompt: [
-                "Implement the user's DevPocket task using the registered devpocket-development workflow in this new worktree.",
+                "The user explicitly selected the optional devpocket-development workflow; implement that task in this new worktree.",
                 "Read AGENTS.md. Invoke run_dynamic_workflow with name devpocket-development and the JSON arguments below.",
                 "If the workflow/reviewer is not loaded, request scoped loading; do not replace the workflow with unchecked self-review.",
                 "The workflow stops at a committed, independently reviewed, source-bound handoff. Preserve any blocked/needs_human outcome.",

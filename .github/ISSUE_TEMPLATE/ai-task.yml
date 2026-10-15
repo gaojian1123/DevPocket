@@ -1,13 +1,14 @@
 name: AI development task
-description: Define an observable task for the DevPocket development workflow.
+description: Define an observable task for skill-led DevPocket development.
 title: "[Task] "
 body:
   - type: markdown
     attributes:
       value: |
         An issue describes work; it does not authorize a deployment, installation,
-        real GitHub Copilot experiment, device enrollment, or release. Start the
-        approved task in a new GitHub Copilot worktree using the development workflow.
+        real GitHub Copilot experiment, device enrollment, or release. Follow the
+        devpocket-development skill and AGENTS.md; reuse a suitable current worktree.
+        The registered workflow is optional and requires an explicit choice.
   - type: textarea
     id: goal
     attributes:
