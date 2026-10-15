@@ -482,6 +482,33 @@ test("gate changes and missing agent results stop rather than granting self-appr
   }
 });
 
+test("tooling-only impact retains the controller's protected-policy stop before any execution or review", async (t) => {
+  const { runDevelopment } = await import("../development-workflow.mjs");
+  const { verificationPlan } = await import("../verification.mjs");
+  for (const file of ["AGENTS.md", "scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs"]) {
+    await t.test(file, async (t) => {
+      const { root } = await workspace(t);
+      let calls = 0;
+      const result = await runDevelopment(durable({
+        runId: "tooling-protection", args: { goal: "Task", acceptance: ["Behavior"] }, phase() {}, log() {},
+        agent: async (_prompt, options) => {
+          calls++;
+          assert.equal(options.agent, "general-purpose");
+          await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+          await writeFile(path.join(root, file), "// fixture\n");
+          return { status: "implemented", summary: "Changed routing policy." };
+        },
+      }), { root, verify: async () => { assert.fail("Tooling-only impact cannot authorize modified policy."); } });
+      assert.equal(result.status, "needs_human");
+      assert.equal(calls, 1);
+      const plan = await verificationPlan(root, "HEAD");
+      assert.deepEqual(plan.requiredChecks, ["workflow-tests"]);
+      assert.deepEqual(plan.requiredGroups, ["tooling"]);
+      assert.equal(plan.requiresHumanReview, true);
+    });
+  }
+});
+
 test("skill, compiler, Gradle launcher and nested dependency policy require review before execution", async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
   for (const file of [".github/skills/devpocket-development/SKILL.md", ".npmrc", ".NPMRC", "backend/tsconfig.json", "android/gradlew.bat",

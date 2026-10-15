@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import { diagnosticError, failureDetails, ownValue, projectFailureDetails } from "./diagnostic-errors.mjs";
 import { projectWorkerDiagnostics, readDiagnosticReport } from "./worker-diagnostics.mjs";
 import { diagnosticDirectory, publishDiagnostic } from "./diagnostic-publication.mjs";
+import { isDiagnosticVerificationVersion } from "./verification-policy.mjs";
 
 export const DEVICE_DIAGNOSTIC_PREFIX = "DEVPOCKET_DEVICE_DIAGNOSTIC ";
 export const DEVICE_DIAGNOSTIC_LIMIT = 32768;
@@ -491,7 +492,7 @@ async function main() {
   }
   try { report = await readDiagnosticReport(path.join(directory, "report.json")); }
   catch (error) { collectionFailure = failureDetails(error, error instanceof SyntaxError ? "report-invalid" : "report-unavailable"); }
-  if (report && (report.version !== 1 || !Array.isArray(report.checks))) {
+  if (report && (!isDiagnosticVerificationVersion(report.version) || !Array.isArray(report.checks))) {
     collectionFailure = failureDetails(diagnosticError("report-invalid"));
   }
   const selected = Array.isArray(report?.checks) ? report.checks.filter((item) => item?.id === "android-device") : [];

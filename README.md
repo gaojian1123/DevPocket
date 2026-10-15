@@ -214,6 +214,16 @@ session, isolates a clean primary checkout and blocks dirty or unknown checkouts
 Its extension activation and App run approvals remain explicit. Both routes
 retain the same verification requirements and scoped authorization; a skill is
 guidance, not a replacement for programmatic evidence checks or protected CI.
+
+Verification classifies changed paths centrally and derives CI lanes from the
+selected check definitions. Task-start/session-routing tooling and its regression
+file select the complete workflow regression suite in an independent **tooling**
+lane, without application builds or Android provisioning. `AGENTS.md` selects
+those regressions and retains protected human review. README, validation and
+docs Markdown changes alone select no application checks. Verification/CI/build
+infrastructure, dependency policy and unknown paths remain conservative full
+impact; mixed changes take the union. Plans include bounded path/rule explanations.
+Narrower check selection never authorizes execution of modified protected policy.
 Android-affecting changes require actual emulator
 instrumentation against a local test adapter, not just a successful APK build.
 CI runs this device gate on a standard GitHub-hosted Ubuntu 24.04 VM with KVM;

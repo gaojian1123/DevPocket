@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
+import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "../verification-policy.mjs";
 
 const exec = promisify(execFile);
 const entry = path.resolve("scripts/verify.mjs");
@@ -32,14 +33,24 @@ async function repository(t) {
 
 async function verify(root, args, env) {
   const report = path.join(root, ".data", "verification", randomUUID(), "report.json");
-  let exitCode = 0;
+  let exitCode = 0, stdout;
   try {
-    await exec(process.execPath, [entry, "--repo", root, "--base", "HEAD", "--report", report, ...args],
-      { timeout: 60_000, env: typeof env === "function" ? env(report) : env });
+    ({ stdout } = await exec(process.execPath, [entry, "--repo", root, "--base", "HEAD", "--report", report, ...args],
+      { timeout: 60_000, env: typeof env === "function" ? env(report) : env }));
   } catch (error) {
     exitCode = error.code;
+    stdout = error.stdout;
   }
-  return { exitCode, reportPath: report, report: JSON.parse(await readFile(report, "utf8")) };
+  return { exitCode, stdout, reportPath: report, report: JSON.parse(await readFile(report, "utf8")) };
+}
+
+async function changedRepository(t, files) {
+  const root = await repository(t);
+  for (const file of files) {
+    await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+    await writeFile(path.join(root, file), "fixture\n");
+  }
+  return root;
 }
 
 test("a documentation plan identifies the exact source without claiming checks ran", async (t) => {
@@ -52,6 +63,271 @@ test("a documentation plan identifies the exact source without claiming checks r
   assert.deepEqual(result.report.changedFiles, ["README.md"]);
   assert.deepEqual(result.report.requiredChecks, []);
   assert.match(result.report.source.fingerprint, /^[a-f0-9]{64}$/);
+});
+
+test("task-routing tooling selects only its complete regression suite, independently of AGENTS", async (t) => {
+  const original = ["AGENTS.md", "README.md", "docs/DEVELOPMENT-WORKFLOW.md",
+    "scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs"];
+  for (const files of [original, ["scripts/workflow-extension.mjs"], ["scripts/tests/development-workflow.test.mjs"], ["AGENTS.md"]]) {
+    await t.test(files.join(", "), async (t) => {
+      const root = await repository(t);
+      for (const file of files) {
+        await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+        await writeFile(path.join(root, file), "fixture\n");
+      }
+      const result = await verify(root, ["--plan"]);
+      assert.equal(result.exitCode, 0);
+      assert.deepEqual(result.report.requiredChecks, ["workflow-tests"]);
+      assert.deepEqual(result.report.requiredGroups, ["tooling"]);
+      assert.equal(result.report.requiresHumanReview, true);
+      assert.equal(result.report.layouts, false);
+      assert.deepEqual(result.report.changedFiles, [...files].sort());
+      assert.deepEqual(result.report.selectionReasons.flatMap((reason) => reason.paths).sort(), [...files].sort());
+      assert.ok(result.report.selectionReasons.every((reason) =>
+        ["documentation", "task-routing", "agent-instructions"].includes(reason.rule) && reason.omittedPaths === 0));
+      const publicPlan = JSON.parse(result.stdout.split(/\r?\n/).find((line) => line.startsWith("{")));
+      assert.deepEqual(publicPlan.selectionReasons, result.report.selectionReasons);
+      assert.deepEqual(publicPlan.requiredGroups, ["tooling"]);
+    });
+  }
+});
+
+test("documentation and an unchanged checkout select no checks or groups", async (t) => {
+  for (const files of [[], ["README.md"], ["VALIDATION.md"], ["docs/DEVELOPMENT-WORKFLOW.md"]]) {
+    await t.test(files.join(", ") || "unchanged", async (t) => {
+      const root = await changedRepository(t, files);
+      const { report, exitCode } = await verify(root, ["--plan"]);
+      assert.equal(exitCode, 0);
+      assert.deepEqual(report.requiredChecks, []);
+      assert.deepEqual(report.requiredGroups, []);
+      assert.equal(report.requiresHumanReview, false);
+      assert.equal(report.layouts, false);
+      assert.deepEqual(report.selectionReasons.map((item) => item.rule), files.length ? ["documentation"] : []);
+      const combined = await verify(root, ["--combine", ...CHECK_GROUPS.flatMap((group) => ["--upstream", `${group}:skipped`])]);
+      assert.equal(combined.exitCode, 0);
+      assert.equal(combined.report.complete, true);
+    });
+  }
+});
+
+test("verification infrastructure and unknown paths retain all downstream checks and protection", async (t) => {
+  for (const file of [
+    "scripts/verification.mjs", "scripts/verification-policy.mjs", "scripts/verify.mjs", "scripts/verify.ps1",
+    "scripts/development-workflow.mjs", "scripts/process.mjs", "scripts/owned-command.ps1", "scripts/device-run.mjs",
+    "scripts/build-android.ps1", "scripts/tests/verification.test.mjs", "scripts/workflow-extension-extra.mjs",
+    "scripts/tests/development-workflow-extra.test.mjs", ".github/workflows/ci.yml", ".github/actions/prepare-native/action.yml",
+    "package.json", "package-lock.json", ".npmrc", "backend/tsconfig.json", "deployment/azure/package.json",
+    "deployment/azure/probe/requirements-test.txt", "android/app/build.gradle.kts",
+    "android/gradle/wrapper/gradle-wrapper.properties", "previously-unknown/file.txt",
+  ]) await t.test(file, async (t) => {
+    const root = await changedRepository(t, [file]);
+    const { report, exitCode } = await verify(root, ["--plan"]);
+    assert.equal(exitCode, 0);
+    assert.deepEqual(report.requiredChecks, CHECKS.map((check) => check.id));
+    assert.deepEqual(report.requiredGroups, ["tooling", "backend", "android", "device"]);
+    assert.equal(report.requiresHumanReview, true);
+    assert.equal(report.layouts, true);
+    assert.deepEqual(report.selectionReasons.map((item) => item.rule),
+      [file.startsWith("previously-unknown/") ? "unknown" : "verification-infrastructure"]);
+    assert.deepEqual(report.selectionReasons[0].paths, [file]);
+  });
+});
+
+test("mixed routing and application changes select the union and derive groups from check definitions", async (t) => {
+  const core = ["workflow-tests", "typecheck", "backend-tests", "backend-build", "schema"];
+  for (const [file, checks, groups, layouts = false] of [
+    ["backend/tests/fixture.test.ts", core, ["tooling", "backend"]],
+    ["backend/src/protocol.ts", [...core, "extension-package", "setup", "android-build", "android-device"], CHECK_GROUPS],
+    ["backend/integration/fixture.ts", [...core, "android-build", "android-device"], CHECK_GROUPS],
+    ["protocol.schema.json", [...core, "android-build", "android-device"], CHECK_GROUPS],
+    ["test-fixtures/fixture.ts", [...core, "android-build", "android-device"], CHECK_GROUPS],
+    ["extension/bridge.mjs", [...core, "extension-package", "setup"], ["tooling", "backend"]],
+    ["deployment/azure/src/fixture.ts", [...core, "setup", "azure-tests", "operations-tests"], ["tooling", "backend"]],
+    ["android/app/src/main/java/dev/devpocket/app/ui/Screen.kt", ["workflow-tests", "android-build", "android-device"],
+      ["tooling", "android", "device"], true],
+    ["unknown.txt", CHECKS.map((check) => check.id), CHECK_GROUPS, true],
+  ]) await t.test(file, async (t) => {
+    const root = await changedRepository(t, ["scripts/workflow-extension.mjs", file]);
+    const { report, exitCode } = await verify(root, ["--plan"]);
+    assert.equal(exitCode, 0);
+    assert.deepEqual(report.requiredChecks, checks);
+    assert.deepEqual(report.requiredGroups, groups);
+    assert.deepEqual(report.requiredGroups, [...new Set(CHECKS.filter((check) => checks.includes(check.id)).map((check) => check.group))]);
+    assert.equal(report.requiresHumanReview, true);
+    assert.equal(report.layouts, layouts);
+    assert.equal(report.selectionReasons.length, 2);
+    assert.deepEqual(report.selectionReasons.flatMap((item) => item.paths).sort(), [file, "scripts/workflow-extension.mjs"].sort());
+  });
+});
+
+test("plan explanations are deterministic and bounded without truncating actual impact selection", async (t) => {
+  const docs = Array.from({ length: 40 }, (_, index) => `docs/guide-${String(index).padStart(2, "0")}.md`).reverse();
+  const root = await changedRepository(t, [...docs, "docs/unusual name.md", "scripts/workflow-extension.mjs"]);
+  const first = (await verify(root, ["--plan"])).report;
+  const second = (await verify(root, ["--plan"])).report;
+  assert.deepEqual(first.selectionReasons, second.selectionReasons);
+  assert.deepEqual(first.requiredChecks, ["workflow-tests"]);
+  const reason = first.selectionReasons.find((item) => item.rule === "documentation");
+  assert.deepEqual(reason.paths, [...docs].sort().slice(0, 16));
+  assert.equal(reason.omittedPaths, 25);
+  assert.ok(reason.description.length > 0);
+  assert.deepEqual(first.selectionReasons.find((item) => item.rule === "task-routing").checks, ["workflow-tests"]);
+  const forced = (await verify(root, ["--plan", "--all"])).report;
+  assert.deepEqual(forced.requiredChecks, CHECKS.map((check) => check.id));
+  assert.deepEqual(forced.requiredGroups, CHECK_GROUPS);
+  assert.equal(forced.selectionReasons.at(-1).rule, "all-checks");
+  assert.deepEqual(forced.selectionReasons.at(-1).paths, []);
+});
+
+test("the CLI and PowerShell tooling shard run no application checks", async (t) => {
+  const root = await changedRepository(t, ["scripts/workflow-extension.mjs"]);
+  const result = await verify(root, ["--group", "tooling"]);
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.report.version, VERIFICATION_REPORT_VERSION);
+  assert.equal(result.report.group, "tooling");
+  assert.equal(result.report.complete, true);
+  assert.deepEqual(result.report.checks.map((check) => [check.id, check.status]), [["workflow-tests", "passed"]]);
+  const report = path.join(root, ".data", "verification", "powershell", "report.json");
+  await exec("pwsh", ["-NoProfile", "-NonInteractive", "-File", path.resolve("scripts/verify.ps1"),
+    "-Base", "HEAD", "-Group", "tooling", "-Report", report], { cwd: root, timeout: 30000 });
+  const wrapper = JSON.parse(await readFile(report, "utf8"));
+  assert.equal(wrapper.group, "tooling");
+  assert.equal(wrapper.complete, true);
+  assert.deepEqual(wrapper.requiredChecks, ["workflow-tests"]);
+  const invalid = await verify(root, ["--plan", "--group", "not-a-group"]);
+  assert.equal(invalid.exitCode, 1);
+  assert.equal(invalid.report.failure.reason, "configuration");
+});
+
+test("tooling aggregation accepts only complete current evidence and ignores unselected skipped jobs", async (t) => {
+  const root = await changedRepository(t, ["scripts/workflow-extension.mjs"]);
+  const verified = await verify(root, ["--group", "tooling"]);
+  assert.equal(verified.exitCode, 0);
+  const current = verified.report, input = path.join(root, ".data", "tooling-input.json");
+  const upstream = ["tooling:success", "backend:skipped", "android:skipped", "device:skipped"]
+    .flatMap((result) => ["--upstream", result]);
+  await writeFile(input, JSON.stringify(current));
+  const success = await verify(root, ["--combine", "--input", input, ...upstream]);
+  assert.equal(success.exitCode, 0);
+  assert.equal(success.report.complete, true);
+  assert.deepEqual(success.report.requiredGroups, ["tooling"]);
+  for (const [name, change, reason] of [
+    ["missing tooling", { checks: [] }, "shard-missing"],
+    ["unrun tooling", { checks: [{ id: "workflow-tests", status: "not_run" }] }, "shard-missing"],
+    ["failed report", { status: "failed" }, "check-failed"],
+    ["blocked report", { status: "blocked" }, "check-failed"],
+    ["planned report", { status: "planned" }, "check-failed"],
+    ["duplicate check", { checks: [current.checks[0], current.checks[0]] }, "check-duplicate"],
+    ["wrong group", { group: "backend" }, "check-group"],
+    ["unknown group", { group: "unrecognized" }, "check-group"],
+    ["unexpected check", { checks: [{ id: "backend-tests", status: "passed", exitCode: 0 }] }, "check-unexpected"],
+    ["nonzero exit", { checks: [{ id: "workflow-tests", status: "passed", exitCode: 1 }] }, "check-failed"],
+    ["stale base", { base: "a".repeat(40) }, "source-mismatch"],
+    ["stale head", { source: { ...current.source, head: "b".repeat(40) } }, "source-mismatch"],
+    ["stale fingerprint", { source: { ...current.source, fingerprint: "c".repeat(64) } }, "source-mismatch"],
+    ["different required checks", { requiredChecks: [] }, "policy-mismatch"],
+    ["different required groups", { requiredGroups: ["backend"] }, "policy-mismatch"],
+    ["missing group policy", { requiredGroups: undefined }, "policy-mismatch"],
+    ["legacy report", { version: 1 }, "policy-mismatch"],
+    ["unknown report version", { version: 999 }, "policy-mismatch"],
+  ]) await t.test(name, async () => {
+    await writeFile(input, JSON.stringify({ ...current, ...change }));
+    const result = await verify(root, ["--combine", "--input", input, ...upstream]);
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.report.complete, false);
+    assert.equal(result.report.failure.reason, reason);
+  });
+  await writeFile(input, JSON.stringify(current));
+  const duplicate = await verify(root, ["--combine", "--input", input, "--input", input]);
+  assert.equal(duplicate.report.failure.reason, "check-duplicate");
+  for (const outcome of ["failure", "cancelled", "skipped", "unknown"]) {
+    const result = await verify(root, ["--combine", "--input", input, "--upstream", `tooling:${outcome}`]);
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.report.failure.reason, "upstream-job-failed");
+    assert.equal(result.report.failure.group, "tooling");
+    assert.equal(result.report.failure.outcome, outcome);
+  }
+  const missing = await verify(root, ["--combine", "--input", input, "--upstream", "backend:skipped"]);
+  assert.equal(missing.report.failure.reason, "upstream-job-failed");
+  assert.equal(missing.report.failure.outcome, "unknown");
+  const conflicting = await verify(root, ["--combine", "--input", input, "--upstream", "tooling:success", "--upstream", "tooling:skipped"]);
+  assert.equal(conflicting.report.failure.reason, "configuration");
+});
+
+test("mixed and full plans require every tooling and application shard with strict job outcomes", async (t) => {
+  for (const [name, files] of [
+    ["mixed", ["scripts/workflow-extension.mjs", "backend/tests/fixture.ts"]],
+    ["full", ["scripts/verification.mjs"]],
+  ]) await t.test(name, async (t) => {
+    const root = await changedRepository(t, files), plan = (await verify(root, ["--plan"])).report;
+    const cases = [
+      { name: "native", class: "dev.devpocket.app.NativeFlowTest", status: "passed", tests: 2 },
+      ...["compact", ...(plan.layouts ? ["medium", "expanded", "landscape", "large-font"] : [])].map((name) =>
+        ({ name: `layout-${name}`, class: "dev.devpocket.app.AdaptiveLayoutTest", status: "passed", tests: 1 })),
+      { name: "fixture", class: "dev.devpocket.app.FixtureFlowTest", status: "passed", tests: 1 },
+    ];
+    const deviceEvidence = { version: 1, runId: randomUUID(), status: "passed", cleanup: "completed",
+      evidence: "emulator-test-sdk-adapter", source: plan.source, cases, tests: cases.reduce((count, item) => count + item.tests, 0),
+      apkSha256: "a".repeat(64), testApkSha256: "b".repeat(64), discoveredClasses: [...new Set(cases.map((item) => item.class))] };
+    const inputs = new Map();
+    for (const group of plan.requiredGroups) {
+      const file = path.join(root, ".data", `${group}-input.json`);
+      await writeFile(file, JSON.stringify({ ...plan, group, status: "partial", complete: false,
+        checks: plan.requiredChecks.map((id) => CHECKS.find((check) => check.id === id).group !== group
+          ? { id, status: "not_run" } : { id, status: "passed", exitCode: 0, ...(id === "android-device" ? { deviceEvidence } : {}) }) }));
+      inputs.set(group, file);
+    }
+    const args = [...inputs.values()].flatMap((file) => ["--input", file]);
+    const upstream = (failedGroup, outcome) => CHECK_GROUPS.flatMap((group) =>
+      ["--upstream", `${group}:${group === failedGroup ? outcome : plan.requiredGroups.includes(group) ? "success" : "skipped"}`]);
+    const complete = await verify(root, ["--combine", ...args, ...upstream()]);
+    assert.equal(complete.exitCode, 0);
+    assert.equal(complete.report.complete, true);
+    for (const group of plan.requiredGroups) {
+      const missing = await verify(root, ["--combine", ...[...inputs.entries()].filter(([key]) => key !== group)
+        .flatMap(([, file]) => ["--input", file]), ...upstream()]);
+      assert.equal(missing.exitCode, 1);
+      assert.equal(missing.report.failure.reason, "shard-missing");
+      assert.deepEqual(missing.report.failure.missingChecks,
+        CHECKS.filter((check) => check.group === group && plan.requiredChecks.includes(check.id)).map((check) => check.id));
+      for (const outcome of ["failure", "cancelled", "skipped"]) {
+        const failed = await verify(root, ["--combine", ...args, ...upstream(group, outcome)]);
+        assert.equal(failed.exitCode, 1);
+        assert.equal(failed.report.failure.reason, "upstream-job-failed");
+        assert.equal(failed.report.failure.group, group);
+      }
+    }
+  });
+});
+
+test("CI projects actual planner groups and forwards selected and unselected job outcomes without reclassifying checks", async (t) => {
+  const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
+  const planning = workflow.split("\n  plan:")[1].split("\n  tooling:")[0], gate = workflow.split("\n  gate:")[1];
+  const loop = (text) => text.match(/ {10}foreach \(\$group in @\([^\n]+\)\) \{\n[\s\S]+?\n {10}\}/)?.[0];
+  const projection = loop(planning), upstream = loop(gate);
+  assert.ok(projection);
+  assert.ok(upstream);
+  assert.doesNotMatch(planning, /Where-Object|requiredChecks -contains/);
+  for (const [name, files, groups] of [
+    ["documentation", ["README.md"], []],
+    ["tooling", ["scripts/workflow-extension.mjs"], ["tooling"]],
+    ["full", ["scripts/verification-policy.mjs"], CHECK_GROUPS],
+  ]) await t.test(name, async (t) => {
+    const root = await changedRepository(t, files), plan = await verify(root, ["--plan"]);
+    const output = path.join(root, ".data", "job-outputs");
+    await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
+      `$plan = Get-Content -LiteralPath $env:PLAN_FILE -Raw | ConvertFrom-Json\n${projection}`],
+    { cwd: root, env: { ...process.env, PLAN_FILE: plan.reportPath, GITHUB_OUTPUT: output }, timeout: 20000 });
+    const flags = Object.fromEntries((await readFile(output, "utf8")).trim().split(/\r?\n/).map((line) => line.split("=")));
+    assert.deepEqual(flags, Object.fromEntries(CHECK_GROUPS.map((group) => [group, String(groups.includes(group))])));
+    const results = Object.fromEntries(CHECK_GROUPS.map((group) =>
+      [`${group.toUpperCase()}_RESULT`, groups.includes(group) ? "success" : "skipped"]));
+    const forwarded = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
+      `$arguments = @()\n${upstream}\nConvertTo-Json -InputObject @($arguments) -Compress`],
+    { cwd: root, env: { ...process.env, ...results }, timeout: 20000 });
+    assert.deepEqual(JSON.parse(forwarded.stdout),
+      CHECK_GROUPS.flatMap((group) => ["--upstream", `${group}:${groups.includes(group) ? "success" : "skipped"}`]));
+  });
 });
 
 test("app, wire, skill and unknown changes cannot omit device checks or lower their risk", async (t) => {
@@ -72,8 +348,8 @@ test("app, wire, skill and unknown changes cannot omit device checks or lower th
       assert.ok(result.report.requiredChecks.includes("android-build"));
       if (!file.startsWith("android/")) assert.equal(result.report.requiresHumanReview, true);
       if (file.startsWith(".github/skills/")) {
-        const { CHECKS } = await import("../verification.mjs");
         assert.deepEqual(result.report.requiredChecks, CHECKS.map((check) => check.id));
+        assert.deepEqual(result.report.requiredGroups, CHECK_GROUPS);
       }
     });
   }
@@ -92,7 +368,7 @@ test("a failed command exits unsuccessfully and leaves later required checks not
   assert.equal(result.report.checks.find((check) => check.id === "backend-tests").status, "not_run");
 });
 
-test("backend diagnostics observe the normal ordered controller entry without accepting a failing suite", async (t) => {
+test("backend diagnostics observe the ordered backend entry without running the independent tooling suite", async (t) => {
   const root = await repository(t);
   const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
   manifest.type = "module";
@@ -111,7 +387,7 @@ test("backend diagnostics observe the normal ordered controller entry without ac
   delete env.NODE_TEST_CONTEXT;
   const result = await verify(root, ["--group", "backend", "--backend-diagnostics"], env);
   assert.equal(result.exitCode, 1);
-  assert.equal(result.report.checks.find((check) => check.id === "workflow-tests").status, "passed");
+  assert.equal(result.report.checks.find((check) => check.id === "workflow-tests").status, "not_run");
   assert.equal(result.report.checks.find((check) => check.id === "typecheck").status, "passed");
   const backend = result.report.checks.find((check) => check.id === "backend-tests");
   assert.equal(backend.status, "failed");
@@ -140,7 +416,7 @@ test("diagnostic preflight rejects raw reporter configuration before workflow-te
   ].join("\n"));
   const caller = { ...process.env };
   delete caller.NODE_TEST_CONTEXT;
-  const result = await verify(root, ["--group", "backend", "--backend-diagnostics"], (report) => ({
+  const result = await verify(root, ["--group", "all", "--backend-diagnostics"], (report) => ({
     ...caller,
     NODE_OPTIONS: `--title='x --test_reporter=spec --test_reporter_destination=${report} --title=y'`,
   }));
@@ -269,9 +545,9 @@ test("a failed required job cannot qualify through an otherwise successful check
   await writeFile(path.join(root, "backend", "tests", "fixture.test.ts"), "// fixture\n");
   const plan = (await verify(root, ["--plan"])).report;
   const input = path.join(root, ".data", "backend.json");
-  await writeFile(input, JSON.stringify({ ...plan, group: "backend", status: "partial", complete: false,
+  await writeFile(input, JSON.stringify({ ...plan, group: "all", status: "passed", complete: true,
     checks: plan.requiredChecks.map((id) => ({ id, status: "passed", exitCode: 0 })) }));
-  const result = await verify(root, ["--combine", "--input", input, "--upstream", "backend:failure"]);
+  const result = await verify(root, ["--combine", "--input", input, "--upstream", "tooling:success", "--upstream", "backend:failure"]);
   assert.equal(result.exitCode, 1);
   assert.equal(result.report.complete, false);
   assert.equal(result.report.failure.reason, "upstream-job-failed");
@@ -285,7 +561,7 @@ test("aggregation never republishes arbitrary check fields from otherwise valid 
   await writeFile(path.join(root, "backend", "tests", "fixture.test.ts"), "// fixture\n");
   const plan = (await verify(root, ["--plan"])).report;
   const input = path.join(root, ".data", "backend.json");
-  await writeFile(input, JSON.stringify({ ...plan, group: "backend", status: "partial",
+  await writeFile(input, JSON.stringify({ ...plan, group: "all", status: "passed",
     checks: plan.requiredChecks.map((id) => ({ id, status: "passed", exitCode: 0,
       rawAssertion: "PRIVATE_AGGREGATE_CANARY", deviceDiagnostics: { raw: "PRIVATE_AGGREGATE_CANARY" } })) }));
   const result = await verify(root, ["--combine", "--input", input]);
@@ -348,7 +624,7 @@ test("log initialization failure is a visible blocked check and never runs its c
   const directory = path.join(root, ".data", "verification", "log-init");
   await mkdir(path.join(directory, "workflow-tests.log"), { recursive: true });
   const report = path.join(directory, "report.json");
-  await assert.rejects(exec(process.execPath, [entry, "--repo", root, "--base", "HEAD", "--group", "backend", "--report", report],
+  await assert.rejects(exec(process.execPath, [entry, "--repo", root, "--base", "HEAD", "--group", "tooling", "--report", report],
     { timeout: 20000 }), (error) => error.code === 1);
   const value = JSON.parse(await readFile(report, "utf8")), check = value.checks.find((item) => item.id === "workflow-tests");
   assert.equal(check.status, "blocked");
