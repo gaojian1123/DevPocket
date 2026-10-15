@@ -160,6 +160,7 @@ async function commitThroughSession(ctx, file, request) {
       "commit-failed": "Git commit or its hooks failed; inspect the retained index and history.",
       "hook-failed": "A candidate Git hook failed even though Git returned success; inspect the retained index and history.",
       "hook-evidence": "Candidate Git hook-exit evidence or its cleanup is incomplete; inspect the retained index and history.",
+      "index-cleanup": "Candidate index cleanup is incomplete; inspect the retained lock and index without removing another operation's lock.",
       "inspection-failed": "Candidate commit inspection failed; the outcome requires inspection.",
     };
     const reason = Object.hasOwn(failures, receipt.failure) ? failures[receipt.failure] : "Candidate commit failed.";

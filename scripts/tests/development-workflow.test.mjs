@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { checkDevelopmentReadiness, runDevelopment } from "../development-workflow.mjs";
-import { changedPaths, inspectWorktree } from "../candidate-commit.mjs";
+import { changedPaths, inspectWorktree, prepareCandidate, sha256 } from "../candidate-commit.mjs";
 import { executeVerification, git, sourceSnapshot } from "../verification.mjs";
 
 const exec = promisify(execFile);
@@ -624,6 +625,8 @@ test("commit permission, native-tool and hook failures never reach final verific
       assert.match(result.reason, /commit|hook|pipeline|PowerShell|session identity/i);
       const current = await inspectWorktree(root);
       assert.equal(current.identity.branch, "refs/heads/task");
+      const index = path.resolve(root, (await git(root, ["rev-parse", "--git-path", "index"])).trim());
+      await assert.rejects(readFile(`${index}.lock`), { code: "ENOENT" });
       if (["hook-post-commit-error", "hook-mutates", "hook-removes-trailer"].includes(scenario)) {
         assert.notEqual(current.source.head, parent, "A failed candidate remains history; it is never reset/amended.");
       } else assert.equal(current.source.head, parent);
@@ -779,6 +782,58 @@ test("the native candidate boundary rejects concurrent changes instead of commit
         "candidate-test", "candidate-0.json.result.json"), "utf8"), '{"status":"committed","candidate":{"commit":"forged"}}\n');
     });
   }
+});
+
+test("staging after final inspection never commits an unowned file", async (t) => {
+  const { root } = await workspace(t);
+  const before = await inspectWorktree(root);
+  await writeFile(path.join(root, "README.md"), "Inspected task change\n");
+  const { request } = await prepareCandidate(root, before, await sourceSnapshot(root),
+    ["README.md"], "fixture-session", "Commit the inspected task");
+  const directory = path.join(root, ".data");
+  await mkdir(directory);
+  const requestFile = path.join(directory, "candidate-request.json");
+  const bytes = JSON.stringify(request) + "\n";
+  await writeFile(requestFile, bytes);
+  const preload = path.join(directory, "concurrent-index.mjs");
+  await writeFile(preload, [
+    "import childProcess from 'node:child_process';",
+    "import { syncBuiltinESMExports } from 'node:module';",
+    "import { promisify } from 'node:util';",
+    "import { writeFileSync } from 'node:fs';",
+    "import path from 'node:path';",
+    "const original = childProcess.execFile, execute = promisify(original);",
+    "const intercepted = (...args) => original(...args);",
+    "intercepted[promisify.custom] = (command, args, options) => {",
+    "  if (command === 'git' && args.includes('commit')) {",
+    "    writeFileSync(path.join(options.cwd, 'unowned.txt'), 'Concurrent user change\\n');",
+    "    const staged = childProcess.spawnSync('git', ['add', '--', 'unowned.txt'], { cwd: options.cwd });",
+    "    writeFileSync(path.join(options.cwd, '.data', 'race-stage-status'), String(staged.status));",
+    "  }",
+    "  return execute(command, args, options);",
+    "};",
+    "childProcess.execFile = intercepted;",
+    "syncBuiltinESMExports();",
+    "",
+  ].join("\n"));
+  const entry = fileURLToPath(new URL("../candidate-commit.mjs", import.meta.url));
+  let failure;
+  await assert.rejects(exec(process.execPath, ["--import", pathToFileURL(preload).href, entry,
+    "--request", requestFile, "--sha256", sha256(bytes)], { cwd: root, timeout: 30_000 }), (error) => {
+    failure = error;
+    return error.code === 1;
+  });
+  const unowned = await readFile(path.join(root, "unowned.txt"), "utf8").catch(() => {
+    assert.fail(`The concurrent staging injection did not execute: ${failure.stderr}`);
+  });
+  assert.equal(unowned, "Concurrent user change\n");
+  assert.ok(["0", "128"].includes(await readFile(path.join(directory, "race-stage-status"), "utf8")));
+  assert.notEqual((await sourceSnapshot(root)).head, before.source.head, "Exercise the real candidate commit after the concurrent staging attempt.");
+  const committed = (await git(root, ["ls-tree", "-r", "--name-only", "HEAD"])).trim().split("\n");
+  assert.equal(committed.includes("unowned.txt"), false, "Reject before unowned staged data enters retained history.");
+  assert.deepEqual((await git(root, ["diff", "--name-only", before.source.head, "HEAD"])).trim().split("\n"), ["README.md"]);
+  const index = path.resolve(root, (await git(root, ["rev-parse", "--git-path", "index"])).trim());
+  await assert.rejects(readFile(`${index}.lock`), { code: "ENOENT" });
 });
 
 test("failing checks produce a new repair commit and fresh evidence without rewriting the first attempt", async (t) => {

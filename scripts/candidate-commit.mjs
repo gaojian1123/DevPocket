@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { lstat, mkdtemp, open, readFile, readlink, rm, rmdir } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { copyFile, lstat, mkdtemp, open, readFile, readlink, rm, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,7 +46,7 @@ async function hookFailures(trace) {
   return [...hooks.values()].filter((hook) => hook.exitCode !== 0);
 }
 
-async function gitMutation(root, args, input) {
+async function gitMutation(root, args, input, environment = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), "devpocket-candidate-"));
   const file = path.join(directory, "hooks.jsonl");
   let trace, output, failure;
@@ -54,7 +54,7 @@ async function gitMutation(root, args, input) {
     trace = await open(file, "wx+", 0o600);
     const command = exec("git", ["--no-pager", ...args], {
       cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 120_000,
-      env: { ...process.env, GIT_TRACE2_EVENT: file },
+      env: { ...process.env, ...environment, GIT_TRACE2_EVENT: file },
     });
     command.child.stdin.end(input);
     output = await command;
@@ -211,6 +211,56 @@ export async function validateCandidateCommit(root, request, candidate) {
   return candidate;
 }
 
+async function commitInspectedIndex(root, request, staged, tree) {
+  const index = path.resolve(root, (await git(root, ["rev-parse", "--git-path", "index"])).trim());
+  const lockPath = `${index}.lock`;
+  const owner = JSON.stringify({ pid: process.pid, token: randomUUID() }) + "\n";
+  let lock, directory, failure;
+  const check = async () => {
+    const current = await inspectWorktree(root);
+    assertIdentity(current, request.expected);
+    if (current.source.head !== request.expected.source.head ||
+        current.index !== staged.index || !sameSource(current.source, staged.source)) {
+      fail("The inspected candidate or expected parent changed before committing.");
+    }
+  };
+  try {
+    try { lock = await open(lockPath, "wx", 0o600); }
+    catch (error) {
+      if (error.code === "EEXIST") fail("The candidate commit index is locked; preserve the existing lock and inspect before continuing.");
+      throw error;
+    }
+    await lock.writeFile(owner);
+    await check();
+    directory = await mkdtemp(path.join(tmpdir(), "devpocket-candidate-index-"));
+    const isolated = path.join(directory, "index");
+    await copyFile(index, isolated);
+    const environment = { GIT_INDEX_FILE: isolated };
+    if ((await gitMutation(root, ["write-tree"], undefined, environment)).trim() !== tree) {
+      fail("The isolated candidate index does not match the inspected tree.");
+    }
+    await check();
+    await gitMutation(root, ["commit", "--file=-"], request.message, environment);
+  } catch (error) { failure = error; }
+  for (const cleanup of [
+    async () => { if (directory) await rm(directory, { recursive: true, force: true }); },
+    async () => {
+      if (!lock) return;
+      await lock.close();
+      if (await readFile(lockPath, "utf8") !== owner) throw new Error("Candidate index lock ownership changed.");
+      await rm(lockPath);
+    },
+  ]) {
+    try { await cleanup(); }
+    catch (cause) {
+      failure ??= Object.assign(new Error("Candidate index cleanup failed; inspect the retained lock and index.", { cause }),
+        { candidateFailure: "index-cleanup" });
+      failure.indexCleanupFailed = true;
+    }
+  }
+  if (failure) throw failure;
+}
+
 export async function commitCandidate(request) {
   if (request?.version !== 1 || !request.expected || path.resolve(request.root) !== request.expected.identity?.root ||
       !/^[A-Za-z0-9-]{1,100}$/.test(request.sessionId ?? "") || !taskPaths(request.files).length) {
@@ -240,7 +290,7 @@ export async function commitCandidate(request) {
   const staged = await inspectWorktree(root);
   assertIdentity(staged, current);
   if (staged.index !== current.index || !sameSource(staged.source, current.source)) fail("Source or index changed before commit.");
-  try { await gitMutation(root, ["commit", "--file=-"], request.message); }
+  try { await commitInspectedIndex(root, request, staged, tree); }
   catch (error) { throw Object.assign(error, { candidateFailure: error.candidateFailure ?? "commit-failed" }); }
   const after = await inspectWorktree(root);
   const candidate = { created: true, parent: request.expected.source.head, commit: after.source.head,
@@ -263,11 +313,12 @@ async function main() {
     await receipt.writeFile(JSON.stringify({ status: "committed", candidate }) + "\n");
   } catch (error) {
     await receipt.writeFile(JSON.stringify({ status: "blocked",
-      failure: ["candidate-changed", "staging-failed", "commit-failed", "hook-failed", "hook-evidence"].includes(error.candidateFailure)
+      failure: ["candidate-changed", "staging-failed", "commit-failed", "hook-failed", "hook-evidence", "index-cleanup"].includes(error.candidateFailure)
         ? error.candidateFailure : "inspection-failed",
       ...(Number.isInteger(error.code) ? { exitCode: error.code } : {}),
       ...(error.hookFailures ? { hookFailures: error.hookFailures } : {}),
-      ...(error.traceCleanupFailed ? { traceCleanup: "failed" } : {}) }) + "\n");
+      ...(error.traceCleanupFailed ? { traceCleanup: "failed" } : {}),
+      ...(error.indexCleanupFailed ? { indexCleanup: "failed" } : {}) }) + "\n");
     throw error;
   } finally { await receipt.close(); }
 }
@@ -277,6 +328,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.error(error.message);
     if (error.stderr) console.error(error.stderr);
     if (error.traceCleanupFailed) console.error("Git hook trace cleanup also failed.");
+    if (error.indexCleanupFailed) console.error("Candidate index cleanup also failed.");
     process.exitCode = 1;
   });
 }

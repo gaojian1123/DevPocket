@@ -97,10 +97,13 @@ The controller follows **implement → local candidate commit → final verifica
 2. The controller checks ownership, source, index, branch and Git configuration.
    Protected gate/dependency/workflow changes still stop for explicit human
    policy review **before** committing or executing the modified policy.
-   Otherwise its guarded candidate helper stages only the inspected literal paths
-   and creates one local commit through the original session's native PowerShell
-   tool/permission pipeline. Missing native tools or denied permission blocks the
-   step; there is no direct mutation fallback. Git configuration and hooks are
+   Otherwise its guarded candidate helper stages only the inspected literal paths,
+   holds the real index's exclusive lock, and commits an isolated copy of the
+   inspected index through the original session's native PowerShell tool/permission
+   pipeline. It checks the captured tree and expected parent before committing;
+   concurrent staging cannot enter that commit through the live index. Missing
+   native tools or denied permission blocks the step; there is no direct mutation
+   fallback. Git configuration and hooks are
    retained. The commit includes the project `Co-authored-by` trailer and a
    `Copilot-Session` trailer from the live owning session, not a task-specific
    identity embedded in source.
@@ -1036,6 +1039,9 @@ completed journaled run may be read again only while its task/workspace/source
 still match and the candidate index/worktree remain clean. Inspect the recorded
 candidate request/receipt, current index and history after a commit interruption;
 preserve failed commits and reports rather than guessing whether to retry.
+The candidate index lock records its owner PID and token. Inspect that owner
+before recovering an interrupted commit; existing or replaced locks are never
+removed automatically.
 The committed-candidate controller uses a versioned journal key; older uncommitted
 handoffs cannot be promoted to readiness or have their commit fields rewritten.
 In-flight runs retain their existing controller's restrictions. Start further
