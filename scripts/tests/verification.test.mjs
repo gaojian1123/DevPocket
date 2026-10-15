@@ -7,6 +7,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "../verification-policy.mjs";
+import { developmentReviewRequirements } from "../development-policy.mjs";
 
 const exec = promisify(execFile);
 const entry = path.resolve("scripts/verify.mjs");
@@ -79,7 +80,8 @@ test("task-routing tooling selects only its complete regression suite, independe
       assert.equal(result.exitCode, 0);
       assert.deepEqual(result.report.requiredChecks, ["workflow-tests"]);
       assert.deepEqual(result.report.requiredGroups, ["tooling"]);
-      assert.equal(result.report.requiresHumanReview, true);
+      assert.equal(Object.hasOwn(result.report, "requiresHumanReview"), false);
+      assert.equal(developmentReviewRequirements(result.report.changedFiles).requiresHumanReview, true);
       assert.equal(result.report.layouts, false);
       assert.deepEqual(result.report.changedFiles, [...files].sort());
       assert.deepEqual(result.report.selectionReasons.flatMap((reason) => reason.paths).sort(), [...files].sort());
@@ -88,8 +90,52 @@ test("task-routing tooling selects only its complete regression suite, independe
       const publicPlan = JSON.parse(result.stdout.split(/\r?\n/).find((line) => line.startsWith("{")));
       assert.deepEqual(publicPlan.selectionReasons, result.report.selectionReasons);
       assert.deepEqual(publicPlan.requiredGroups, ["tooling"]);
+      assert.equal(Object.hasOwn(publicPlan, "requiresHumanReview"), false);
     });
   }
+});
+
+test("development orchestration and named agent instructions remain protected without selecting application checks", async (t) => {
+  const tooling = ["scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
+    ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"];
+  for (const files of [...tooling.map((file) => [file]), [...tooling, "README.md", "docs/DEVELOPMENT-WORKFLOW.md"]]) {
+    await t.test(files.join(", "), async (t) => {
+      const root = await changedRepository(t, files);
+      const result = await verify(root, ["--plan"]);
+      assert.equal(result.exitCode, 0);
+      assert.deepEqual(result.report.requiredChecks, ["workflow-tests"]);
+      assert.deepEqual(result.report.requiredGroups, ["tooling"]);
+      assert.equal(result.report.layouts, false);
+      assert.equal(Object.hasOwn(result.report, "requiresHumanReview"), false);
+      assert.deepEqual(developmentReviewRequirements(result.report.changedFiles), {
+        requiresHumanReview: true, protectedPaths: files.filter((file) => tooling.includes(file)).sort(),
+      });
+      const publicPlan = JSON.parse(result.stdout.split(/\r?\n/).find((line) => line.startsWith("{")));
+      assert.deepEqual(Object.keys(publicPlan).sort(),
+        ["kind", "layouts", "requiredChecks", "requiredGroups", "selectionReasons"]);
+      assert.deepEqual(publicPlan.requiredGroups, ["tooling"]);
+      assert.deepEqual(result.report.selectionReasons.flatMap((reason) => reason.paths).sort(), [...files].sort());
+    });
+  }
+});
+
+test("the actual CI planner does not load local development trust policy", async (t) => {
+  const root = await changedRepository(t, ["scripts/development-workflow.mjs"]);
+  const guard = path.join(root, ".data", "trust-import-guard.mjs");
+  await mkdir(path.dirname(guard), { recursive: true });
+  await writeFile(guard, [
+    'import { registerHooks } from "node:module";',
+    'registerHooks({ resolve(specifier, context, next) {',
+    '  if (specifier.endsWith("/development-policy.mjs")) throw new Error("CI loaded local trust policy");',
+    '  return next(specifier, context);',
+    '} });',
+  ].join("\n"));
+  const result = await verify(root, ["--plan"], {
+    ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(guard).href}`,
+  });
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(result.report.requiredChecks, ["workflow-tests"]);
+  assert.deepEqual(result.report.requiredGroups, ["tooling"]);
 });
 
 test("documentation and an unchanged checkout select no checks or groups", async (t) => {
@@ -100,7 +146,8 @@ test("documentation and an unchanged checkout select no checks or groups", async
       assert.equal(exitCode, 0);
       assert.deepEqual(report.requiredChecks, []);
       assert.deepEqual(report.requiredGroups, []);
-      assert.equal(report.requiresHumanReview, false);
+      assert.equal(Object.hasOwn(report, "requiresHumanReview"), false);
+      assert.deepEqual(developmentReviewRequirements(report.changedFiles), { requiresHumanReview: false, protectedPaths: [] });
       assert.equal(report.layouts, false);
       assert.deepEqual(report.selectionReasons.map((item) => item.rule), files.length ? ["documentation"] : []);
       const combined = await verify(root, ["--combine", ...CHECK_GROUPS.flatMap((group) => ["--upstream", `${group}:skipped`])]);
@@ -113,9 +160,13 @@ test("documentation and an unchanged checkout select no checks or groups", async
 test("verification infrastructure and unknown paths retain all downstream checks and protection", async (t) => {
   for (const file of [
     "scripts/verification.mjs", "scripts/verification-policy.mjs", "scripts/verify.mjs", "scripts/verify.ps1",
-    "scripts/development-workflow.mjs", "scripts/process.mjs", "scripts/owned-command.ps1", "scripts/device-run.mjs",
+    "scripts/git-state.mjs", "scripts/native-candidate.mjs",
+    "scripts/process.mjs", "scripts/owned-command.ps1", "scripts/device-run.mjs",
     "scripts/build-android.ps1", "scripts/tests/verification.test.mjs", "scripts/workflow-extension-extra.mjs",
-    "scripts/tests/development-workflow-extra.test.mjs", ".github/workflows/ci.yml", ".github/actions/prepare-native/action.yml",
+    "scripts/tests/development-workflow-extra.test.mjs", "scripts/development-workflow-extra.mjs",
+    "scripts/development-policy-extra.mjs", "scripts/candidate-commit-extra.mjs",
+    ".github/agents/another-reviewer.agent.md", ".github/skills/another-skill/SKILL.md",
+    ".github/skills/devpocket-development/extra.md", ".github/workflows/ci.yml", ".github/actions/prepare-native/action.yml",
     "package.json", "package-lock.json", ".npmrc", "backend/tsconfig.json", "deployment/azure/package.json",
     "deployment/azure/probe/requirements-test.txt", "android/app/build.gradle.kts",
     "android/gradle/wrapper/gradle-wrapper.properties", "previously-unknown/file.txt",
@@ -125,7 +176,8 @@ test("verification infrastructure and unknown paths retain all downstream checks
     assert.equal(exitCode, 0);
     assert.deepEqual(report.requiredChecks, CHECKS.map((check) => check.id));
     assert.deepEqual(report.requiredGroups, ["tooling", "backend", "android", "device"]);
-    assert.equal(report.requiresHumanReview, true);
+    assert.equal(Object.hasOwn(report, "requiresHumanReview"), false);
+    assert.equal(developmentReviewRequirements(report.changedFiles).requiresHumanReview, true);
     assert.equal(report.layouts, true);
     assert.deepEqual(report.selectionReasons.map((item) => item.rule),
       [file.startsWith("previously-unknown/") ? "unknown" : "verification-infrastructure"]);
@@ -133,8 +185,10 @@ test("verification infrastructure and unknown paths retain all downstream checks
   });
 });
 
-test("mixed routing and application changes select the union and derive groups from check definitions", async (t) => {
+test("mixed development tooling and application changes select the union from the single check catalogue", async (t) => {
   const core = ["workflow-tests", "typecheck", "backend-tests", "backend-build", "schema"];
+  const tooling = ["scripts/workflow-extension.mjs", "scripts/development-workflow.mjs",
+    "scripts/candidate-commit.mjs", ".github/agents/devpocket-reviewer.agent.md"];
   for (const [file, checks, groups, layouts = false] of [
     ["backend/tests/fixture.test.ts", core, ["tooling", "backend"]],
     ["backend/src/protocol.ts", [...core, "extension-package", "setup", "android-build", "android-device"], CHECK_GROUPS],
@@ -145,18 +199,21 @@ test("mixed routing and application changes select the union and derive groups f
     ["deployment/azure/src/fixture.ts", [...core, "setup", "azure-tests", "operations-tests"], ["tooling", "backend"]],
     ["android/app/src/main/java/dev/devpocket/app/ui/Screen.kt", ["workflow-tests", "android-build", "android-device"],
       ["tooling", "android", "device"], true],
+    ["scripts/verification.mjs", CHECKS.map((check) => check.id), CHECK_GROUPS, true],
+    [".github/workflows/ci.yml", CHECKS.map((check) => check.id), CHECK_GROUPS, true],
     ["unknown.txt", CHECKS.map((check) => check.id), CHECK_GROUPS, true],
   ]) await t.test(file, async (t) => {
-    const root = await changedRepository(t, ["scripts/workflow-extension.mjs", file]);
+    const root = await changedRepository(t, [...tooling, file]);
     const { report, exitCode } = await verify(root, ["--plan"]);
     assert.equal(exitCode, 0);
     assert.deepEqual(report.requiredChecks, checks);
     assert.deepEqual(report.requiredGroups, groups);
     assert.deepEqual(report.requiredGroups, [...new Set(CHECKS.filter((check) => checks.includes(check.id)).map((check) => check.group))]);
-    assert.equal(report.requiresHumanReview, true);
+    assert.equal(Object.hasOwn(report, "requiresHumanReview"), false);
+    assert.equal(developmentReviewRequirements(report.changedFiles).requiresHumanReview, true);
     assert.equal(report.layouts, layouts);
-    assert.equal(report.selectionReasons.length, 2);
-    assert.deepEqual(report.selectionReasons.flatMap((item) => item.paths).sort(), [file, "scripts/workflow-extension.mjs"].sort());
+    assert.equal(report.selectionReasons.length, 4);
+    assert.deepEqual(report.selectionReasons.flatMap((item) => item.paths).sort(), [file, ...tooling].sort());
   });
 });
 
@@ -180,7 +237,8 @@ test("plan explanations are deterministic and bounded without truncating actual 
 });
 
 test("the CLI and PowerShell tooling shard run no application checks", async (t) => {
-  const root = await changedRepository(t, ["scripts/workflow-extension.mjs"]);
+  const root = await changedRepository(t, ["scripts/development-workflow.mjs", "scripts/candidate-commit.mjs",
+    ".github/agents/devpocket-reviewer.agent.md"]);
   const result = await verify(root, ["--group", "tooling"]);
   assert.equal(result.exitCode, 0);
   assert.equal(result.report.version, VERIFICATION_REPORT_VERSION);
@@ -229,6 +287,7 @@ test("tooling aggregation accepts only complete current evidence and ignores uns
     ["different required groups", { requiredGroups: ["backend"] }, "policy-mismatch"],
     ["missing group policy", { requiredGroups: undefined }, "policy-mismatch"],
     ["legacy report", { version: 1 }, "policy-mismatch"],
+    ["coupled impact and review report", { version: 2 }, "policy-mismatch"],
     ["unknown report version", { version: 999 }, "policy-mismatch"],
   ]) await t.test(name, async () => {
     await writeFile(input, JSON.stringify({ ...current, ...change }));
@@ -252,6 +311,13 @@ test("tooling aggregation accepts only complete current evidence and ignores uns
   assert.equal(missing.report.failure.outcome, "unknown");
   const conflicting = await verify(root, ["--combine", "--input", input, "--upstream", "tooling:success", "--upstream", "tooling:skipped"]);
   assert.equal(conflicting.report.failure.reason, "configuration");
+  for (const requiresHumanReview of [true, false]) {
+    await writeFile(input, JSON.stringify({ ...current, requiresHumanReview }));
+    const result = await verify(root, ["--combine", "--input", input, ...upstream]);
+    assert.equal(result.exitCode, 0, "Local-agent review flags cannot approve or block CI test evidence.");
+    assert.equal(result.report.complete, true);
+    assert.equal(Object.hasOwn(result.report, "requiresHumanReview"), false);
+  }
 });
 
 test("mixed and full plans require every tooling and application shard with strict job outcomes", async (t) => {
@@ -308,9 +374,12 @@ test("CI projects actual planner groups and forwards selected and unselected job
   assert.ok(projection);
   assert.ok(upstream);
   assert.doesNotMatch(planning, /Where-Object|requiredChecks -contains/);
+  assert.doesNotMatch(planning + gate, /requiresHumanReview|development-policy/);
   for (const [name, files, groups] of [
     ["documentation", ["README.md"], []],
     ["tooling", ["scripts/workflow-extension.mjs"], ["tooling"]],
+    ["development", ["scripts/development-workflow.mjs", "scripts/candidate-commit.mjs",
+      ".github/agents/devpocket-reviewer.agent.md"], ["tooling"]],
     ["full", ["scripts/verification-policy.mjs"], CHECK_GROUPS],
   ]) await t.test(name, async (t) => {
     const root = await changedRepository(t, files), plan = await verify(root, ["--plan"]);
@@ -330,12 +399,12 @@ test("CI projects actual planner groups and forwards selected and unselected job
   });
 });
 
-test("app, wire, skill and unknown changes cannot omit device checks or lower their risk", async (t) => {
+test("app, wire, unrelated skills and unknown changes cannot omit device checks", async (t) => {
   for (const file of [
     "android/app/src/main/java/Screen.kt",
     "backend/src/protocol.ts",
     "scripts/verify.mjs",
-    ".github/skills/devpocket-development/SKILL.md",
+    ".github/skills/another-skill/SKILL.md",
     "new-unclassified-file",
   ]) {
     await t.test(file, async (t) => {
@@ -346,7 +415,8 @@ test("app, wire, skill and unknown changes cannot omit device checks or lower th
       assert.equal(result.exitCode, 0);
       assert.ok(result.report.requiredChecks.includes("android-device"));
       assert.ok(result.report.requiredChecks.includes("android-build"));
-      if (!file.startsWith("android/")) assert.equal(result.report.requiresHumanReview, true);
+      assert.equal(Object.hasOwn(result.report, "requiresHumanReview"), false);
+      if (!file.startsWith("android/")) assert.equal(developmentReviewRequirements(result.report.changedFiles).requiresHumanReview, true);
       if (file.startsWith(".github/skills/")) {
         assert.deepEqual(result.report.requiredChecks, CHECKS.map((check) => check.id));
         assert.deepEqual(result.report.requiredGroups, CHECK_GROUPS);

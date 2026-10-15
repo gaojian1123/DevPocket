@@ -222,14 +222,22 @@ retain the same verification requirements and scoped authorization; a skill is
 guidance, not a replacement for programmatic evidence checks or protected CI.
 
 Verification classifies changed paths centrally and derives CI lanes from the
-selected check definitions. Task-start/session-routing tooling and its regression
-file select the complete workflow regression suite in an independent **tooling**
-lane, without application builds or Android provisioning. `AGENTS.md` selects
-those regressions and retains protected human review. README, validation and
-docs Markdown changes alone select no application checks. Verification/CI/build
-infrastructure, dependency policy and unknown paths remain conservative full
-impact; mixed changes take the union. Plans include bounded path/rule explanations.
-Narrower check selection never authorizes execution of modified protected policy.
+selected check definitions, independently of local Agent trust requirements.
+Explicitly named development orchestration, candidate preparation, routing and
+DevPocket skill/reviewer instructions select the complete workflow regression
+suite in an independent **tooling** lane, without application builds or Android
+provisioning. `AGENTS.md` selects those regressions too. README, validation and
+docs Markdown changes alone select no application checks. Shared verification
+selection/execution/aggregation, CI/build infrastructure, dependency inputs and
+unknown paths remain conservative full impact; mixed changes take the union.
+Plans include bounded path/rule explanations, not approval decisions.
+
+Local execution trust and human-review requirements belong to
+`scripts\development-policy.mjs`, shared by skill-led development and the optional
+controller. Tooling-only selection still stops before unapproved protected-policy
+execution. Passing tests and independent AI review do not supply human approval.
+GitHub merge review is enforced separately by repository rulesets/required
+reviews/CODEOWNERS when configured; this tooling does not configure them.
 Android-affecting changes require actual emulator
 instrumentation against a local test adapter, not just a successful APK build.
 CI runs this device gate on a standard GitHub-hosted Ubuntu 24.04 VM with KVM;

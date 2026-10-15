@@ -232,7 +232,7 @@ export async function prepareCandidate(root, before, source, ownedFiles, session
   if (typeof sessionId !== "string" || !/^[A-Za-z0-9-]{1,100}$/.test(sessionId)) {
     fail("The original session identity is required for the candidate commit trailer.");
   }
-  if (!execution || execution.version !== 1) fail("A captured native implementation is required for candidate execution.");
+  if (!execution || execution.version !== 2) fail("A current captured native implementation is required for candidate execution.");
   const title = `DevPocket: ${goal.replace(/\s+/g, " ").trim()}`.slice(0, 100);
   return { request: {
     version: 3, root: path.resolve(root), expected: current, files, sessionId, hooks: { ...hooks },

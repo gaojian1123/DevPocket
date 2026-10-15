@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const nativeFiles = ["candidate-commit.mjs", "git-state.mjs"];
 const implementationFiles = [...new Set([...nativeFiles, "native-candidate.mjs", "development-workflow.mjs", "workflow-extension.mjs",
-  "verification.mjs", "verification-policy.mjs", "process.mjs", "device-run.mjs", "worker-diagnostics.mjs",
+  "development-policy.mjs", "verification.mjs", "verification-policy.mjs", "process.mjs", "device-run.mjs", "worker-diagnostics.mjs",
   "device-diagnostics.mjs", "diagnostic-errors.mjs", "bounded-worker-log.mjs", "diagnostic-publication.mjs",
   "native-lifecycle.mjs"])].sort();
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -23,11 +23,11 @@ export async function captureCandidateImplementation(directory = fileURLToPath(n
     }
     return Object.freeze({ name, sha256: digest(bytes) });
   }));
-  return Object.freeze({ version: 1, directory, files: Object.freeze(files) });
+  return Object.freeze({ version: 2, directory, files: Object.freeze(files) });
 }
 
 export async function requireCandidateImplementation(expected) {
-  if (expected?.version !== 1 || typeof expected.directory !== "string" ||
+  if (expected?.version !== 2 || typeof expected.directory !== "string" ||
       !Array.isArray(expected.files) || expected.files.length !== implementationFiles.length) {
     throw new Error("A captured controller/helper implementation is required.");
   }
@@ -59,7 +59,7 @@ async function runFrozenCandidate(specification) {
       throw new Error("The native Node.js runtime cannot load captured modules; a supported runtime is required.");
     }
     const request = JSON.parse(bytes), implementation = request.execution;
-    if (implementation?.version !== 1 || typeof implementation.directory !== "string" ||
+    if (implementation?.version !== 2 || typeof implementation.directory !== "string" ||
         !Array.isArray(implementation.files) ||
         JSON.stringify(implementation.files.map((input) => input?.name)) !== JSON.stringify(specification.inputs)) {
       throw new Error("Candidate executable-input binding is missing or unrecognized.");
