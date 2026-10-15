@@ -114,7 +114,7 @@ async function main() {
   console.log(`Verification ${report.status}: ${path.relative(root, reportPath).replaceAll("\\", "/")}`);
   if (report.status === "planned") console.log(JSON.stringify({
     kind: "verification-plan", requiredChecks: report.requiredChecks, requiredGroups: report.requiredGroups,
-    requiresHumanReview: report.requiresHumanReview, layouts: report.layouts, selectionReasons: report.selectionReasons,
+    layouts: report.layouts, selectionReasons: report.selectionReasons,
   }));
   if (report.failure) console.error(JSON.stringify({ kind: "verification-failure", ...report.failure }));
 }

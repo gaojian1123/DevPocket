@@ -30,6 +30,9 @@ test("repository routing discovers the development skill without requiring workf
   assert.match(skill, /--combine/);
   assert.match(skill, /source identity matches the review/);
   assert.match(skill, /requiresHumanReview/);
+  assert.ok(skill.includes("scripts\\development-policy.mjs"));
+  assert.match(skill, /developmentReviewRequirements/);
+  assert.match(skill, /CI reports do not supply/);
   assert.match(readme, /skill\*\* is the default agent route/);
   assert.match(issue, /registered workflow is optional/);
   const optional = guide.split("## Optional: registered workflow")[1];
@@ -485,7 +488,9 @@ test("gate changes and missing agent results stop rather than granting self-appr
 test("tooling-only impact retains the controller's protected-policy stop before any execution or review", async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
   const { verificationPlan } = await import("../verification.mjs");
-  for (const file of ["AGENTS.md", "scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs"]) {
+  for (const file of ["AGENTS.md", "scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs",
+    "scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
+    ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"]) {
     await t.test(file, async (t) => {
       const { root } = await workspace(t);
       let calls = 0;
@@ -504,7 +509,79 @@ test("tooling-only impact retains the controller's protected-policy stop before 
       const plan = await verificationPlan(root, "HEAD");
       assert.deepEqual(plan.requiredChecks, ["workflow-tests"]);
       assert.deepEqual(plan.requiredGroups, ["tooling"]);
-      assert.equal(plan.requiresHumanReview, true);
+      assert.equal(Object.hasOwn(plan, "requiresHumanReview"), false);
+      assert.deepEqual(result.policyReview, {
+        requiresHumanReview: true, protectedPaths: [file], source: plan.source,
+      });
+      assert.equal(result.verification, undefined);
+      assert.equal(result.review, undefined);
+    });
+  }
+});
+
+test("local review requirements preserve trust boundaries independently of impact rules", async () => {
+  const { developmentReviewRequirements } = await import("../development-policy.mjs");
+  for (const [file, requiresHumanReview, protectedPath] of [
+    ["README.md", false, false], ["VALIDATION.md", false, false], ["docs/policy.md", false, false],
+    ["AGENTS.md", true, true], ["scripts/development-workflow.mjs", true, true],
+    ["scripts/development-policy.mjs", true, true], ["scripts/candidate-commit.mjs", true, true],
+    ["scripts/tests/development-workflow.test.mjs", true, true],
+    [".github/agents/devpocket-reviewer.agent.md", true, true],
+    [".github/skills/devpocket-development/SKILL.md", true, true],
+    ["scripts/verification.mjs", true, true], ["scripts/verification-policy.mjs", true, true],
+    ["scripts/verify.mjs", true, true], [".github/workflows/ci.yml", true, true],
+    ["package-lock.json", true, true], [".NPMRC", true, true], ["backend/tsconfig.json", true, true],
+    ["deployment/azure/probe/requirements-test.txt", true, true],
+    ["android/gradlew.bat", true, true], ["android/app/build.gradle.kts", true, true],
+    ["android/app/src/main/java/dev/devpocket/app/ui/Screen.kt", false, false],
+    ["android/app/src/main/java/dev/devpocket/app/data/Store.kt", true, false],
+    ["android/app/src/main/AndroidManifest.xml", true, false],
+    ["backend/tests/fixture.test.ts", false, false], ["backend/integration/fixture.ts", false, false],
+    ["backend/src/runtime.ts", true, false], ["extension/entry.mjs", true, false],
+    ["deployment/setup.ps1", true, false], ["infra/main.bicep", true, false], ["azure.yaml", true, false],
+    ["protocol.schema.json", true, false], ["test-fixtures/fixture.json", true, false],
+    ["unclassified.txt", true, false],
+  ]) assert.deepEqual(developmentReviewRequirements([file]), {
+    requiresHumanReview, protectedPaths: protectedPath ? [file] : [],
+  }, file);
+  assert.deepEqual(developmentReviewRequirements([]), { requiresHumanReview: false, protectedPaths: [] });
+  assert.deepEqual(developmentReviewRequirements(["README.md", "scripts/candidate-commit.mjs", "AGENTS.md", "AGENTS.md"]), {
+    requiresHumanReview: true, protectedPaths: ["AGENTS.md", "scripts/candidate-commit.mjs"],
+  });
+  for (const invalid of [undefined, null, {}, "README.md", [null], [""]]) {
+    assert.throws(() => developmentReviewRequirements(invalid), /actual changed-path list/);
+  }
+});
+
+test("post-review controller handoff uses local requirements even when verification carries a contrary review flag", async (t) => {
+  const { runDevelopment } = await import("../development-workflow.mjs");
+  for (const [file, requiresHumanReview] of [["backend/tests/fixture.test.ts", false], ["extension/entry.mjs", true]]) {
+    await t.test(file, async (t) => {
+      const { root } = await workspace(t), calls = [];
+      let executions = 0;
+      const result = await runDevelopment(durable({
+        runId: "local-review", args: { goal: "Task", acceptance: ["Behavior"] }, phase() {}, log() {},
+        agent: async (_prompt, options) => {
+          calls.push(options.agent);
+          if (options.agent === "devpocket-reviewer") return { verdict: "pass", findings: [] };
+          await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+          await writeFile(path.join(root, file), "// fixture\n");
+          return { status: "implemented", summary: "Changed source." };
+        },
+      }), { root, verify: async (_root, plan) => {
+        executions++;
+        assert.equal(Object.hasOwn(plan, "requiresHumanReview"), false);
+        assert.deepEqual(plan.requiredGroups, ["tooling", "backend"]);
+        return { ...plan, status: "passed", complete: true, group: "all", requiresHumanReview: !requiresHumanReview,
+          checks: plan.requiredChecks.map((id) => ({ id, status: "passed", exitCode: 0 })) };
+      } });
+      assert.equal(executions, 1);
+      assert.deepEqual(calls, ["general-purpose", "devpocket-reviewer"]);
+      assert.equal(result.status, requiresHumanReview ? "needs_human" : "ready");
+      assert.deepEqual(result.policyReview, { requiresHumanReview, protectedPaths: [], source: result.source });
+      assert.equal(result.verification.complete, true);
+      assert.equal(result.review.verdict, "pass");
+      assert.deepEqual(result.review.source, result.policyReview.source);
     });
   }
 });

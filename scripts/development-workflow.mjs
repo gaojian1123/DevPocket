@@ -1,6 +1,7 @@
 import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { combineVerification, executeVerification, git, isVerificationPolicyPath, sourceSnapshot, verificationPlan } from "./verification.mjs";
+import { combineVerification, executeVerification, git, sourceSnapshot, verificationPlan } from "./verification.mjs";
+import { developmentReviewRequirements } from "./development-policy.mjs";
 
 function objectFields(value, keys) {
   if (!value || typeof value !== "object" || Array.isArray(value) ||
@@ -166,9 +167,10 @@ async function runAttempt(ctx, root, task, verify) {
       if (implemented.data.status === "needs_input") return finish({ status: "needs_human", reason: implemented.data.summary });
       const plan = await verificationPlan(root, base);
       if (plan.source.head !== base) return finish(blocked("The implementation changed Git history; inspect before continuing."));
-      if (plan.changedFiles.some(isVerificationPolicyPath)) {
+      const policyReview = { ...developmentReviewRequirements(plan.changedFiles), source: plan.source };
+      if (policyReview.protectedPaths.length) {
         return finish({ status: "needs_human", reason: "Verification, dependency or workflow policy changed; review it before executing new policy.",
-          changedFiles: plan.changedFiles });
+          changedFiles: plan.changedFiles, policyReview });
       }
       state.stage = "verifying";
       state.source = plan.source;
@@ -213,11 +215,11 @@ async function runAttempt(ctx, root, task, verify) {
       if (!sameSource(await sourceSnapshot(root), plan.source)) return finish(blocked("Source changed during the read-only review."));
       const review = { ...reviewed.data, source: plan.source, reviewer: "devpocket-reviewer" };
       await save(path.join(directory, `review-${round}.json`), review);
-      if (review.verdict === "needs_human") return finish({ status: "needs_human", verification, review });
+      if (review.verdict === "needs_human") return finish({ status: "needs_human", verification, review, policyReview });
       if (review.verdict === "pass") return finish({
-        status: plan.requiresHumanReview ? "needs_human" : "ready",
-        reason: plan.requiresHumanReview ? "High-risk paths require human review." : "Verified and independently reviewed; no remote publication performed.",
-        verification, review, changedFiles: plan.changedFiles,
+        status: policyReview.requiresHumanReview ? "needs_human" : "ready",
+        reason: policyReview.requiresHumanReview ? "Local development policy requires human review." : "Verified and independently reviewed; no remote publication performed.",
+        verification, review, changedFiles: plan.changedFiles, policyReview,
       });
       feedback = { review };
       if (round === task.maxRepairRounds) return finish({ status: "blocked", reason: "Automatic repair rounds exhausted.", verification, review });

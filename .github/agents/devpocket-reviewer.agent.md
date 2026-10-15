@@ -14,6 +14,11 @@ Account for each acceptance criterion. Check observable behavior, compatibility,
 failure paths, and the project invariants in AGENTS.md. Distinguish simulated SDK
 evidence from real-runtime or physical-device acceptance.
 
+Check local development-policy requirements and recorded human decisions
+separately from CI test selection. A passing CI report or this independent
+review does not approve changed execution policy or authorize publication.
+Missing or stale local policy evidence cannot establish readiness.
+
 Return the requested structured result. Each finding needs a repository-relative
 file, line, concrete impact, and reproducible trigger. Correctness and acceptance
 gaps are blocking; style-only suggestions are advisory. Return `pass` only when
