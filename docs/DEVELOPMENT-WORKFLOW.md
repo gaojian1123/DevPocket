@@ -148,6 +148,8 @@ Git Trace2 records observed hook exits during staging and commit, including
 `post-commit` failures that Git itself does not propagate. Hooks run normally,
 once per Git invocation; missing hook-exit evidence blocks rather than implying
 success. A failed post-commit hook leaves its completed local commit in place.
+Machine-readable trailer queries suppress signature display without changing
+commit signing or the user's Git display settings.
 Read-only status/diff inspections disable optional Git locks so they do not
 refresh the index or invoke its hook.
 Root and Git metadata comparisons resolve directory aliases, while task ownership
@@ -197,7 +199,8 @@ not repository gates.
 ## Verification
 
 Run from the checkout with Node 24 and PowerShell 7. The complete workflow
-regression suite also needs Git, Python 3.12 (standard-library checks), the
+regression suite also needs Git with SSH signing support (`ssh-keygen` for
+disposable signing fixtures), Python 3.12 (standard-library checks), the
 root npm dependencies (including TypeScript/tsx), and the existing Windows
 owned-command compiler support. It uses synthetic toolchains, not an Android
 SDK/JDK or emulator. Operational fixture checks additionally need the pinned

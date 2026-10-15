@@ -692,6 +692,26 @@ test("the SDK's string tool-result form still requires a validated native commit
   assert.equal((await inspectWorktree(root)).status, "");
 });
 
+test("signed candidates preserve signature settings while reading commit trailers", async (t) => {
+  const { root, main } = await workspace(t);
+  const directory = path.join(main, ".data", "signing");
+  await mkdir(directory, { recursive: true });
+  const key = path.join(directory, "fixture-key"), allowed = path.join(directory, "allowed-signers");
+  await exec("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "fixture@example.test", "-f", key], { timeout: 30_000 });
+  await writeFile(allowed, `fixture@example.test ${(await readFile(`${key}.pub`, "utf8")).trim()}\n`);
+  for (const [name, value] of [
+    ["gpg.format", "ssh"], ["gpg.ssh.program", "ssh-keygen"], ["user.signingkey", key],
+    ["gpg.ssh.allowedSignersFile", allowed], ["commit.gpgsign", "true"], ["log.showSignature", "true"],
+  ]) await git(root, ["config", "--local", name, value]);
+  const before = await inspectWorktree(root);
+  const result = await runDevelopment(documentationTask(root), { root });
+  assert.equal(result.status, "ready", result.reason);
+  await git(root, ["verify-commit", result.candidate.commit]);
+  assert.equal((await inspectWorktree(root)).configuration, before.configuration);
+  const visible = await git(root, ["show", "-s", "--format=%(trailers:key=Copilot-Session,valueonly)", result.candidate.commit]);
+  assert.notEqual(visible.trim(), "fixture-session", "Signature display remains enabled outside machine-readable queries.");
+});
+
 test("pre-existing user changes are preserved without dispatching or staging", async (t) => {
   const { root } = await workspace(t);
   await writeFile(path.join(root, "README.md"), "User draft\n");

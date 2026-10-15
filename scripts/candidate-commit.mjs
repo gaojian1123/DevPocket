@@ -200,7 +200,7 @@ async function requireCommitResult(root, request, candidate) {
     fail("Candidate content differs from the inspected task-owned changes.");
   }
   for (const [key, value] of [["Co-authored-by", coauthor], ["Copilot-Session", request.sessionId]]) {
-    if ((await git(root, ["show", "-s", `--format=%(trailers:key=${key},valueonly)`, candidate.commit])).trim() !== value) {
+    if ((await git(root, ["show", "--no-show-signature", "-s", `--format=%(trailers:key=${key},valueonly)`, candidate.commit])).trim() !== value) {
       fail("A required candidate commit trailer is missing or changed.");
     }
   }
