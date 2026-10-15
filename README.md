@@ -195,8 +195,15 @@ After the user finished the trial, its dedicated local emulator, ADB server and 
 
 The developer-only GitHub Copilot workflow is the default agent route for new feature
 implementation and bug-fix requests under `AGENTS.md`; no special workflow phrase
-is needed. It creates an isolated worktree, implements the task, runs source-bound
-checks and requests an independent read-only review with bounded repairs.
+is needed. It creates an isolated worktree, implements the task with targeted
+checks, makes a task-scoped local candidate commit through the original tool
+permissions, then runs final source-bound verification and an independent
+read-only review against that exact clean commit. Repairs create new commits
+and fresh evidence; failed commits and reports remain history. The automatic
+endpoint is a committed PR-ready handoff, not remote publication.
+Before separately authorized push/PR creation, a read-only readiness check
+reuses the durable evidence for an unchanged candidate without repeating local
+final verification. Changed source, HEAD, branch or index invalidates readiness.
 Discussion, planning and documentation-only tasks do not start implementation.
 Extension loading and the App's run approvals remain explicit; unavailable
 prerequisites are reported rather than silently bypassed.

@@ -98,7 +98,7 @@ export async function verificationPlan(root, base, all = false) {
   catch (error) { throw verificationFault("base-invalid", {}, error); }
   const source = await sourceSnapshot(root);
   const changedFiles = [...new Set([
-    ...splitPaths(await git(root, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "--no-renames", "-z", baseSha, "--"])),
+    ...splitPaths(await git(root, ["--no-optional-locks", "diff", "--no-ext-diff", "--no-textconv", "--name-only", "--no-renames", "-z", baseSha, "--"])),
     ...splitPaths(await git(root, ["ls-files", "--others", "--exclude-standard", "-z"])),
   ])].sort();
   const selected = new Set();

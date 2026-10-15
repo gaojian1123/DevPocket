@@ -8,7 +8,8 @@ For new user requests to implement a feature or fix a bug, use the registered
 `devpocket-development` workflow by default. No special workflow phrase is
 required. Before implementation, follow `docs\DEVELOPMENT-WORKFLOW.md` for the
 task contract, entry point and activation requirements. Use that guide also for
-missing verification evidence or interrupted-run recovery.
+missing verification evidence, interrupted-run recovery, and the readiness check
+before publishing an already-verified candidate commit.
 
 Continue the existing task for follow-ups. Workflow-dispatched implementers and
 reviewers perform their assigned step, rather than dispatching another workflow.
@@ -41,7 +42,7 @@ Preserve protocol identifiers such as `cliVersion`, `terminal` and
 
 ## Checks and operations
 
-- Use `npm run verify -- -Base BASE_COMMIT` for the diff-selected gate; planning, partial shards and skipped required tests are not completed verification.
+- Use `npm run verify -- -Base BASE_COMMIT` for the diff-selected gate; planning, partial shards and skipped required tests are not completed verification. In the development workflow, final verification and independent review follow the controller's local candidate commit; targeted development checks precede it.
 - Use the relevant checks in `package.json` for backend changes and `scripts\build-android.ps1 -Lint` for Android changes. Documentation-only edits need no application build.
 - Real GitHub Copilot checks use explicitly opted-in disposable sessions in the intended client; CLI checks use disposable terminals. Extension installation/reload, host/device enrollment and cloud operations require authorization for the specific target; previous trial approvals are not standing permission.
 - Before deployment or onboarding, read the matching runbook in `deployment\`. Keep credentials and private runtime evidence in ignored storage; preserve sealed artifacts and record new acceptance separately.

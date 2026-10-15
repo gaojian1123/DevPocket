@@ -60,26 +60,82 @@ direct coding or implementer self-review is not a substitute for the workflow.
 Honor the App's per-run approval and credit/time controls; default routing does
 not bypass them.
 
-The controller dispatches implementation, executes verification itself, and
-dispatches a separate read-only reviewer against the actual diff and added files.
-It accepts neither implementer-written approval nor an editable workspace result
-as the authoritative review. The SDK's durable step journal holds the final
-controller result. Each repair gets a fresh review invocation and source-bound
-evidence. Runtime credit/time limits are chosen at invocation; the workflow does
-not guess them or override model preferences.
+The controller follows **implement → local candidate commit → final verification
+→ independent review**:
+
+1. The implementer finishes changes and targeted development checks, leaving the
+   index/history unchanged. It returns the inspected task-owned paths and the
+   exact `sourceSnapshot` observed after its last edit/check. There is no mandatory
+   full acceptance pass before committing.
+2. The controller checks ownership, source, index, branch and Git configuration.
+   Protected gate/dependency/workflow changes still stop for explicit human
+   policy review **before** committing or executing the modified policy.
+   Otherwise its guarded candidate helper stages only the inspected literal paths
+   and creates one local commit through the original session's native PowerShell
+   tool/permission pipeline. Missing native tools or denied permission blocks the
+   step; there is no direct mutation fallback. Git configuration and hooks are
+   retained. The commit includes the project `Co-authored-by` trailer and a
+   `Copilot-Session` trailer from the live owning session, not a task-specific
+   identity embedded in source.
+3. With the candidate HEAD, clean index/worktree and original branch confirmed,
+   the controller selects the diff against the explicit original base and runs
+   final verification once for that revision. Required checks, aggregation and
+   native evidence rules below are unchanged.
+4. A separate read-only reviewer examines that committed diff, added files and
+   source-bound verification. Both stages must retain the exact candidate identity
+   and clean tree. Passing verification alone does not make a candidate ready;
+   high-risk paths still require human review.
+
+Repairs create a new local commit on the failed candidate, then new selected
+verification and a fresh independent review. Prior commits/reports remain history
+within the chosen repair bound. A no-op initial task uses the existing clean HEAD
+without an empty commit; a no-op repair stops instead of repeatedly checking the
+same failed revision. Commit/hook failures and concurrent source, history, branch,
+configuration or index changes stop explicitly. Nothing amends, resets, rewrites
+history or automatically cleans up a failed commit's index.
+Git Trace2 records observed hook exits during staging and commit, including
+`post-commit` failures that Git itself does not propagate. Hooks run normally,
+once per Git invocation; missing hook-exit evidence blocks rather than implying
+success. A failed post-commit hook leaves its completed local commit in place.
+Read-only status/diff inspections disable optional Git locks so they do not
+refresh the index or invoke its hook.
+
+The controller accepts neither implementer-written approval nor an editable
+workspace result as the authoritative review. The SDK's durable step journal
+holds the final controller result. Runtime credit/time limits are chosen at
+invocation; the workflow does not guess them or override model preferences.
 Registration uses only Node built-ins and the runtime-bundled SDK, so a fresh
 worktree can load it before restoring application dependencies. Provision the
 runner toolchain once; normal missing repository dependencies can be restored
 from their lockfiles after an actual missing-dependency failure.
 
-The automatic endpoint is **ready for a PR**, with changes in the worktree and
-`handoff.json` under `.data\development\<run-id>`. It does not commit, push, open a
-PR, merge or deploy. Use the App's normal PR creation path when publication is
-authorized. Commit/merge-ref changes require fresh applicable verification; old
-reports are not re-labelled as evidence for a new revision.
+The automatic endpoint is **ready for a PR**, with a clean local candidate commit
+and `handoff.json` under `.data\development\<run-id>`. The handoff identifies the
+exact commit, original base, workspace/branch, source fingerprint, verification
+and independent review. It does not push, open a PR, merge or deploy.
 Report the actual run/worktree and outcome when dispatched. Say that a workflow
 has started only after an invocation returns its run identity; a proposed plan
 or manually performed equivalent steps are not a registered workflow run.
+
+### Publish an unchanged candidate
+
+After separate publication authorization, call
+`devpocket_check_development_readiness` with `{"runId":"THE_COMPLETED_RUN_ID"}`
+in the owning session/worktree. This read-only tool reads the runtime's durable
+result, checks the original workspace/branch and exact clean candidate, and
+revalidates the existing verification/review bindings and check completeness.
+It does not run verification commands, create another commit or publish anything.
+An editable `handoff.json` cannot substitute for the durable result.
+
+If ready, push that unchanged commit and use the App's normal PR creation path.
+An unchanged push (including recording its upstream) does not require another
+local final verification. Recheck freshness if publication is delayed; readiness
+is a point-in-time result, not authority to publish a later revision. Later edits,
+repair commits, merge/rebase ref changes or a changed index/branch invalidate it
+and require applicable verification and independent review for the new candidate.
+Old reports are never relabelled. Required remote CI and human policy review
+remain independent requirements; this avoids duplicate **local** final acceptance,
+not repository gates.
 
 ## Verification
 
@@ -856,12 +912,19 @@ are not repurposed for CI candidates.
 ## Stops and recovery
 
 The controller stops for missing prerequisites, agent failure, inconsistent
-review results, changed source during verification/review, protected policy
-changes, high-risk final review, or exhaustion of the chosen repair count.
+review results, commit/hook errors or uncertain commit outcomes, concurrent
+source/index/history/branch/configuration changes, protected policy changes,
+high-risk final review, or exhaustion of the chosen repair count.
 Uncertain external side effects remain outside the automatic workflow.
 
-An interrupted implementation is not automatically replayed. Inspect
+An interrupted implementation or candidate commit is not automatically replayed. Inspect
 `state.json`, the runtime's durable workflow record, and any retained lock. A
 completed journaled run may be read again only while its task/workspace/source
-still match; edited files invalidate its readiness. Start further work from an
-explicitly reviewed state rather than deleting evidence to bypass a stop.
+still match and the candidate index/worktree remain clean. Inspect the recorded
+candidate request/receipt, current index and history after a commit interruption;
+preserve failed commits and reports rather than guessing whether to retry.
+The committed-candidate controller uses a versioned journal key; older uncommitted
+handoffs cannot be promoted to readiness or have their commit fields rewritten.
+In-flight runs retain their existing controller's restrictions. Start further
+work only from an explicitly reviewed state, with scoped commit/policy authority
+where needed, rather than deleting evidence or reloading to bypass a stop.
