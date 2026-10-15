@@ -10,7 +10,7 @@ import { deviceSourceCatalogue, projectDeviceDiagnostics, deviceDiagnosticsFromO
 import { diagnosticError, failureDetails, ownValue, commandDetails, diagnosticVersion } from "./diagnostic-errors.mjs";
 import { boundedDiagnosticBytes } from "./bounded-worker-log.mjs";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationGroups, verificationImpact } from "./verification-policy.mjs";
-export { CHECKS, isVerificationPolicyPath } from "./verification-policy.mjs";
+export { CHECKS } from "./verification-policy.mjs";
 
 const exec = promisify(execFile);
 const digest = (value) => createHash("sha256").update(value).digest("hex");

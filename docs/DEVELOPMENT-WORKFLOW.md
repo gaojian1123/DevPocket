@@ -167,28 +167,37 @@ Impact rules are explicit and ordered:
 - `README.md`, `VALIDATION.md` and `docs/**/*.md` select no checks.
 - Exactly `scripts/workflow-extension.mjs` and
   `scripts/tests/development-workflow.test.mjs` select `workflow-tests`, in the
-  independent `tooling` group. These are task-start/session-routing tooling and
-  its regressions, not the shipped runtime extension or verification controller.
-- `AGENTS.md` selects the same tooling regressions and retains protected human
-  review, without automatically selecting application checks. Thus the five-path
-  PR #10 change set (these three paths, README and the workflow guide) selects
-  only `workflow-tests`; either tooling path also does so independently.
-- Verification policy/engine, CI definitions, build tooling, shared execution
-  and cleanup infrastructure, and dependency configuration select **all** checks,
-  layouts and human review. This includes `scripts/verification-policy.mjs`,
-  `scripts/verification.mjs`, `scripts/verify.mjs`,
-  `scripts/development-workflow.mjs`, other scripts/tests, `.github` definitions,
-  package/lock/npm/TypeScript/Python dependency inputs and Android build inputs.
-  There is no scripts-directory exemption.
+  independent `tooling` group. These cover task routing and the complete
+  development-tooling regressions, not the shipped runtime extension.
+- Exactly `scripts/development-workflow.mjs`, `scripts/development-policy.mjs`
+  and `scripts/candidate-commit.mjs` select that same complete workflow suite.
+  They govern development orchestration, local trust and candidate preparation,
+  not shared application verification. The candidate-helper path is classified
+  even in revisions where its implementation is not present.
+- Exactly `AGENTS.md`, `.github/agents/devpocket-reviewer.agent.md` and
+  `.github/skills/devpocket-development/SKILL.md` select the tooling regressions
+  without automatically selecting application checks. Thus the five-path
+  PR #10 change set (`AGENTS.md`, the routing module, its regression file,
+  README and the workflow guide) selects only `workflow-tests`; each named
+  tooling path also does so independently.
+- Shared verification selection/execution/aggregation, CI definitions, build
+  tooling, shared execution and cleanup infrastructure, and dependency inputs
+  select **all** checks and layouts. This includes
+  `scripts/verification-policy.mjs`, `scripts/verification.mjs`,
+  `scripts/verify.mjs`, other scripts/tests and `.github` definitions,
+  package/lock/npm/TypeScript/Python dependencies and Android build inputs.
+  Only the exact tooling paths above are exceptions; neither the `scripts`
+  nor `.github` directory is exempt. A mixed controller/candidate/reviewer
+  change that also modifies `verification.mjs` still selects every lane.
 - Existing backend, runtime-extension, operations, shared wire/fixture and
   Android rules retain their downstream coverage. Backend checks still include
   workflow regressions, now in the tooling lane. Runtime/wire changes still
   require native compatibility evidence; Android UI/resource changes select
-  layouts. Unclassified paths select the full set, layouts and human review.
+  layouts. Unclassified paths select the full set and layouts.
 
 Mixed changes take the union; no narrow rule cancels another path's requirements.
 `--all` explicitly selects every check. Plan JSON and CLI output include
-`requiredChecks`, `requiredGroups`, `requiresHumanReview`, `layouts`, and
+`requiredChecks`, `requiredGroups`, `layouts`, and
 `selectionReasons`: fixed rule descriptions, selected checks/groups and sorted
 changed-path examples (at most 16 paths of 240 characters per rule, with
 `omittedPaths` for unsampled/unsupported names). Omission affects explanations
@@ -198,14 +207,25 @@ fields cannot become explanation text.
 
 The verifier reuses the commands in `package.json`. Android changes and affected
 runtime/wire changes require JVM/build checks **and** native emulator evidence.
-Protection is separate from impact selection. The controller's existing
-`isVerificationPolicyPath` stop still covers **all** scripts, `.github` and
-`AGENTS.md`, including tooling-only changes. The optional workflow pauses before
-executing modified gate/dependency policy. Both routes retain the pre-execution
-human approval described above and the plan's human-review requirement. A change
-implementing these planner/CI rules itself has full impact and does not bypass
-that stop. Targeted synthetic regressions are not a completed source-bound gate
-or independent-review approval.
+Protection is separate from impact selection. `scripts\development-policy.mjs`
+owns `isVerificationPolicyPath` and
+`developmentReviewRequirements(changedFiles)`. The protected-path stop still
+covers **all** scripts, `.github`, `AGENTS.md` and the existing dependency/build
+policy inputs, including tooling-only changes. The optional workflow pauses
+before executing modified policy and retains source-bound `policyReview`
+requirements in its handoff. After passing tests and independent review, local
+review requirements still determine `needs_human` versus `ready`; runtime,
+wire, operations, sensitive Android and unknown paths retain their requirements.
+The skill-led route records the same local decision and human approval separately
+from test evidence. Neither route defaults a missing local decision to approval.
+
+CI planning, lane selection and aggregation do not decide Agent or GitHub
+approval. GitHub merge review belongs to externally configured rulesets,
+required reviews and CODEOWNERS, not a plan flag; these changes do not create or
+modify that configuration. Both local routes retain the explicit pre-execution
+human approval described above. A change implementing these shared planner/CI
+rules itself has full impact and does not bypass the stop. Targeted synthetic
+regressions are not a completed source-bound gate or independent-review approval.
 
 For CI shards, use `-Group tooling`, `-Group backend`, `-Group android` or
 `-Group device` with a separate `-Report` for each. The tooling check remains
@@ -241,18 +261,34 @@ still requires all selected checks. A documentation-only plan needs no shards.
 
 Aggregation rejects missing checks, failed/blocked/planned evidence, duplicate
 results, wrong-group checks, mismatched policy, and stale base/source identities.
-Verification reports are now **version 2**, with required `requiredGroups`
-matching the current catalogue. Version-1 reports, absent group policy and
-reports that place `workflow-tests` in backend cannot qualify; rerun rather
-than relabel old evidence. Non-acceptance diagnostic exporters can still read
-version-1 reports, using their legacy workflow-test group. Device/startup
-evidence formats are unchanged. A required check
+Verification reports are now **version 3**, with required `requiredGroups`
+matching the current catalogue and no `requiresHumanReview` decision.
+Version-1/2 reports, absent group policy and reports that place `workflow-tests`
+in backend cannot qualify; rerun rather than relabel old evidence.
+Non-acceptance diagnostic exporters still read both historical versions:
+version 1 retains its backend workflow-test group, version 2 retains tooling,
+and neither gets explanations rebuilt using current rules. Historical check
+selections remain intact. An old review flag is projected only under
+`legacyAgentReview`, with `approval: "not-established"` even when the old flag
+was false. Current diagnostics ignore injected review/approval fields.
+Device/startup evidence formats are unchanged. A required check
 that did not run is never equivalent to passing. Schema generation that changes
 source also invalidates that run; review the generated change and verify again.
 Detailed logs remain private in ignored run directories. Share only the
 allowlisted machine reports and explicitly selected candidate artifacts.
 Report destinations must be new files beneath `.data\verification` or `.data\ci`;
 existing reports and sealed/operational evidence cannot be overwritten.
+
+Controller and publication consumers must import local trust helpers from
+`scripts\development-policy.mjs`. The former `isVerificationPolicyPath` exports
+from the verification modules are removed, so an unmigrated named import fails
+explicitly rather than silently dropping protection. Replace reads of
+`plan.requiresHumanReview` in **both** final-status and publication-freshness
+guards with `developmentReviewRequirements(plan.changedFiles)`, retain the
+decision with the exact source identity, and reject missing/stale local evidence.
+Changing imports alone is not sufficient. This migration does not grant commit
+or publication authority, replace recorded human decisions, or weaken candidate
+identity, hook approval, independent review or source-bound evidence checks.
 
 ### End-to-end failure information
 

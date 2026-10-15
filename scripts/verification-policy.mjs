@@ -1,5 +1,5 @@
-export const VERIFICATION_REPORT_VERSION = 2;
-export const isDiagnosticVerificationVersion = (version) => version === 1 || version === VERIFICATION_REPORT_VERSION;
+export const VERIFICATION_REPORT_VERSION = 3;
+export const isDiagnosticVerificationVersion = (version) => [1, 2, VERIFICATION_REPORT_VERSION].includes(version);
 
 export const CHECKS = [
   { id: "workflow-tests", group: "tooling", npm: "run test:workflow" },
@@ -20,47 +20,46 @@ export const verificationGroups = (ids) => [...new Set(CHECKS.filter((check) => 
 export const diagnosticCheckGroup = (check, version) =>
   version === 1 && check.id === "workflow-tests" ? "backend" : check.group;
 
-// Protection is independent of impact: even routing-only edits stop the controller for policy review.
-export const isVerificationPolicyPath = (file) =>
-  /^(?:\.github\/|scripts\/|AGENTS\.md$|android\/gradle\/|android\/gradlew(?:\.bat)?$)/i.test(file) ||
-  /(?:^|\/)\.npmrc$/i.test(file) ||
-  /(?:^|\/)(?:package(?:-lock)?\.json|npm-shrinkwrap\.json|tsconfig(?:\.[^/]+)?\.json|requirements[^/]*\.txt)$/i.test(file) ||
-  /^android\/.*(?:\.gradle(?:\.kts)?|gradle\.properties)$/i.test(file);
-
 const allChecks = CHECKS.map((check) => check.id);
 const backend = ["workflow-tests", "typecheck", "backend-tests", "backend-build", "schema"];
 const android = ["android-build", "android-device"];
-const full = { checks: allChecks, review: () => true, layouts: () => true };
+const full = { checks: allChecks, layouts: () => true };
 const rules = [
   { id: "documentation", description: "Documentation does not select application checks.",
     matches: (file) => ["README.md", "VALIDATION.md"].includes(file) || /^docs\/.*\.md$/.test(file), checks: [] },
-  { id: "task-routing", description: "Task-start/session-routing tooling and its regression file use the complete workflow suite.",
+  { id: "task-routing", description: "Task routing and development workflow regressions use the complete workflow suite.",
     matches: (file) => ["scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs"].includes(file),
     checks: ["workflow-tests"] },
-  { id: "agent-instructions", description: "Agent policy requires human review and workflow regressions, not application checks.",
-    matches: (file) => file === "AGENTS.md", checks: ["workflow-tests"] },
+  { id: "development-tooling", description: "Development orchestration, local trust policy and candidate preparation use the complete workflow suite.",
+    matches: (file) => ["scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/candidate-commit.mjs"].includes(file),
+    checks: ["workflow-tests"] },
+  { id: "agent-instructions", description: "DevPocket development instructions use workflow regressions, not application checks.",
+    matches: (file) => ["AGENTS.md", ".github/agents/devpocket-reviewer.agent.md",
+      ".github/skills/devpocket-development/SKILL.md"].includes(file), checks: ["workflow-tests"] },
   { id: "verification-infrastructure", description: "Verification, CI, build, shared execution or dependency policy requires all downstream checks.",
-    matches: isVerificationPolicyPath, ...full },
+    matches: (file) =>
+      /^(?:scripts\/|\.github\/|android\/gradle\/|android\/gradlew(?:\.bat)?$)/i.test(file) ||
+      /(?:^|\/)(?:\.npmrc|package(?:-lock)?\.json|npm-shrinkwrap\.json|tsconfig(?:\.[^/]+)?\.json|requirements[^/]*\.txt)$/i.test(file) ||
+      /^android\/.*(?:\.gradle(?:\.kts)?|gradle\.properties)$/i.test(file), ...full },
   { id: "android", description: "Android changes require native build and device evidence.",
     matches: (file) => file.startsWith("android/"), checks: android,
-    layouts: (file) => /\/ui\/|\/res\/|Manifest|\.gradle|gradle\.properties/.test(file),
-    review: (file) => /\/data\/|Manifest|\.gradle|gradle\.properties/.test(file) },
+    layouts: (file) => /\/ui\/|\/res\/|Manifest|\.gradle|gradle\.properties/.test(file) },
   { id: "backend-runtime", description: "Backend/runtime source requires backend, packaging, setup and native compatibility checks.",
     matches: (file) => file.startsWith("backend/src/"),
-    checks: [...backend, "extension-package", "setup", ...android], review: () => true },
+    checks: [...backend, "extension-package", "setup", ...android] },
   { id: "backend-integration", description: "Runtime integration changes require backend and native compatibility checks.",
     matches: (file) => file.startsWith("backend/integration/"), checks: [...backend, ...android] },
   { id: "backend", description: "Backend changes require workflow regressions and backend checks.",
     matches: (file) => file.startsWith("backend/"), checks: backend },
   { id: "runtime-extension", description: "The shipped runtime extension requires backend, packaging and setup checks.",
-    matches: (file) => file.startsWith("extension/"), checks: [...backend, "extension-package", "setup"], review: () => true },
+    matches: (file) => file.startsWith("extension/"), checks: [...backend, "extension-package", "setup"] },
   { id: "operations", description: "Deployment and infrastructure changes require backend and operational fixtures.",
     matches: (file) => file.startsWith("deployment/") || file.startsWith("infra/") || file === "azure.yaml",
-    checks: [...backend, "setup", "azure-tests", "operations-tests"], review: () => true },
+    checks: [...backend, "setup", "azure-tests", "operations-tests"] },
   { id: "wire-fixtures", description: "Shared wire contracts and fixtures require backend and native compatibility checks.",
     matches: (file) => file.startsWith("test-fixtures/") || file === "protocol.schema.json",
-    checks: [...backend, ...android], review: () => true },
-  { id: "unknown", description: "Unclassified paths require every check, layouts and human review.",
+    checks: [...backend, ...android] },
+  { id: "unknown", description: "Unclassified paths require every check and layouts.",
     matches: () => true, ...full },
 ];
 const allRule = { id: "all-checks", description: "Explicit --all selects every check.", checks: allChecks };
@@ -78,18 +77,17 @@ function explanation(rule, files) {
 
 export function verificationImpact(changedFiles, all = false) {
   const selected = new Set(), causes = new Map();
-  let requiresHumanReview = false, layouts = false;
+  let layouts = false;
   for (const file of [...new Set(changedFiles)].sort()) {
     const rule = ruleFor(file);
     rule.checks.forEach((id) => selected.add(id));
     if (!causes.has(rule.id)) causes.set(rule.id, []);
     causes.get(rule.id).push(file);
-    requiresHumanReview ||= isVerificationPolicyPath(file) || Boolean(rule.review?.(file));
     layouts ||= Boolean(rule.layouts?.(file));
   }
   if (all) allChecks.forEach((id) => selected.add(id));
   const requiredChecks = orderedChecks([...selected]);
-  return { requiredChecks, requiredGroups: verificationGroups(requiredChecks), requiresHumanReview, layouts,
+  return { requiredChecks, requiredGroups: verificationGroups(requiredChecks), layouts,
     selectionReasons: [
       ...rules.filter((rule) => causes.has(rule.id)).map((rule) => explanation(rule, causes.get(rule.id))),
       ...(all ? [explanation(allRule, [])] : []),
@@ -105,8 +103,11 @@ export function projectVerificationSelection(report, sourcePaths) {
   let remainingPaths = pathLimit;
   return {
     requiredChecks, requiredGroups: [...new Set(selected.map((check) => diagnosticCheckGroup(check, report.version)))],
-    requiresHumanReview: typeof report.requiresHumanReview === "boolean" ? report.requiresHumanReview : "unknown",
     layouts: typeof report.layouts === "boolean" ? report.layouts : "unknown",
+    ...([1, 2].includes(report.version) ? { legacyAgentReview: {
+      requiresHumanReview: typeof report.requiresHumanReview === "boolean" ? report.requiresHumanReview : "unknown",
+      approval: "not-established",
+    } } : {}),
     selectionReasons: [...rules, allRule].flatMap((rule) => {
       const inputs = reasons.filter((item) => item?.rule === rule.id);
       if (inputs.length !== 1 || !Array.isArray(inputs[0].paths)) return [];

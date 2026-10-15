@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { randomUUID } from "node:crypto";
+import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "../verification-policy.mjs";
 
 const exec = promisify(execFile);
 
@@ -80,6 +81,8 @@ test("tooling failures and plan causes survive public diagnostics without raw re
   assert.equal(diagnostics.acceptance, false);
   assert.equal(diagnostics.collectionStatus, "completed");
   assert.deepEqual(diagnostics.selection.requiredGroups, ["tooling"]);
+  assert.equal(Object.hasOwn(diagnostics.selection, "requiresHumanReview"), false);
+  assert.equal(Object.hasOwn(diagnostics.selection, "legacyAgentReview"), false);
   assert.deepEqual(diagnostics.selection.selectionReasons[0].paths, ["scripts/tests/development-workflow.test.mjs"]);
   assert.equal(diagnostics.checks[0].id, "workflow-tests");
   assert.equal(diagnostics.checks[0].status, "failed");
@@ -136,6 +139,7 @@ test("legacy diagnostic selections retain backend grouping without relabelling h
       assert.deepEqual(output.selection.requiredChecks, sample.requiredChecks);
       assert.deepEqual(output.selection.requiredGroups, sample.groups);
       assert.deepEqual(output.selection.selectionReasons, []);
+      assert.deepEqual(output.selection.legacyAgentReview, { requiresHumanReview: "unknown", approval: "not-established" });
       assert.deepEqual(output.checks.map((check) => check.id), backend);
     });
   }
@@ -146,7 +150,57 @@ test("legacy diagnostic selections retain backend grouping without relabelling h
     selectionReasons: [{ rule: "task-routing", paths: [file] }],
   }, new Set([file]));
   assert.deepEqual(legacy.requiredGroups, ["backend"]);
-  assert.deepEqual(legacy.selectionReasons, [], "Version-2 impact rules must not explain a version-1 plan.");
+  assert.deepEqual(legacy.selectionReasons, [], "Current impact rules must not explain a historical plan.");
+});
+
+test("historical local review flags are diagnostic-only and cannot manufacture approval or narrow old check selections", async (t) => {
+  await mkdir(".data/tests", { recursive: true });
+  const root = await mkdtemp(path.resolve(".data/tests/legacy-review-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, ".gitignore"), ".data/\n");
+  await exec("git", ["init", "--quiet"], { cwd: root });
+  const file = "scripts/development-workflow.mjs";
+  await mkdir(path.join(root, "scripts"));
+  await writeFile(path.join(root, file), "// fixture\n");
+  for (const version of [1, 2, VERIFICATION_REPORT_VERSION]) {
+    for (const [label, requirement] of [["true", true], ["false", false], ["absent", undefined], ["invalid", "PRIVATE_REVIEW_CANARY"]]) {
+      await t.test(`${version}: ${label}`, async () => {
+        const directory = path.join(root, ".data", "ci", `review-${version}-${label}`);
+        await mkdir(directory, { recursive: true });
+        const current = version === VERIFICATION_REPORT_VERSION;
+        const checks = current ? ["workflow-tests"] : CHECKS.map((check) => check.id);
+        await writeFile(path.join(directory, "plan.json"), JSON.stringify({
+          version, status: "planned", complete: false, checks: [], requiredChecks: checks,
+          requiresHumanReview: requirement, approval: "approved", review: { verdict: "pass" },
+          selectionReasons: [{ rule: current ? "development-tooling" : "verification-infrastructure",
+            paths: [file], description: "PRIVATE_REVIEW_CANARY", checks: ["PRIVATE_REVIEW_CANARY"] }],
+        }));
+        const projected = await exec(process.execPath, [path.resolve("scripts/verification-diagnostics.mjs"),
+          "--directory", directory, "--job", "plan"], { cwd: root, timeout: 20000 });
+        const output = JSON.parse(await readFile(path.join(directory, "verification-diagnostics.json"), "utf8"));
+        assert.equal(output.collectionStatus, "completed");
+        assert.equal(output.acceptance, false);
+        assert.equal(output.status, "planned");
+        assert.deepEqual(output.selection.requiredChecks, checks);
+        assert.deepEqual(output.selection.requiredGroups, current ? ["tooling"]
+          : version === 1 ? ["backend", "android", "device"] : CHECK_GROUPS);
+        assert.equal(Object.hasOwn(output.selection, "requiresHumanReview"), false);
+        if (current) {
+          assert.equal(Object.hasOwn(output.selection, "legacyAgentReview"), false);
+          assert.deepEqual(output.selection.selectionReasons[0].paths, [file]);
+          assert.deepEqual(output.selection.selectionReasons[0].checks, ["workflow-tests"]);
+        } else {
+          assert.deepEqual(output.selection.legacyAgentReview, {
+            requiresHumanReview: typeof requirement === "boolean" ? requirement : "unknown", approval: "not-established",
+          });
+          assert.deepEqual(output.selection.selectionReasons, [], "Old full-impact explanations must not be rebuilt as tooling-only.");
+        }
+        assert.ok(!projected.stdout.includes("PRIVATE_REVIEW_CANARY"));
+        assert.ok(!JSON.stringify(output).includes('"approved"'));
+        assert.ok(!JSON.stringify(output).includes('"verdict"'));
+      });
+    }
+  }
 });
 
 test("check log hints accept only source-indexed locations and fixed exception/code identifiers", async () => {

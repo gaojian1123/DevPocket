@@ -68,7 +68,7 @@ The current session owns implementation and repairs; another implementation
 session is not a prerequisite.
 
 Before execution, inspect the protected-policy diff read-only using the trusted
-`isVerificationPolicyPath` rules in `scripts\verification-policy.mjs`. Do not run
+`isVerificationPolicyPath` rules in `scripts\development-policy.mjs`. Do not run
 a modified planner to decide whether its own policy needs approval.
 **Require explicit human approval of the actual changed execution or dependency
 policy before executing it.** This includes focused checks, dependency restoration
@@ -134,8 +134,13 @@ Required Android device evidence remains mandatory. Keep the report path, base,
 `source.head` and `source.fingerprint` with the task.
 For candidate-commit delivery, require `source.head` to equal `CANDIDATE_COMMIT`.
 
-Preserve `requiresHumanReview` for final handoff. Neither that flag nor a passing
-report supplies the human approval required before executing changed policy.
+Evaluate the local `developmentReviewRequirements(plan.changedFiles)` from the
+trusted `scripts\development-policy.mjs` against the actual changed-path list.
+Retain its `requiresHumanReview`, protected paths and the plan's source identity
+as `policyReview` for review and handoff. CI reports do not supply this decision;
+an absent decision is not `false` or permission to publish. Neither the local
+requirement nor a passing report supplies the human approval required before
+executing changed policy.
 Missing tools, failed checks, changed source and unavailable evidence remain
 blockers; use the guide's relevant diagnostics rather than weakening the gate.
 
@@ -143,7 +148,8 @@ blockers; use the guide's relevant diagnostics rather than weakening the gate.
 
 Invoke the configured read/search-only `devpocket-reviewer` in a separate context.
 Supply the fixed task contract, base, actual diff, all added/untracked changed
-paths, delivery target, current verification report and its source identity.
+paths, delivery target, current verification report, local policy requirements
+and recorded human decisions, and the source identity.
 For candidate-commit delivery, identify the candidate SHA as well. Ask it to
 inspect the files rather than rely on the implementer's summary.
 
@@ -183,6 +189,9 @@ complete passing aggregate whose source identity matches the review. Any edit,
 including a commit/ref change, invalidates mismatched verification and review.
 For candidate-commit delivery, also require the working tree to remain clean and
 HEAD to remain `CANDIDATE_COMMIT` before publishing.
+Recompute the local review requirement for the unchanged source before any
+authorized publication; a missing or stale `policyReview` cannot establish
+readiness.
 This aggregate validates test evidence; it does not authenticate an AI review.
 
 ## 8. Hand off or publish
@@ -191,7 +200,7 @@ Report the delivery target, workspace, base, evidence path and independent revie
 outcome. Identify a verified candidate by its exact commit SHA.
 Use `ready` only when acceptance, verification and review are complete for the
 unchanged source. Use `blocked` for missing/failed evidence and `needs_human` for
-unresolved decisions or `requiresHumanReview`; preserve those qualifications.
+unresolved decisions or `policyReview.requiresHumanReview`; preserve those qualifications.
 
 For working-tree implementation, stop at reviewed working-tree changes and state
 that they are not final-commit PR evidence. For local-commit-only delivery, stop
