@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory)][string]$Base,
     [string]$Report,
-    [ValidateSet('all', 'backend', 'android', 'device')][string]$Group = 'all',
+    [ValidateSet('all', 'tooling', 'backend', 'android', 'device')][string]$Group = 'all',
     [string]$Jdk = $env:DEVPOCKET_JDK,
     [string]$Sdk = $env:DEVPOCKET_ANDROID_SDK,
     [string]$Image = $env:DEVPOCKET_ANDROID_IMAGE,

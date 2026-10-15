@@ -304,8 +304,9 @@ test("the CLI exports only source-bound allowlisted worker metadata and preserve
 
 test("diagnostic metadata cannot replace required failed device evidence", async () => {
   const { combineVerification } = await import("../verification.mjs");
-  const plan = { version: 1, base: "a".repeat(40),
-    source: { head: "b".repeat(40), fingerprint: "c".repeat(64) }, requiredChecks: ["android-device"] };
+  const { VERIFICATION_REPORT_VERSION } = await import("../verification-policy.mjs");
+  const plan = { version: VERIFICATION_REPORT_VERSION, base: "a".repeat(40),
+    source: { head: "b".repeat(40), fingerprint: "c".repeat(64) }, requiredChecks: ["android-device"], requiredGroups: ["device"] };
   assert.throws(() => combineVerification(plan, [{
     ...plan, group: "device", status: "blocked", checks: [
       { id: "android-device", status: "blocked", exitCode: 1, workerDiagnostics: { availability: "observed" } },

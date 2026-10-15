@@ -1,7 +1,8 @@
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { CHECKS, git } from "./verification.mjs";
+import { git } from "./verification.mjs";
+import { CHECKS, CHECK_GROUPS, diagnosticCheckGroup, isDiagnosticVerificationVersion, projectVerificationSelection } from "./verification-policy.mjs";
 import { readDiagnosticReport } from "./worker-diagnostics.mjs";
 import { readBoundedLog } from "./android-diagnostics.mjs";
 import { commandDetails, diagnosticError, failureDetails, ownValue, projectFailureDetails } from "./diagnostic-errors.mjs";
@@ -24,7 +25,7 @@ function projectedFailure(value) {
   return {
     ...result, phase: phases.includes(phase) ? phase : "unknown",
     ...(CHECKS.some((item) => item.id === check) ? { check } : {}),
-    ...(["all", "backend", "android", "device"].includes(group) ? { group } : {}),
+    ...(["all", ...CHECK_GROUPS].includes(group) ? { group } : {}),
     ...(["success", "failure", "cancelled", "skipped", "unknown"].includes(outcome) ? { outcome } : {}),
     ...(Number.isInteger(index) && index >= 0 && index < 32 ? { inputIndex: index } : {}),
     ...(["app", "instrumentation"].includes(artifact) ? { artifact } : {}),
@@ -32,11 +33,15 @@ function projectedFailure(value) {
   };
 }
 
-export async function diagnosticSourceFiles(root) {
+async function diagnosticSourceIndex(root) {
   const values = (await git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean);
   if (values.length > 8192) throw diagnosticError("output-limit");
-  return new Set(values.filter((file) => file.length <= 240 &&
-    /^(?:backend|scripts|deployment|android|test-fixtures)\/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:ts|mjs|js|py|ps1|kt|kts|java|xml)$/.test(file)));
+  return { paths: new Set(values), sources: new Set(values.filter((file) => file.length <= 240 &&
+    /^(?:backend|scripts|deployment|android|test-fixtures)\/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:ts|mjs|js|py|ps1|kt|kts|java|xml)$/.test(file))) };
+}
+
+export async function diagnosticSourceFiles(root) {
+  return (await diagnosticSourceIndex(root)).sources;
 }
 
 export function checkLogHints(text, root, sources, check = "unknown") {
@@ -84,13 +89,14 @@ export function checkLogHints(text, root, sources, check = "unknown") {
 }
 
 export async function collectVerificationDiagnostics(root, directory, job, stepResult = "unknown", expectedOwner) {
-  if (!["plan", "backend", "android", "device", "gate", "startup"].includes(job)) throw diagnosticError("configuration");
-  let report, collectorFailure, sourceHintsFailure, startupEntry, sources = new Set();
+  if (!["plan", ...CHECK_GROUPS, "gate", "startup"].includes(job)) throw diagnosticError("configuration");
+  let report, collectorFailure, sourceHintsFailure, startupEntry, sources = new Set(), sourcePaths = new Set();
   const collectionErrors = [];
   const file = job === "gate" ? "gate.json" : job === "plan" ? "plan.json" : job === "startup" ? "startup-report.json" : "report.json";
   try { report = await readDiagnosticReport(path.join(directory, file)); }
   catch (error) { collectorFailure = failureDetails(error, error instanceof SyntaxError ? "report-invalid" : "report-unavailable"); }
-  if (report && (report.version !== 1 || (job === "startup" ? report.kind !== "native-startup-diagnostic" : !Array.isArray(report.checks)))) {
+  if (report && (job === "startup" ? report.version !== 1 || report.kind !== "native-startup-diagnostic"
+    : !isDiagnosticVerificationVersion(report.version) || !Array.isArray(report.checks))) {
     collectorFailure = failureDetails(diagnosticError("report-invalid"));
   }
   if (job === "startup") {
@@ -113,7 +119,11 @@ export async function collectVerificationDiagnostics(root, directory, job, stepR
       }
     } catch (error) { collectionErrors.push({ operation: "startup-entry-report", failure: failureDetails(error, "report-unavailable") }); }
   }
-  try { sources = await diagnosticSourceFiles(root); }
+  try {
+    const index = await diagnosticSourceIndex(root);
+    sources = index.sources;
+    sourcePaths = index.paths;
+  }
   catch (error) {
     sourceHintsFailure = failureDetails(error, "collector-failed");
     collectionErrors.push({ operation: "source-index", failure: sourceHintsFailure });
@@ -125,7 +135,8 @@ export async function collectVerificationDiagnostics(root, directory, job, stepR
   const checks = [];
   for (const definition of CHECKS) {
     const selected = Array.isArray(report?.checks) ? report.checks.filter((item) => item?.id === definition.id) : [];
-    if (!selected.length || (!["gate", "plan"].includes(job) && definition.group !== job)) continue;
+    const group = diagnosticCheckGroup(definition, report?.version);
+    if (!selected.length || (!["gate", "plan"].includes(job) && group !== job)) continue;
     if (selected.length !== 1) { collectorFailure = failureDetails(diagnosticError("report-invalid")); continue; }
     const input = selected[0], issues = ownValue(input, "diagnosticIssues");
     const check = {
@@ -199,6 +210,7 @@ export async function collectVerificationDiagnostics(root, directory, job, stepR
       ? { status: "failed", failure: projectedFailure(report.sourceValidation.failure) } : null,
     sourceHintsAvailable: sources.size > 0,
     sourceHintsFailure: sourceHintsFailure ?? null,
+    selection: projectVerificationSelection(report, sourcePaths),
     checks,
     ...(startup ? { startup } : {}),
     note: "Fixed check/phase/exit facts and bounded source-aware log hints only. Hints are not a proved cause. Missing reports or platform termination never establish success.",

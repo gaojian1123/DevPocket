@@ -41,6 +41,114 @@ test("an actual compiler check exposes its trusted source/code through the publi
   assert.ok(!result.stdout.includes(root));
 });
 
+test("tooling failures and plan causes survive public diagnostics without raw report or log fields", async (t) => {
+  await mkdir(".data/tests", { recursive: true });
+  const root = await mkdtemp(path.resolve(".data/tests/tooling-diagnostics-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, ".gitignore"), ".data/\n");
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: {
+    "test:workflow": "node --test --test-reporter=spec scripts/tests/development-workflow.test.mjs",
+  } }));
+  await exec("git", ["init", "--quiet"], { cwd: root });
+  await exec("git", ["add", "."], { cwd: root });
+  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Fixture"], { cwd: root });
+  await mkdir(path.join(root, "scripts", "tests"), { recursive: true });
+  await writeFile(path.join(root, "scripts", "tests", "development-workflow.test.mjs"), [
+    'import {test} from "node:test";',
+    'import assert from "node:assert/strict";',
+    'test("synthetic failure", () => { assert.fail("PRIVATE_TOOLING_LOG_CANARY"); });',
+  ].join("\n"));
+  const directory = path.join(root, ".data", "ci", "tooling"), reportFile = path.join(directory, "report.json");
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  await assert.rejects(exec(process.execPath, [path.resolve("scripts/verify.mjs"), "--repo", root, "--base", "HEAD",
+    "--group", "tooling", "--report", reportFile], { env, timeout: 45000 }), (error) => error.code === 1);
+  const report = JSON.parse(await readFile(reportFile, "utf8"));
+  assert.equal(report.status, "failed");
+  assert.deepEqual(report.requiredChecks, ["workflow-tests"]);
+  const exporter = path.resolve("scripts/verification-diagnostics.mjs");
+  const commands = path.join(root, ".data", "commands", "_runner_file_commands");
+  await mkdir(commands, { recursive: true });
+  const output = path.join(commands, `set_output_${randomUUID()}`), summary = path.join(commands, `step_summary_${randomUUID()}`);
+  await writeFile(output, "");
+  await writeFile(summary, "");
+  const exported = await exec(process.execPath, [exporter, "--directory", directory, "--job", "tooling", "--step-result", "failure", "--github"],
+    { cwd: root, timeout: 20000, env: { ...env, GITHUB_ACTIONS: "true", RUNNER_TEMP: path.dirname(commands),
+      GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary } });
+  const diagnostics = JSON.parse(await readFile(path.join(directory, "verification-diagnostics.json"), "utf8"));
+  assert.equal(diagnostics.job, "tooling");
+  assert.equal(diagnostics.acceptance, false);
+  assert.equal(diagnostics.collectionStatus, "completed");
+  assert.deepEqual(diagnostics.selection.requiredGroups, ["tooling"]);
+  assert.deepEqual(diagnostics.selection.selectionReasons[0].paths, ["scripts/tests/development-workflow.test.mjs"]);
+  assert.equal(diagnostics.checks[0].id, "workflow-tests");
+  assert.equal(diagnostics.checks[0].status, "failed");
+  assert.equal(diagnostics.checks[0].failure.reason, "command-failed");
+  assert.ok(diagnostics.checks[0].hints.some((hint) => hint.kind === "test-declaration-hint"));
+  assert.equal(await readFile(output, "utf8"), "report_ready=true\n");
+  assert.ok(!exported.stdout.includes("PRIVATE_TOOLING_LOG_CANARY"));
+  assert.ok(!(await readFile(summary, "utf8")).includes("PRIVATE_TOOLING_LOG_CANARY"));
+  const injected = path.join(root, ".data", "ci", "injected");
+  await mkdir(injected);
+  await writeFile(path.join(injected, "gate.json"), JSON.stringify({
+    ...report, status: "blocked", checks: [],
+    failure: { reason: "upstream-job-failed", phase: "aggregate", group: "tooling", outcome: "skipped",
+      summary: "PRIVATE_TOOLING_REPORT_CANARY" },
+    selectionReasons: [{ ...report.selectionReasons[0], description: "PRIVATE_TOOLING_REPORT_CANARY",
+      paths: [...report.selectionReasons[0].paths, "scripts/PRIVATE_TOOLING_REPORT_CANARY.mjs"],
+      checks: ["PRIVATE_TOOLING_REPORT_CANARY"], groups: ["PRIVATE_TOOLING_REPORT_CANARY"] }],
+  }));
+  const projected = await exec(process.execPath, [exporter, "--directory", injected, "--job", "gate"],
+    { cwd: root, timeout: 20000 });
+  const gate = JSON.parse(await readFile(path.join(injected, "verification-diagnostics.json"), "utf8"));
+  assert.equal(gate.failure.group, "tooling");
+  assert.equal(gate.failure.outcome, "skipped");
+  assert.equal(gate.selection.selectionReasons[0].omittedPaths, 1);
+  assert.deepEqual(gate.selection.selectionReasons[0].checks, ["workflow-tests"]);
+  assert.ok(!projected.stdout.includes("PRIVATE_TOOLING_REPORT_CANARY"));
+  assert.ok(!JSON.stringify(gate).includes("PRIVATE_TOOLING_REPORT_CANARY"));
+});
+
+test("legacy diagnostic selections retain backend grouping without relabelling historical checks", async (t) => {
+  await mkdir(".data/tests", { recursive: true });
+  const root = await mkdtemp(path.resolve(".data/tests/legacy-selection-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, ".gitignore"), ".data/\n");
+  await exec("git", ["init", "--quiet"], { cwd: root });
+  const backend = ["workflow-tests", "typecheck", "backend-tests", "backend-build", "schema"];
+  for (const sample of [
+    { name: "backend", requiredChecks: backend, groups: ["backend"] },
+    { name: "mixed", requiredChecks: [...backend, "android-build", "android-device"], groups: ["backend", "android", "device"] },
+  ]) {
+    await t.test(sample.name, async () => {
+      const directory = path.join(root, ".data", "ci", sample.name);
+      await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, "report.json"), JSON.stringify({
+        version: 1, status: "partial", group: "backend", requiredChecks: sample.requiredChecks,
+        checks: sample.requiredChecks.map((id) => backend.includes(id)
+          ? { id, status: "passed", exitCode: 0 } : { id, status: "not_run" }),
+      }));
+      await exec(process.execPath, [path.resolve("scripts/verification-diagnostics.mjs"),
+        "--directory", directory, "--job", "backend"], { cwd: root, timeout: 20000 });
+      const output = JSON.parse(await readFile(path.join(directory, "verification-diagnostics.json"), "utf8"));
+      assert.equal(output.acceptance, false);
+      assert.equal(output.collectionStatus, "completed");
+      assert.deepEqual(output.selection.requiredChecks, sample.requiredChecks);
+      assert.deepEqual(output.selection.requiredGroups, sample.groups);
+      assert.deepEqual(output.selection.selectionReasons, []);
+      assert.deepEqual(output.checks.map((check) => check.id), backend);
+    });
+  }
+  const { projectVerificationSelection } = await import("../verification-policy.mjs");
+  const file = "scripts/workflow-extension.mjs";
+  const legacy = projectVerificationSelection({
+    version: 1, requiredChecks: backend,
+    selectionReasons: [{ rule: "task-routing", paths: [file] }],
+  }, new Set([file]));
+  assert.deepEqual(legacy.requiredGroups, ["backend"]);
+  assert.deepEqual(legacy.selectionReasons, [], "Version-2 impact rules must not explain a version-1 plan.");
+});
+
 test("check log hints accept only source-indexed locations and fixed exception/code identifiers", async () => {
   const { checkLogHints } = await import("../verification-diagnostics.mjs");
   const sources = new Set(["backend/src/known.ts", "deployment/azure/probe/test_receiver.py"]);

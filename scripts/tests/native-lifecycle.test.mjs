@@ -77,8 +77,9 @@ test("dedicated native capture bounds data and preserves known exits without inv
 
 test("a ready startup diagnostic is not a successful native verification report", async () => {
   const { combineVerification } = await import("../verification.mjs");
-  const plan = { version: 1, base: "a".repeat(40),
-    source: { head: "b".repeat(40), fingerprint: "c".repeat(64) }, requiredChecks: [] };
+  const { VERIFICATION_REPORT_VERSION } = await import("../verification-policy.mjs");
+  const plan = { version: VERIFICATION_REPORT_VERSION, base: "a".repeat(40),
+    source: { head: "b".repeat(40), fingerprint: "c".repeat(64) }, requiredChecks: [], requiredGroups: [] };
   assert.throws(() => combineVerification(plan, [{
     ...plan, status: "ready", kind: "native-startup-diagnostic", acceptance: false, group: "all", checks: [],
   }]), /failed, blocked, planned/);
