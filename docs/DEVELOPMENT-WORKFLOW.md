@@ -142,6 +142,13 @@ SDK/JDK or emulator. Operational fixture checks additionally need the pinned
 `deployment\azure\probe\requirements-test.txt` dependencies; use an isolated
 environment rather than changing the machine's Python packages.
 
+Before executing changed verification or dependency policy, obtain explicit human
+approval through the pre-execution gate in Step 3 of
+`.github\skills\devpocket-development\SKILL.md`. It covers focused checks,
+dependency/install hooks and commit hooks, and requires renewed approval when
+the approved policy changes. Self-review or AI review cannot supply that approval;
+the standalone verifier checks evidence, not human authorization.
+
 ```powershell
 npm run verify -- -Base BASE_COMMIT -Plan
 npm run verify -- -Base BASE_COMMIT
@@ -194,11 +201,11 @@ runtime/wire changes require JVM/build checks **and** native emulator evidence.
 Protection is separate from impact selection. The controller's existing
 `isVerificationPolicyPath` stop still covers **all** scripts, `.github` and
 `AGENTS.md`, including tooling-only changes. The optional workflow pauses before
-executing modified gate/dependency policy; review that policy explicitly before
-another run. Skill-led development also retains explicit policy review and the
-plan's human-review requirement. A change implementing these planner/CI rules itself has full
-impact and does not bypass that stop. Targeted synthetic regressions are not a
-completed source-bound gate or independent-review approval.
+executing modified gate/dependency policy. Both routes retain the pre-execution
+human approval described above and the plan's human-review requirement. A change
+implementing these planner/CI rules itself has full impact and does not bypass
+that stop. Targeted synthetic regressions are not a completed source-bound gate
+or independent-review approval.
 
 For CI shards, use `-Group tooling`, `-Group backend`, `-Group android` or
 `-Group device` with a separate `-Report` for each. The tooling check remains

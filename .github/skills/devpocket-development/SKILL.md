@@ -64,8 +64,30 @@ task depends on it; never silently omit that dependency.
 ## 3. Implement in the owning session
 
 Make the agreed change, relevant regression coverage and documentation updates.
-Use the existing checks for focused feedback. The current session owns
-implementation and repairs; another implementation session is not a prerequisite.
+The current session owns implementation and repairs; another implementation
+session is not a prerequisite.
+
+Before execution, inspect the protected-policy diff read-only using the trusted
+`isVerificationPolicyPath` rules in `scripts\verification-policy.mjs`. Do not run
+a modified planner to decide whether its own policy needs approval.
+**Require explicit human approval of the actual changed execution or dependency
+policy before executing it.** This includes focused checks, dependency restoration
+and its install/lifecycle hooks, and Git commit hooks. Changed agent instructions
+also need approval before adopting them as execution policy.
+
+Record the human decision, approved policy diff or content hashes, and permitted
+command scope with the task. General task/workflow authorization, implementer
+self-review and an AI review are not approval of newly changed policy.
+Any further change to the approved policy or hook inputs invalidates that
+approval; obtain renewed human approval before the next affected execution,
+including during repairs.
+
+If approval is missing or its scope cannot be established, report `needs_human`.
+Inspection and editing may continue. Run unchanged, already approved checks only
+after establishing that they cannot load the modified policy or hooks; otherwise
+stop before execution. The standalone verifier does not enforce this approval.
+
+After this gate, use the existing checks for focused feedback.
 Restore missing dependencies from lockfiles only after an actual missing-dependency
 failure. Runtime experiments, installation/reload, enrollment, cloud operations
 and publication still require their specific authorization.
@@ -77,10 +99,13 @@ Complete the required verification and independent review against that snapshot;
 qualify the result as reviewed working-tree changes, not a verified final commit.
 
 **Authorized commit/PR delivery:** after focused checks and once local commit
-authorization is established, create the candidate commit before final
-verification and independent review. Include every intended task input, including
-new files and tests. Preserve unrelated changes; resolve any remaining edits with
-the user rather than deleting, moving or committing them implicitly.
+authorization is established, confirm that Step 3's human approval gate covers
+any changed commit hooks before invoking Git. Commit authorization alone does
+not approve changed hooks, and disabling hooks is not a substitute for approval.
+Then create the candidate commit before final verification and independent
+review. Include every intended task input, including new files and tests.
+Preserve unrelated changes; resolve any remaining edits with the user rather
+than deleting, moving or committing them implicitly.
 
 Require a clean tracked and non-ignored working tree for candidate-commit
 verification. Check again after commit hooks, and record the resulting HEAD as
@@ -94,6 +119,8 @@ not become evidence for the new commit by changing report fields.
 
 ## 5. Obtain source-bound verification
 
+Confirm Step 3's pre-execution human approval before invoking changed verification
+or dependency policy, including a modified planner.
 Follow the Verification section of `docs\DEVELOPMENT-WORKFLOW.md`:
 
 ```powershell
@@ -107,8 +134,8 @@ Required Android device evidence remains mandatory. Keep the report path, base,
 `source.head` and `source.fingerprint` with the task.
 For candidate-commit delivery, require `source.head` to equal `CANDIDATE_COMMIT`.
 
-Review changes to verification execution or dependency policy explicitly before
-executing that changed policy. Preserve `requiresHumanReview` for final handoff.
+Preserve `requiresHumanReview` for final handoff. Neither that flag nor a passing
+report supplies the human approval required before executing changed policy.
 Missing tools, failed checks, changed source and unavailable evidence remain
 blockers; use the guide's relevant diagnostics rather than weakening the gate.
 
@@ -134,6 +161,7 @@ replace it. The development workflow extension is not needed for this step.
 ## 7. Repair and recheck
 
 Investigate blocking findings in the same workspace under the same contract.
+Return to Step 3's approval gate before executing repaired policy or hooks.
 Allow at most two repair rounds unless the user chooses a different bound.
 For candidate-commit delivery, put a repair into a new authorized follow-up commit
 before final verification; amend only if the user explicitly requests it. Keep
