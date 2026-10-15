@@ -1118,6 +1118,42 @@ test("commit permission, native-tool and hook failures never reach final verific
   }
 });
 
+test("nested Git hook failures cannot qualify an otherwise successful commit", async (t) => {
+  const { root, main } = await workspace(t);
+  await writeFile(path.join(main, ".git", "hooks", "post-index-change"), [
+    "#!/bin/sh",
+    "if test -e .data/inside-pre-commit; then",
+    "  printf observed > .data/nested-hook-ran",
+    "  printf 'private nested hook detail\\n' >&2",
+    "  exit 19",
+    "fi",
+    "",
+  ].join("\n"), { mode: 0o755 });
+  await writeFile(path.join(main, ".git", "hooks", "pre-commit"), [
+    "#!/bin/sh",
+    ": > .data/inside-pre-commit",
+    "printf 'Explained\\n' > README.md",
+    "git add -- README.md",
+    "code=$?",
+    "rm .data/inside-pre-commit",
+    "exit \"$code\"",
+    "",
+  ].join("\n"), { mode: 0o755 });
+  let verifications = 0;
+  const result = await runDevelopment(documentationTask(root), {
+    root, verify: async (directory, plan, options) => { verifications++; return executeVerification(directory, plan, options); },
+  });
+  assert.equal(await readFile(path.join(root, ".data", "nested-hook-ran"), "utf8"), "observed");
+  assert.equal(result.status, "blocked", "An ignored nested hook failure is not a successful candidate.");
+  assert.equal(verifications, 0);
+  const receipt = JSON.parse(await readFile(path.join(root, ".data", "development", "candidate-test",
+    "candidate-0.json.result.json"), "utf8"));
+  assert.equal(receipt.failure, "hook-failed");
+  assert.equal(receipt.exitCode, 0, "Keep the root Git command's successful exit distinct from the failed nested hook.");
+  assert.ok(receipt.hookFailures.some((failure) => failure.hook === "post-index-change" && failure.exitCode === 19));
+  assert.equal(JSON.stringify(receipt).includes("private nested hook detail"), false);
+});
+
 test("successful hooks run once normally even when their output or nested Git commands look like failures", async (t) => {
   const { root, main } = await workspace(t);
   await writeFile(path.join(main, ".git", "hooks", "post-commit"), [

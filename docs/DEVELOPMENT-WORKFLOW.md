@@ -151,6 +151,11 @@ Git Trace2 records observed hook exits during staging and commit, including
 `post-commit` failures that Git itself does not propagate. Hooks run normally,
 once per Git invocation; missing hook-exit evidence blocks rather than implying
 success. A failed post-commit hook leaves its completed local commit in place.
+Hook starts/exits are paired by trace session and child identity across nested
+Git commands. Command completion stays bound to the root Git invocation, and
+ordinary non-hook child failures are not reclassified as hook failures.
+Repeated hook/exit descriptors are projected once without exporting trace SIDs;
+every observed hook invocation still requires its own complete exit evidence.
 Before index publication, failures leave the original live index intact; task
 working files remain available for recovery. The active hook snapshot covers the
 configured directory, including files reached through directory/file links,

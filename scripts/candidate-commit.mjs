@@ -31,20 +31,24 @@ async function hookFailures(trace) {
       !own.some((event) => event.event === "exit" && event.code === 0) ||
       !own.some((event) => event.event === "atexit" && event.code === 0)) throw new Error("Missing Git completion evidence.");
   const hooks = new Map();
-  for (const event of own) {
+  for (const event of events) {
+    const key = JSON.stringify([event.sid, event.child_id]);
     if (event.event === "child_start" && event.child_class === "hook") {
-      if (!Number.isSafeInteger(event.child_id) || !hookNames.has(event.hook_name) || hooks.has(event.child_id)) {
+      if (typeof event.sid !== "string" || !event.sid.length ||
+          !Number.isSafeInteger(event.child_id) || event.child_id < 0 ||
+          !hookNames.has(event.hook_name) || hooks.has(key)) {
         throw new Error("Unrecognized Git hook evidence.");
       }
-      hooks.set(event.child_id, { hook: event.hook_name });
-    } else if (event.event === "child_exit" && hooks.has(event.child_id)) {
-      const hook = hooks.get(event.child_id);
+      hooks.set(key, { hook: event.hook_name });
+    } else if (event.event === "child_exit" && hooks.has(key)) {
+      const hook = hooks.get(key);
       if (!Number.isInteger(event.code) || hook.exitCode !== undefined) throw new Error("Invalid Git hook exit.");
       hook.exitCode = event.code;
     }
   }
   if ([...hooks.values()].some((hook) => hook.exitCode === undefined)) throw new Error("Missing Git hook exit.");
-  return [...hooks.values()].filter((hook) => hook.exitCode !== 0);
+  const failures = [...hooks.values()].filter((hook) => hook.exitCode !== 0);
+  return [...new Map(failures.map((hook) => [JSON.stringify([hook.hook, hook.exitCode]), hook])).values()];
 }
 
 async function gitMutation(root, args, input, environment = {}) {
