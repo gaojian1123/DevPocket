@@ -169,11 +169,15 @@ Candidate requests and controller journals use version 4 to bind hook,
 executable-input and prepared reference-transaction evidence. Older requests/results require inspected recovery;
 they are not replayed as approval for the new controller.
 An operation-private hook route uses Git's `reference-transaction` prepared phase,
-while Git holds its ref locks, to bind the actual branch update and new commit's
-parent to the request. A verify-only transaction first proves the native veto
+while Git holds its ref locks, to bind the actual branch update, parent and
+inspected tree before advancing history. A verify-only transaction first proves the native veto
 works without advancing a ref or invoking user hooks. User hooks are forwarded
 once through `git hook run`, with original arguments, input, configuration and
 exit status; user hook files and persistent Git settings are not replaced.
+The mutating guard context is created separately after staging has established
+the inspected tree; the earlier verify-only probe cannot authorize a commit.
+Reference-binding evidence version 2 includes that tree. Hook edits remain in
+the working tree for inspection, but a different tree cannot enter branch history.
 The operation-private routing exists only for the candidate command. Unknown ref
 shapes, changed context and missing prepared evidence stop explicitly. Zero OIDs
 alone do not establish a no-op: `AUTO_MERGE` cleanup requires an actual absence

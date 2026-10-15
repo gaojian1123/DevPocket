@@ -207,9 +207,10 @@ export async function assertCandidate(root, workspace, candidate) {
       (await git(root, ["rev-parse", "HEAD^{tree}"])).trim() !== candidate.tree) {
     fail("The candidate HEAD, source or index changed; a clean, exact committed candidate is required.");
   }
-  if (candidate.created && (candidate.reference?.version !== 1 ||
+  if (candidate.created && (candidate.reference?.version !== 2 ||
       candidate.reference.branch !== workspace.identity.branch ||
-      candidate.reference.parent !== candidate.parent || candidate.reference.commit !== candidate.commit)) {
+      candidate.reference.parent !== candidate.parent || candidate.reference.commit !== candidate.commit ||
+      candidate.reference.tree !== candidate.tree)) {
     fail("Candidate reference-transaction evidence is missing or inconsistent.");
   }
   return current;
@@ -326,7 +327,8 @@ async function referenceGuard(specification, observeHooks) {
     try { approved = JSON.parse(await readFile(path.join(context.directory, "prepared.json"), "utf8")); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
     if (approved && (approved.context !== specification.hash || approved.parent !== context.parent ||
-        approved.branch !== context.branch || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(approved.commit))) {
+        approved.branch !== context.branch || approved.tree !== context.tree ||
+        !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(approved.commit))) {
       throw new Error("Prepared reference evidence changed.");
     }
     const identity = async () => {
@@ -392,14 +394,20 @@ async function referenceGuard(specification, observeHooks) {
               row.old !== context.parent || row.next !== branch[0].next)) throw new Error("Reference update is not bound to the expected branch and parent.");
         if (args[0] === "prepared") {
           await identity();
+          if (typeof context.tree !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(context.tree)) {
+            throw new Error("A ref update requires its inspected tree binding.");
+          }
           const object = query(["cat-file", "--batch"], `${branch[0].next}\n`);
           const newline = object.indexOf("\n"), header = object.slice(0, newline).split(" ");
           if (header.length !== 3 || header[0] !== branch[0].next || header[1] !== "commit") throw new Error("Expected a native commit object.");
-          const parents = object.slice(newline + 1).split("\n\n", 1)[0].split("\n")
-            .filter((line) => line.startsWith("parent ")).map((line) => line.slice(7));
+          const headers = object.slice(newline + 1).split("\n\n", 1)[0].split("\n");
+          const parents = headers.filter((line) => line.startsWith("parent ")).map((line) => line.slice(7));
+          const trees = headers.filter((line) => line.startsWith("tree ")).map((line) => line.slice(5));
           if (JSON.stringify(parents) !== JSON.stringify([context.parent])) throw new Error("Native commit has a different parent.");
+          if (JSON.stringify(trees) !== JSON.stringify([context.tree])) throw new Error("Native commit differs from the inspected tree.");
           await writeFile(path.join(context.directory, "prepared.json"),
-            JSON.stringify({ context: specification.hash, branch: context.branch, parent: context.parent, commit: branch[0].next }),
+            JSON.stringify({ context: specification.hash, branch: context.branch, parent: context.parent,
+              commit: branch[0].next, tree: context.tree }),
             { flag: "wx", mode: 0o600 });
         } else if (!approved || approved.commit !== branch[0].next) throw new Error("Reference completion lacks its prepared binding.");
       }
@@ -420,7 +428,7 @@ async function referenceGuard(specification, observeHooks) {
   }
 }
 
-async function prepareReferenceGuard(root, request, directory) {
+async function prepareReferenceGuard(root, request, directory, tree) {
   const token = `DEVPOCKET_REF_${randomUUID().replaceAll("-", "")}`;
   const parameters = `${token}_PARAMETERS`, present = `${token}_PRESENT`;
   if ([token, parameters, present].some((name) => process.env[name] !== undefined)) fail("Reference guard environment ownership is unavailable.");
@@ -434,6 +442,7 @@ async function prepareReferenceGuard(root, request, directory) {
   const context = { version: 1, root, directory, physicalRoot: await realpath(root),
     gitDirectory: request.expected.identity.gitDirectory, commonDirectory: request.expected.identity.commonDirectory,
     branch: request.expected.identity.branch, parent: request.expected.source.head,
+    ...(tree ? { tree } : {}),
     configuration: request.expected.configuration, hooks: request.hooks,
     parametersPresent: process.env.GIT_CONFIG_PARAMETERS !== undefined,
     parametersHash: sha256(process.env.GIT_CONFIG_PARAMETERS ?? "") };
@@ -481,7 +490,7 @@ async function commitInspectedIndex(root, request) {
   const index = path.resolve(root, (await git(root, ["rev-parse", "--git-path", "index"])).trim());
   const lockPath = `${index}.lock`;
   const owner = JSON.stringify({ pid: process.pid, token: randomUUID() }) + "\n";
-  let lock, lockIdentity, directory, referenceDirectory, failure, published = false, candidate;
+  let lock, lockIdentity, directory, probeDirectory, referenceDirectory, failure, published = false, candidate;
   const requireLock = async () => {
     const current = await lstat(lockPath, { bigint: true });
     if (!current.isFile() || current.isSymbolicLink() || current.dev !== lockIdentity.dev || current.ino !== lockIdentity.ino) {
@@ -510,9 +519,9 @@ async function commitInspectedIndex(root, request) {
     if (lockIdentity.ino === 0n) fail("Candidate index lock identity is unavailable.");
     await lock.writeFile(owner);
     await check();
-    referenceDirectory = await mkdtemp(path.join(tmpdir(), "devpocket-ref-guard-"));
-    const reference = await prepareReferenceGuard(root, request, referenceDirectory);
-    await proveReferenceVeto(root, request, reference);
+    probeDirectory = await mkdtemp(path.join(tmpdir(), "devpocket-ref-probe-"));
+    const probe = await prepareReferenceGuard(root, request, probeDirectory);
+    await proveReferenceVeto(root, request, probe);
     await check();
     directory = await mkdtemp(path.join(tmpdir(), "devpocket-candidate-index-"));
     const isolated = path.join(directory, "index");
@@ -536,6 +545,9 @@ async function commitInspectedIndex(root, request) {
     const tree = (await gitMutation(root, ["write-tree"], undefined, environment)).trim();
     const stagedIndex = sha256(await gitMutation(root, ["ls-files", "--stage", "-z"], undefined, environment));
     await check();
+    referenceDirectory = await mkdtemp(path.join(tmpdir(), "devpocket-ref-guard-"));
+    const reference = await prepareReferenceGuard(root, request, referenceDirectory, tree);
+    await check();
     try {
       await gitMutation(root, ["-c", `core.hooksPath=${reference.directory}`, "commit", "--file=-"], request.message,
         { ...environment, ...reference.environment });
@@ -550,7 +562,8 @@ async function commitInspectedIndex(root, request) {
     assertIdentity(after, request.expected);
     const preparedReference = JSON.parse(await readFile(path.join(reference.directory, "prepared.json"), "utf8"));
     if (preparedReference.context !== reference.hash || preparedReference.branch !== request.expected.identity.branch ||
-        preparedReference.parent !== request.expected.source.head || preparedReference.commit !== after.source.head) {
+        preparedReference.parent !== request.expected.source.head || preparedReference.commit !== after.source.head ||
+        preparedReference.tree !== tree) {
       fail("Native commit lacks its expected prepared reference transaction.");
     }
     const ancestry = (await git(root, ["rev-list", "--parents", "-n", "1", after.source.head])).trim().split(" ");
@@ -582,12 +595,13 @@ async function commitInspectedIndex(root, request) {
     published = true;
     const final = await inspectWorktree(root);
     candidate = { created: true, parent: request.expected.source.head, commit: after.source.head,
-      source: final.source, tree, index: stagedIndex, reference: { version: 1, branch: request.expected.identity.branch,
-        parent: request.expected.source.head, commit: after.source.head } };
+      source: final.source, tree, index: stagedIndex, reference: { version: 2, branch: request.expected.identity.branch,
+        parent: request.expected.source.head, commit: after.source.head, tree } };
     await requireCommitResult(root, request, candidate);
   } catch (error) { failure = error; }
   for (const cleanup of [
     async () => { if (directory) await rm(directory, { recursive: true, force: true }); },
+    async () => { if (probeDirectory) await rm(probeDirectory, { recursive: true, force: true }); },
     async () => { if (referenceDirectory) await rm(referenceDirectory, { recursive: true, force: true }); },
     async () => {
       if (published) return;

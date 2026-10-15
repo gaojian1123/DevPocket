@@ -1092,9 +1092,13 @@ test("commit permission, native-tool and hook failures never reach final verific
       assert.equal(current.identity.branch, "refs/heads/task");
       const index = path.resolve(root, (await git(root, ["rev-parse", "--git-path", "index"])).trim());
       await assert.rejects(readFile(`${index}.lock`), { code: "ENOENT" });
-      if (["hook-post-commit-error", "hook-mutates", "hook-removes-trailer"].includes(scenario)) {
+      if (["hook-post-commit-error", "hook-removes-trailer"].includes(scenario)) {
         assert.notEqual(current.source.head, parent, "A failed candidate remains history; it is never reset/amended.");
       } else assert.equal(current.source.head, parent);
+      if (scenario === "hook-mutates") {
+        assert.equal(await readFile(path.join(root, "README.md"), "utf8"), "hook-content\n", "Retain hook edits without admitting a different tree.");
+        assert.equal(await git(root, ["diff", "--cached", "--name-only"]), "");
+      }
       if (scenario === "hook-error") {
         assert.equal(await git(root, ["diff", "--cached", "--name-only"]), "", "A failed isolated commit leaves the original live index intact.");
         assert.equal(await readFile(path.join(root, "README.md"), "utf8"), "Explained\n");
@@ -1286,6 +1290,20 @@ test("the native candidate boundary rejects concurrent changes instead of commit
   }
 });
 
+test("a hook-staged unowned file cannot enter retained candidate history", async (t) => {
+  const { root, main } = await workspace(t);
+  const parent = (await sourceSnapshot(root)).head;
+  await writeFile(path.join(main, ".git", "hooks", "pre-commit"),
+    "#!/bin/sh\nprintf 'Unowned hook content\\n' > hook-unowned.txt\ngit add -- hook-unowned.txt\n", { mode: 0o755 });
+  const result = await runDevelopment(documentationTask(root), {
+    root, verify: async () => { assert.fail("Unowned committed content cannot reach verification."); },
+  });
+  assert.equal(result.status, "blocked");
+  assert.equal((await sourceSnapshot(root)).head, parent, "Reject the new tree before advancing the branch.");
+  assert.equal(await git(root, ["diff", "--cached", "--name-only"]), "", "Preserve the original live index.");
+  assert.equal(await readFile(path.join(root, "hook-unowned.txt"), "utf8"), "Unowned hook content\n");
+});
+
 test("late AUTO_MERGE creation cannot be deleted as an assumed no-op", async (t) => {
   const { root, main } = await workspace(t);
   const expected = (await git(root, ["rev-parse", "HEAD^{tree}"])).trim();
@@ -1346,6 +1364,7 @@ test("transaction guards preserve configured hooks, original configuration and h
         assert.equal(phases.match(/refs\/heads\/task\n/g)?.length, 2, "Forward the actual prepared/committed update once; the capability probe is private.");
         assert.equal(result.candidate.reference.branch, "refs/heads/task");
         assert.equal(result.candidate.reference.parent, before.source.head);
+        assert.equal(result.candidate.reference.tree, result.candidate.tree);
       }
     });
   }
