@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, lstat, mkdtemp, open, readFile, readlink, rm, rmdir } from "node:fs/promises";
+import { copyFile, lstat, mkdtemp, open, readFile, readlink, realpath, rm, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -104,10 +104,11 @@ export async function inspectWorktree(root) {
     git(root, ["rev-parse", "--show-toplevel"]), git(root, ["rev-parse", "--git-dir"]),
     git(root, ["rev-parse", "--git-common-dir"]),
   ]);
-  const top = path.resolve(topPath.trim());
-  const gitDirectory = path.resolve(root, gitPath.trim());
-  const commonDirectory = path.resolve(root, commonPath.trim());
-  if (top !== root || gitDirectory === commonDirectory) fail("Use the root of an isolated linked worktree, not the primary checkout.");
+  const [physicalRoot, top, gitDirectory, commonDirectory] = await Promise.all([
+    realpath(root), realpath(topPath.trim()),
+    realpath(path.resolve(root, gitPath.trim())), realpath(path.resolve(root, commonPath.trim())),
+  ]);
+  if (top !== physicalRoot || gitDirectory === commonDirectory) fail("Use the root of an isolated linked worktree, not the primary checkout.");
   const branch = (await git(root, ["symbolic-ref", "--quiet", "HEAD"])).trim();
   if (!branch.startsWith("refs/heads/")) fail("An attached task branch is required.");
   for (const marker of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "BISECT_START"]) {

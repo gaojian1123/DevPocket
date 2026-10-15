@@ -129,6 +129,8 @@ once per Git invocation; missing hook-exit evidence blocks rather than implying
 success. A failed post-commit hook leaves its completed local commit in place.
 Read-only status/diff inspections disable optional Git locks so they do not
 refresh the index or invoke its hook.
+Root and Git metadata comparisons resolve directory aliases, while task ownership
+retains the caller's workspace path.
 
 The controller accepts neither implementer-written approval nor an editable
 workspace result as the authoritative review. The SDK's durable step journal

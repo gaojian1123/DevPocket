@@ -293,6 +293,18 @@ test("starter uses actual Git identities for separate metadata and directory ali
   const result = await linked.start({ goal: "Task", acceptance: ["Behavior"] });
   assert.equal(result.resultType, "success", result.textResultForLlm);
   assert.deepEqual(linked.calls.map((call) => call.name), ["run_dynamic_workflow"]);
+  const completed = await runDevelopment(documentationTask(alias), { root: alias });
+  assert.equal(completed.status, "ready", completed.reason);
+  assert.equal((await checkDevelopmentReadiness(alias, completed)).status, "ready");
+  const physical = await inspectWorktree(root), aliased = await inspectWorktree(alias);
+  assert.deepEqual(aliased.source, physical.source);
+  assert.equal(aliased.identity.gitDirectory, physical.identity.gitDirectory);
+  assert.equal(aliased.identity.commonDirectory, physical.identity.commonDirectory);
+  assert.equal(aliased.identity.root, path.resolve(alias), "Keep the caller's workspace path in the ownership contract.");
+  const nestedAlias = path.join(main, ".data", "nested-alias");
+  await symlink(path.join(root, ".data"), nestedAlias, process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(inspectWorktree(nestedAlias), /root of an isolated linked worktree/);
+  await assert.rejects(inspectWorktree(main), /not the primary checkout/);
 });
 
 test("starter discovers qualified native tool names for reuse and primary isolation", async (t) => {
