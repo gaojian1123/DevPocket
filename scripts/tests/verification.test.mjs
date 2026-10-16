@@ -160,6 +160,7 @@ test("documentation and an unchanged checkout select no checks or groups", async
 test("verification infrastructure and unknown paths retain all downstream checks and protection", async (t) => {
   for (const file of [
     "scripts/verification.mjs", "scripts/verification-policy.mjs", "scripts/verify.mjs", "scripts/verify.ps1",
+    "scripts/git-state.mjs", "scripts/native-candidate.mjs",
     "scripts/process.mjs", "scripts/owned-command.ps1", "scripts/device-run.mjs",
     "scripts/build-android.ps1", "scripts/tests/verification.test.mjs", "scripts/workflow-extension-extra.mjs",
     "scripts/tests/development-workflow-extra.test.mjs", "scripts/development-workflow-extra.mjs",

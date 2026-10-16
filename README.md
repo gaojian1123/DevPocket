@@ -211,7 +211,13 @@ The **registered devpocket-development workflow** remains an explicit opt-in for
 controller-managed execution and bounded repairs, not the default entry point.
 Its starter also reuses a freshly inspected clean linked worktree in the current
 session, isolates a clean primary checkout and blocks dirty or unknown checkouts.
-Its extension activation and App run approvals remain explicit. Both routes
+The controller makes a task-scoped local candidate commit through original native
+permissions before final source-bound verification and independent review.
+Repairs create new commits and evidence; earlier commits and reports remain.
+Its read-only readiness check reuses durable evidence for an unchanged candidate
+without repeating local final verification. Source, HEAD, branch or index changes
+invalidate readiness. It does not push, create a PR, merge or deploy.
+Extension activation and App run approvals remain explicit. Both routes
 retain the same verification requirements and scoped authorization; a skill is
 guidance, not a replacement for programmatic evidence checks or protected CI.
 
