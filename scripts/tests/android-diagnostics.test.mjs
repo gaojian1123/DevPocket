@@ -263,7 +263,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
 test("the independent tooling CI job runs the complete workflow suite without application or device provisioning", async () => {
   const { CHECKS } = await import("../verification-policy.mjs");
   assert.deepEqual(CHECKS.filter((check) => check.group === "tooling"),
-    [{ id: "workflow-tests", group: "tooling", npm: "run test:workflow" }]);
+    [{ id: "workflow-tests", group: "tooling" }]);
   const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
   const tooling = workflow.split("\n  tooling:")[1]?.split("\n  backend:")[0];
   assert.ok(tooling);

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
-import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "../verification-policy.mjs";
+import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationImpact } from "../verification-policy.mjs";
 import { developmentReviewRequirements } from "../development-policy.mjs";
 
 const exec = promisify(execFile);
@@ -97,6 +97,9 @@ test("task-routing tooling selects only its complete regression suite, independe
 
 test("development orchestration and named agent instructions remain protected without selecting application checks", async (t) => {
   const tooling = ["scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
+    "scripts/native-candidate.mjs", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
+    "scripts/verify.mjs", "scripts/verify.ps1", "scripts/tests/verification.test.mjs",
+    ".github/extensions/devpocket-development/extension.mjs", ".github/ISSUE_TEMPLATE/ai-task.yml",
     ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"];
   for (const files of [...tooling.map((file) => [file]), [...tooling, "README.md", "docs/DEVELOPMENT-WORKFLOW.md"]]) {
     await t.test(files.join(", "), async (t) => {
@@ -138,6 +141,45 @@ test("the actual CI planner does not load local development trust policy", async
   assert.deepEqual(result.report.requiredGroups, ["tooling"]);
 });
 
+test("the compatibility facade plans and combines real tooling results without loading execution adapters", async (t) => {
+  const facade = await import("../verification.mjs"), source = await import("../git-state.mjs");
+  for (const name of ["verificationPlan", "executeVerification", "combineVerification", "verificationFailure",
+    "verificationFault", "requirePlanCollection", "git", "readOnlyGit", "sourceSnapshot"]) assert.equal(typeof facade[name], "function", name);
+  assert.equal(facade.git, source.git);
+  assert.equal(facade.readOnlyGit, source.readOnlyGit);
+  assert.equal(facade.sourceSnapshot, source.sourceSnapshot);
+  const args = ["diff", "--name-only"];
+  assert.deepEqual(source.readOnlyGitArgs(args), ["--no-optional-locks", "-c", "core.fsmonitor=false", ...args]);
+  assert.deepEqual(args, ["diff", "--name-only"]);
+  const files = ["scripts/git-state.mjs", "scripts/native-candidate.mjs",
+    "scripts/verification.mjs", "scripts/tests/verification.test.mjs"];
+  const root = await changedRepository(t, files);
+  const verified = await verify(root, ["--group", "tooling"]);
+  assert.equal(verified.exitCode, 0);
+  assert.equal(verified.report.complete, true);
+  const guard = path.join(root, ".data", "execution-import-guard.mjs");
+  await writeFile(guard, [
+    'import { registerHooks } from "node:module";',
+    'const forbidden = new Set(["verification-executor.mjs", "verification-backend.mjs", "verification-android.mjs",',
+    '"process.mjs", "android-runner.mjs", "backend-diagnostics.mjs", "device-run.mjs"]);',
+    'registerHooks({ resolve(specifier, context, next) {',
+    '  if (forbidden.has(specifier.split("/").at(-1))) throw new Error("Pure verification loaded execution");',
+    '  return next(specifier, context);',
+    '} });',
+  ].join("\n"));
+  const env = { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(guard).href}` };
+  const planned = await verify(root, ["--plan"], env);
+  assert.equal(planned.exitCode, 0);
+  assert.deepEqual(planned.report.requiredGroups, ["tooling"]);
+  assert.deepEqual(planned.report.changedFiles, [...files].sort());
+  const combined = await verify(root, ["--combine", "--input", verified.reportPath,
+    "--upstream", "tooling:success", "--upstream", "backend:skipped", "--upstream", "android:skipped",
+    "--upstream", "device:skipped"], env);
+  assert.equal(combined.exitCode, 0);
+  assert.equal(combined.report.complete, true);
+  assert.deepEqual(combined.report.source, verified.report.source);
+});
+
 test("documentation and an unchanged checkout select no checks or groups", async (t) => {
   for (const files of [[], ["README.md"], ["VALIDATION.md"], ["docs/DEVELOPMENT-WORKFLOW.md"]]) {
     await t.test(files.join(", ") || "unchanged", async (t) => {
@@ -157,20 +199,21 @@ test("documentation and an unchanged checkout select no checks or groups", async
   }
 });
 
-test("verification infrastructure and unknown paths retain all downstream checks and protection", async (t) => {
-  for (const file of [
-    "scripts/verification.mjs", "scripts/verification-policy.mjs", "scripts/verify.mjs", "scripts/verify.ps1",
-    "scripts/git-state.mjs", "scripts/native-candidate.mjs",
-    "scripts/process.mjs", "scripts/owned-command.ps1", "scripts/device-run.mjs",
-    "scripts/build-android.ps1", "scripts/tests/verification.test.mjs", "scripts/workflow-extension-extra.mjs",
-    "scripts/tests/development-workflow-extra.test.mjs", "scripts/development-workflow-extra.mjs",
-    "scripts/development-policy-extra.mjs", "scripts/candidate-commit-extra.mjs",
-    ".github/agents/another-reviewer.agent.md", ".github/skills/another-skill/SKILL.md",
-    ".github/skills/devpocket-development/extra.md", ".github/workflows/ci.yml", ".github/actions/prepare-native/action.yml",
-    "package.json", "package-lock.json", ".npmrc", "backend/tsconfig.json", "deployment/azure/package.json",
-    "deployment/azure/probe/requirements-test.txt", "android/app/build.gradle.kts",
-    "android/gradle/wrapper/gradle-wrapper.properties", "previously-unknown/file.txt",
-  ]) await t.test(file, async (t) => {
+test("shared execution, cross-lane CI, shared dependencies and unknown paths retain all downstream checks", async (t) => {
+  const cases = [
+    ...["scripts/verification-executor.mjs", "scripts/process.mjs", "scripts/owned-command.ps1",
+      "scripts/owned-command.cs", "scripts/owned-command-windows.mjs", "scripts/owned-command-linux.py",
+      "scripts/bounded-worker-log.mjs", "scripts/backend-diagnostics.mjs"].map((file) => [file, "shared-execution"]),
+    ...[".github/workflows/ci.yml", ".github/CODEOWNERS", "package.json", "package-lock.json", ".npmrc",
+      "new-package/package.json"].map((file) => [file, "verification-infrastructure"]),
+    ...["scripts/workflow-extension-extra.mjs", "scripts/tests/development-workflow-extra.test.mjs",
+      "scripts/development-workflow-extra.mjs", "scripts/development-policy-extra.mjs", "scripts/candidate-commit-extra.mjs",
+      "scripts/native-candidate-extra.mjs", "scripts/git-state-extra.mjs", "scripts/verification-extra.mjs",
+      ".github/agents/another-reviewer.agent.md", ".github/skills/another-skill/SKILL.md",
+      ".github/skills/devpocket-development/extra.md", ".github/actions/new-action/action.yml",
+      "previously-unknown/file.txt"].map((file) => [file, "unknown"]),
+  ];
+  for (const [file, rule] of cases) await t.test(file, async (t) => {
     const root = await changedRepository(t, [file]);
     const { report, exitCode } = await verify(root, ["--plan"]);
     assert.equal(exitCode, 0);
@@ -179,10 +222,56 @@ test("verification infrastructure and unknown paths retain all downstream checks
     assert.equal(Object.hasOwn(report, "requiresHumanReview"), false);
     assert.equal(developmentReviewRequirements(report.changedFiles).requiresHumanReview, true);
     assert.equal(report.layouts, true);
-    assert.deepEqual(report.selectionReasons.map((item) => item.rule),
-      [file.startsWith("previously-unknown/") ? "unknown" : "verification-infrastructure"]);
+    assert.deepEqual(report.selectionReasons.map((item) => item.rule), [rule]);
     assert.deepEqual(report.selectionReasons[0].paths, [file]);
   });
+});
+
+test("backend and native execution inputs select their actual side, including build and device evidence", async (t) => {
+  const backend = CHECKS.filter((check) => ["tooling", "backend"].includes(check.group)).map((check) => check.id);
+  const native = ["workflow-tests", "android-build", "android-device"];
+  for (const [files, checks, groups, layouts, rule] of [
+    [["scripts/verification-backend.mjs", "scripts/bundle-extension.mjs", "scripts/package-extension.ps1",
+      "scripts/launch-cli-proof.ps1", "scripts/tests/extension-package.test.mjs", "backend/tsconfig.json",
+      "backend/tsconfig.cli-proof.json", ".github/workflows/extension-release.yml"],
+    backend, ["tooling", "backend"], false, "backend-execution"],
+    [["scripts/verification-android.mjs", "scripts/build-android.ps1", "scripts/prepare-android.ps1",
+      "scripts/test-android.ps1", "scripts/android-runner.mjs", "scripts/android-emulator.mjs", "scripts/android-home.mjs",
+      "scripts/device-run.mjs", "scripts/emulator-resources.mjs", "scripts/linux-emulator.mjs", "scripts/linux-runtime.mjs",
+      "scripts/native-startup.mjs", "scripts/platform-diagnostics.mjs", "scripts/manual-emulator.mjs",
+      "scripts/start-test-emulator.ps1", "scripts/stop-test-emulator.ps1", "scripts/test-native-layouts.ps1",
+      ".github/actions/prepare-native/action.yml", ".github/workflows/native-startup-diagnostics.yml",
+      "android/app/build.gradle.kts", "android/gradle.properties", "android/gradlew", "android/gradlew.bat",
+      "android/gradle/wrapper/gradle-wrapper.properties", "android/gradle/wrapper/gradle-wrapper.jar"],
+    native, ["tooling", "android", "device"], true, "android-execution"],
+    [["deployment/azure/package.json", "deployment/azure/package-lock.json", "deployment/azure/probe/requirements-test.txt"],
+    ["workflow-tests", "typecheck", "backend-tests", "backend-build", "schema", "setup", "azure-tests", "operations-tests"],
+    ["tooling", "backend"], false, "operations"],
+  ]) for (const file of files) await t.test(file, async (t) => {
+    const root = await changedRepository(t, [file]);
+    const { report, exitCode } = await verify(root, ["--plan"]);
+    assert.equal(exitCode, 0);
+    assert.deepEqual(report.requiredChecks, checks);
+    assert.deepEqual(report.requiredGroups, groups);
+    assert.equal(report.layouts, layouts);
+    assert.deepEqual(report.selectionReasons.map((item) => item.rule), [rule]);
+    assert.equal(developmentReviewRequirements(report.changedFiles).requiresHumanReview, true);
+  });
+});
+
+test("the complete workflow suite and pure evidence modules are tooling, not application execution", async () => {
+  const manifest = JSON.parse(await readFile("package.json", "utf8"));
+  const regressions = manifest.scripts["test:workflow"].slice("node --test ".length).split(" ");
+  const contracts = ["verification-diagnostics", "diagnostic-errors", "diagnostic-publication", "android-diagnostics",
+    "device-diagnostics", "worker-diagnostics", "native-lifecycle"].map((name) => `scripts/${name}.mjs`);
+  for (const file of [...regressions, ...contracts]) {
+    const impact = verificationImpact([file]);
+    assert.deepEqual(impact.requiredChecks, ["workflow-tests"], file);
+    assert.deepEqual(impact.requiredGroups, ["tooling"], file);
+    assert.equal(impact.layouts, false, file);
+  }
+  assert.ok(CHECKS.every((check) => JSON.stringify(Object.keys(check).sort()) === '["group","id"]'),
+    "The impact catalogue cannot carry executable commands or arguments.");
 });
 
 test("mixed development tooling and application changes select the union from the single check catalogue", async (t) => {
@@ -199,7 +288,13 @@ test("mixed development tooling and application changes select the union from th
     ["deployment/azure/src/fixture.ts", [...core, "setup", "azure-tests", "operations-tests"], ["tooling", "backend"]],
     ["android/app/src/main/java/dev/devpocket/app/ui/Screen.kt", ["workflow-tests", "android-build", "android-device"],
       ["tooling", "android", "device"], true],
-    ["scripts/verification.mjs", CHECKS.map((check) => check.id), CHECK_GROUPS, true],
+    ["scripts/verification.mjs", ["workflow-tests"], ["tooling"]],
+    ["scripts/git-state.mjs", ["workflow-tests"], ["tooling"]],
+    ["scripts/tests/verification.test.mjs", ["workflow-tests"], ["tooling"]],
+    ["scripts/verification-backend.mjs", CHECKS.filter((check) => ["tooling", "backend"].includes(check.group)).map((check) => check.id),
+      ["tooling", "backend"]],
+    ["scripts/verification-android.mjs", ["workflow-tests", "android-build", "android-device"], ["tooling", "android", "device"], true],
+    ["scripts/verification-executor.mjs", CHECKS.map((check) => check.id), CHECK_GROUPS, true],
     [".github/workflows/ci.yml", CHECKS.map((check) => check.id), CHECK_GROUPS, true],
     ["unknown.txt", CHECKS.map((check) => check.id), CHECK_GROUPS, true],
   ]) await t.test(file, async (t) => {
@@ -214,6 +309,55 @@ test("mixed development tooling and application changes select the union from th
     assert.equal(report.layouts, layouts);
     assert.equal(report.selectionReasons.length, 4);
     assert.deepEqual(report.selectionReasons.flatMap((item) => item.paths).sort(), [file, ...tooling].sort());
+  });
+});
+
+test("real added, staged, deleted, renamed and mixed paths select a deterministic conservative union", async (t) => {
+  const tools = ["scripts/git-state.mjs", "scripts/native-candidate.mjs", "scripts/verification.mjs", "scripts/tests/verification.test.mjs"];
+  const backend = CHECKS.filter((check) => ["tooling", "backend"].includes(check.group)).map((check) => check.id);
+  const native = ["workflow-tests", "android-build", "android-device"], all = CHECKS.map((check) => check.id);
+  for (const scenario of [
+    { name: "untracked tools", add: tools, checks: ["workflow-tests"] },
+    { name: "staged tools", add: tools, staged: true, checks: ["workflow-tests"] },
+    { name: "modified tools", initial: tools, add: tools, checks: ["workflow-tests"] },
+    { name: "deleted tools", initial: tools, remove: tools, checks: ["workflow-tests"] },
+    { name: "staged deletions", initial: tools, remove: tools, staged: true, checks: ["workflow-tests"] },
+    { name: "native renamed to source helper", initial: ["scripts/verification-android.mjs"],
+      rename: ["scripts/verification-android.mjs", "scripts/git-state.mjs"], checks: native, layouts: true },
+    { name: "source helper renamed to backend executor", initial: ["scripts/git-state.mjs"],
+      rename: ["scripts/git-state.mjs", "scripts/verification-backend.mjs"], staged: true, checks: backend },
+    { name: "both side executors", add: [...tools, "scripts/verification-backend.mjs", "scripts/verification-android.mjs"],
+      checks: all, layouts: true },
+    { name: "deleted unknown input", initial: ["scripts/unclassified.mjs"], remove: ["scripts/unclassified.mjs"],
+      checks: all, layouts: true },
+    { name: "renamed to unclassified input", initial: ["scripts/git-state.mjs"],
+      rename: ["scripts/git-state.mjs", "scripts/unclassified.mjs"], checks: all, layouts: true },
+    { name: "unknown unusual filename", add: [...tools, "scripts/unknown input.mjs"], checks: all, layouts: true },
+  ]) await t.test(scenario.name, async (t) => {
+    const root = await changedRepository(t, scenario.initial ?? []);
+    await exec("git", ["add", "."], { cwd: root });
+    await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+      "commit", "--quiet", "--allow-empty", "-m", "Initial inputs"], { cwd: root });
+    for (const file of scenario.add ?? []) {
+      await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+      await writeFile(path.join(root, file), "changed fixture\n");
+    }
+    for (const file of scenario.remove ?? []) await rm(path.join(root, file));
+    if (scenario.rename) await rename(...scenario.rename.map((file) => path.join(root, file)));
+    if (scenario.staged) await exec("git", ["add", "-A"], { cwd: root });
+    const index = await readFile(path.join(root, ".git", "index"));
+    const first = await verify(root, ["--plan"]), second = await verify(root, ["--plan"]);
+    assert.equal(first.exitCode, 0);
+    assert.equal(second.exitCode, 0);
+    assert.deepEqual(first.report, second.report);
+    assert.deepEqual(first.report.changedFiles, [...new Set([
+      ...(scenario.add ?? []), ...(scenario.remove ?? []), ...(scenario.rename ?? []),
+    ])].sort());
+    assert.deepEqual(first.report.requiredChecks, scenario.checks);
+    assert.deepEqual(first.report.requiredGroups,
+      [...new Set(CHECKS.filter((check) => scenario.checks.includes(check.id)).map((check) => check.group))]);
+    assert.equal(first.report.layouts, scenario.layouts ?? false);
+    assert.deepEqual(await readFile(path.join(root, ".git", "index")), index, "Planning must not refresh the index.");
   });
 });
 
@@ -234,6 +378,25 @@ test("plan explanations are deterministic and bounded without truncating actual 
   assert.deepEqual(forced.requiredGroups, CHECK_GROUPS);
   assert.equal(forced.selectionReasons.at(-1).rule, "all-checks");
   assert.deepEqual(forced.selectionReasons.at(-1).paths, []);
+});
+
+test("public plan diagnostics preserve responsibility-specific selections without supplying approval", async (t) => {
+  for (const file of ["scripts/git-state.mjs", "scripts/verification-backend.mjs", "scripts/verification-android.mjs",
+    "scripts/verification-executor.mjs", "scripts/unknown.mjs"]) await t.test(file, async (t) => {
+    const root = await changedRepository(t, [file]), result = await verify(root, ["--plan"]);
+    assert.equal(result.exitCode, 0);
+    const directory = path.dirname(result.reportPath);
+    await rename(result.reportPath, path.join(directory, "plan.json"));
+    await exec(process.execPath, [path.resolve("scripts/verification-diagnostics.mjs"),
+      "--directory", directory, "--job", "plan"], { cwd: root, timeout: 20000 });
+    const diagnostic = JSON.parse(await readFile(path.join(directory, "verification-diagnostics.json"), "utf8"));
+    assert.equal(diagnostic.acceptance, false);
+    assert.equal(diagnostic.collectionStatus, "completed");
+    assert.deepEqual(diagnostic.selection.requiredChecks, result.report.requiredChecks);
+    assert.deepEqual(diagnostic.selection.requiredGroups, result.report.requiredGroups);
+    assert.deepEqual(diagnostic.selection.selectionReasons, result.report.selectionReasons);
+    assert.equal(Object.hasOwn(diagnostic.selection, "requiresHumanReview"), false);
+  });
 });
 
 test("the CLI and PowerShell tooling shard run no application checks", async (t) => {
@@ -274,7 +437,10 @@ test("tooling aggregation accepts only complete current evidence and ignores uns
     ["unrun tooling", { checks: [{ id: "workflow-tests", status: "not_run" }] }, "shard-missing"],
     ["failed report", { status: "failed" }, "check-failed"],
     ["blocked report", { status: "blocked" }, "check-failed"],
+    ["cancelled report", { status: "cancelled" }, "check-failed"],
     ["planned report", { status: "planned" }, "check-failed"],
+    ["skipped check", { checks: [{ id: "workflow-tests", status: "skipped", exitCode: 0 }] }, "check-failed"],
+    ["cancelled check", { checks: [{ id: "workflow-tests", status: "cancelled", exitCode: 0 }] }, "check-failed"],
     ["duplicate check", { checks: [current.checks[0], current.checks[0]] }, "check-duplicate"],
     ["wrong group", { group: "backend" }, "check-group"],
     ["unknown group", { group: "unrecognized" }, "check-group"],
@@ -323,7 +489,7 @@ test("tooling aggregation accepts only complete current evidence and ignores uns
 test("mixed and full plans require every tooling and application shard with strict job outcomes", async (t) => {
   for (const [name, files] of [
     ["mixed", ["scripts/workflow-extension.mjs", "backend/tests/fixture.ts"]],
-    ["full", ["scripts/verification.mjs"]],
+    ["full", ["scripts/verification-executor.mjs"]],
   ]) await t.test(name, async (t) => {
     const root = await changedRepository(t, files), plan = (await verify(root, ["--plan"])).report;
     const cases = [
@@ -380,7 +546,11 @@ test("CI projects actual planner groups and forwards selected and unselected job
     ["tooling", ["scripts/workflow-extension.mjs"], ["tooling"]],
     ["development", ["scripts/development-workflow.mjs", "scripts/candidate-commit.mjs",
       ".github/agents/devpocket-reviewer.agent.md"], ["tooling"]],
-    ["full", ["scripts/verification-policy.mjs"], CHECK_GROUPS],
+    ["contracts", ["scripts/git-state.mjs", "scripts/native-candidate.mjs", "scripts/verification.mjs",
+      "scripts/tests/verification.test.mjs"], ["tooling"]],
+    ["backend", ["scripts/verification-backend.mjs"], ["tooling", "backend"]],
+    ["native", ["scripts/verification-android.mjs"], ["tooling", "android", "device"]],
+    ["full", ["scripts/verification-executor.mjs"], CHECK_GROUPS],
   ]) await t.test(name, async (t) => {
     const root = await changedRepository(t, files), plan = await verify(root, ["--plan"]);
     const output = path.join(root, ".data", "job-outputs");
@@ -403,7 +573,7 @@ test("app, wire, unrelated skills and unknown changes cannot omit device checks"
   for (const file of [
     "android/app/src/main/java/Screen.kt",
     "backend/src/protocol.ts",
-    "scripts/verify.mjs",
+    "scripts/verification-executor.mjs",
     ".github/skills/another-skill/SKILL.md",
     "new-unclassified-file",
   ]) {
@@ -436,6 +606,89 @@ test("a failed command exits unsuccessfully and leaves later required checks not
   assert.equal(result.report.checks.find((check) => check.id === "typecheck").status, "failed");
   assert.equal(result.report.checks.find((check) => check.id === "typecheck").exitCode, 23);
   assert.equal(result.report.checks.find((check) => check.id === "backend-tests").status, "not_run");
+});
+
+test("the backend adapter runs every fixed npm entry with the correct working directory and no native commands", async (t) => {
+  const root = await repository(t), directory = path.join(root, ".data");
+  await mkdir(directory);
+  const calls = path.join(directory, "commands.jsonl"), recorder = path.join(directory, "record.mjs");
+  await writeFile(recorder, `import {appendFileSync} from "node:fs";\n` +
+    `appendFileSync(${JSON.stringify(calls)}, JSON.stringify({id:process.argv[2],cwd:process.cwd()})+"\\n");\n`);
+  const entries = [
+    ["typecheck", "typecheck"], ["test", "backend-tests"], ["build", "backend-build"], ["schema", "schema"],
+    ["test:extension-package", "extension-package"], ["test:setup", "setup"], ["test:operations", "operations-tests"],
+  ];
+  const script = (id) => `node "${recorder}" ${id}`;
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: {
+    ...Object.fromEntries(entries.map(([name, id]) => [name, script(id)])), "test:workflow": script("must-not-run"),
+  } }));
+  const azure = path.join(root, "deployment", "azure");
+  await mkdir(azure, { recursive: true });
+  await writeFile(path.join(azure, "package.json"), JSON.stringify({ scripts: { test: script("azure-tests") } }));
+  await exec("git", ["add", "."], { cwd: root });
+  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+    "commit", "--quiet", "-m", "Fixed command fixtures"], { cwd: root });
+  await mkdir(path.join(root, "scripts"));
+  await writeFile(path.join(root, "scripts", "verification-backend.mjs"), "// adapter change\n");
+  const result = await verify(root, ["--group", "backend"]);
+  assert.equal(result.exitCode, 0, JSON.stringify(result.report));
+  assert.equal(result.report.status, "partial");
+  const expected = CHECKS.filter((check) => check.group === "backend").map((check) => check.id);
+  assert.deepEqual(JSON.parse("[" + (await readFile(calls, "utf8")).trim().split("\n").join(",") + "]"),
+    expected.map((id) => ({ id, cwd: id === "azure-tests" ? azure : root })));
+  assert.deepEqual(result.report.checks.filter((check) => check.status === "passed").map((check) => check.id), expected);
+  assert.equal(result.report.checks[0].status, "not_run");
+  assert.ok(result.report.checks.every((check) => check.id === "workflow-tests" ||
+    check.commandOutcome?.reason === "exit" && check.commandOutcome.exitCode === 0 &&
+      check.commandOutcome.cleanupFailure === null), JSON.stringify(result.report.checks));
+});
+
+test("the native adapter preserves literal parameters, mandatory instrumentation and device failures through both entries", async (t) => {
+  for (const layouts of [false, true]) await t.test(`layouts=${layouts}`, async (t) => {
+    const root = await repository(t), scripts = path.join(root, "scripts");
+    await mkdir(scripts);
+    await mkdir(path.join(root, ".data"));
+    await writeFile(path.join(scripts, "build-android.ps1"), [
+      "param($Jdk,$Sdk,[switch]$Lint,[switch]$Instrumentation)",
+      "@{Jdk=$Jdk;Sdk=$Sdk;Lint=[bool]$Lint;Instrumentation=[bool]$Instrumentation} | ConvertTo-Json -Compress | Set-Content -LiteralPath '.data/build-args.json'",
+      "exit 0", "",
+    ].join("\n"));
+    await writeFile(path.join(scripts, "test-android.ps1"), [
+      "param($Jdk,$Sdk,$Image,$RunDirectory,$Owner,[switch]$Layouts)",
+      "@{Jdk=$Jdk;Sdk=$Sdk;Image=$Image;RunDirectory=$RunDirectory;Owner=$Owner;Layouts=[bool]$Layouts;LayoutsBound=$PSBoundParameters.ContainsKey('Layouts')} | ConvertTo-Json -Compress | Set-Content -LiteralPath '.data/device-args.json'",
+      "exit 37", "",
+    ].join("\n"));
+    await exec("git", ["add", "."], { cwd: root });
+    await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+      "commit", "--quiet", "-m", "Native entry fixtures"], { cwd: root });
+    const changed = layouts ? "scripts/verification-android.mjs" : "android/screen.kt";
+    await mkdir(path.dirname(path.join(root, changed)), { recursive: true });
+    await writeFile(path.join(root, changed), "// fixture\n");
+    const jdk = path.join(root, "literal jdk ' &"), sdk = path.join(root, "literal sdk ' &");
+    const report = path.join(root, ".data", "verification", "native-wrapper", "report.json");
+    await exec("pwsh", ["-NoProfile", "-NonInteractive", "-File", path.resolve("scripts/verify.ps1"),
+      "-Base", "HEAD", "-Group", "android", "-Jdk", jdk, "-Sdk", sdk, "-Report", report],
+    { cwd: root, timeout: 30000 });
+    assert.deepEqual(JSON.parse(await readFile(path.join(root, ".data", "build-args.json"), "utf8")),
+      { Jdk: jdk, Sdk: sdk, Lint: true, Instrumentation: true });
+    const build = JSON.parse(await readFile(report, "utf8"));
+    assert.equal(build.status, "partial");
+    assert.equal(build.checks.find((check) => check.id === "android-build").status, "passed");
+    assert.equal(build.checks.find((check) => check.id === "android-device").status, "not_run");
+    const image = "system-images/android-35/google_apis/x86_64";
+    const device = await verify(root, ["--group", "device", "--jdk", jdk, "--sdk", sdk, "--image", image]);
+    assert.equal(device.exitCode, 1);
+    const check = device.report.checks.find((item) => item.id === "android-device");
+    assert.equal(check.exitCode, 37);
+    assert.equal(check.status, "failed");
+    assert.equal(device.report.complete, false);
+    assert.deepEqual(JSON.parse(await readFile(path.join(root, ".data", "device-args.json"), "utf8")), {
+      Jdk: jdk, Sdk: sdk, Image: image, RunDirectory: path.join(path.dirname(device.reportPath), "device"),
+      Owner: check.deviceRunId, Layouts: layouts, LayoutsBound: layouts,
+    });
+    assert.match(check.deviceRunId, /^[a-f0-9-]{36}$/);
+    assert.equal(device.report.checks.find((item) => item.id === "android-build").status, "not_run");
+  });
 });
 
 test("backend diagnostics observe the ordered backend entry without running the independent tooling suite", async (t) => {
@@ -753,12 +1006,93 @@ test("Git executable-mode changes invalidate source evidence even when bytes are
   assert.notEqual(after, before);
 });
 
+test("source identity detects content, nonignored additions, staged inputs and deletions without normalizing bytes", async (t) => {
+  const { sourceSnapshot } = await import("../git-state.mjs");
+  const root = await repository(t), original = await sourceSnapshot(root);
+  await mkdir(path.join(root, ".data"));
+  await writeFile(path.join(root, ".data", "ignored.txt"), "not a source input\n");
+  assert.deepEqual(await sourceSnapshot(root), original);
+  const file = path.join(root, "README.md");
+  await writeFile(file, "changed bytes\n");
+  const changed = await sourceSnapshot(root);
+  assert.equal(changed.head, original.head);
+  assert.notEqual(changed.fingerprint, original.fingerprint);
+  await exec("git", ["add", "README.md"], { cwd: root });
+  assert.deepEqual(await sourceSnapshot(root), changed, "Staging identical worktree bytes cannot manufacture a different source.");
+  await writeFile(file, "changed bytes\r\n");
+  const raw = await sourceSnapshot(root);
+  assert.notEqual(raw.fingerprint, changed.fingerprint);
+  await writeFile(file, "changed bytes\n");
+  assert.deepEqual(await sourceSnapshot(root), changed, "The worktree, not a stale staged blob, defines bytes to execute.");
+  await writeFile(path.join(root, "new-source.txt"), "untracked bytes\n");
+  const untracked = await sourceSnapshot(root);
+  assert.notEqual(untracked.fingerprint, changed.fingerprint);
+  await exec("git", ["add", "new-source.txt"], { cwd: root });
+  assert.deepEqual(await sourceSnapshot(root), untracked);
+  await rm(file);
+  const deleted = await sourceSnapshot(root);
+  assert.notEqual(deleted.fingerprint, untracked.fingerprint);
+  assert.deepEqual(await sourceSnapshot(root), deleted);
+  await exec("git", ["add", "-u"], { cwd: root });
+  assert.notEqual((await sourceSnapshot(root)).fingerprint, untracked.fingerprint);
+});
+
+test("HEAD identity and an unmerged index are independent of the source byte fingerprint", async (t) => {
+  const { sourceSnapshot } = await import("../git-state.mjs");
+  const root = await repository(t), before = await sourceSnapshot(root);
+  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+    "commit", "--quiet", "--allow-empty", "-m", "New HEAD with identical inputs"], { cwd: root });
+  const after = await sourceSnapshot(root);
+  assert.notEqual(after.head, before.head);
+  assert.equal(after.fingerprint, before.fingerprint);
+  const oid = (await exec("git", ["hash-object", "-w", "README.md"], { cwd: root })).stdout.trim();
+  await exec("git", ["update-index", "--force-remove", "README.md"], { cwd: root });
+  const update = exec("git", ["update-index", "--index-info"], { cwd: root });
+  update.child.stdin.end([1, 2, 3].map((stage) => `100644 ${oid} ${stage}\tREADME.md\n`).join(""));
+  await update;
+  await assert.rejects(sourceSnapshot(root), /unmerged index/);
+  const plan = await verify(root, ["--plan"]);
+  assert.equal(plan.exitCode, 1);
+  assert.equal(plan.report.complete, false);
+});
+
+test("source identity records a tracked link itself rather than following its ignored target", async (t) => {
+  const { sourceSnapshot } = await import("../git-state.mjs");
+  const root = await repository(t), link = path.join(root, "tracked-link");
+  await writeFile(link, "placeholder");
+  const oid = (await exec("git", ["hash-object", "-w", "tracked-link"], { cwd: root })).stdout.trim();
+  await exec("git", ["update-index", "--add", "--cacheinfo", `120000,${oid},tracked-link`], { cwd: root });
+  await writeFile(path.join(root, ".gitignore"), ".data/\n**/build/\ntracked-link/*\n");
+  await rm(link);
+  const targets = [path.join(root, ".data", "target-one"), path.join(root, ".data", "target-two")];
+  for (const target of targets) await mkdir(target, { recursive: true });
+  await symlink(targets[0], link, process.platform === "win32" ? "junction" : "dir");
+  t.after(async () => {
+    try { await rm(link); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+  });
+  const before = await sourceSnapshot(root);
+  await writeFile(path.join(targets[0], "ignored-content.txt"), "not followed");
+  assert.deepEqual(await sourceSnapshot(root), before);
+  await rm(link);
+  await symlink(targets[1], link, process.platform === "win32" ? "junction" : "dir");
+  assert.notEqual((await sourceSnapshot(root)).fingerprint, before.fingerprint);
+});
+
 test("source fingerprints retain Git modes and bytes across distinct unnormalized checkouts", async (t) => {
   const { sourceSnapshot } = await import("../verification.mjs");
   const root = await repository(t);
   await exec("git", ["update-index", "--chmod=+x", "README.md"], { cwd: root });
   await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
     "commit", "--quiet", "-m", "Mode fixture"], { cwd: root });
+  const linked = `${root}-worktree`;
+  await exec("git", ["-c", "core.autocrlf=false", "worktree", "add", "--quiet", "--detach", linked, "HEAD"], { cwd: root });
+  try {
+    assert.deepEqual(await sourceSnapshot(linked), await sourceSnapshot(root),
+      "Linked-worktree Git metadata must not enter source identity.");
+  } finally {
+    await exec("git", ["worktree", "remove", linked], { cwd: root });
+  }
   const clone = `${root}-clone`;
   t.after(() => rm(clone, { recursive: true, force: true }));
   await exec("git", ["-c", "core.autocrlf=false", "clone", "--quiet", "--no-local", root, clone]);

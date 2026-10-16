@@ -1,18 +1,10 @@
-import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, open, readFile } from "node:fs/promises";
-import path from "node:path";
 import { readOnlyGit, sourceSnapshot } from "./git-state.mjs";
-import { runCommand } from "./process.mjs";
-import { cleanDeviceRun } from "./device-run.mjs";
-import { projectWorkerDiagnostics, readDiagnosticReport } from "./worker-diagnostics.mjs";
-import { deviceSourceCatalogue, projectDeviceDiagnostics, deviceDiagnosticsFromOutput } from "./device-diagnostics.mjs";
-import { diagnosticError, failureDetails, ownValue, commandDetails, diagnosticVersion } from "./diagnostic-errors.mjs";
-import { boundedDiagnosticBytes } from "./bounded-worker-log.mjs";
+import { deviceSourceCatalogue } from "./device-diagnostics.mjs";
+import { diagnosticError, failureDetails, ownValue, diagnosticVersion } from "./diagnostic-errors.mjs";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationGroups, verificationImpact } from "./verification-policy.mjs";
 export { CHECKS } from "./verification-policy.mjs";
 export { git, readOnlyGit, sourceSnapshot } from "./git-state.mjs";
 
-const digest = (value) => createHash("sha256").update(value).digest("hex");
 const splitPaths = (value) => value.split("\0").filter(Boolean);
 const baselineDeviceClasses = ["NativeFlowTest", "AdaptiveLayoutTest", "FixtureFlowTest"].map((name) => `dev.devpocket.app.${name}`);
 
@@ -69,7 +61,7 @@ export async function verificationPlan(root, base, all = false) {
   };
 }
 
-function publicDeviceEvidence(value, workerDiagnostics, deviceDiagnostics) {
+export function publicDeviceEvidence(value, workerDiagnostics, deviceDiagnostics) {
   const version = (input) => diagnosticVersion(input) ?? null;
   return {
     version: 1, runId: value.runId, status: value.status, cleanup: value.cleanup, evidence: value.evidence,
@@ -95,241 +87,12 @@ export function requirePlanCollection(plan) {
 }
 
 export async function executeVerification(root, plan, options = {}) {
-  requirePlanCollection(plan);
-  requireCheckPolicy(plan);
-  const group = options.group ?? "all";
-  if (!["all", ...CHECK_GROUPS].includes(group)) throw verificationFault("configuration");
-  const checks = plan.requiredChecks.map((id) => ({ id, status: "not_run" }));
-  const backendDiagnostics = options.backendDiagnostics ? await import("./backend-diagnostics.mjs") : undefined;
-  const backendDiagnosticRunId = backendDiagnostics && ["all", "backend"].includes(group) &&
-    plan.requiredChecks.includes("backend-tests") ? randomUUID() : undefined;
-  let backendDiagnosticEnv;
-  try {
-    backendDiagnosticEnv = backendDiagnosticRunId
-      ? await backendDiagnostics.prepareBackendDiagnosticEnvironment(root, backendDiagnosticRunId, process.env, options.signal) : undefined;
-  } catch (error) {
-    error.verificationContext = { phase: "preflight", check: "backend-tests" };
-    throw error;
-  }
-  await mkdir(options.directory, { recursive: true });
-  let stopped = false;
-  for (const check of checks) {
-    const definition = CHECKS.find((item) => item.id === check.id);
-    const deviceOwner = check.id === "android-device" ? randomUUID() : undefined;
-    if (group !== "all" && group !== definition.group) continue;
-    if (stopped) continue;
-    if (deviceOwner) check.deviceRunId = deviceOwner;
-    let deviceCatalogue;
-    if (deviceOwner) {
-      try { deviceCatalogue = await deviceSourceCatalogue(root); }
-      catch (error) {
-        deviceCatalogue = { files: [], fingerprint: "unknown" };
-        check.collectionStatus = "failed";
-        check.diagnosticIssues = [{ operation: "device-catalogue", ...failureDetails(error, "collector-failed") }];
-      }
-    }
-    const args = definition.npm
-      ? ["-NoProfile", "-NonInteractive", "-Command", `& npm ${definition.npm}; exit $LASTEXITCODE`]
-      : ["-NoProfile", "-NonInteractive", "-File", path.join(root, "scripts", definition.script),
-        ...definition.args];
-    if (definition.script) {
-      if (options.jdk) args.push("-Jdk", options.jdk);
-      if (options.sdk) args.push("-Sdk", options.sdk);
-      if (check.id === "android-device") {
-        args.push("-RunDirectory", path.join(options.directory, "device"));
-        args.push("-Owner", deviceOwner);
-        if (options.image) args.push("-Image", options.image);
-        if (plan.layouts) args.push("-Layouts");
-      }
-    }
-    const started = Date.now();
-    const log = path.join(options.directory, `${check.id}.log`);
-    let logFile, checkPhase = "log", retainedLog = Buffer.alloc(0), logTruncated = false;
-    check.executionState = "not-started";
-    const logIssue = (error) => {
-      check.collectionStatus = "failed";
-      check.diagnosticIssues = [...(check.diagnosticIssues ?? []),
-        { operation: "private-log", ...failureDetails(error, "report-write") }];
-    };
-    const writeLog = async (text) => {
-      if (!logFile) return false;
-      const part = boundedDiagnosticBytes(text);
-      const bounded = boundedDiagnosticBytes(Buffer.concat([retainedLog, part.bytes]));
-      retainedLog = bounded.bytes;
-      logTruncated ||= part.truncated || bounded.truncated;
-      check.privateLog = { availability: "pending", truncated: logTruncated, retainedBytes: bounded.bytes.length };
-      if (check.id === "backend-tests" && backendDiagnostics) {
-        check.backendDiagnosticLogTruncated = logTruncated;
-      }
-      try {
-        await logFile.truncate(0);
-        let offset = 0;
-        while (offset < retainedLog.length) {
-          const result = await logFile.write(retainedLog, offset, retainedLog.length - offset, offset);
-          if (!result.bytesWritten) throw diagnosticError("report-write");
-          offset += result.bytesWritten;
-        }
-        check.privateLog.availability = "retained";
-        return true;
-      } catch (error) {
-        check.privateLog.availability = "unavailable";
-        logIssue(error);
-        return false;
-      }
-    };
-    let output;
-    try {
-      logFile = await open(log, "wx", 0o600);
-      let env;
-      if (check.id === "backend-tests" && backendDiagnostics) {
-        check.backendDiagnosticRunId = backendDiagnosticRunId;
-        env = backendDiagnosticEnv;
-      }
-      checkPhase = "command";
-      check.executionState = "started";
-      output = await runCommand("pwsh", args, {
-        cwd: root, env, timeoutMs: 30 * 60_000, graceMs: check.id === "android-device" ? 30_000 : 5000, signal: options.signal,
-      });
-      check.executionState = "exited";
-      check.commandOutcome = commandDetails(output.commandOutcome);
-      if (!await writeLog(output.stdout + output.stderr)) {
-        checkPhase = "log";
-        throw verificationFault("report-write", { check: check.id });
-      }
-      if (check.id === "backend-tests" && backendDiagnostics) {
-        let catalogue;
-        try { catalogue = await backendDiagnostics.backendTestCatalogue(root); }
-        catch (error) {
-          catalogue = { files: [], fingerprint: "unknown" };
-          check.collectionStatus = "failed";
-          check.diagnosticIssues = [...(check.diagnosticIssues ?? []),
-            { operation: "backend-catalogue", ...failureDetails(error, "collector-failed") }];
-        }
-        const observed = backendDiagnostics.parseBackendOutput(output.stdout, catalogue, check.backendDiagnosticRunId);
-        if (observed.collectionStatus === "failed") check.collectionStatus = "failed";
-        if (typeof observed.summary?.success === "boolean") check.reportedBackendTestStatus = observed.summary.success ? "passed" : "failed";
-      }
-      if (check.id === "android-device") {
-        checkPhase = "device-validation";
-        const evidence = await readDiagnosticReport(path.join(options.directory, "device", "device-report.json"));
-        if (!evidence) throw diagnosticError("report-missing");
-        validateDeviceEvidence(evidence, plan, process.platform);
-        if (evidence.runId !== deviceOwner) throw verificationFault("ownership-mismatch", { check: check.id });
-        for (const [field, parts] of [
-          ["apkSha256", ["debug", "app-debug.apk"]],
-          ["testApkSha256", ["androidTest", "debug", "app-debug-androidTest.apk"]],
-        ]) {
-          checkPhase = "artifact-validation";
-          const context = { check: check.id, artifact: field === "apkSha256" ? "app" : "instrumentation" };
-          let bytes;
-          try { bytes = await readFile(path.join(root, "android", "app", "build", "outputs", "apk", ...parts)); }
-          catch (error) { throw verificationFault("apk-unavailable", context, error); }
-          if (digest(bytes) !== evidence[field]) throw verificationFault("apk-mismatch", context);
-        }
-        check.workerDiagnostics = projectWorkerDiagnostics(evidence.workerDiagnostics, deviceOwner);
-        check.deviceDiagnostics = projectDeviceDiagnostics(evidence.deviceDiagnostics, deviceCatalogue, deviceOwner);
-        check.deviceEvidence = publicDeviceEvidence(evidence, check.workerDiagnostics, check.deviceDiagnostics);
-      }
-      if (check.collectionStatus === "failed") throw verificationFault("collector-failed", { check: check.id });
-      Object.assign(check, { status: "passed", exitCode: 0 });
-    } catch (error) {
-      if (!error.commandOutcome && output?.commandOutcome) error.commandOutcome = output.commandOutcome;
-      check.commandOutcome = commandDetails(error.commandOutcome);
-      if (check.executionState === "started") check.executionState = "exited";
-      check.failure = verificationFailure(error, checkPhase);
-      if (!logFile) {
-        check.failure = { ...failureDetails(error, "report-write"), phase: "log", check: check.id };
-        check.privateLog = { availability: "not-produced", truncated: false, retainedBytes: 0 };
-      }
-      await writeLog(`${error.stdout ?? ""}${error.stderr ?? ""}\n${error.message}\n`);
-      Object.assign(check, {
-        status: check.id === "android-build" && error.code === 78 ? "blocked" : typeof error.code === "number" ? "failed" : "blocked",
-        exitCode: typeof error.code === "number" ? error.code : null,
-        reason: check.id === "android-build" && error.code === 78 ? "Android build prerequisites are unavailable." : check.failure.summary,
-      });
-      if (check.id === "android-device") {
-        check.deviceDiagnostics = deviceDiagnosticsFromOutput(
-          `${error.stdout ?? output?.stdout ?? ""}\n${error.stderr ?? output?.stderr ?? ""}`, deviceCatalogue, deviceOwner);
-        if (error.processTreeStopped) {
-          try {
-            const cleaned = await cleanDeviceRun(root, path.join(options.directory, "device"), deviceOwner);
-            check.cleanup = cleaned ? "completed" : "unknown";
-          } catch (cleanupError) {
-            check.cleanup = "failed";
-            check.diagnosticIssues = [...(check.diagnosticIssues ?? []),
-              { operation: "controller-cleanup", ...failureDetails(cleanupError, "cleanup-failed") }];
-            check.reason += " Cleanup remains incomplete; inspect retained owned resources.";
-          }
-        }
-        try {
-          const evidence = await readDiagnosticReport(path.join(options.directory, "device", "device-report.json"));
-          if (!evidence || typeof evidence !== "object") throw diagnosticError(evidence === null ? "report-missing" : "report-invalid");
-          if (evidence.runId === deviceOwner) {
-            check.workerDiagnostics = projectWorkerDiagnostics(evidence.workerDiagnostics, deviceOwner);
-            if (evidence.deviceDiagnostics) check.deviceDiagnostics = projectDeviceDiagnostics(evidence.deviceDiagnostics, deviceCatalogue, deviceOwner);
-            if (["passed", "failed", "blocked"].includes(evidence.executionStatus)) check.reportedDeviceExecutionStatus = evidence.executionStatus;
-            if (["completed", "failed", "unknown"].includes(evidence.collectionStatus)) check.reportedDeviceCollectionStatus = evidence.collectionStatus;
-            if (evidence.collectionStatus === "failed" || check.deviceDiagnostics.collectionStatus === "failed" ||
-                check.workerDiagnostics.collectionStatus === "failed") check.collectionStatus = "failed";
-          }
-          if (evidence.runId === deviceOwner && evidence.status === "blocked" && evidence.cleanup === "completed") {
-            check.status = "blocked";
-            check.reason = "Device prerequisites or worker readiness are unavailable; inspect the bounded worker diagnostics.";
-          }
-        } catch (evidenceError) {
-          if (evidenceError.diagnosticCode !== "report-missing") check.collectionStatus = "failed";
-          check.diagnosticIssues = [...(check.diagnosticIssues ?? []),
-            { operation: "device-report", ...failureDetails(evidenceError, evidenceError instanceof SyntaxError ? "report-invalid" : "report-unavailable") }];
-          check.reason += " No complete device report was available.";
-        }
-        if (check.deviceDiagnostics.primary) {
-          const primary = check.deviceDiagnostics.primary;
-          check.reason = `Device failure at ${primary.phase}/${primary.operation}: ${primary.reason}.`;
-        } else if (check.reportedDeviceExecutionStatus === "passed" &&
-            (check.reportedDeviceCollectionStatus === "failed" || check.deviceDiagnostics.collectionStatus === "failed" ||
-              check.workerDiagnostics?.collectionStatus === "failed" || check.collectionStatus === "failed")) {
-          if (check.failure.reason === "command-failed") check.failure = verificationFailure(verificationFault("collector-failed", { check: check.id }), "report");
-          check.reason = "Native execution passed, but diagnostic collection failed.";
-        }
-      }
-
-      stopped = true;
-    } finally {
-      try { await logFile?.close(); }
-      catch (error) {
-        logIssue(error);
-        if (check.status === "passed") {
-          check.status = "blocked";
-          check.failure = { ...failureDetails(error, "report-write"), phase: "log", check: check.id };
-          check.reason = check.failure.summary;
-          stopped = true;
-        }
-      }
-    }
-    check.durationMs = Date.now() - started;
-    check.log = path.relative(root, log);
-  }
-  let current, sourceFailure;
-  try { current = await sourceSnapshot(root); }
-  catch (error) {
-    error.diagnosticCode = "source-unavailable";
-    sourceFailure = verificationFailure(error, "source-validation");
-  }
-  const changed = current && (current.head !== plan.source.head || current.fingerprint !== plan.source.fingerprint);
-  const failed = checks.some((check) => check.status === "failed");
-  const blocked = checks.some((check) => check.status === "blocked");
-  const complete = !sourceFailure && !changed && !failed && !blocked && checks.every((check) => check.status === "passed");
-  return {
-    ...plan, group, checks, complete,
-    status: changed || failed ? "failed" : blocked || sourceFailure ? "blocked" : complete ? "passed" : "partial",
-    ...(sourceFailure ? { sourceValidation: { status: "failed", failure: sourceFailure } } : {}),
-    ...(changed ? { error: "Source changed during verification. Regenerate/review the change and run again.",
-      failure: verificationFailure(verificationFault("source-changed"), "source-validation") } : {}),
-    environment: { node: process.version, platform: process.platform },
-  };
+  // Planning and aggregation must not load application execution adapters.
+  const executor = await import("./verification-executor.mjs");
+  return executor.executeVerification(root, plan, options);
 }
 
-function requireCheckPolicy(plan) {
+export function requireCheckPolicy(plan) {
   if (plan.version !== VERIFICATION_REPORT_VERSION || !Array.isArray(plan.requiredChecks) ||
       JSON.stringify(plan.requiredChecks) !== JSON.stringify(CHECKS.filter((check) => plan.requiredChecks.includes(check.id)).map((check) => check.id)) ||
       JSON.stringify(plan.requiredGroups) !== JSON.stringify(verificationGroups(plan.requiredChecks))) {
@@ -386,7 +149,7 @@ export function combineVerification(plan, reports) {
     checks: plan.requiredChecks.map((id) => passed.get(id)) };
 }
 
-function validateDeviceEvidence(evidence, plan, platform) {
+export function validateDeviceEvidence(evidence, plan, platform) {
   const context = { check: "android-device" };
   if (!evidence || evidence.status !== "passed" ||
       evidence.evidence !== "emulator-test-sdk-adapter" ||

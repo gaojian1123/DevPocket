@@ -7,7 +7,8 @@ const nativeFiles = ["candidate-commit.mjs", "git-state.mjs"];
 const implementationFiles = [...new Set([...nativeFiles, "native-candidate.mjs", "development-workflow.mjs", "workflow-extension.mjs",
   "development-policy.mjs", "verification.mjs", "verification-policy.mjs", "process.mjs", "device-run.mjs", "worker-diagnostics.mjs",
   "device-diagnostics.mjs", "diagnostic-errors.mjs", "bounded-worker-log.mjs", "diagnostic-publication.mjs",
-  "native-lifecycle.mjs"])].sort();
+  "native-lifecycle.mjs", "verification-executor.mjs", "verification-backend.mjs", "verification-android.mjs",
+  "backend-diagnostics.mjs"])].sort();
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 export async function captureCandidateImplementation(directory = fileURLToPath(new URL(".", import.meta.url))) {

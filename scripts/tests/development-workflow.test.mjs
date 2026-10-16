@@ -8,9 +8,11 @@ import { test } from "node:test";
 import { checkDevelopmentReadiness, runDevelopment } from "../development-workflow.mjs";
 import { changedPaths, inspectWorktree, prepareCandidate, sha256 } from "../candidate-commit.mjs";
 import { executeVerification, git, sourceSnapshot } from "../verification.mjs";
-import { captureCandidateImplementation, nativeCandidateCommand } from "../native-candidate.mjs";
+import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "../native-candidate.mjs";
 
 const exec = promisify(execFile);
+const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
+  "verification-android.mjs", "backend-diagnostics.mjs"];
 
 function nativeSession() {
   return { sessionId: "fixture-session", rpc: { tools: {
@@ -34,7 +36,7 @@ async function implemented(root, summary = "Changed") {
   return { status: "implemented", summary, source, ownedFiles: await changedPaths(root, source.head) };
 }
 
-async function copiedController(root) {
+async function copiedController(root, beforeLoad) {
   const inputs = await captureCandidateImplementation();
   const directory = path.join(root, ".data", "implementation");
   await mkdir(directory, { recursive: true });
@@ -43,6 +45,7 @@ async function copiedController(root) {
     assert.equal(sha256(bytes), input.sha256);
     await writeFile(path.join(directory, input.name), bytes, { flag: "wx" });
   }
+  await beforeLoad?.(directory);
   return { directory, controller: await import(pathToFileURL(path.join(directory, "development-workflow.mjs")).href) };
 }
 
@@ -618,6 +621,8 @@ test("tooling-only impact retains the controller's protected-policy stop before 
   const { verificationPlan } = await import("../verification.mjs");
   for (const file of ["AGENTS.md", "scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs",
     "scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
+    "scripts/native-candidate.mjs", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
+    "scripts/verify.mjs", "scripts/verify.ps1", "scripts/tests/verification.test.mjs",
     ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"]) {
     await t.test(file, async (t) => {
       const { root } = await workspace(t);
@@ -1050,8 +1055,20 @@ test("signed candidates preserve signature settings while reading commit trailer
   assert.notEqual(visible.trim(), "fixture-session", "Signature display remains enabled outside machine-readable queries.");
 });
 
+test("candidate implementation capture includes every verification adapter and rejects the older input set", async () => {
+  const captured = await captureCandidateImplementation();
+  assert.equal(captured.version, 2);
+  for (const name of verificationInputs) {
+    assert.match(captured.files.find((file) => file.name === name)?.sha256 ?? "", /^[a-f0-9]{64}$/);
+  }
+  await requireCandidateImplementation(captured);
+  const legacy = { ...captured, files: captured.files.filter((file) => !verificationInputs.includes(file.name)) };
+  await assert.rejects(requireCandidateImplementation(legacy), /captured controller\/helper implementation/);
+});
+
 test("native approval cannot execute a changed helper, import or wrapper", async (t) => {
-  for (const name of ["candidate-commit.mjs", "git-state.mjs", "native-candidate.mjs", "development-workflow.mjs", "development-policy.mjs", "workflow-extension.mjs"]) {
+  for (const name of ["candidate-commit.mjs", "git-state.mjs", "native-candidate.mjs", "development-workflow.mjs",
+    "development-policy.mjs", "workflow-extension.mjs", ...verificationInputs]) {
     await t.test(name, async (t) => {
       const { root } = await workspace(t), session = nativeSession();
       const { directory, controller } = await copiedController(root);
@@ -1074,6 +1091,29 @@ test("native approval cannot execute a changed helper, import or wrapper", async
       await assert.rejects(readFile(marker), { code: "ENOENT" });
     });
   }
+});
+
+test("capturing verification adapters does not widen the closed native candidate loader", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  const { controller } = await copiedController(root, async (directory) => {
+    const helper = path.join(directory, "candidate-commit.mjs"), content = await readFile(helper, "utf8");
+    const entry = "export async function runCandidateRequest(file, hash) {";
+    assert.ok(content.includes(entry));
+    await writeFile(helper, content.replace(entry, `${entry}\n  await import("./verification-backend.mjs");`));
+  });
+  const parent = (await sourceSnapshot(root)).head, execute = session.rpc.tools.execute;
+  let nativeResult;
+  session.rpc.tools.execute = async (request) => {
+    nativeResult = await execute(request);
+    return nativeResult;
+  };
+  const result = await controller.runDevelopment(documentationTask(root, { session }), {
+    root, verify: async () => { assert.fail("A non-native import cannot reach verification."); },
+  });
+  assert.equal(result.status, "blocked");
+  assert.match(nativeResult.textResultForLlm, /unclassified candidate import/i);
+  assert.equal((await sourceSnapshot(root)).head, parent);
+  assert.equal(await git(root, ["diff", "--cached", "--name-only"]), "");
 });
 
 test("native startup refuses unbound Node preloads before they can execute", async (t) => {
@@ -1115,15 +1155,17 @@ test("native startup refuses unbound Node preloads before they can execute", asy
 });
 
 test("a stale loaded controller cannot adopt a newer on-disk implementation", async (t) => {
-  const { root } = await workspace(t);
-  const { directory, controller } = await copiedController(root);
-  const file = path.join(directory, "candidate-commit.mjs");
-  await writeFile(file, await readFile(file, "utf8") + "\n// different implementation revision\n");
-  const result = await controller.runDevelopment(documentationTask(root, {
-    agent: async () => { assert.fail("Stale implementation must stop before dispatch."); },
-  }), { root });
-  assert.equal(result.status, "needs_human");
-  assert.match(result.reason, /implementation changed/);
+  for (const name of ["candidate-commit.mjs", ...verificationInputs]) await t.test(name, async (t) => {
+    const { root } = await workspace(t);
+    const { directory, controller } = await copiedController(root);
+    const file = path.join(directory, name);
+    await writeFile(file, await readFile(file, "utf8") + "\n// different implementation revision\n");
+    const result = await controller.runDevelopment(documentationTask(root, {
+      agent: async () => { assert.fail("Stale implementation must stop before dispatch."); },
+    }), { root });
+    assert.equal(result.status, "needs_human");
+    assert.match(result.reason, /implementation changed/);
+  });
 });
 
 test("verifiers cannot mutate the controller's source or check-selection snapshot", async (t) => {
