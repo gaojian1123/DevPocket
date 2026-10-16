@@ -490,6 +490,8 @@ test("tooling-only impact retains the controller's protected-policy stop before 
   const { verificationPlan } = await import("../verification.mjs");
   for (const file of ["AGENTS.md", "scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs",
     "scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
+    "scripts/native-candidate.mjs", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
+    "scripts/verify.mjs", "scripts/verify.ps1", "scripts/tests/verification.test.mjs",
     ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"]) {
     await t.test(file, async (t) => {
       const { root } = await workspace(t);

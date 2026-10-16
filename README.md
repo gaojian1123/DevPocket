@@ -217,14 +217,17 @@ guidance, not a replacement for programmatic evidence checks or protected CI.
 
 Verification classifies changed paths centrally and derives CI lanes from the
 selected check definitions, independently of local Agent trust requirements.
-Explicitly named development orchestration, candidate preparation, routing and
-DevPocket skill/reviewer instructions select the complete workflow regression
-suite in an independent **tooling** lane, without application builds or Android
-provisioning. `AGENTS.md` selects those regressions too. README, validation and
-docs Markdown changes alone select no application checks. Shared verification
-selection/execution/aggregation, CI/build infrastructure, dependency inputs and
-unknown paths remain conservative full impact; mixed changes take the union.
-Plans include bounded path/rule explanations, not approval decisions.
+Development orchestration, candidate preparation, source identity, planning,
+evidence aggregation and their named contract regressions select the complete
+workflow suite in the independent **tooling** lane, without application builds
+or Android provisioning. `AGENTS.md` and the named DevPocket skill/reviewer
+instructions select it too; README, validation and docs Markdown alone select
+no checks. The verifier's compatibility entry separates these contracts from
+the backend and Android execution adapters. Backend build/command inputs select
+backend checks; native build/device inputs select build, device and layouts.
+Shared process execution, cross-lane CI, shared dependencies and unknown paths
+remain conservative full impact. Runtime/wire compatibility coverage is retained,
+and mixed changes take the union. Plans explain responsibilities, not approval.
 
 Local execution trust and human-review requirements belong to
 `scripts\development-policy.mjs`, shared by skill-led development and the optional

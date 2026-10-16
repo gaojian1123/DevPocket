@@ -162,38 +162,87 @@ are shared by local verification, the development controller and CI. Each
 selected check defines its group; `requiredGroups` is derived from those
 definitions, never from "non-Android means backend."
 
-Impact rules are explicit and ordered:
+### Responsibility-based impact
 
-- `README.md`, `VALIDATION.md` and `docs/**/*.md` select no checks.
-- Exactly `scripts/workflow-extension.mjs` and
-  `scripts/tests/development-workflow.test.mjs` select `workflow-tests`, in the
-  independent `tooling` group. These cover task routing and the complete
-  development-tooling regressions, not the shipped runtime extension.
-- Exactly `scripts/development-workflow.mjs`, `scripts/development-policy.mjs`
-  and `scripts/candidate-commit.mjs` select that same complete workflow suite.
-  They govern development orchestration, local trust and candidate preparation,
-  not shared application verification. The candidate-helper path is classified
-  even in revisions where its implementation is not present.
-- Exactly `AGENTS.md`, `.github/agents/devpocket-reviewer.agent.md` and
-  `.github/skills/devpocket-development/SKILL.md` select the tooling regressions
-  without automatically selecting application checks. Thus the five-path
-  PR #10 change set (`AGENTS.md`, the routing module, its regression file,
-  README and the workflow guide) selects only `workflow-tests`; each named
-  tooling path also does so independently.
-- Shared verification selection/execution/aggregation, CI definitions, build
-  tooling, shared execution and cleanup infrastructure, and dependency inputs
-  select **all** checks and layouts. This includes
-  `scripts/verification-policy.mjs`, `scripts/verification.mjs`,
-  `scripts/verify.mjs`, other scripts/tests and `.github` definitions,
-  package/lock/npm/TypeScript/Python dependencies and Android build inputs.
-  Only the exact tooling paths above are exceptions; neither the `scripts`
-  nor `.github` directory is exempt. A mixed controller/candidate/reviewer
-  change that also modifies `verification.mjs` still selects every lane.
-- Existing backend, runtime-extension, operations, shared wire/fixture and
-  Android rules retain their downstream coverage. Backend checks still include
-  workflow regressions, now in the tooling lane. Runtime/wire changes still
-  require native compatibility evidence; Android UI/resource changes select
-  layouts. Unclassified paths select the full set and layouts.
+`scripts\verification-policy.mjs` contains the ordered impact rules and the
+declarative `CHECKS` catalogue (`id` and `group`, not executable commands).
+There is no per-PR exemption, diff-size heuristic or dynamic dependency graph.
+The exact named script/instruction/regression paths are deliberate interfaces;
+adding a new file does not silently inherit a tooling exemption.
+
+| Responsibility | Representative inputs | Required checks |
+| --- | --- | --- |
+| Documentation | `README.md`, `VALIDATION.md`, `docs/**/*.md` | None |
+| Development tooling | `development-workflow.mjs`, `development-policy.mjs`, `candidate-commit.mjs`, `native-candidate.mjs`; routing and the development extension entry | Complete `workflow-tests` in `tooling` |
+| Agent instructions | `AGENTS.md`, the DevPocket skill/reviewer and AI task template | Complete `workflow-tests` |
+| Source/verification contracts | `git-state.mjs`, `verification.mjs`, `verification-policy.mjs`, `verify.mjs`, `verify.ps1`; named diagnostic/evidence projections and workflow regressions | Complete `workflow-tests` |
+| Backend execution/build | `verification-backend.mjs`, extension bundle/package helpers, CLI-proof launcher, backend TypeScript configs, extension distribution workflow | Tooling and backend checks; no Android provisioning |
+| Native execution/build | `verification-android.mjs`, Android runner/build/emulator helpers, owned device cleanup, Gradle inputs/wrappers, native preparation action | Tooling, Android build, device cases and all layouts |
+| Shared execution | `verification-executor.mjs`, `process.mjs`, `owned-command*`, bounded command logs, shared backend/native diagnostic preflight | Every check and layouts |
+| Cross-lane infrastructure | `ci.yml`, root npm/lock inputs, shared or unclassified dependency policy | Every check and layouts |
+| Operations | `deployment/`, `infra/`, `azure.yaml`, including their own npm/Python inputs | Backend and operational fixtures, not native execution |
+| Unknown | Any path not classified by the preceding rules | Every check and layouts |
+
+The shared backend diagnostics module is used both by backend execution and the
+hosted native preparation's Linux process tests; it is not a backend-only input.
+Root Node dependencies are shared with the native relay fixture. Android Gradle
+inputs and device-specific cleanup, on the other hand, do not select backend
+product checks just because they are protected policy.
+
+Existing backend source, runtime integration, runtime-extension and wire/fixture
+rules retain their downstream coverage. Runtime/wire changes (including the
+schema generator) still require native compatibility evidence; Android product
+changes require build and device checks, with layouts for UI/resource changes.
+Named synthetic workflow tests run the whole existing suite, not a selected
+subset. The separate Linux process regression belongs to hosted native
+preparation and continues to select native execution.
+
+The original five-path routing change (`AGENTS.md`, routing module, routing
+regression, README and this guide) still selects only `workflow-tests`. So do
+`git-state.mjs`, `native-candidate.mjs`, `verification.mjs` and
+`tests/verification.test.mjs`, individually or together. This is because of
+their responsibilities, not because they occur together in a particular PR.
+Authority over acceptance does not make a source/aggregation helper an
+application build input: real Git, CLI, aggregation and controlled-process
+contracts verify that authority. Application tests cannot replace those contracts.
+
+### Verification modules and compatibility
+
+`scripts\verification.mjs` retains `verificationPlan(root, base, all)`,
+`executeVerification(root, plan, options)`, `combineVerification(plan, reports)`,
+`verificationFailure`, `verificationFault` and `requirePlanCollection`, plus
+the `git`/`sourceSnapshot` compatibility exports from `git-state.mjs`.
+Planning and aggregation do not load the execution adapters. The execution
+entry loads `verification-executor.mjs`, which owns sequencing, process
+ownership, bounded logs, stopping after failure and the final source check.
+The two concrete adapters own actual backend npm commands and native
+PowerShell commands/arguments respectively, including diagnostic preparation
+and device evidence/cleanup. No caller-supplied executable or plugin registry
+is introduced. Keep actual command, timeout, build and device changes in these
+execution modules, not in the tooling-classified facade or catalogue.
+
+The source contract still returns `{ head, fingerprint }`. The fingerprint
+uses tracked and non-ignored worktree bytes, indexed Git modes, link identity
+and tracked deletions, without newline normalization or absolute checkout paths.
+Staging identical bytes does not change it; a different HEAD is checked
+separately, and an unmerged index refuses evidence. It is not a replacement for
+a candidate controller's separate index, tree, parent, branch and hook/config
+freshness checks.
+
+Consumers that freeze executable implementation inputs must add
+`verification-executor.mjs`, `verification-backend.mjs` and
+`verification-android.mjs` to their captured input set, alongside `git-state.mjs`
+and the existing imports. Re-capture, explicitly approve and reload the changed
+implementation; an old loaded snapshot cannot silently acquire new imports.
+Keep a candidate helper's closed loader and native input allowlist intact.
+Classification changes do not permit loading uncaptured modules from mutable
+disk or relabelling earlier candidate/review evidence.
+
+The initial extraction changes actual shared and per-side executors, so its
+own migration requires broad source-bound verification. Later pure source,
+plan, aggregate or regression edits select tooling without those executors
+being changed. Do not use the migration's full plan as a substitute for proving
+the lighter pathsets and the necessary per-side/full unions independently.
 
 Mixed changes take the union; no narrow rule cancels another path's requirements.
 `--all` explicitly selects every check. Plan JSON and CLI output include
@@ -223,9 +272,10 @@ CI planning, lane selection and aggregation do not decide Agent or GitHub
 approval. GitHub merge review belongs to externally configured rulesets,
 required reviews and CODEOWNERS, not a plan flag; these changes do not create or
 modify that configuration. Both local routes retain the explicit pre-execution
-human approval described above. A change implementing these shared planner/CI
-rules itself has full impact and does not bypass the stop. Targeted synthetic
-regressions are not a completed source-bound gate or independent-review approval.
+human approval described above. A planner-only change selects contract
+regressions; a cross-lane CI or shared-executor change selects full impact.
+Neither bypasses the protected-policy stop. Targeted synthetic regressions
+are not a completed source-bound gate or independent-review approval.
 
 For CI shards, use `-Group tooling`, `-Group backend`, `-Group android` or
 `-Group device` with a separate `-Report` for each. The tooling check remains

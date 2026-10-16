@@ -2,17 +2,17 @@ export const VERIFICATION_REPORT_VERSION = 3;
 export const isDiagnosticVerificationVersion = (version) => [1, 2, VERIFICATION_REPORT_VERSION].includes(version);
 
 export const CHECKS = [
-  { id: "workflow-tests", group: "tooling", npm: "run test:workflow" },
-  { id: "typecheck", group: "backend", npm: "run typecheck" },
-  { id: "backend-tests", group: "backend", npm: "test" },
-  { id: "backend-build", group: "backend", npm: "run build" },
-  { id: "schema", group: "backend", npm: "run schema" },
-  { id: "extension-package", group: "backend", npm: "run test:extension-package" },
-  { id: "setup", group: "backend", npm: "run test:setup" },
-  { id: "azure-tests", group: "backend", npm: "--prefix deployment\\azure test" },
-  { id: "operations-tests", group: "backend", npm: "run test:operations" },
-  { id: "android-build", group: "android", script: "build-android.ps1", args: ["-Lint", "-Instrumentation"] },
-  { id: "android-device", group: "device", script: "test-android.ps1", args: [] },
+  { id: "workflow-tests", group: "tooling" },
+  { id: "typecheck", group: "backend" },
+  { id: "backend-tests", group: "backend" },
+  { id: "backend-build", group: "backend" },
+  { id: "schema", group: "backend" },
+  { id: "extension-package", group: "backend" },
+  { id: "setup", group: "backend" },
+  { id: "azure-tests", group: "backend" },
+  { id: "operations-tests", group: "backend" },
+  { id: "android-build", group: "android" },
+  { id: "android-device", group: "device" },
 ];
 
 export const CHECK_GROUPS = [...new Set(CHECKS.map((check) => check.group))];
@@ -21,26 +21,61 @@ export const diagnosticCheckGroup = (check, version) =>
   version === 1 && check.id === "workflow-tests" ? "backend" : check.group;
 
 const allChecks = CHECKS.map((check) => check.id);
+const tooling = ["workflow-tests"];
 const backend = ["workflow-tests", "typecheck", "backend-tests", "backend-build", "schema"];
+const backendExecution = CHECKS.filter((check) => ["tooling", "backend"].includes(check.group)).map((check) => check.id);
 const android = ["android-build", "android-device"];
+const nativeExecution = { checks: [...tooling, ...android], layouts: () => true };
 const full = { checks: allChecks, layouts: () => true };
 const rules = [
   { id: "documentation", description: "Documentation does not select application checks.",
     matches: (file) => ["README.md", "VALIDATION.md"].includes(file) || /^docs\/.*\.md$/.test(file), checks: [] },
   { id: "task-routing", description: "Task routing and development workflow regressions use the complete workflow suite.",
-    matches: (file) => ["scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs"].includes(file),
-    checks: ["workflow-tests"] },
+    matches: (file) => ["scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs",
+      ".github/extensions/devpocket-development/extension.mjs"].includes(file), checks: tooling },
   { id: "development-tooling", description: "Development orchestration, local trust policy and candidate preparation use the complete workflow suite.",
-    matches: (file) => ["scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/candidate-commit.mjs"].includes(file),
-    checks: ["workflow-tests"] },
+    matches: (file) => ["scripts/development-workflow.mjs", "scripts/development-policy.mjs",
+      "scripts/candidate-commit.mjs", "scripts/native-candidate.mjs"].includes(file), checks: tooling },
   { id: "agent-instructions", description: "DevPocket development instructions use workflow regressions, not application checks.",
     matches: (file) => ["AGENTS.md", ".github/agents/devpocket-reviewer.agent.md",
-      ".github/skills/devpocket-development/SKILL.md"].includes(file), checks: ["workflow-tests"] },
-  { id: "verification-infrastructure", description: "Verification, CI, build, shared execution or dependency policy requires all downstream checks.",
-    matches: (file) =>
-      /^(?:scripts\/|\.github\/|android\/gradle\/|android\/gradlew(?:\.bat)?$)/i.test(file) ||
-      /(?:^|\/)(?:\.npmrc|package(?:-lock)?\.json|npm-shrinkwrap\.json|tsconfig(?:\.[^/]+)?\.json|requirements[^/]*\.txt)$/i.test(file) ||
-      /^android\/.*(?:\.gradle(?:\.kts)?|gradle\.properties)$/i.test(file), ...full },
+      ".github/skills/devpocket-development/SKILL.md", ".github/ISSUE_TEMPLATE/ai-task.yml"].includes(file), checks: tooling },
+  { id: "verification-contract", description: "Source identity, planning, evidence validation and report projection use workflow contracts, not application builds.",
+    matches: (file) => ["scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
+      "scripts/verify.mjs", "scripts/verify.ps1", "scripts/verification-diagnostics.mjs", "scripts/diagnostic-errors.mjs",
+      "scripts/diagnostic-publication.mjs", "scripts/android-diagnostics.mjs", "scripts/device-diagnostics.mjs",
+      "scripts/worker-diagnostics.mjs", "scripts/native-lifecycle.mjs"].includes(file), checks: tooling },
+  { id: "tooling-regression", description: "Named synthetic workflow regressions run the complete workflow suite without provisioning application toolchains.",
+    matches: (file) => [
+      "verification", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
+      "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
+      "bounded-worker-log", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime",
+    ].some((name) => file === `scripts/tests/${name}.test.mjs`) ||
+      file === "scripts/tests/fixtures/emulator-lease-peer.mjs", checks: tooling },
+  { id: "backend-execution", description: "Backend command adaptation, builds and packaging require backend checks, not native execution.",
+    matches: (file) => ["scripts/verification-backend.mjs", "scripts/bundle-extension.mjs", "scripts/package-extension.ps1",
+      "scripts/launch-cli-proof.ps1", "scripts/tests/extension-package.test.mjs", "scripts/tests/fixtures/proof-cli-process.mjs",
+      "scripts/tests/fixtures/proof-cli.ps1", "backend/tsconfig.json", "backend/tsconfig.cli-proof.json",
+      ".github/workflows/extension-release.yml"].includes(file), checks: backendExecution },
+  { id: "android-execution", description: "Native build, device commands, prerequisites and owned device cleanup require build, device and layout evidence.",
+    matches: (file) => ["scripts/verification-android.mjs", "scripts/build-android.ps1", "scripts/prepare-android.ps1",
+      "scripts/test-android.ps1", "scripts/android-runner.mjs", "scripts/android-emulator.mjs", "scripts/android-home.mjs",
+      "scripts/device-run.mjs", "scripts/emulator-resources.mjs", "scripts/linux-emulator.mjs", "scripts/linux-runtime.mjs",
+      "scripts/manual-emulator.mjs", "scripts/native-startup.mjs", "scripts/platform-diagnostics.mjs",
+      "scripts/start-test-emulator.ps1", "scripts/stop-test-emulator.ps1", "scripts/test-native-layouts.ps1",
+      "scripts/save-debug-artifact.ps1", "scripts/tests/linux-process.test.mjs",
+      ".github/actions/prepare-native/action.yml", ".github/workflows/native-startup-diagnostics.yml"].includes(file) ||
+      /^(?:android\/gradle\/|android\/gradlew(?:\.bat)?$)/.test(file) ||
+      /^android\/.*(?:\.gradle(?:\.kts)?|gradle\.properties)$/.test(file), ...nativeExecution },
+  { id: "shared-execution", description: "The shared executor, process ownership, bounded logs and shared backend/native preflight require all downstream checks.",
+    matches: (file) => ["scripts/verification-executor.mjs", "scripts/process.mjs", "scripts/owned-command.ps1",
+      "scripts/owned-command.cs", "scripts/owned-command-windows.mjs", "scripts/owned-command-linux.py",
+      "scripts/bounded-worker-log.mjs", "scripts/backend-diagnostics.mjs"].includes(file), ...full },
+  { id: "operations", description: "Deployment and infrastructure changes, including their dependencies, require backend and operational fixtures.",
+    matches: (file) => file.startsWith("deployment/") || file.startsWith("infra/") || file === "azure.yaml",
+    checks: [...backend, "setup", "azure-tests", "operations-tests"] },
+  { id: "verification-infrastructure", description: "Cross-lane CI and shared or unclassified dependency inputs require all downstream checks.",
+    matches: (file) => [".github/workflows/ci.yml", ".github/CODEOWNERS"].includes(file) ||
+      /(?:^|\/)(?:\.npmrc|package(?:-lock)?\.json|npm-shrinkwrap\.json|tsconfig(?:\.[^/]+)?\.json|requirements[^/]*\.txt)$/i.test(file), ...full },
   { id: "android", description: "Android changes require native build and device evidence.",
     matches: (file) => file.startsWith("android/"), checks: android,
     layouts: (file) => /\/ui\/|\/res\/|Manifest|\.gradle|gradle\.properties/.test(file) },
@@ -53,11 +88,8 @@ const rules = [
     matches: (file) => file.startsWith("backend/"), checks: backend },
   { id: "runtime-extension", description: "The shipped runtime extension requires backend, packaging and setup checks.",
     matches: (file) => file.startsWith("extension/"), checks: [...backend, "extension-package", "setup"] },
-  { id: "operations", description: "Deployment and infrastructure changes require backend and operational fixtures.",
-    matches: (file) => file.startsWith("deployment/") || file.startsWith("infra/") || file === "azure.yaml",
-    checks: [...backend, "setup", "azure-tests", "operations-tests"] },
   { id: "wire-fixtures", description: "Shared wire contracts and fixtures require backend and native compatibility checks.",
-    matches: (file) => file.startsWith("test-fixtures/") || file === "protocol.schema.json",
+    matches: (file) => file.startsWith("test-fixtures/") || ["protocol.schema.json", "scripts/export-schema.ts"].includes(file),
     checks: [...backend, ...android] },
   { id: "unknown", description: "Unclassified paths require every check and layouts.",
     matches: () => true, ...full },
