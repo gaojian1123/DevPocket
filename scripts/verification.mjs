@@ -1,9 +1,9 @@
-import { git, sourceSnapshot } from "./git-state.mjs";
+import { readOnlyGit, sourceSnapshot } from "./git-state.mjs";
 import { deviceSourceCatalogue } from "./device-diagnostics.mjs";
 import { diagnosticError, failureDetails, ownValue, diagnosticVersion } from "./diagnostic-errors.mjs";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationGroups, verificationImpact } from "./verification-policy.mjs";
 export { CHECKS } from "./verification-policy.mjs";
-export { git, sourceSnapshot } from "./git-state.mjs";
+export { git, readOnlyGit, sourceSnapshot } from "./git-state.mjs";
 
 const splitPaths = (value) => value.split("\0").filter(Boolean);
 const baselineDeviceClasses = ["NativeFlowTest", "AdaptiveLayoutTest", "FixtureFlowTest"].map((name) => `dev.devpocket.app.${name}`);
@@ -33,12 +33,12 @@ export function verificationFailure(error, phase = "command") {
 export async function verificationPlan(root, base, all = false) {
   if (!base || base.startsWith("-")) throw verificationFault("base-invalid");
   let baseSha;
-  try { baseSha = (await git(root, ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`])).trim(); }
+  try { baseSha = (await readOnlyGit(root, ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`])).trim(); }
   catch (error) { throw verificationFault("base-invalid", {}, error); }
   const source = await sourceSnapshot(root);
   const changedFiles = [...new Set([
-    ...splitPaths(await git(root, ["--no-optional-locks", "diff", "--no-ext-diff", "--no-textconv", "--name-only", "--no-renames", "-z", baseSha, "--"])),
-    ...splitPaths(await git(root, ["ls-files", "--others", "--exclude-standard", "-z"])),
+    ...splitPaths(await readOnlyGit(root, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "--no-renames", "-z", baseSha, "--"])),
+    ...splitPaths(await readOnlyGit(root, ["ls-files", "--others", "--exclude-standard", "-z"])),
   ])].sort();
   const impact = verificationImpact(changedFiles, all);
   const device = impact.requiredChecks.includes("android-device");

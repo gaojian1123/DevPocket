@@ -13,7 +13,8 @@ The skill distinguishes working-tree implementation from authorized commit/PR
 delivery. Its candidate-commit step precedes final verification and independent
 review; the task's original base remains unchanged. This ordering does not grant
 publication permission or relax evidence identity. The optional controller below
-still stops at reviewed changes and does not acquire a commit phase.
+also creates a local candidate before final verification and review, through the
+original native tool permissions, and stops before remote publication.
 
 This route does not require extension loading, the starter tool or Dynamic
 Workflows. It uses the existing verifier and read/search-only
@@ -52,7 +53,7 @@ the current session, freshly inspect the starting checkout before dispatch.
 Use bounded read-only Git inspection, as the starter does through the existing
 Git helper: confirm the repository root, compare the resolved `--git-dir` and
 `--git-common-dir`, and inspect
-`git --no-optional-locks status --porcelain --untracked-files=all --ignore-submodules=none`.
+`git --no-optional-locks -c core.fsmonitor=false status --porcelain --untracked-files=all --ignore-submodules=none`.
 Check staged, unstaged and non-ignored untracked changes; ignored artifacts do
 not make a checkout dirty. Session names and the presence of a `.git` file alone
 do not establish linked-worktree identity.
@@ -107,13 +108,122 @@ The user can choose a different route explicitly. Honor the App's per-run
 approval and credit/time controls; opting in does not bypass them or authorize
 a replacement runtime.
 
-The controller dispatches implementation, executes verification itself, and
-dispatches a separate read-only reviewer against the actual diff and added files.
-It accepts neither implementer-written approval nor an editable workspace result
-as the authoritative review. The SDK's durable step journal holds the final
-controller result. Each repair gets a fresh review invocation and source-bound
-evidence. Runtime credit/time limits are chosen at invocation; the workflow does
-not guess them or override model preferences.
+The controller follows **implement → local candidate commit → final verification
+→ independent review**:
+
+1. The implementer finishes changes and targeted development checks, leaving the
+   index/history unchanged. It returns the inspected task-owned paths and the
+   exact `sourceSnapshot` observed after its last edit/check. There is no mandatory
+   full acceptance pass before committing.
+2. The controller checks ownership, source, index, branch and Git configuration.
+   Protected gate/dependency/workflow changes still stop for explicit human
+   policy review **before** committing or executing the modified policy.
+   The controller also snapshots the active Git hooks directory before implementation;
+   changed hook inputs stop for human policy approval before native mutation.
+   Otherwise its guarded candidate helper holds the real index's exclusive lock
+   before final preflight, stages only the inspected literal paths into an isolated
+   index, and commits it through the original session's native PowerShell tool/permission
+   pipeline. It checks the captured tree and expected parent before committing,
+   then publishes the verified index through its owned lock. Concurrent staged-only
+   edits cannot be overwritten by staging into the live index. Missing
+   native tools or denied permission blocks the step; there is no direct mutation
+   fallback. Git configuration and hooks are
+   retained. The commit includes the project `Co-authored-by` trailer and a
+   `Copilot-Session` trailer from the live owning session, not a task-specific
+   identity embedded in source.
+3. With the candidate HEAD, clean index/worktree and original branch confirmed,
+   the controller selects the diff against the explicit original base and runs
+   final verification once for that revision. Required checks, aggregation and
+   native evidence rules below are unchanged.
+4. A separate read-only reviewer examines that committed diff, added files and
+   source-bound verification. Both stages must retain the exact candidate identity
+   and clean tree. Passing verification alone does not make a candidate ready;
+   high-risk paths still require human review.
+
+Repairs create a new local commit on the failed candidate, then new selected
+verification and a fresh independent review. Prior commits/reports remain history
+within the chosen repair bound. A no-op initial task uses the existing clean HEAD
+without an empty commit; a no-op repair stops instead of repeatedly checking the
+same failed revision. Commit/hook failures and concurrent source, history, branch,
+configuration or index changes stop explicitly. Nothing amends, resets, rewrites
+history or automatically cleans up a failed commit's index.
+Git Trace2 records observed hook exits during staging and commit, including
+`post-commit` failures that Git itself does not propagate. Hooks run normally,
+once per Git invocation; missing hook-exit evidence blocks rather than implying
+success. A failed post-commit hook leaves its completed local commit in place.
+Hook starts/exits are paired by trace session and child identity across nested
+Git commands. Command completion stays bound to the root Git invocation, and
+ordinary non-hook child failures are not reclassified as hook failures.
+The observed-name allowlist covers Git's documented hooks, including nested
+hooks such as `post-checkout`, separately from the candidate-only routing set.
+Every recognized hook still needs complete exit evidence; unknown names block.
+Repeated hook/exit descriptors are projected once without exporting trace SIDs;
+every observed hook invocation still requires its own complete exit evidence.
+Before index publication, failures leave the original live index intact; task
+working files remain available for recovery. The active hook snapshot covers the
+configured directory, including files reached through directory/file links,
+without copying hook source into reports. Inspection is bounded to 256 entries,
+eight levels, 1 MiB per file and 4 MiB total. An absent hooks directory is recorded
+explicitly; disappearing inputs, unreadable, changing or unsupported hook evidence
+blocks execution rather than silently allowing it.
+Hooks may invoke programs outside that directory; these snapshots do not parse
+arbitrary hook dependencies or replace the original native permission policy.
+Candidate requests and controller journals use version 4 to bind hook,
+executable-input and prepared reference-transaction evidence. Older requests/results require inspected recovery;
+they are not replayed as approval for the new controller.
+An operation-private hook route uses Git's `reference-transaction` prepared phase,
+while Git holds its ref locks, to bind the actual branch update, parent and
+inspected tree before advancing history. A verify-only transaction first proves the native veto
+works without advancing a ref or invoking user hooks. User hooks are forwarded
+once through `git hook run`, with original arguments, input, configuration and
+exit status; user hook files and persistent Git settings are not replaced.
+Git's earlier `preparing` notification is advisory: its unresolved `HEAD` update
+is accepted without creating probe, cleanup or commit evidence. Original hooks
+still receive that phase and retain their veto; the private capability probe is
+not forwarded. Only the later, locked `prepared` phase can establish admission.
+The mutating guard context is created separately after staging has established
+the inspected tree; the earlier verify-only probe cannot authorize a commit.
+Reference-binding evidence version 2 includes that tree. Hook edits remain in
+the working tree for inspection, but a different tree cannot enter branch history.
+The operation-private routing exists only for the candidate command. Unknown ref
+shapes, changed context and missing prepared evidence stop explicitly. Zero OIDs
+alone do not establish a no-op: `AUTO_MERGE` cleanup requires an actual absence
+check while the prepared transaction holds its lock, plus matching completion
+evidence. A ref created later is retained for inspection rather than deleted.
+The captured executable manifest uses version 2 and includes the local development
+policy module separately from CI impact policy, plus the shared verification
+executor, both execution adapters and their backend diagnostic import. Earlier
+input sets cannot qualify the current native launcher or publication checks.
+The run retains its initial hook snapshot across verification, review, repairs
+and readiness checks. A later observation cannot become approval of changed
+hooks; any mismatch requires renewed human approval before continuing.
+Native dispatch also retains the loaded controller/helper input hashes. After
+the native permission boundary, a builtins-only bootstrap checks those bytes
+again before importing repository code. The candidate helper and its shared Git
+module execute from captured in-memory source; unclassified imports are rejected,
+not loaded from a mutable path. Direct mutable helper CLI execution is refused.
+Before Node starts, the trusted PowerShell launcher refuses nonempty `NODE_OPTIONS`.
+It does not clear or reinterpret those settings: startup preloads run before a
+JavaScript bootstrap, so an unbound startup environment requires explicit handling
+in the original client rather than a mutable-code fallback.
+An on-disk implementation change requires approval and an explicit reload rather
+than silently adopting a newer file under an older loaded controller.
+Verification receives a separate deep-frozen plan snapshot; returned evidence is
+copied/frozen and aggregated against the controller's private original plan.
+Neither verifier callbacks nor later observations can rewrite its required checks
+or source identity.
+Machine-readable trailer queries suppress signature display without changing
+commit signing or the user's Git display settings.
+Read-only index/status/diff probes disable optional Git locks and fsmonitor for
+that command. Configuration-evidence queries stay unmodified, and authorized Git
+mutations retain their configured behavior.
+Root and Git metadata comparisons resolve directory aliases, while task ownership
+retains the caller's workspace path.
+
+The controller accepts neither implementer-written approval nor an editable
+workspace result as the authoritative review. The SDK's durable step journal
+holds the final controller result. Runtime credit/time limits are chosen at
+invocation; the workflow does not guess them or override model preferences.
 Registration uses only Node built-ins and the runtime-bundled SDK, so a fresh
 worktree can load it before restoring application dependencies. Provision the
 runner toolchain once; normal missing repository dependencies can be restored
@@ -123,19 +233,39 @@ For an existing run, route feedback to its current owner or inspect/resume its
 recorded run. Dispatched implementers/reviewers perform their assigned phase,
 rather than calling the starter recursively.
 
-The automatic endpoint is **ready for a PR**, with changes in the worktree and
-`handoff.json` under `.data\development\<run-id>`. It does not commit, push, open a
-PR, merge or deploy. Use the App's normal PR creation path when publication is
-authorized. Commit/merge-ref changes require fresh applicable verification; old
-reports are not re-labelled as evidence for a new revision.
+The automatic endpoint is **ready for a PR**, with a clean local candidate commit
+and `handoff.json` under `.data\development\<run-id>`. The handoff identifies the
+exact commit, original base, workspace/branch, source fingerprint, verification
+and independent review. It does not push, open a PR, merge or deploy.
 Report the actual run/worktree and outcome when dispatched. Say that a workflow
 has started only after an invocation returns its run identity; a proposed plan
 or manually performed equivalent steps are not a registered workflow run.
 
+### Publish an unchanged candidate
+
+After separate publication authorization, call
+`devpocket_check_development_readiness` with `{"runId":"THE_COMPLETED_RUN_ID"}`
+in the owning session/worktree. This read-only tool reads the runtime's durable
+result, checks the original workspace/branch and exact clean candidate, and
+revalidates the existing verification/review bindings and check completeness.
+It does not run verification commands, create another commit or publish anything.
+An editable `handoff.json` cannot substitute for the durable result.
+
+If ready, push that unchanged commit and use the App's normal PR creation path.
+An unchanged push (including recording its upstream) does not require another
+local final verification. Recheck freshness if publication is delayed; readiness
+is a point-in-time result, not authority to publish a later revision. Later edits,
+repair commits, merge/rebase ref changes or a changed index/branch invalidate it
+and require applicable verification and independent review for the new candidate.
+Old reports are never relabelled. Required remote CI and human policy review
+remain independent requirements; this avoids duplicate **local** final acceptance,
+not repository gates.
+
 ## Verification
 
 Run from the checkout with Node 24 and PowerShell 7. The complete workflow
-regression suite also needs Git, Python 3.12 (standard-library checks), the
+regression suite also needs Git with SSH signing support (`ssh-keygen` for
+disposable signing fixtures), Python 3.12 (standard-library checks), the
 root npm dependencies (including TypeScript/tsx), and the existing Windows
 owned-command compiler support. It uses synthetic toolchains, not an Android
 SDK/JDK or emulator. Operational fixture checks additionally need the pinned
@@ -211,7 +341,7 @@ contracts verify that authority. Application tests cannot replace those contract
 `scripts\verification.mjs` retains `verificationPlan(root, base, all)`,
 `executeVerification(root, plan, options)`, `combineVerification(plan, reports)`,
 `verificationFailure`, `verificationFault` and `requirePlanCollection`, plus
-the `git`/`sourceSnapshot` compatibility exports from `git-state.mjs`.
+the `git`/`readOnlyGit`/`sourceSnapshot` compatibility exports from `git-state.mjs`.
 Planning and aggregation do not load the execution adapters. The execution
 entry loads `verification-executor.mjs`, which owns sequencing, process
 ownership, bounded logs, stopping after failure and the final source check.
@@ -228,15 +358,20 @@ Staging identical bytes does not change it; a different HEAD is checked
 separately, and an unmerged index refuses evidence. It is not a replacement for
 a candidate controller's separate index, tree, parent, branch and hook/config
 freshness checks.
+Read-only index probes use `readOnlyGit` (or `readOnlyGitArgs` when retaining
+private-index/Trace2 context), which disables optional locks and fsmonitor for
+that command only. Raw `git` remains available for unchanged configuration
+evidence and authorized mutations; probe overrides do not rewrite user settings.
 
-Consumers that freeze executable implementation inputs must add
-`verification-executor.mjs`, `verification-backend.mjs` and
-`verification-android.mjs` to their captured input set, alongside `git-state.mjs`
-and the existing imports. Re-capture, explicitly approve and reload the changed
-implementation; an old loaded snapshot cannot silently acquire new imports.
-Keep a candidate helper's closed loader and native input allowlist intact.
-Classification changes do not permit loading uncaptured modules from mutable
-disk or relabelling earlier candidate/review evidence.
+The controller's fixed implementation capture includes `verification-executor.mjs`,
+`verification-backend.mjs`, `verification-android.mjs` and `backend-diagnostics.mjs`
+alongside `git-state.mjs` and the existing imports. Re-capture, explicitly approve
+and reload the changed implementation; an old loaded snapshot cannot silently
+acquire the new inputs. The native candidate loader still permits only its
+captured candidate helper and Git module, not the verification adapters.
+Classification changes do not permit mutable-disk fallback or relabelling earlier
+candidate/review evidence. Regression cases cover missing legacy inputs, adapter
+changes before dispatch and after native approval, and rejected non-native imports.
 
 The initial extraction changes actual shared and per-side executors, so its
 own migration requires broad source-bound verification. Later pure source,
@@ -1094,12 +1229,22 @@ For skill-led work, follow the recovery steps in
 recorded runs of the optional workflow.
 
 The controller stops for missing prerequisites, agent failure, inconsistent
-review results, changed source during verification/review, protected policy
-changes, high-risk final review, or exhaustion of the chosen repair count.
+review results, commit/hook errors or uncertain commit outcomes, concurrent
+source/index/history/branch/configuration changes, protected policy changes,
+high-risk final review, or exhaustion of the chosen repair count.
 Uncertain external side effects remain outside the automatic workflow.
 
-An interrupted implementation is not automatically replayed. Inspect
+An interrupted implementation or candidate commit is not automatically replayed. Inspect
 `state.json`, the runtime's durable workflow record, and any retained lock. A
 completed journaled run may be read again only while its task/workspace/source
-still match; edited files invalidate its readiness. Start further work from an
-explicitly reviewed state rather than deleting evidence to bypass a stop.
+still match and the candidate index/worktree remain clean. Inspect the recorded
+candidate request/receipt, current index and history after a commit interruption;
+preserve failed commits and reports rather than guessing whether to retry.
+The candidate index lock records its owner PID and token. Inspect that owner
+before recovering an interrupted commit; existing or replaced locks are never
+removed automatically.
+The committed-candidate controller uses a versioned journal key; older uncommitted
+handoffs cannot be promoted to readiness or have their commit fields rewritten.
+In-flight runs retain their existing controller's restrictions. Start further
+work only from an explicitly reviewed state, with scoped commit/policy authority
+where needed, rather than deleting evidence or reloading to bypass a stop.

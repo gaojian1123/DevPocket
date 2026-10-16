@@ -144,9 +144,13 @@ test("the actual CI planner does not load local development trust policy", async
 test("the compatibility facade plans and combines real tooling results without loading execution adapters", async (t) => {
   const facade = await import("../verification.mjs"), source = await import("../git-state.mjs");
   for (const name of ["verificationPlan", "executeVerification", "combineVerification", "verificationFailure",
-    "verificationFault", "requirePlanCollection", "git", "sourceSnapshot"]) assert.equal(typeof facade[name], "function", name);
+    "verificationFault", "requirePlanCollection", "git", "readOnlyGit", "sourceSnapshot"]) assert.equal(typeof facade[name], "function", name);
   assert.equal(facade.git, source.git);
+  assert.equal(facade.readOnlyGit, source.readOnlyGit);
   assert.equal(facade.sourceSnapshot, source.sourceSnapshot);
+  const args = ["diff", "--name-only"];
+  assert.deepEqual(source.readOnlyGitArgs(args), ["--no-optional-locks", "-c", "core.fsmonitor=false", ...args]);
+  assert.deepEqual(args, ["diff", "--name-only"]);
   const files = ["scripts/git-state.mjs", "scripts/native-candidate.mjs",
     "scripts/verification.mjs", "scripts/tests/verification.test.mjs"];
   const root = await changedRepository(t, files);

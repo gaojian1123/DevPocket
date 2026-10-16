@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { git } from "./verification.mjs";
+import { readOnlyGit } from "./verification.mjs";
 import { CHECKS, CHECK_GROUPS, diagnosticCheckGroup, isDiagnosticVerificationVersion, projectVerificationSelection } from "./verification-policy.mjs";
 import { readDiagnosticReport } from "./worker-diagnostics.mjs";
 import { readBoundedLog } from "./android-diagnostics.mjs";
@@ -34,7 +34,7 @@ function projectedFailure(value) {
 }
 
 async function diagnosticSourceIndex(root) {
-  const values = (await git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean);
+  const values = (await readOnlyGit(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean);
   if (values.length > 8192) throw diagnosticError("output-limit");
   return { paths: new Set(values), sources: new Set(values.filter((file) => file.length <= 240 &&
     /^(?:backend|scripts|deployment|android|test-fixtures)\/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:ts|mjs|js|py|ps1|kt|kts|java|xml)$/.test(file))) };
