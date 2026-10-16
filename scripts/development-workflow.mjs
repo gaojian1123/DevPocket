@@ -1,6 +1,6 @@
 import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { combineVerification, executeVerification, git, sourceSnapshot, verificationPlan } from "./verification.mjs";
+import { combineVerification, executeVerification, readOnlyGit, sourceSnapshot, verificationPlan } from "./verification.mjs";
 import { developmentReviewRequirements } from "./development-policy.mjs";
 import { activeHookSnapshot, assertCandidate, assertIdentity, changedPaths, inspectWorktree, prepareCandidate, sameHooks, sameSource,
   sha256, taskPaths, validateCandidateCommit } from "./candidate-commit.mjs";
@@ -383,7 +383,7 @@ async function runAttempt(ctx, root, task, verify) {
       state.stage = "reviewing";
       await save(statePath, state);
       const patchFile = path.join(directory, `review-${round}.patch`);
-      await writeFile(patchFile, await git(root, ["--no-optional-locks", "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+      await writeFile(patchFile, await readOnlyGit(root, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames",
         base, state.candidate.commit, "--"]), { flag: "wx", mode: 0o600 });
       try { await assertCandidate(root, workspace, state.candidate); }
       catch (error) { return finish(blocked(`Candidate changed before review: ${error.message}`)); }

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { git, sourceSnapshot } from "./git-state.mjs";
+import { git, readOnlyGit, readOnlyGitArgs, sourceSnapshot } from "./git-state.mjs";
 
 const exec = promisify(execFile);
 export const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -104,8 +104,8 @@ export function taskPaths(value) {
 
 export async function changedPaths(root, base) {
   return [...new Set([
-    ...paths(await git(root, ["--no-optional-locks", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", base, "--"])),
-    ...paths(await git(root, ["ls-files", "--others", "--exclude-standard", "-z"])),
+    ...paths(await readOnlyGit(root, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", base, "--"])),
+    ...paths(await readOnlyGit(root, ["ls-files", "--others", "--exclude-standard", "-z"])),
   ])].sort();
 }
 
@@ -188,13 +188,13 @@ export async function inspectWorktree(root) {
     catch (error) { if (error.code === "ENOENT") continue; throw error; }
     fail("An in-progress Git operation requires inspection before continuing.");
   }
-  if (paths(await git(root, ["ls-files", "-v", "-z"])).some((entry) => !entry.startsWith("H "))) {
+  if (paths(await readOnlyGit(root, ["ls-files", "-v", "-z"])).some((entry) => !entry.startsWith("H "))) {
     fail("Unmerged, sparse or assume-unchanged index entries require inspection.");
   }
   const [source, index, configuration, status] = await Promise.all([
-    sourceSnapshot(root), git(root, ["ls-files", "--stage", "-z"]),
+    sourceSnapshot(root), readOnlyGit(root, ["ls-files", "--stage", "-z"]),
     git(root, ["config", "--null", "--list", "--show-origin", "--show-scope"]),
-    git(root, ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"]),
+    readOnlyGit(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
   ]);
   return { identity: { root, gitDirectory, commonDirectory, branch }, source,
     index: sha256(index), configuration: sha256(configuration), status };
@@ -225,7 +225,7 @@ export async function assertCandidate(root, workspace, candidate) {
 // Unlike sourceSnapshot, this guard ignores deleted index entries and index modes
 // that legitimately change during staging. Final evidence still uses sourceSnapshot.
 async function contentFingerprint(root) {
-  const files = [...new Set(paths(await git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])))].sort();
+  const files = [...new Set(paths(await readOnlyGit(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])))].sort();
   const entries = [];
   for (const file of files) {
     const absolute = path.join(root, file);
@@ -275,7 +275,7 @@ async function requireCommitResult(root, request, candidate) {
   if (!candidate.created || candidate.commit === request.expected.source.head ||
       JSON.stringify(ancestry) !== JSON.stringify([candidate.commit, request.expected.source.head]) ||
       candidate.parent !== request.expected.source.head) fail("Candidate history is not exactly one new local commit on the expected parent.");
-  const changed = paths(await git(root, ["--no-optional-locks", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only",
+  const changed = paths(await readOnlyGit(root, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only",
     "-z", request.expected.source.head, candidate.commit, "--"])).sort();
   if (JSON.stringify(changed) !== JSON.stringify(request.files) || await contentFingerprint(root) !== request.content) {
     fail("Candidate content differs from the inspected task-owned changes.");
@@ -544,16 +544,16 @@ async function commitInspectedIndex(root, request) {
       }
     } catch (error) { throw Object.assign(error, { candidateFailure: error.candidateFailure ?? "staging-failed" }); }
     await check();
-    const stagedPaths = paths(await gitMutation(root, ["--no-optional-locks", "diff", "--cached",
-      "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", request.expected.source.head, "--"], undefined, environment)).sort();
+    const stagedPaths = paths(await gitMutation(root, readOnlyGitArgs(["diff", "--cached",
+      "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", request.expected.source.head, "--"]), undefined, environment)).sort();
     if (JSON.stringify(stagedPaths) !== JSON.stringify(request.files) ||
-        await gitMutation(root, ["--no-optional-locks", "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "--"], undefined, environment) ||
-        await gitMutation(root, ["ls-files", "--others", "--exclude-standard", "-z"], undefined, environment)) {
+        await gitMutation(root, readOnlyGitArgs(["diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "--"]), undefined, environment) ||
+        await gitMutation(root, readOnlyGitArgs(["ls-files", "--others", "--exclude-standard", "-z"]), undefined, environment)) {
       fail("The isolated index does not contain exactly the inspected task changes.");
     }
     await requireHooks(root, request.hooks);
     const tree = (await gitMutation(root, ["write-tree"], undefined, environment)).trim();
-    const stagedIndex = sha256(await gitMutation(root, ["ls-files", "--stage", "-z"], undefined, environment));
+    const stagedIndex = sha256(await gitMutation(root, readOnlyGitArgs(["ls-files", "--stage", "-z"]), undefined, environment));
     await check();
     referenceDirectory = await mkdtemp(path.join(tmpdir(), "devpocket-ref-guard-"));
     const reference = await prepareReferenceGuard(root, request, referenceDirectory, tree);
@@ -581,7 +581,7 @@ async function commitInspectedIndex(root, request) {
         JSON.stringify(ancestry) !== JSON.stringify([after.source.head, request.expected.source.head]) ||
         after.source.head === request.expected.source.head ||
         (await git(root, ["rev-parse", "HEAD^{tree}"])).trim() !== tree ||
-        sha256(await gitMutation(root, ["ls-files", "--stage", "-z"], undefined, environment)) !== stagedIndex) {
+        sha256(await gitMutation(root, readOnlyGitArgs(["ls-files", "--stage", "-z"]), undefined, environment)) !== stagedIndex) {
       fail("Candidate commit history, tree or protected index changed.");
     }
     await requireHooks(root, request.hooks);
@@ -595,7 +595,7 @@ async function commitInspectedIndex(root, request) {
     }
     await lock.sync();
     await requireLock();
-    if (sha256(await git(root, ["ls-files", "--stage", "-z"])) !== request.expected.index) {
+    if (sha256(await readOnlyGit(root, ["ls-files", "--stage", "-z"])) !== request.expected.index) {
       fail("The protected live index changed before publication.");
     }
     await lock.close();

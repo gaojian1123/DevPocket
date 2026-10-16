@@ -53,7 +53,7 @@ the current session, freshly inspect the starting checkout before dispatch.
 Use bounded read-only Git inspection, as the starter does through the existing
 Git helper: confirm the repository root, compare the resolved `--git-dir` and
 `--git-common-dir`, and inspect
-`git --no-optional-locks status --porcelain --untracked-files=all --ignore-submodules=none`.
+`git --no-optional-locks -c core.fsmonitor=false status --porcelain --untracked-files=all --ignore-submodules=none`.
 Check staged, unstaged and non-ignored untracked changes; ignored artifacts do
 not make a checkout dirty. Session names and the presence of a `.git` file alone
 do not establish linked-worktree identity.
@@ -213,8 +213,9 @@ Neither verifier callbacks nor later observations can rewrite its required check
 or source identity.
 Machine-readable trailer queries suppress signature display without changing
 commit signing or the user's Git display settings.
-Read-only status/diff inspections disable optional Git locks so they do not
-refresh the index or invoke its hook.
+Read-only index/status/diff probes disable optional Git locks and fsmonitor for
+that command. Configuration-evidence queries stay unmodified, and authorized Git
+mutations retain their configured behavior.
 Root and Git metadata comparisons resolve directory aliases, while task ownership
 retains the caller's workspace path.
 

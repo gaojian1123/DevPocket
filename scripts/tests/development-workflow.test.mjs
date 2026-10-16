@@ -67,7 +67,7 @@ test("repository routing discovers the development skill without requiring workf
   assert.match(agents, /workflow only when the user explicitly/);
   assert.doesNotMatch(agents, /`devpocket-development` workflow by default/);
   assert.match(skill, /clean linked worktree, implement in the current session/);
-  assert.match(skill, /--no-optional-locks status --porcelain --untracked-files=all --ignore-submodules=none/);
+  assert.match(skill, /--no-optional-locks -c core\.fsmonitor=false status --porcelain --untracked-files=all --ignore-submodules=none/);
   assert.match(skill, /Continue an existing task in its own worktree/);
   assert.match(skill, /npm run verify -- -Base BASE_COMMIT/);
   assert.match(skill, /read\/search-only `devpocket-reviewer` in a separate context/);
@@ -146,6 +146,23 @@ async function workspace(t, { separateGitDir = false } = {}) {
     await rm(home, { recursive: true, force: true });
   });
   return { root, main };
+}
+
+function fixtureFsmonitor(t, command) {
+  const index = Number(process.env.GIT_CONFIG_COUNT ?? 0);
+  assert.ok(Number.isSafeInteger(index) && index >= 0 && index < 128);
+  const key = `GIT_CONFIG_KEY_${index}`, value = `GIT_CONFIG_VALUE_${index}`;
+  const original = new Map(["GIT_CONFIG_COUNT", key, value].map((name) => [name, process.env[name]]));
+  t.after(() => {
+    for (const [name, saved] of original) {
+      if (saved === undefined) delete process.env[name];
+      else process.env[name] = saved;
+    }
+  });
+  // Enable only the fixture's declared monitor despite inherited command-scope settings.
+  process.env[key] = "core.fsmonitor";
+  process.env[value] = command;
+  process.env.GIT_CONFIG_COUNT = String(index + 1);
 }
 
 async function registeredStarter(root, {
@@ -836,6 +853,97 @@ test("ready results retain their original external-hook baseline", async (t) => 
   await assert.rejects(readFile(path.join(root, ".data", "reused-hook-ran")), { code: "ENOENT" });
 });
 
+test("read-only Git probes do not execute configured filesystem monitors", async (t) => {
+  const { verificationPlan } = await import("../verification.mjs");
+  const { diagnosticSourceFiles } = await import("../verification-diagnostics.mjs");
+  for (const probe of ["source", "paths", "plan", "worktree", "linked-starter", "primary-starter", "diagnostics"]) {
+    await t.test(probe, async (t) => {
+      const fixture = await workspace(t), root = probe === "primary-starter" ? fixture.main : fixture.root;
+      const hook = path.join(fixture.main, ".git", "hooks", "fsmonitor-watchman");
+      const marker = path.join(root, ".data", "monitor-ran");
+      const base = (await git(root, ["rev-parse", "HEAD"])).trim();
+      await mkdir(path.join(root, ".data"));
+      await writeFile(hook, "#!/bin/sh\nprintf ran >> .data/monitor-ran\nprintf 'monitor-token\\0/\\0'\n", { mode: 0o755 });
+      await git(root, ["config", "--local", "core.fsmonitor", hook.replaceAll("\\", "/")]);
+      await git(root, ["config", "--local", "core.fsmonitorHookVersion", "2"]);
+      fixtureFsmonitor(t, hook.replaceAll("\\", "/"));
+      const configuration = await git(root, ["config", "--null", "--list", "--show-origin", "--show-scope"]);
+      await writeFile(path.join(root, "README.md"), "Inspected dirty file\n");
+      await mkdir(path.join(root, "docs"));
+      await writeFile(path.join(root, "docs", "monitor.md"), "Untracked documentation\n");
+      if (probe === "source") assert.equal((await sourceSnapshot(root)).head, base);
+      if (probe === "paths") assert.deepEqual(await changedPaths(root, base), ["README.md", "docs/monitor.md"]);
+      if (probe === "plan") assert.deepEqual((await verificationPlan(root, base)).changedFiles, ["README.md", "docs/monitor.md"]);
+      if (probe === "diagnostics") {
+        await mkdir(path.join(root, "scripts"));
+        await writeFile(path.join(root, "scripts", "monitor.mjs"), "export {};\n");
+        assert.deepEqual([...await diagnosticSourceFiles(root)], ["scripts/monitor.mjs"]);
+      }
+      if (probe === "worktree") {
+        const current = await inspectWorktree(root);
+        assert.equal(current.configuration, sha256(configuration), "Configuration evidence must not include probe-only overrides.");
+        assert.match(current.status, /README\.md/);
+        assert.match(current.status, /docs\/monitor\.md/);
+      }
+      if (probe.endsWith("starter")) {
+        const starter = await registeredStarter(root);
+        const result = await starter.start({ goal: "Inspect safely", acceptance: ["Dirty work stays untouched"] });
+        assert.equal(result.resultType, "failure");
+        assert.deepEqual(starter.calls, []);
+      }
+      await assert.rejects(readFile(marker), { code: "ENOENT" });
+      assert.equal(sha256(await git(root, ["config", "--null", "--list", "--show-origin", "--show-scope"])), sha256(configuration));
+      if (probe === "source") {
+        await git(root, ["add", "--", "README.md"]);
+        assert.match(await readFile(marker, "utf8"), /^(?:ran)+$/, "Native mutation keeps the user's configured monitor behavior.");
+      }
+    });
+  }
+});
+
+test("readiness rejects a changed filesystem-monitor hook without executing it", async (t) => {
+  const { root, main } = await workspace(t);
+  const hook = path.join(main, ".git", "hooks", "fsmonitor-watchman");
+  await mkdir(path.join(root, ".data"));
+  await writeFile(hook, "#!/bin/sh\nprintf 'monitor-token\\0/\\0'\n", { mode: 0o755 });
+  await git(root, ["config", "--local", "core.fsmonitor", hook.replaceAll("\\", "/")]);
+  await git(root, ["config", "--local", "core.fsmonitorHookVersion", "2"]);
+  fixtureFsmonitor(t, hook.replaceAll("\\", "/"));
+  const result = await runDevelopment(documentationTask(root, {
+    agent: async (_prompt, options) => options.agent === "devpocket-reviewer" ? passingReview : implemented(root, "No source change"),
+  }), { root });
+  assert.equal(result.status, "ready", result.reason);
+  await writeFile(hook, "#!/bin/sh\nprintf changed >> .data/changed-monitor-ran\nprintf 'monitor-token\\0/\\0'\n");
+  const stale = await checkDevelopmentReadiness(root, result);
+  assert.equal(stale.status, "blocked");
+  assert.match(stale.reason, /hook policy changed/i);
+  await assert.rejects(readFile(path.join(root, ".data", "changed-monitor-ran")), { code: "ENOENT" });
+  assert.equal((await git(root, ["config", "--get", "core.fsmonitor"])).trim(), hook.replaceAll("\\", "/"));
+});
+
+test("changed filesystem-monitor configuration is rejected before it can execute", async (t) => {
+  const { root } = await workspace(t);
+  const parent = (await git(root, ["rev-parse", "HEAD"])).trim();
+  const hook = path.join(root, ".data", "unapproved-monitor");
+  await mkdir(path.join(root, ".data"));
+  await writeFile(hook, "#!/bin/sh\nprintf changed >> .data/changed-monitor-ran\nprintf 'monitor-token\\0/\\0'\n", { mode: 0o755 });
+  await git(root, ["config", "--local", "core.fsmonitorHookVersion", "2"]);
+  const result = await runDevelopment(documentationTask(root, {
+    agent: async () => {
+      await writeFile(path.join(root, "README.md"), "Task edit\n");
+      await git(root, ["config", "--local", "core.fsmonitor", hook.replaceAll("\\", "/")]);
+      fixtureFsmonitor(t, hook.replaceAll("\\", "/"));
+      return implemented(root);
+    },
+  }), { root, verify: async () => { assert.fail("Changed configuration must stop before verification."); } });
+  assert.equal(result.status, "blocked");
+  assert.match(result.reason, /configuration changed/i);
+  await assert.rejects(readFile(path.join(root, ".data", "changed-monitor-ran")), { code: "ENOENT" });
+  assert.equal((await git(root, ["rev-parse", "HEAD"])).trim(), parent);
+  assert.equal((await git(root, ["config", "--get", "core.fsmonitor"])).trim(), hook.replaceAll("\\", "/"));
+  assert.equal(await readFile(path.join(root, "README.md"), "utf8"), "Task edit\n");
+});
+
 test("skill, compiler, Gradle launcher and nested dependency policy require review before execution", async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
   for (const file of [".github/skills/devpocket-development/SKILL.md", ".npmrc", ".NPMRC", "backend/tsconfig.json", "android/gradlew.bat",
@@ -1162,6 +1270,19 @@ test("nested hook evidence is not limited to the candidate routing set", async (
   for (const [hook, exitCode] of [["post-checkout", 0], ["post-checkout", 19], ["fixture-unsupported-hook", 0]]) {
     await t.test(`${hook}: ${exitCode}`, async (t) => {
       const { root, main } = await workspace(t);
+      let unknownHookOption = "";
+      if (hook === "fixture-unsupported-hook") {
+        let help;
+        try {
+          const output = await exec("git", ["hook", "run", "-h"], { cwd: root, timeout: 30_000 });
+          help = output.stdout + output.stderr;
+        } catch (error) {
+          if (error.code !== 129) throw error;
+          help = error.stdout + error.stderr;
+        }
+        assert.match(help, /git hook run/);
+        if (help.includes("--allow-unknown-hook-name")) unknownHookOption = "--allow-unknown-hook-name ";
+      }
       await writeFile(path.join(main, ".git", "hooks", hook), [
         "#!/bin/sh",
         "printf ran >> .data/nested-observed-hook",
@@ -1171,7 +1292,7 @@ test("nested hook evidence is not limited to the candidate routing set", async (
       ].join("\n"), { mode: 0o755 });
       await writeFile(path.join(main, ".git", "hooks", "pre-commit"), [
         "#!/bin/sh",
-        hook === "post-checkout" ? "git -c core.autocrlf=false checkout -- README.md" : `git hook run ${hook}`,
+        hook === "post-checkout" ? "git -c core.autocrlf=false checkout -- README.md" : `git hook run ${unknownHookOption}${hook}`,
         "exit 0",
         "",
       ].join("\n"), { mode: 0o755 });

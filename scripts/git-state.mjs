@@ -15,16 +15,22 @@ export async function git(root, args) {
   return result.stdout;
 }
 
+export const readOnlyGitArgs = (args) => ["--no-optional-locks", "-c", "core.fsmonitor=false", ...args];
+
+export async function readOnlyGit(root, args) {
+  return git(root, readOnlyGitArgs(args));
+}
+
 export async function sourceSnapshot(root) {
   const head = (await git(root, ["rev-parse", "--verify", "HEAD"])).trim();
   const modes = new Map();
-  for (const entry of splitPaths(await git(root, ["ls-files", "--stage", "-z"]))) {
+  for (const entry of splitPaths(await readOnlyGit(root, ["ls-files", "--stage", "-z"]))) {
     const tab = entry.indexOf("\t");
     const [mode, , stage] = entry.slice(0, tab).split(" ");
     if (stage !== "0") throw new Error("Resolve the unmerged index before collecting source evidence.");
     modes.set(entry.slice(tab + 1), mode);
   }
-  const files = [...new Set(splitPaths(await git(root,
+  const files = [...new Set(splitPaths(await readOnlyGit(root,
     ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])))].sort();
   const entries = [];
   for (const file of files) {

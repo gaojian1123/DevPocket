@@ -40,10 +40,10 @@ Freshly confirm the repository root, HEAD and the resolved `--git-dir` and
 `--git-common-dir` before editing. Equal Git directories identify the primary
 checkout; a linked worktree has a separate Git directory. Session names or a
 `.git` file alone do not establish that identity. Inspect staged, unstaged and
-non-ignored untracked changes without refreshing the index:
+non-ignored untracked changes without refreshing the index or invoking fsmonitor:
 
 ```powershell
-git --no-optional-locks status --porcelain --untracked-files=all --ignore-submodules=none
+git --no-optional-locks -c core.fsmonitor=false status --porcelain --untracked-files=all --ignore-submodules=none
 ```
 
 - In a clean linked worktree, implement in the current session and worktree.

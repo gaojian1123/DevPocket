@@ -1,7 +1,7 @@
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { checkDevelopmentReadiness, parseTask, requireDevelopmentImplementation, runDevelopment, taskSchema } from "./development-workflow.mjs";
-import { git } from "./verification.mjs";
+import { readOnlyGit } from "./verification.mjs";
 
 const readinessSchema = {
   type: "object", required: ["runId"], properties: { runId: { type: "string" } },
@@ -29,11 +29,11 @@ export async function checkRecordedReadiness(session, root, input) {
 
 async function inspectStartingWorktree(root) {
   root = await realpath(root);
-  const topLevel = await realpath((await git(root, ["rev-parse", "--show-toplevel"])).trim());
+  const topLevel = await realpath((await readOnlyGit(root, ["rev-parse", "--show-toplevel"])).trim());
   if (topLevel !== root) throw new Error("Expected the repository worktree root.");
-  const gitDirectory = await realpath(path.resolve(root, (await git(root, ["rev-parse", "--git-dir"])).trim()));
-  const commonDirectory = await realpath(path.resolve(root, (await git(root, ["rev-parse", "--git-common-dir"])).trim()));
-  const dirty = Boolean(await git(root, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"]));
+  const gitDirectory = await realpath(path.resolve(root, (await readOnlyGit(root, ["rev-parse", "--git-dir"])).trim()));
+  const commonDirectory = await realpath(path.resolve(root, (await readOnlyGit(root, ["rev-parse", "--git-common-dir"])).trim()));
+  const dirty = Boolean(await readOnlyGit(root, ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"]));
   return { linked: gitDirectory !== commonDirectory, dirty };
 }
 

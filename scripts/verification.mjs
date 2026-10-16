@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile } from "node:fs/promises";
 import path from "node:path";
-import { git, sourceSnapshot } from "./git-state.mjs";
+import { readOnlyGit, sourceSnapshot } from "./git-state.mjs";
 import { runCommand } from "./process.mjs";
 import { cleanDeviceRun } from "./device-run.mjs";
 import { projectWorkerDiagnostics, readDiagnosticReport } from "./worker-diagnostics.mjs";
@@ -10,7 +10,7 @@ import { diagnosticError, failureDetails, ownValue, commandDetails, diagnosticVe
 import { boundedDiagnosticBytes } from "./bounded-worker-log.mjs";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationGroups, verificationImpact } from "./verification-policy.mjs";
 export { CHECKS } from "./verification-policy.mjs";
-export { git, sourceSnapshot } from "./git-state.mjs";
+export { git, readOnlyGit, sourceSnapshot } from "./git-state.mjs";
 
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const splitPaths = (value) => value.split("\0").filter(Boolean);
@@ -41,12 +41,12 @@ export function verificationFailure(error, phase = "command") {
 export async function verificationPlan(root, base, all = false) {
   if (!base || base.startsWith("-")) throw verificationFault("base-invalid");
   let baseSha;
-  try { baseSha = (await git(root, ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`])).trim(); }
+  try { baseSha = (await readOnlyGit(root, ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`])).trim(); }
   catch (error) { throw verificationFault("base-invalid", {}, error); }
   const source = await sourceSnapshot(root);
   const changedFiles = [...new Set([
-    ...splitPaths(await git(root, ["--no-optional-locks", "diff", "--no-ext-diff", "--no-textconv", "--name-only", "--no-renames", "-z", baseSha, "--"])),
-    ...splitPaths(await git(root, ["ls-files", "--others", "--exclude-standard", "-z"])),
+    ...splitPaths(await readOnlyGit(root, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "--no-renames", "-z", baseSha, "--"])),
+    ...splitPaths(await readOnlyGit(root, ["ls-files", "--others", "--exclude-standard", "-z"])),
   ])].sort();
   const impact = verificationImpact(changedFiles, all);
   const device = impact.requiredChecks.includes("android-device");
