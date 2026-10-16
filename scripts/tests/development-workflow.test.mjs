@@ -1330,6 +1330,108 @@ test("late AUTO_MERGE creation cannot be deleted as an assumed no-op", async (t)
   assert.equal(receipt.status, "blocked");
 });
 
+test("reference preparing notifications stay advisory until locked admission", async (t) => {
+  for (const scenario of ["commit", "hook-tree-change", "hook-veto", "unknown-phase"]) {
+    await t.test(scenario, async (t) => {
+      const { root, main } = await workspace(t);
+      const directory = path.join(root, ".data");
+      await mkdir(directory);
+      await writeFile(path.join(main, ".git", "hooks", "reference-transaction"), [
+        "#!/bin/sh",
+        'if test "$1" = preparing; then',
+        "  printf preparing >> .data/preparing-count",
+        scenario === "hook-veto" ? "  exit 19" : "  :",
+        "fi",
+        "cat > /dev/null",
+        "",
+      ].join("\n"), { mode: 0o755 });
+      if (scenario === "hook-tree-change") {
+        await writeFile(path.join(main, ".git", "hooks", "pre-commit"),
+          "#!/bin/sh\nprintf 'Unowned\\n' > unowned.txt\ngit add -- unowned.txt\n", { mode: 0o755 });
+      }
+      const before = await inspectWorktree(root);
+      await writeFile(path.join(root, "README.md"), "Inspected change\n");
+      const { request } = await prepareCandidate(root, before, await sourceSnapshot(root),
+        ["README.md"], "fixture-session", "Keep preparing advisory", undefined, await captureCandidateImplementation());
+      const file = path.join(directory, "candidate-request.json"), bytes = JSON.stringify(request) + "\n";
+      await writeFile(file, bytes);
+      const preload = path.join(directory, "preparing-protocol.mjs");
+      await writeFile(preload, [
+        "import assert from 'node:assert/strict';",
+        "import childProcess from 'node:child_process';",
+        "import { syncBuiltinESMExports } from 'node:module';",
+        "import { promisify } from 'node:util';",
+        "import { existsSync, readFileSync, writeFileSync } from 'node:fs';",
+        "import path from 'node:path';",
+        `const target = ${JSON.stringify(root)}, unknown = ${scenario === "unknown-phase"};`,
+        "const original = childProcess.execFile, execute = promisify(original);",
+        "const intercepted = (...args) => original(...args);",
+        "intercepted[promisify.custom] = (program, args, options) => {",
+        "  const routing = args.find((value) => value.startsWith('core.hooksPath='));",
+        "  if (program === 'git' && options?.cwd === target && routing && (args.includes('update-ref') || args.includes('commit'))) {",
+        "    const guard = routing.slice('core.hooksPath='.length);",
+        "    const env = { ...options.env }; delete env.GIT_TRACE2_EVENT;",
+        "    const query = (args) => childProcess.execFileSync('git', args, { cwd: target, env, encoding: 'utf8' }).trim();",
+        "    const parent = query(['rev-parse', 'HEAD']), branch = query(['symbolic-ref', 'HEAD']), zero = '0'.repeat(parent.length);",
+        "    const counter = path.join(target, '.data', 'preparing-count');",
+        "    const count = () => existsSync(counter) ? readFileSync(counter, 'utf8') : '';",
+        "    const invoke = (label, input, forwarded) => {",
+        "      const stdin = path.join(target, '.data', `${label}-input`), previous = count();",
+        "      writeFileSync(stdin, input);",
+        "      writeFileSync(path.join(target, '.data', 'preparing-observed'), `${label}:entered\\n`, { flag: 'a' });",
+        "      childProcess.execFileSync('git', ['-c', routing, 'hook', 'run', `--to-stdin=${stdin}`,",
+        "        'reference-transaction', '--', unknown ? 'future-phase' : 'preparing'],",
+        "        { cwd: target, env, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });",
+        "      assert.equal(count(), previous + (forwarded ? 'preparing' : ''), 'Forward a user phase once, never forward the private probe.');",
+        "      for (const name of ['probe.json', 'prepared.json', 'cleanup-prepared.json']) {",
+        "        assert.equal(existsSync(path.join(guard, name)), false, 'Pre-lock notifications cannot create locked evidence.');",
+        "      }",
+        "      writeFileSync(path.join(target, '.data', 'preparing-observed'), `${label}:accepted\\n`, { flag: 'a' });",
+        "    };",
+        "    if (args.includes('update-ref')) invoke('probe', `${parent} ${zero} ${branch}\\n`, false);",
+        "    else {",
+        "      const tree = query(['write-tree']);",
+        "      const proposed = query(['commit-tree', tree, '-p', parent, '-m', 'Pre-lock fixture object']);",
+        "      invoke('commit', `${parent} ${proposed} HEAD\\n`, true);",
+        "      invoke('cleanup', `${zero} ${zero} AUTO_MERGE\\n`, true);",
+        "    }",
+        "  }",
+        "  return execute(program, args, options);",
+        "}; childProcess.execFile = intercepted; syncBuiltinESMExports();",
+        "",
+      ].join("\n"));
+      const command = nativeCandidateCommand(file, sha256(bytes)).replace(" --input-type=module",
+        ` --import '${pathToFileURL(preload).href.replaceAll("'", "''")}' --input-type=module`);
+      let failure;
+      try {
+        await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", command], { cwd: root, timeout: 90_000 });
+      } catch (error) { failure = error; }
+      const observed = await readFile(path.join(directory, "preparing-observed"), "utf8");
+      const receipt = JSON.parse(await readFile(`${file}.result.json`, "utf8"));
+      const current = await inspectWorktree(root);
+      if (scenario === "commit") {
+        assert.equal(receipt.status, "committed", failure?.stderr);
+        assert.equal(failure, undefined);
+        assert.equal(receipt.candidate.reference.commit, current.source.head);
+        assert.equal(receipt.candidate.reference.tree, (await git(root, ["rev-parse", "HEAD^{tree}"])).trim());
+        assert.match(observed, /probe:accepted\ncommit:entered\ncommit:accepted\ncleanup:entered\ncleanup:accepted\n/);
+      } else {
+        assert.equal(receipt.status, "blocked");
+        assert.equal(failure?.code, 1);
+        assert.equal(current.source.head, before.source.head);
+        assert.equal(current.index, before.index);
+        if (scenario === "hook-tree-change") {
+          assert.match(observed, /cleanup:accepted/);
+          assert.equal(await readFile(path.join(root, "unowned.txt"), "utf8"), "Unowned\n");
+        } else if (scenario === "hook-veto") {
+          assert.equal(observed, "probe:entered\nprobe:accepted\ncommit:entered\n");
+          assert.equal(await readFile(path.join(directory, "preparing-count"), "utf8"), "preparing");
+        } else assert.equal(observed, "probe:entered\n");
+      }
+    });
+  }
+});
+
 test("transaction guards preserve configured hooks, original configuration and hook vetoes", async (t) => {
   for (const veto of [false, true]) {
     await t.test(veto ? "reference veto" : "normal reference hooks", async (t) => {

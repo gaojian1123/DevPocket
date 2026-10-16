@@ -351,8 +351,9 @@ async function referenceGuard(specification, observeHooks) {
       }
     };
     if (specification.hook === "reference-transaction") {
-      if (args.length !== 1 || !["prepared", "committed", "aborted"].includes(args[0]) ||
+      if (args.length !== 1 || !["preparing", "prepared", "committed", "aborted"].includes(args[0]) ||
           !input.length || input.at(-1) !== 10) throw new Error("Unrecognized reference transaction shape.");
+      const preparing = args[0] === "preparing";
       const text = input.toString("utf8");
       if (!Buffer.from(text, "utf8").equals(input)) throw new Error("Unsupported reference encoding.");
       const rows = text.trimEnd().split("\n").map((line) => {
@@ -387,7 +388,8 @@ async function referenceGuard(specification, observeHooks) {
           }
         }
       } else {
-        const branch = rows.filter((row) => row.name === context.branch);
+        const branch = rows.filter((row) => row.name === context.branch ||
+          (preparing && rows.length === 1 && row.name === "HEAD"));
         if (branch.length !== 1 || rows.length > 2 || branch[0].old !== context.parent ||
             branch[0].next.length !== context.parent.length || [zero, context.parent].includes(branch[0].next) ||
             rows.some((row) => ![context.branch, "HEAD"].includes(row.name) ||
@@ -409,7 +411,9 @@ async function referenceGuard(specification, observeHooks) {
             JSON.stringify({ context: specification.hash, branch: context.branch, parent: context.parent,
               commit: branch[0].next, tree: context.tree }),
             { flag: "wx", mode: 0o600 });
-        } else if (!approved || approved.commit !== branch[0].next) throw new Error("Reference completion lacks its prepared binding.");
+        } else if (!preparing && (!approved || approved.commit !== branch[0].next)) {
+          throw new Error("Reference completion lacks its prepared binding.");
+        }
       }
       if (specification.original) await identity();
     } else await identity();

@@ -174,6 +174,10 @@ inspected tree before advancing history. A verify-only transaction first proves 
 works without advancing a ref or invoking user hooks. User hooks are forwarded
 once through `git hook run`, with original arguments, input, configuration and
 exit status; user hook files and persistent Git settings are not replaced.
+Git's earlier `preparing` notification is advisory: its unresolved `HEAD` update
+is accepted without creating probe, cleanup or commit evidence. Original hooks
+still receive that phase and retain their veto; the private capability probe is
+not forwarded. Only the later, locked `prepared` phase can establish admission.
 The mutating guard context is created separately after staging has established
 the inspected tree; the earlier verify-only probe cannot authorize a commit.
 Reference-binding evidence version 2 includes that tree. Hook edits remain in
