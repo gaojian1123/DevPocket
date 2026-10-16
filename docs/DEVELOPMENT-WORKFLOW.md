@@ -154,6 +154,9 @@ success. A failed post-commit hook leaves its completed local commit in place.
 Hook starts/exits are paired by trace session and child identity across nested
 Git commands. Command completion stays bound to the root Git invocation, and
 ordinary non-hook child failures are not reclassified as hook failures.
+The observed-name allowlist covers Git's documented hooks, including nested
+hooks such as `post-checkout`, separately from the candidate-only routing set.
+Every recognized hook still needs complete exit evidence; unknown names block.
 Repeated hook/exit descriptors are projected once without exporting trace SIDs;
 every observed hook invocation still requires its own complete exit evidence.
 Before index publication, failures leave the original live index intact; task

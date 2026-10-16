@@ -1158,6 +1158,54 @@ test("nested Git hook failures cannot qualify an otherwise successful commit", a
   assert.equal(JSON.stringify(receipt).includes("private nested hook detail"), false);
 });
 
+test("nested hook evidence is not limited to the candidate routing set", async (t) => {
+  for (const [hook, exitCode] of [["post-checkout", 0], ["post-checkout", 19], ["fixture-unsupported-hook", 0]]) {
+    await t.test(`${hook}: ${exitCode}`, async (t) => {
+      const { root, main } = await workspace(t);
+      await writeFile(path.join(main, ".git", "hooks", hook), [
+        "#!/bin/sh",
+        "printf ran >> .data/nested-observed-hook",
+        "printf 'private nested hook output\\n' >&2",
+        `exit ${exitCode}`,
+        "",
+      ].join("\n"), { mode: 0o755 });
+      await writeFile(path.join(main, ".git", "hooks", "pre-commit"), [
+        "#!/bin/sh",
+        hook === "post-checkout" ? "git -c core.autocrlf=false checkout -- README.md" : `git hook run ${hook}`,
+        "exit 0",
+        "",
+      ].join("\n"), { mode: 0o755 });
+      const before = await inspectWorktree(root);
+      let verifications = 0;
+      const result = await runDevelopment(documentationTask(root), {
+        root, verify: async (...args) => { verifications++; return executeVerification(...args); },
+      });
+      const receiptText = await readFile(path.join(root, ".data", "development", "candidate-test",
+        "candidate-0.json.result.json"), "utf8");
+      const receipt = JSON.parse(receiptText), current = await inspectWorktree(root);
+      const accepted = hook === "post-checkout" && exitCode === 0;
+      assert.equal(await readFile(path.join(root, ".data", "nested-observed-hook"), "utf8"), "ran");
+      assert.equal(await readFile(path.join(root, "README.md"), "utf8"), "Explained\n");
+      assert.equal((await git(root, ["rev-list", "--count", `${before.source.head}..HEAD`])).trim(), "1",
+        "Inspect the completed native commit rather than aborting before the nested hook runs.");
+      assert.equal(result.status, accepted ? "ready" : "blocked", result.reason);
+      assert.equal(verifications, accepted ? 1 : 0);
+      assert.equal(receiptText.includes("private nested hook output"), false);
+      if (accepted) {
+        assert.equal(current.status, "");
+        assert.equal(receipt.status, "committed");
+        assert.equal(receipt.candidate.reference.commit, current.source.head);
+      } else {
+        assert.equal(receipt.status, "blocked");
+        assert.equal(receipt.failure, hook === "post-checkout" ? "hook-failed" : "hook-evidence");
+        assert.equal(receipt.exitCode, 0, "Retain the successful root Git exit separately from nested hook evidence.");
+        assert.equal(current.index, before.index, "Failure must not publish the private index.");
+        if (hook === "post-checkout") assert.deepEqual(receipt.hookFailures, [{ hook, exitCode }]);
+      }
+    });
+  }
+});
+
 test("successful hooks run once normally even when their output or nested Git commands look like failures", async (t) => {
   const { root, main } = await workspace(t);
   await writeFile(path.join(main, ".git", "hooks", "post-commit"), [

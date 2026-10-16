@@ -14,8 +14,14 @@ export const sameSource = (a, b) => a?.head === b?.head && a?.fingerprint === b?
 const paths = (text) => text.split("\0").filter(Boolean);
 const coauthor = "Copilot App <223556219+Copilot@users.noreply.github.com>";
 const fail = (message) => { throw Object.assign(new Error(message), { candidateFailure: "candidate-changed" }); };
-const hookNames = new Set(["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit",
+const routedHookNames = new Set(["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit",
   "post-index-change", "reference-transaction"]);
+const observedHookNames = new Set([...routedHookNames,
+  "applypatch-msg", "pre-applypatch", "post-applypatch", "pre-merge-commit", "pre-rebase",
+  "post-checkout", "post-merge", "pre-push", "pre-receive", "update", "proc-receive",
+  "post-receive", "post-update", "push-to-checkout", "pre-auto-gc", "post-rewrite",
+  "sendemail-validate", "fsmonitor-watchman", "p4-changelist", "p4-prepare-changelist",
+  "p4-post-changelist", "p4-pre-submit"]);
 
 async function hookFailures(trace) {
   const { size } = await trace.stat();
@@ -36,7 +42,7 @@ async function hookFailures(trace) {
     if (event.event === "child_start" && event.child_class === "hook") {
       if (typeof event.sid !== "string" || !event.sid.length ||
           !Number.isSafeInteger(event.child_id) || event.child_id < 0 ||
-          !hookNames.has(event.hook_name) || hooks.has(key)) {
+          !observedHookNames.has(event.hook_name) || hooks.has(key)) {
         throw new Error("Unrecognized Git hook evidence.");
       }
       hooks.set(key, { hook: event.hook_name });
@@ -437,7 +443,7 @@ async function prepareReferenceGuard(root, request, directory, tree) {
   const parameters = `${token}_PARAMETERS`, present = `${token}_PRESENT`;
   if ([token, parameters, present].some((name) => process.env[name] !== undefined)) fail("Reference guard environment ownership is unavailable.");
   const original = new Set();
-  for (const hook of hookNames) {
+  for (const hook of routedHookNames) {
     for (const suffix of process.platform === "win32" ? ["", ".exe"] : [""]) {
       try { await access(path.join(request.hooks.directory, hook + suffix), constants.X_OK); original.add(hook); break; }
       catch (error) { if (!["ENOENT", "EACCES"].includes(error.code)) throw error; }
