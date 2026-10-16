@@ -913,3 +913,77 @@ The emulator initially delayed rendering after package replacement, then
 rendered the new interface without resetting its data. No live message was sent
 and no live cancellation or model change was applied during this check. Relay,
 user-extension and wire formats were not changed by this UI follow-up.
+
+## Development regression scheduling measurement (2026-10-16)
+
+This is a same-machine development-tooling benchmark, not product, deployment,
+real-client or final-commit acceptance. The clean isolated worktree started at
+`db9e25de78ee736ffb2020d0605272c09ff949f3`, which also matched remote `main`.
+The optimization changes only test scheduling and its documentation; the
+responsibility-based selection introduced in #15 is unchanged.
+
+Both measurements ran the **complete** `npm run test:workflow` entry, sequentially
+on the same Windows 10.0.26300 machine with 16 logical processors, Node 24.18.0,
+npm 11.16.0, Git 2.53.0.windows.4 and PowerShell 7.6.7. Dependencies were restored
+from the unchanged lockfile with explicit approval after the first attempted run
+reported missing TypeScript. That interrupted attempt is not a timing baseline.
+PowerShell `Stopwatch` measured the whole npm invocation, including startup and
+cleanup; redirected output retained each scenario's reported duration.
+
+| Complete entry | Wall time | Tests | Failed / skipped / cancelled |
+| --- | ---: | ---: | ---: |
+| Unmodified main, successful repeat | 1,365.622 s (22m 45.622s) | 585 passed | 0 / 0 / 0 |
+| Approved bounded-subtest scheduling | 1,033.398 s (17m 13.398s) | 585 passed | 0 / 0 / 0 |
+
+The observed reduction is **332.224 seconds (24.3%)**, not a machine-independent
+performance guarantee. The 585 hierarchical scenario identities match exactly.
+All 64 development-workflow top-level tests and all 464 assertion calls in that
+file remain; a syntax-tree comparison checked assertion text as well as count.
+Their summed top-level duration fell from 1,363.820 to 1,031.509 seconds.
+Top-level tests remain serial, so that sum is meaningful; concurrent child
+durations must not be summed as elapsed time.
+
+| Development scenario group | Before | After |
+| --- | ---: | ---: |
+| Permission, native-tool and hook failures | 89.943 s | 50.917 s |
+| Stale, partial, incomplete and missing-native evidence | 76.149 s | 42.814 s |
+| Configured hooks and policy approval | 56.568 s | 30.662 s |
+| Captured helper/import/wrapper changes after approval | 48.314 s | 22.745 s |
+| Reference preparing and locked admission | 52.937 s | 30.261 s |
+| Nested hook evidence outside the candidate routing set | 56.046 s | 34.259 s |
+
+Only 21 independent scenario groups overlap, with at most two subtests per
+group. Every subtest still creates its own real repository and linked worktree,
+and all subtests and their cleanup are awaited. Process-global environment
+probes and shared-fixture cases stay serial. Candidate ordering and repair
+sequences also stay intact. Real PowerShell, Git hooks/nested exits, private
+indexes, atomic ref admission, injected concurrent edits, captured inputs,
+closed loading, startup rejection, read-only probes and freshness checks were
+not replaced with mocks or cached evidence. Existing synthetic SDK/tool responses
+remain synthetic; this benchmark does not claim a live Copilot permission check.
+
+Reliability observations are retained rather than discarded: an earlier complete
+unmodified run took 1,393.386 seconds with 584 passes and one failure in the
+existing `process.test.mjs` fragmented-bootstrap test's initial owner setup.
+That test passed unchanged when rerun alone, and the next full unmodified run
+passed all 585 tests. No fix or timeout change is claimed for that unreproduced
+setup failure. The approved focused scheduling/native-boundary check also passed
+all 26 selected tests; it is not a substitute for the full entry.
+
+Private benchmark evidence is under `.data\workflow-performance`: `baseline`
+holds the interrupted dependency attempt, `baseline-ready` the first complete
+failed run and focused bootstrap rerun, `baseline-repeat` the successful baseline,
+and `optimized` the full optimized run. Each completed measurement retains
+`environment.json`, `measurement.json` and `workflow-tests.log`; `comparison.json`
+records all development scenario timings and the full inventory comparison.
+`policy-v1.patch`, `policy-v1.json` and `policy-approval.json` retain the actual
+human-approved scheduling change and its hashes. The optimized benchmark's
+source fingerprint is
+`0ddfd1b973f4b1977acd8f0e4d9193852c2baf64dfb0598a4e70debf8a17de4f`,
+before adding this measurement record.
+
+Final acceptance must use a fresh complete source-bound
+`npm run verify -- -Base db9e25de78ee736ffb2020d0605272c09ff949f3`
+report and independent review of the final working-tree snapshot. These
+benchmark logs do not replace that evidence or authorize commits, publication,
+extension installation/reload, deployment or changes to a shared toolchain.

@@ -475,6 +475,29 @@ Changing imports alone is not sufficient. This migration does not grant commit
 or publication authority, replace recorded human decisions, or weaken candidate
 identity, hook approval, independent review or source-bound evidence checks.
 
+### Full workflow regression scheduling
+
+`npm run test:workflow` remains the complete default regression gate. Within
+`scripts\tests\development-workflow.test.mjs`, selected scenario groups use
+Node's built-in test scheduler with a fixed limit of **two** subtests. Each
+such subtest creates and cleans up its own temporary repository and linked
+worktree; all scheduled subtests are awaited. This overlaps independent
+Git/PowerShell work without replacing native execution or sharing a candidate,
+index, hook directory, receipt or verification result.
+
+Top-level tests remain serial. Scenarios sharing a fixture and tests that write
+`process.env` (filesystem-monitor configuration and optional-lock probes) remain
+serial too. Do not enable file-wide concurrency or apply the subtest option to
+a shared-state group. The original assertions, scenarios, command deadlines,
+default entry point and responsibility-based check selection are unchanged;
+there is no fast-only gate or cross-source acceptance cache.
+
+Measure the complete entry on the same machine and toolchain, retaining its exit
+status, total elapsed time and per-test output. Compare completed scenario names
+and counts as well as duration; summing concurrent child durations is not wall
+time. Keep failed attempts visible, and use a fresh source-bound `npm run verify`
+report for final acceptance rather than treating benchmark output as verification.
+
 ### End-to-end failure information
 
 Controlled failures retain separate **execution**, **evidence validation** and
