@@ -73,7 +73,10 @@ An approval request contains:
 
 `formatDevelopmentApproval` supplies the common format. In skill-led work, add a
 plain-language description of the actual behavioral change and use the original
-client's question tool for the real user decision. Retain that actual response in
+client's question tool for the real user decision. The question contains the exact
+hash-validated contents as an immutable text snapshot; local files are reference
+copies, not an approval source. Markdown fences cannot escape the snapshot block.
+Retain that actual response in
 session evidence. A copied JSON file, implementer assertion or AI review does not
 authenticate approval. Sensitive code review may use an applicable actual GitHub
 human review; this does not approve execution or bypass repository rules.
@@ -95,11 +98,18 @@ subset. This policy history does not add paths to CI impact selection.
 Accepted decisions continue the pending phase in the same invocation, without
 dispatching implementation again. Repeated requests for the same scope replay the
 runtime-journaled decision, not an editable workspace receipt. The controller
+checks an already-retained exact receipt before requiring an interactive UI, while
+still checking detail-file type/hash and current source, hooks, implementation and
+inputs. Loss of UI capability alone cannot invalidate matching retained consent.
+The controller
 rechecks source, workspace, hooks, implementation and approval inputs after the
 answer and before continuing.
 The exact original/proposed details digest and byte length are part of the request.
 Details are checked before presentation, before recording an accepted decision,
 and before continuation; substituted, missing or linked details cannot supply consent.
+Replacing and restoring a local copy cannot change the snapshot already sent in
+the native question. Filename dictionaries and missing-content rendering preserve
+own properties, including names such as `__proto__`.
 Rejection/cancellation stays rejected for that key; it is not retried under another
 command. Malformed or missing answers are not
 approval. An unavailable UI returns the specific pending request, without running

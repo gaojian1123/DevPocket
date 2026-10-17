@@ -2,7 +2,7 @@ import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { combineVerification, executeVerification, readOnlyGit, sourceSnapshot, verificationPlan } from "./verification.mjs";
 import { developmentApprovalDetails, developmentApprovalRequest, developmentApprovalSatisfied, inspectDevelopmentPolicy,
-  obtainDevelopmentApproval } from "./development-policy.mjs";
+  obtainDevelopmentApproval, readDevelopmentApprovalDetails } from "./development-policy.mjs";
 import { activeHookSnapshot, assertCandidate, assertIdentity, changedPaths, inspectWorktree, prepareCandidate, sameHooks, sameSource,
   sha256, taskPaths, validateCandidateCommit } from "./candidate-commit.mjs";
 import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "./native-candidate.mjs";
@@ -320,11 +320,17 @@ async function runAttempt(ctx, root, task, verify) {
       const patch = developmentApprovalDetails(base, policy, files);
       try { await writeFile(details, patch, { flag: "wx", mode: 0o600 }); }
       catch (error) {
-        if (error.code !== "EEXIST" || await readFile(details, "utf8") !== patch) throw error;
+        if (error.code !== "EEXIST" || await readDevelopmentApprovalDetails(request, details) === null) throw error;
       }
-      state.pendingApproval = request;
-      await save(statePath, state);
-      const decision = await obtainDevelopmentApproval(ctx, request, details, summary);
+      const retained = receipts.find((receipt) => developmentApprovalSatisfied(request, [receipt]));
+      if (await readDevelopmentApprovalDetails(request, details) === null) {
+        return blocked("Approval details changed or have an unsupported file type; retained consent cannot bypass inspection.");
+      }
+      if (!retained) {
+        state.pendingApproval = request;
+        await save(statePath, state);
+      }
+      const decision = retained ? { receipt: retained } : await obtainDevelopmentApproval(ctx, request, details, summary);
       if (decision.status) return decision;
       const current = await inspectWorktree(root);
       assertIdentity(current, workspace);
@@ -337,7 +343,7 @@ async function runAttempt(ctx, root, task, verify) {
       if (developmentApprovalRequest(scope, refreshed, stage, approvedHooks)?.id !== request.id) {
         return blocked("Approval inputs changed while the decision was pending; no stale approval was consumed.");
       }
-      if (sha256(await readFile(details)) !== request.detailsSha256) {
+      if (await readDevelopmentApprovalDetails(request, details) === null) {
         return blocked("Approval details changed before continuation; the action remains blocked.");
       }
       if (!receipts.some((receipt) => receipt.requestId === request.id)) receipts.push(decision.receipt);

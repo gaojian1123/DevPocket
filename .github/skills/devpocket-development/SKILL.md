@@ -89,8 +89,10 @@ reload and same-task recovery, not an automatic hot swap.
 
 Present the action, reason, exact target, effects, exclusions and validity using
 `formatDevelopmentApproval`; add a plain-language description of the actual behavior
-change and the current diff/inputs. Ask only for missing scope. A manifest filename
-or hash alone is not an approval request. Record the actual user answer, task/target,
+change and include the hash-validated, immutable diff/contents in the native question
+itself (or an immutable authenticated attachment). A mutable local file is only a
+reference copy, never the approval source. Ask only for missing scope. A manifest
+filename or hash alone is not an approval request. Record the actual user answer, task/target,
 actions and relevant input versions in the session. An agent-written JSON record
 or AI review alone is not human approval.
 

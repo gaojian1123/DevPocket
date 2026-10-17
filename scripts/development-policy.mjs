@@ -107,7 +107,8 @@ export function developmentReviewRequirements(files, packageChanges = {}) {
 export async function inspectDevelopmentPolicy(root, base, files, git) {
   files = changedPaths(files);
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(base)) throw new TypeError("An explicit task base is required.");
-  const physicalRoot = await realpath(root), inputs = [], contents = {}, beforeContents = {}, packageChanges = {};
+  const physicalRoot = await realpath(root), inputs = [];
+  const contents = Object.create(null), beforeContents = Object.create(null), packageChanges = Object.create(null);
   for (const file of files.filter((name) => classification(name))) {
     const entry = await git(root, ["--literal-pathspecs", "ls-tree", "-z", base, "--", file]);
     if (/^100(?:644|755) blob [a-f0-9]+\t/.test(entry)) {
@@ -150,15 +151,21 @@ export async function inspectDevelopmentPolicy(root, base, files, git) {
   }
   const requirements = developmentReviewRequirements(files, packageChanges);
   const required = new Set([...requirements.protectedPaths, ...requirements.reviewPaths]);
+  const project = (values) => Object.assign(Object.create(null),
+    Object.fromEntries(Object.entries(values).filter(([file]) => required.has(file))));
   return { ...requirements, inputs: inputs.filter((input) => required.has(input.path)),
-    beforeContents: Object.fromEntries(Object.entries(beforeContents).filter(([file]) => required.has(file))),
-    contents: Object.fromEntries(Object.entries(contents).filter(([file]) => required.has(file))) };
+    beforeContents: project(beforeContents), contents: project(contents) };
 }
 
 export function developmentApprovalDetails(base, policy, files) {
+  const text = (values, file, missing) => {
+    if (!values || !Object.hasOwn(values, file)) return missing;
+    if (typeof values[file] !== "string") throw new TypeError("Approval details require captured text contents.");
+    return values[file];
+  };
   return `Original task base: ${base}\n` + [...files].sort().map((file) =>
-    `\n=== ${file} ===\n--- Original ---\n${policy.beforeContents?.[file] ?? "(absent)"}\n` +
-    `--- Proposed ---\n${policy.contents?.[file] ?? "(deleted)"}\n`).join("");
+    `\n=== ${file} ===\n--- Original ---\n${text(policy.beforeContents, file, "(absent)")}\n` +
+    `--- Proposed ---\n${text(policy.contents, file, "(deleted)")}\n`).join("");
 }
 
 export function developmentApprovalRequest(scope, policy, stage, hooks) {
@@ -187,7 +194,13 @@ export function developmentApprovalRequest(scope, policy, stage, hooks) {
   return { ...request, id: identity(request) };
 }
 
-export function formatDevelopmentApproval(request, details, summary) {
+export function formatDevelopmentApproval(request, details, summary, snapshot) {
+  if (typeof snapshot !== "string" || Buffer.byteLength(snapshot) !== request.detailsBytes ||
+      hash(snapshot) !== request.detailsSha256) throw new TypeError("An exact immutable approval snapshot is required.");
+  let fence = "```";
+  for (const match of snapshot.matchAll(/`+/g)) {
+    if (match[0].length >= fence.length) fence = "`".repeat(match[0].length + 1);
+  }
   return [
     `Approval requested: ${request.action}`,
     `Why now: ${request.reasons.map((item) => item.why).join(" ")}`,
@@ -198,35 +211,39 @@ export function formatDevelopmentApproval(request, details, summary) {
     `After approval: ${request.effects.join(" ")}`,
     `Not included: ${request.exclusions.join(" ")}`,
     `Valid for: ${request.validity}`,
-    `Review the actual changes: ${details}`,
+    `Local detail copy (not authoritative): ${details}`,
     `Details SHA256: ${request.detailsSha256}`,
     `Request identity: ${request.id}`,
+    `Contents to approve (immutable native-question snapshot):\n${fence}text\n${snapshot}\n${fence}`,
   ].join("\n\n");
 }
 
-async function matchingApprovalDetails(request, file) {
+export async function readDevelopmentApprovalDetails(request, file) {
   try {
     const info = await lstat(file);
-    return info.isFile() && !info.isSymbolicLink() && info.size === request.detailsBytes &&
-      hash(await readFile(file)) === request.detailsSha256;
+    if (!info.isFile() || info.isSymbolicLink() || info.size !== request.detailsBytes) return null;
+    const bytes = await readFile(file);
+    if (bytes.length !== request.detailsBytes || hash(bytes) !== request.detailsSha256) return null;
+    return bytes.toString("utf8");
   } catch (error) {
-    if (["ENOENT", "ENOTDIR"].includes(error.code)) return false;
+    if (["ENOENT", "ENOTDIR"].includes(error.code)) return null;
     throw error;
   }
 }
 
 export async function obtainDevelopmentApproval(ctx, request, details, summary) {
   if (!request) return null;
-  const message = formatDevelopmentApproval(request, details, summary);
+  const snapshot = await readDevelopmentApprovalDetails(request, details);
+  const changedDetails = () => ({ status: "blocked",
+    reason: "Approval details changed or are unavailable. No decision based on substituted contents may authorize execution.",
+    approval: request });
+  if (snapshot === null) return changedDetails();
+  const message = formatDevelopmentApproval(request, details, summary, snapshot);
   if (ctx.session?.capabilities?.ui?.elicitation !== true || typeof ctx.session.ui?.elicitation !== "function") {
     return { status: "needs_human", reason: "The original client's interactive approval UI is unavailable. Review this request there; no approval or execution was assumed.",
       approval: { ...request, message } };
   }
   if (typeof ctx.step !== "function") throw new Error("Approval requires the original workflow journal.");
-  const changedDetails = () => ({ status: "blocked",
-    reason: "Approval details changed or are unavailable. No decision based on substituted contents may authorize execution.",
-    approval: { ...request, message } });
-  if (!await matchingApprovalDetails(request, details)) return changedDetails();
   const decision = await ctx.step(`devpocket-approval-v1:${request.id}`, async () => {
     const response = await ctx.session.ui.elicitation({
       message,
@@ -241,7 +258,7 @@ export async function obtainDevelopmentApproval(ctx, request, details, summary) 
       (response.action !== "accept" || response.content && Object.keys(response.content).length === 1 &&
         ["approve", "reject"].includes(response.content.decision));
     const approved = valid && response.action === "accept" && response.content.decision === "approve";
-    const detailsMatch = !approved || await matchingApprovalDetails(request, details);
+    const detailsMatch = !approved || await readDevelopmentApprovalDetails(request, details) !== null;
     return { version: 1, requestId: request.id, origin: "original-client",
       decision: !valid || !detailsMatch ? "invalid" : response.action === "cancel" ? "cancelled" :
         approved ? "approved" : "rejected" };
@@ -251,7 +268,7 @@ export async function obtainDevelopmentApproval(ctx, request, details, summary) 
     reason: "This approval was rejected, cancelled or not established. No automatic retry or broader permission is inferred.",
     approval: { ...request, message }, decision,
   };
-  if (!await matchingApprovalDetails(request, details)) return changedDetails();
+  if (await readDevelopmentApprovalDetails(request, details) === null) return changedDetails();
   return { receipt: decision };
 }
 

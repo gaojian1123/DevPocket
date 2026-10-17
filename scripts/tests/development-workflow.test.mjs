@@ -740,6 +740,37 @@ function approvalFixture() {
   return { scope, policy, hooks: { directory: "fixture-hooks", fingerprint: "3".repeat(64) } };
 }
 
+test("approval inspection and rendering preserve prototype-like added and existing filenames", async (t) => {
+  const { root } = await workspace(t), files = ["__proto__", "constructor", "toString"];
+  const base = (await sourceSnapshot(root)).head;
+  for (const file of files) await writeFile(path.join(root, file), `original ${file}\n`);
+  const added = await inspectDevelopmentPolicy(root, base, files, git);
+  assert.equal(Object.getPrototypeOf(added.contents), null);
+  assert.equal(Object.getPrototypeOf(added.beforeContents), null);
+  for (const file of files) {
+    assert.equal(Object.hasOwn(added.contents, file), true);
+    assert.equal(added.contents[file], `original ${file}\n`);
+    assert.equal(Object.hasOwn(added.beforeContents, file), false);
+  }
+  const addedDetails = developmentApprovalDetails(base, added, files);
+  assert.doesNotMatch(addedDetails, /\[object Object\]|function Object|function toString/);
+  assert.ok(files.every((file) => addedDetails.includes(`original ${file}\n`)));
+  const inherited = developmentApprovalDetails(base, { beforeContents: {}, contents: {} }, files);
+  assert.doesNotMatch(inherited, /\[object Object\]|function/);
+  await git(root, ["add", "--", ...files]);
+  await git(root, ["commit", "--quiet", "-m", "Fixture named inputs"]);
+  const existingBase = (await sourceSnapshot(root)).head;
+  for (const file of files) await writeFile(path.join(root, file), `updated ${file}\n`);
+  const existing = await inspectDevelopmentPolicy(root, existingBase, files, git);
+  for (const file of files) {
+    assert.equal(Object.hasOwn(existing.beforeContents, file), true);
+    assert.equal(existing.beforeContents[file], `original ${file}\n`);
+    assert.equal(existing.contents[file], `updated ${file}\n`);
+  }
+  const existingDetails = developmentApprovalDetails(existingBase, existing, files);
+  assert.ok(files.every((file) => existingDetails.includes(`original ${file}\n`) && existingDetails.includes(`updated ${file}\n`)));
+});
+
 test("scoped approval identity follows authority inputs, not unrelated source revisions", () => {
   const { scope, policy, hooks } = approvalFixture();
   const request = developmentApprovalRequest(scope, policy, "execution", hooks);
@@ -753,15 +784,28 @@ test("scoped approval identity follows authority inputs, not unrelated source re
     developmentApprovalRequest(scope, { ...policy, contents: { "scripts/verify.mjs": "Substituted presentation" } }, "execution", hooks),
     developmentApprovalRequest(scope, policy, "execution", { ...hooks, fingerprint: "7".repeat(64) }),
   ]) assert.notEqual(next.id, request.id);
-  const message = formatDevelopmentApproval(request, "actual-changes.txt");
+  const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
+  const message = formatDevelopmentApproval(request, "actual-changes.txt", undefined, snapshot);
   for (const label of ["Approval requested:", "Why now:", "Target:", "Changes:", "After approval:", "Not included:", "Valid for:"]) {
     assert.ok(message.includes(label), label);
   }
   assert.ok(message.includes(scope.workspace.root));
   assert.ok(message.includes("scripts/verify.mjs"));
   assert.ok(message.includes("actual-changes.txt"));
+  assert.ok(message.includes(snapshot));
+  assert.throws(() => formatDevelopmentApproval(request, "actual-changes.txt"), /immutable approval snapshot/);
+  assert.throws(() => formatDevelopmentApproval(request, "actual-changes.txt", undefined, "Substituted"), /immutable approval snapshot/);
   assert.equal(developmentApprovalSatisfied(request, [{ requestId: request.id, approved: true }]), false);
   assert.throws(() => developmentApprovalRequest(scope, { ...policy, inputs: [] }, "execution", hooks), /every requested path/);
+});
+
+test("approval snapshots cannot escape their native-question code block", () => {
+  const { scope, policy, hooks } = approvalFixture();
+  policy.contents["scripts/verify.mjs"] = "```text\nuntrusted contents\n```\n";
+  const request = developmentApprovalRequest(scope, policy, "execution", hooks);
+  const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
+  const message = formatDevelopmentApproval(request, "reference-only.txt", undefined, snapshot);
+  assert.ok(message.includes(`\n\`\`\`\`text\n${snapshot}\n\`\`\`\``));
 });
 
 test("only exact native decisions are journaled and rejection is not automatically re-prompted", async (t) => {
@@ -828,16 +872,44 @@ test("substituted approval details cannot mint a reusable native grant", async (
   assert.equal(questions, 1, "Restoring the artifact cannot resurrect an invalid approval or repeat the question.");
 });
 
-test("native policy approval continues the pending candidate and survives ordinary repair without another question", async (t) => {
+test("substitution and restoration cannot alter contents presented by the native question", async (t) => {
+  const { scope, policy, hooks } = approvalFixture();
+  const request = developmentApprovalRequest(scope, policy, "execution", hooks);
+  await mkdir(".data/tests", { recursive: true });
+  const directory = await mkdtemp(path.resolve(".data/tests/approval-snapshot-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const details = path.join(directory, "reference.txt");
+  const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
+  await writeFile(details, snapshot);
+  const ctx = durable({ session: { capabilities: { ui: { elicitation: true } }, ui: {
+    elicitation: async (input) => {
+      const shown = input.message;
+      assert.ok(shown.includes(snapshot));
+      assert.match(shown, /Local detail copy \(not authoritative\)/);
+      await writeFile(details, snapshot.replace("policy fixture", "benign fixture"));
+      assert.match(await readFile(details, "utf8"), /benign fixture/);
+      assert.equal(input.message, shown);
+      assert.doesNotMatch(input.message, /benign fixture/);
+      await writeFile(details, snapshot);
+      return { action: "accept", content: { decision: "approve" } };
+    },
+  } } });
+  const decision = await obtainDevelopmentApproval(ctx, request, details);
+  assert.equal(developmentApprovalSatisfied(request, [decision.receipt]), true,
+    "The decision applies to the original immutable contents shown in the native question, not the substituted copy.");
+});
+
+test("native policy approval survives ordinary repair after the interactive UI becomes unavailable", async (t) => {
   const { root } = await workspace(t), session = nativeSession();
   let questions = 0, implementations = 0, verifications = 0, reviews = 0;
   session.capabilities = { ui: { elicitation: true } };
   session.ui = { elicitation: async (input) => {
     questions++;
     assert.match(input.message, /scripts\/verify\.mjs/);
-    const detail = /Review the actual changes: ([^\n]+)/.exec(input.message)[1];
+    const detail = /Local detail copy \(not authoritative\): ([^\n]+)/.exec(input.message)[1];
     assert.match(await readFile(detail, "utf8"), /Proposed[\s\S]*policy fixture/);
     assert.match(input.message, /No push, PR creation, merge/);
+    session.capabilities.ui.elicitation = false;
     return { action: "accept", content: { decision: "approve" } };
   } };
   const result = await runDevelopment(durable({
@@ -908,7 +980,7 @@ test("ignored approval detail substitution stops before native candidate executi
     session.capabilities = { ui: { elicitation: true } };
     session.ui = { elicitation: async (input) => {
       requestedSource = await sourceSnapshot(root);
-      const details = /Review the actual changes: ([^\n]+)/.exec(input.message)[1];
+      const details = /Local detail copy \(not authoritative\): ([^\n]+)/.exec(input.message)[1];
       if (change === "delete") await rm(details);
       else {
         const original = await readFile(details, "utf8");
