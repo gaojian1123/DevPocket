@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "xcode": {
+      "type": "local",
+      "command": "/usr/bin/xcrun",
+      "args": ["mcpbridge"],
+      "tools": ["*"]
+    }
+  }
+}

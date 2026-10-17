@@ -280,6 +280,27 @@ test("the complete workflow suite and pure evidence modules are tooling, not app
     "The impact catalogue cannot carry executable commands or arguments.");
 });
 
+test("local Xcode setup and root ignore policy select tooling without weakening mixed or unknown inputs", () => {
+  const setup = [".gitignore", "scripts/setup-xcode-mcp.mjs", "config/xcode-mcp.example.json",
+    "scripts/tests/xcode-mcp.test.mjs"];
+  for (const files of [...setup.map((file) => [file]), [...setup, "README.md", "docs/DEVELOPMENT-WORKFLOW.md"]]) {
+    const impact = verificationImpact(files);
+    assert.deepEqual(impact.requiredChecks, ["workflow-tests"]);
+    assert.deepEqual(impact.requiredGroups, ["tooling"]);
+    assert.equal(impact.layouts, false);
+    assert.equal(developmentReviewRequirements(files).requiresHumanReview, true);
+  }
+  for (const file of ["package.json", "package-lock.json", "scripts/process.mjs", ".github/workflows/ci.yml",
+    "scripts/setup-xcode-mcp-extra.mjs", "config/another-mcp.example.json",
+    "scripts/tests/xcode-mcp-extra.test.mjs", "nested/.gitignore"]) {
+    const impact = verificationImpact([...setup, file]);
+    assert.deepEqual(impact.requiredChecks, CHECKS.map((check) => check.id), file);
+    assert.equal(impact.layouts, true, file);
+  }
+  assert.deepEqual(verificationImpact([...setup, "android/app/src/main/java/dev/devpocket/app/ui/Screen.kt"]).requiredGroups,
+    ["tooling", "android", "device"]);
+});
+
 test("mixed development tooling and application changes select the union from the single check catalogue", async (t) => {
   const core = ["workflow-tests", "typecheck", "backend-tests", "backend-build", "schema"];
   const tooling = ["scripts/workflow-extension.mjs", "scripts/development-workflow.mjs",

@@ -400,9 +400,9 @@ adding a new file does not silently inherit a tooling exemption.
 | Responsibility | Representative inputs | Required checks |
 | --- | --- | --- |
 | Documentation | `README.md`, `VALIDATION.md`, `docs/**/*.md` | None |
-| Development tooling | `development-workflow.mjs`, `development-policy.mjs`, `candidate-commit.mjs`, `native-candidate.mjs`; routing and the development extension entry | Complete `workflow-tests` in `tooling` |
+| Development tooling | `development-workflow.mjs`, `development-policy.mjs`, `candidate-commit.mjs`, `native-candidate.mjs`, `setup-xcode-mcp.mjs`, `config/xcode-mcp.example.json`; routing and the development extension entry | Complete `workflow-tests` in `tooling` |
 | Agent instructions | `AGENTS.md`, the DevPocket skill/reviewer and AI task template | Complete `workflow-tests` |
-| Source/verification contracts | `git-state.mjs`, `verification.mjs`, `verification-policy.mjs`, `verify.mjs`, `verify.ps1`; named diagnostic/evidence projections and workflow regressions | Complete `workflow-tests` |
+| Source/verification contracts | Root `.gitignore`, `git-state.mjs`, `verification.mjs`, `verification-policy.mjs`, `verify.mjs`, `verify.ps1`; named diagnostic/evidence projections and workflow regressions | Complete `workflow-tests` |
 | Backend execution/build | `verification-backend.mjs`, extension bundle/package helpers, CLI-proof launcher, backend TypeScript configs, extension distribution workflow | Tooling and backend checks; no Android provisioning |
 | Native execution/build | `verification-android.mjs`, Android runner/build/emulator helpers, owned device cleanup, Gradle inputs/wrappers, native preparation action | Tooling, Android build, device cases and all layouts |
 | Shared execution | `verification-executor.mjs`, `process.mjs`, `owned-command*`, bounded command logs, shared backend/native diagnostic preflight | Every check and layouts |
@@ -415,6 +415,14 @@ hosted native preparation's Linux process tests; it is not a backend-only input.
 Root Node dependencies are shared with the native relay fixture. Android Gradle
 inputs and device-specific cleanup, on the other hand, do not select backend
 product checks just because they are protected policy.
+
+The optional Xcode MCP initializer and its named template/regression are local
+development tooling. Root `.gitignore` participates in source selection and is
+covered by the workflow/source-identity contracts. The Xcode regression is loaded
+as an isolated suite by `development-workflow.test.mjs`, so adding it does not
+change the shared root npm manifest. Root npm/lock changes, unknown MCP files,
+nested ignore files and mixed application changes still retain their existing
+conservative coverage; there is no general MCP or dependency exemption.
 
 Existing backend source, runtime integration, runtime-extension and wire/fixture
 rules retain their downstream coverage. Runtime/wire changes (including the

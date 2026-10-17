@@ -1,4 +1,6 @@
 node_modules/
+/.mcp.json
+/.mcp.json.lock
 dist/
 .data/
 .tools/
