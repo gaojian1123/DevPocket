@@ -1399,6 +1399,52 @@ test("candidate implementation capture includes every verification adapter and r
   await assert.rejects(requireCandidateImplementation(legacy), /captured controller\/helper implementation/);
 });
 
+test("native capture retries identical metadata churn but rejects content changes or persistent instability", async () => {
+  const entry = new URL("../native-candidate.mjs", import.meta.url).href;
+  const script = [
+    'import assert from "node:assert/strict";',
+    'import fs from "node:fs/promises";',
+    'import { syncBuiltinESMExports } from "node:module";',
+    `const target = await fs.realpath(new URL(${JSON.stringify(entry)}));`,
+    'const original = fs.lstat, originalOpen = fs.open, mode = process.argv[1];',
+    'let observed = 0, reads = 0;',
+    'fs.lstat = async (file, ...args) => {',
+    '  const info = await original(file, ...args);',
+    '  if (file === target) {',
+    '    observed++;',
+    '    if (mode === "open" && observed === 1) info.ctimeMs -= 1;',
+    '    if (["transient", "content"].includes(mode) && observed === 2) info.ctimeMs += 1;',
+    '    if (mode === "during" && observed % 2 === 0) info.ctimeMs += 1;',
+    '  }',
+    '  return info;',
+    '};',
+    'fs.open = async (file, ...args) => {',
+    '  const handle = await originalOpen(file, ...args);',
+    '  if (file === target && mode === "content") {',
+    '    const read = handle.readFile.bind(handle);',
+    '    handle.readFile = async (...options) => {',
+    '      const bytes = await read(...options);',
+    '      if (++reads === 2) bytes[0] ^= 1;',
+    '      return bytes;',
+    '    };',
+    '  }',
+    '  return handle;',
+    '};',
+    'syncBuiltinESMExports();',
+    `const { captureCandidateImplementation } = await import(${JSON.stringify(entry)});`,
+    'if (["open", "transient"].includes(mode)) {',
+    '  const result = await captureCandidateImplementation();',
+    '  assert.ok(result.files.some(file => file.name === "native-candidate.mjs"));',
+    '} else await assert.rejects(captureCandidateImplementation(), /changed while being captured/);',
+    'assert.equal(observed, mode === "open" ? 2 : 4);',
+    'console.log("capture validated");',
+  ].join("\n");
+  for (const mode of ["open", "transient", "during", "content"]) {
+    const result = await exec(process.execPath, ["--input-type=module", "-e", script, mode], { timeout: 30_000 });
+    assert.match(result.stdout, /capture validated/);
+  }
+});
+
 test("native approval cannot execute a changed helper, import or wrapper", isolatedCases, async (t) => {
   await Promise.all(["candidate-commit.mjs", "git-state.mjs", "native-candidate.mjs", "development-workflow.mjs",
     "development-policy.mjs", "workflow-extension.mjs", ...verificationInputs].map((name) =>

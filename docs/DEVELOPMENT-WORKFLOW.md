@@ -291,6 +291,10 @@ The captured executable manifest uses version 2 and includes the local developme
 policy module separately from CI impact policy, plus the shared verification
 executor, both execution adapters and their backend diagnostic import. Earlier
 input sets cannot qualify the current native launcher or publication checks.
+Native input capture reads through an owned file handle. A ctime-only disturbance
+may trigger one read-only recapture, which must be stable and retain identical
+file identity, mode, size, mtime and content hash. Persistent instability or changed
+content still fails; this never retries a Git mutation or accepts different inputs.
 The run retains its initial hook snapshot across verification, review, repairs
 and readiness checks. A later observation cannot become approval of changed
 hooks; any mismatch requires renewed human approval before continuing.

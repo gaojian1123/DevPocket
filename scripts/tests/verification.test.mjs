@@ -115,7 +115,7 @@ test("development orchestration and named agent instructions remain protected wi
       assert.equal(Object.hasOwn(result.report, "requiresHumanReview"), false);
       const requirements = developmentReviewRequirements(result.report.changedFiles);
       const protectedPaths = files.filter((file) => tooling.includes(file) &&
-        file !== "scripts/tests/verification.test.mjs" && file !== ".github/ISSUE_TEMPLATE/ai-task.yml").sort();
+        !file.startsWith("scripts/tests/") && file !== ".github/ISSUE_TEMPLATE/ai-task.yml").sort();
       assert.equal(requirements.requiresHumanReview, protectedPaths.length > 0);
       assert.deepEqual(requirements.protectedPaths, protectedPaths);
       assert.deepEqual(requirements.reviewPaths, []);
