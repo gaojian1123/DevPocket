@@ -235,6 +235,13 @@ Shared process execution, cross-lane CI, shared dependencies and unknown paths
 remain conservative full impact. Runtime/wire compatibility coverage is retained,
 and mixed changes take the union. Plans explain responsibilities, not approval.
 
+`npm run test:workflow` uses `scripts/test-workflow.mjs`, which owns the complete
+explicit tooling test list, including Xcode setup and the runner's own contracts.
+It launches Node's test runner with separate file processes and Node's default
+concurrency, inherits the terminal streams, and preserves failures and exit status.
+It does not import the tests into one process or discover the entire test directory;
+extension packaging and the separate Linux process gate keep their own entries.
+
 Local execution trust and human-review requirements belong to
 `scripts\development-policy.mjs`, shared by skill-led development and the optional
 controller. Tooling-only selection still stops before unapproved protected-policy
@@ -354,8 +361,9 @@ Focused checks use `node --test scripts/tests/xcode-mcp.test.mjs`. On a supporte
 Mac they exercise real Git worktree creation and read-only Xcode lookup, not an
 MCP connection or an App session. They also cover simulated unsupported
 platforms, missing Xcode, configuration preservation and hook conflicts.
-The same cases run as an isolated suite inside the existing development-workflow
-regression entry. The named initializer/template/tests and root ignore policy
+The same file runs as a peer in the complete `npm run test:workflow` list, in its
+own Node test process. Its Git fixtures still restore and check their inherited
+environment. The named initializer/template/tests and root ignore policy
 select tooling checks, not application builds; shared dependencies and unknown
 paths remain conservatively classified.
 

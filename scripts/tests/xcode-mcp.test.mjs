@@ -31,6 +31,9 @@ after(async () => {
   }
   if (gitConfigDirectory) await rm(gitConfigDirectory, { recursive: true, force: true });
 });
+after(() => {
+  for (const [key, value] of previousGitEnvironment) assert.equal(process.env[key], value, key);
+});
 
 async function temporary(t) {
   await mkdir(".data/tests", { recursive: true });
