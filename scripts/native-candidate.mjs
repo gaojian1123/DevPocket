@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, open, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,19 +10,37 @@ const implementationFiles = [...new Set([...nativeFiles, "native-candidate.mjs",
   "native-lifecycle.mjs", "verification-executor.mjs", "verification-backend.mjs", "verification-android.mjs",
   "backend-diagnostics.mjs"])].sort();
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const sameFile = (left, right) => ["dev", "ino", "mode", "size", "mtimeMs"].every((key) => left[key] === right[key]);
 
 export async function captureCandidateImplementation(directory = fileURLToPath(new URL(".", import.meta.url))) {
   directory = await realpath(directory);
   const files = await Promise.all(implementationFiles.map(async (name) => {
-    const file = path.join(directory, name), info = await lstat(file);
-    if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024) throw new Error("Candidate implementation input is unavailable.");
-    const bytes = await readFile(file);
-    const after = await lstat(file);
-    if (bytes.length !== info.size || after.dev !== info.dev || after.ino !== info.ino ||
-        after.mode !== info.mode || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs) {
-      throw new Error("Candidate implementation changed while being captured.");
+    const file = path.join(directory, name);
+    let previous;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const info = await lstat(file);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024) throw new Error("Candidate implementation input is unavailable.");
+      const handle = await open(file, "r");
+      try {
+        // Opening a Windows file can update ctime without changing its contents.
+        const opened = await handle.stat();
+        if (!sameFile(info, opened)) throw new Error("Candidate implementation changed while being captured.");
+        const bytes = await handle.readFile(), after = await handle.stat(), current = await lstat(file);
+        const sha256 = digest(bytes);
+        if (bytes.length !== opened.size || !sameFile(opened, after) || !sameFile(after, current) ||
+            previous && (!sameFile(previous.info, opened) || previous.sha256 !== sha256)) {
+          throw new Error("Candidate implementation changed while being captured.");
+        }
+        if (opened.ctimeMs !== after.ctimeMs || after.ctimeMs !== current.ctimeMs) {
+          previous = { info: opened, sha256 };
+          continue;
+        }
+        return Object.freeze({ name, sha256 });
+      } finally {
+        await handle.close();
+      }
     }
-    return Object.freeze({ name, sha256: digest(bytes) });
+    throw new Error("Candidate implementation changed while being captured.");
   }));
   return Object.freeze({ version: 2, directory, files: Object.freeze(files) });
 }

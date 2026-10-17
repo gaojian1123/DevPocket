@@ -26,6 +26,14 @@ Check local development-policy requirements and recorded human decisions
 separately from CI test selection. A passing CI report or this independent
 review does not approve changed execution policy or authorize publication.
 Missing or stale local policy evidence cannot establish readiness.
+Match actual user decisions to the task, target, allowed effects and relevant
+input versions. Ordinary code/test repairs do not require repeated human consent
+when that scope is unchanged; their verification and independent review must
+still match the current source. A required decision that has been satisfied is
+not a pending blocker. An implementer-written approval file is not evidence of
+an original-client user decision. Use the scoped approval rules and request format
+in `docs\DEVELOPMENT-WORKFLOW.md`; name the specific missing decision rather than
+returning a generic request to approve all changes.
 
 Return the requested structured result. Each finding needs a repository-relative
 file, line, concrete impact, and reproducible trigger. Correctness and acceptance
