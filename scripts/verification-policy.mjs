@@ -36,7 +36,7 @@ const rules = [
   { id: "development-tooling", description: "Development orchestration, local tool setup, trust policy and candidate preparation use the complete workflow suite.",
     matches: (file) => ["scripts/development-workflow.mjs", "scripts/development-policy.mjs",
       "scripts/candidate-commit.mjs", "scripts/native-candidate.mjs",
-      "scripts/setup-xcode-mcp.mjs", "config/xcode-mcp.example.json"].includes(file), checks: tooling },
+      "scripts/setup-xcode-mcp.mjs", "config/xcode-mcp.example.json", "scripts/test-workflow.mjs"].includes(file), checks: tooling },
   { id: "agent-instructions", description: "DevPocket development instructions use workflow regressions, not application checks.",
     matches: (file) => ["AGENTS.md", ".github/agents/devpocket-reviewer.agent.md",
       ".github/skills/devpocket-development/SKILL.md", ".github/ISSUE_TEMPLATE/ai-task.yml"].includes(file), checks: tooling },
@@ -49,7 +49,7 @@ const rules = [
     matches: (file) => [
       "verification", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
       "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
-      "bounded-worker-log", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime", "xcode-mcp",
+      "bounded-worker-log", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner",
     ].some((name) => file === `scripts/tests/${name}.test.mjs`) ||
       file === "scripts/tests/fixtures/emulator-lease-peer.mjs", checks: tooling },
   { id: "backend-execution", description: "Backend command adaptation, builds and packaging require backend checks, not native execution.",

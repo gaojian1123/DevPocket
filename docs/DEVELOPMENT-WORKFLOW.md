@@ -400,7 +400,7 @@ adding a new file does not silently inherit a tooling exemption.
 | Responsibility | Representative inputs | Required checks |
 | --- | --- | --- |
 | Documentation | `README.md`, `VALIDATION.md`, `docs/**/*.md` | None |
-| Development tooling | `development-workflow.mjs`, `development-policy.mjs`, `candidate-commit.mjs`, `native-candidate.mjs`, `setup-xcode-mcp.mjs`, `config/xcode-mcp.example.json`; routing and the development extension entry | Complete `workflow-tests` in `tooling` |
+| Development tooling | `development-workflow.mjs`, `development-policy.mjs`, `candidate-commit.mjs`, `native-candidate.mjs`, `setup-xcode-mcp.mjs`, `config/xcode-mcp.example.json`, `test-workflow.mjs`; routing and the development extension entry | Complete `workflow-tests` in `tooling` |
 | Agent instructions | `AGENTS.md`, the DevPocket skill/reviewer and AI task template | Complete `workflow-tests` |
 | Source/verification contracts | Root `.gitignore`, `git-state.mjs`, `verification.mjs`, `verification-policy.mjs`, `verify.mjs`, `verify.ps1`; named diagnostic/evidence projections and workflow regressions | Complete `workflow-tests` |
 | Backend execution/build | `verification-backend.mjs`, extension bundle/package helpers, CLI-proof launcher, backend TypeScript configs, extension distribution workflow | Tooling and backend checks; no Android provisioning |
@@ -418,9 +418,9 @@ product checks just because they are protected policy.
 
 The optional Xcode MCP initializer and its named template/regression are local
 development tooling. Root `.gitignore` participates in source selection and is
-covered by the workflow/source-identity contracts. The Xcode regression is loaded
-as an isolated suite by `development-workflow.test.mjs`, so adding it does not
-change the shared root npm manifest. Root npm/lock changes, unknown MCP files,
+covered by the workflow/source-identity contracts. The Xcode regression is a peer
+in the explicit `test-workflow.mjs` list, not an import from another test file.
+Root npm/lock changes (including changes to test script commands), unknown MCP files,
 nested ignore files and mixed application changes still retain their existing
 conservative coverage; there is no general MCP or dependency exemption.
 
@@ -583,16 +583,31 @@ identity, hook approval, independent review or source-bound evidence checks.
 
 ### Full workflow regression scheduling
 
-`npm run test:workflow` remains the complete default regression gate. Within
-`scripts\tests\development-workflow.test.mjs`, selected scenario groups use
+`npm run test:workflow` remains the complete default regression gate. Its dedicated
+entry, `scripts/test-workflow.mjs`, exports the explicit `WORKFLOW_TEST_FILES`
+catalogue and passes that full list to a child `node --test` invocation. Tests and
+CI contracts read the same catalogue rather than parse a package script. The
+impact policy independently names the approved tooling paths; unknown tests and
+runner lookalikes still require all checks.
+
+Each listed file runs in its own process with Node's default file concurrency.
+The wrapper adds no concurrency, isolation, reporter or filtering flags by default,
+inherits standard input/output/error, propagates exit codes and termination signals,
+and reports launch failures as failures. Node test options can be passed after
+`npm run test:workflow --`; filtered runs are focused feedback, not the complete
+verification gate. No test-directory glob is used: extension packaging and the
+separate Linux process regression remain outside this list. Xcode setup is an
+ordinary peer entry, with fixture environment restoration asserted in that file.
+
+Within `scripts\tests\development-workflow.test.mjs`, selected scenario groups use
 Node's built-in test scheduler with a fixed limit of **two** subtests. Each
 such subtest creates and cleans up its own temporary repository and linked
 worktree; all scheduled subtests are awaited. This overlaps independent
 Git/PowerShell work without replacing native execution or sharing a candidate,
 index, hook directory, receipt or verification result.
 
-Top-level tests remain serial. Scenarios sharing a fixture and tests that write
-`process.env` (filesystem-monitor configuration and optional-lock probes) remain
+Top-level tests within each file remain serial. Scenarios sharing a fixture and
+tests that write `process.env` (filesystem-monitor configuration and optional-lock probes) remain
 serial too. Do not enable file-wide concurrency or apply the subtest option to
 a shared-state group. The original assertions, scenarios, command deadlines,
 default entry point and responsibility-based check selection are unchanged;

@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { test } from "node:test";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationImpact } from "../verification-policy.mjs";
 import { developmentReviewRequirements, isVerificationPolicyPath } from "../development-policy.mjs";
+import { WORKFLOW_TEST_FILES } from "../test-workflow.mjs";
 
 const exec = promisify(execFile);
 const entry = path.resolve("scripts/verify.mjs");
@@ -100,6 +101,7 @@ test("development orchestration and named agent instructions remain protected wi
   const tooling = ["scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
     "scripts/native-candidate.mjs", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
     "scripts/verify.mjs", "scripts/verify.ps1", "scripts/tests/verification.test.mjs",
+    "scripts/test-workflow.mjs", "scripts/tests/workflow-runner.test.mjs",
     ".github/extensions/devpocket-development/extension.mjs", ".github/ISSUE_TEMPLATE/ai-task.yml",
     ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"];
   for (const files of [...tooling.map((file) => [file]), [...tooling, "README.md", "docs/DEVELOPMENT-WORKFLOW.md"]]) {
@@ -266,18 +268,34 @@ test("backend and native execution inputs select their actual side, including bu
 });
 
 test("the complete workflow suite and pure evidence modules are tooling, not application execution", async () => {
-  const manifest = JSON.parse(await readFile("package.json", "utf8"));
-  const regressions = manifest.scripts["test:workflow"].slice("node --test ".length).split(" ");
   const contracts = ["verification-diagnostics", "diagnostic-errors", "diagnostic-publication", "android-diagnostics",
     "device-diagnostics", "worker-diagnostics", "native-lifecycle"].map((name) => `scripts/${name}.mjs`);
-  for (const file of [...regressions, ...contracts]) {
+  for (const file of [...WORKFLOW_TEST_FILES, "scripts/test-workflow.mjs", ...contracts]) {
     const impact = verificationImpact([file]);
     assert.deepEqual(impact.requiredChecks, ["workflow-tests"], file);
     assert.deepEqual(impact.requiredGroups, ["tooling"], file);
     assert.equal(impact.layouts, false, file);
+    const requirements = developmentReviewRequirements([file]);
+    const protectedInput = !file.startsWith("scripts/tests/");
+    assert.equal(requirements.requiresHumanReview, protectedInput, file);
+    assert.deepEqual(requirements.protectedPaths, protectedInput ? [file] : [], file);
+    assert.deepEqual(requirements.reviewPaths, [], file);
   }
   assert.ok(CHECKS.every((check) => JSON.stringify(Object.keys(check).sort()) === '["group","id"]'),
     "The impact catalogue cannot carry executable commands or arguments.");
+});
+
+test("the workflow entry does not exempt shared dependencies, unknown tests or mixed application changes", () => {
+  const entry = ["scripts/test-workflow.mjs", "scripts/tests/workflow-runner.test.mjs"];
+  for (const file of ["package.json", "package-lock.json", ".npmrc", ".github/workflows/ci.yml",
+    "scripts/test-workflow-extra.mjs", "scripts/tests/workflow-runner-extra.test.mjs", "scripts/tests/unlisted.test.mjs"]) {
+    const impact = verificationImpact([...entry, file]);
+    assert.deepEqual(impact.requiredChecks, CHECKS.map((check) => check.id), file);
+    assert.equal(impact.layouts, true, file);
+  }
+  assert.deepEqual(verificationImpact([...entry, "backend/tests/fixture.test.ts"]).requiredGroups, ["tooling", "backend"]);
+  assert.deepEqual(verificationImpact([...entry, "android/app/src/main/java/dev/devpocket/app/ui/Screen.kt"]).requiredGroups,
+    ["tooling", "android", "device"]);
 });
 
 test("local Xcode setup and root ignore policy select tooling without weakening mixed or unknown inputs", () => {

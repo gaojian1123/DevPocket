@@ -5,7 +5,7 @@ import path from "node:path";
 // Local authorization is independent of CI impact and never overrides native tool permissions.
 const executionScripts = new Set([
   "development-policy", "development-workflow", "workflow-extension", "candidate-commit", "native-candidate",
-  "git-state", "verification", "verification-policy", "verify", "verification-executor",
+  "git-state", "verification", "verification-policy", "verify", "verification-executor", "test-workflow",
   "verification-backend", "verification-android", "process", "owned-command", "owned-command-windows",
   "owned-command-linux", "device-run", "worker-diagnostics", "device-diagnostics", "diagnostic-errors",
   "bounded-worker-log", "diagnostic-publication", "native-lifecycle", "backend-diagnostics",

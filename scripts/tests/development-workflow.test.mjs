@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { describe, test } from "node:test";
+import { test } from "node:test";
 import { checkDevelopmentReadiness, runDevelopment } from "../development-workflow.mjs";
 import { changedPaths, inspectWorktree, prepareCandidate, sha256 } from "../candidate-commit.mjs";
 import { executeVerification, git, sourceSnapshot } from "../verification.mjs";
@@ -17,14 +17,6 @@ const verificationInputs = ["verification-executor.mjs", "verification-backend.m
   "verification-android.mjs", "backend-diagnostics.mjs"];
 // Top-level tests stay serial; only fresh-workspace cases without shared environment writes use this limit.
 const isolatedCases = { concurrency: 2 };
-
-const gitEnvironmentBeforeXcode = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_COUNT"].map((key) => [key, process.env[key]]);
-describe("Xcode MCP worktree setup", { concurrency: false }, async () => {
-  await import("./xcode-mcp.test.mjs");
-});
-test("Xcode MCP fixtures restore the parent Git environment", () => {
-  for (const [key, value] of gitEnvironmentBeforeXcode) assert.equal(process.env[key], value, key);
-});
 
 function nativeSession() {
   return { sessionId: "fixture-session", rpc: { tools: {
@@ -636,7 +628,7 @@ test("tooling-only impact retains the controller's protected-policy stop before 
   await Promise.all(["AGENTS.md", "scripts/workflow-extension.mjs",
     "scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
     "scripts/native-candidate.mjs", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
-    "scripts/verify.mjs", "scripts/verify.ps1",
+    "scripts/verify.mjs", "scripts/verify.ps1", "scripts/test-workflow.mjs",
     ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"].map((file) =>
     t.test(file, async (t) => {
       const { root } = await workspace(t);
@@ -674,6 +666,7 @@ test("local review requirements preserve trust boundaries independently of impac
     ["AGENTS.md", true, true], ["scripts/development-workflow.mjs", true, true],
     ["scripts/development-policy.mjs", true, true], ["scripts/candidate-commit.mjs", true, true],
     ["scripts/tests/development-workflow.test.mjs", false, false],
+    ["scripts/test-workflow.mjs", true, true], ["scripts/tests/workflow-runner.test.mjs", false, false],
     ["scripts/build-android.ps1", true, true], ["scripts/test-android.ps1", true, true],
     ["scripts/android-runner.mjs", true, true], ["scripts/package-extension.ps1", true, true],
     ["scripts/bundle-extension.mjs", true, true], ["scripts/export-schema.ts", true, true],
