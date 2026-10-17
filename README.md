@@ -237,8 +237,16 @@ and mixed changes take the union. Plans explain responsibilities, not approval.
 
 Local execution trust and human-review requirements belong to
 `scripts\development-policy.mjs`, shared by skill-led development and the optional
-controller. Tooling-only selection still stops before unapproved protected-policy
-execution. Passing tests and independent AI review do not supply human approval.
+controller. Ordinary code/test changes and same-scope repairs reuse the task's
+local-development authorization; entire script/backend directories are not
+automatic human-review gates. Execution-core, dependency, instruction and
+sensitive product changes retain concrete decisions, independently of CI impact.
+Requests describe the action, reason, target, effects, exclusions and validity,
+with actual changes available as details. The optional controller consumes only
+native interactive decisions journaled for the same task and input versions;
+approval continues the pending phase without another implementation dispatch.
+Passing tests and independent AI review do not supply human approval. See
+**Scoped development approvals** in `docs\DEVELOPMENT-WORKFLOW.md`.
 GitHub merge review is enforced separately by repository rulesets/required
 reviews/CODEOWNERS when configured; this tooling does not configure them.
 Android-affecting changes require actual emulator

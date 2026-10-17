@@ -29,6 +29,91 @@ optional. Issue text alone does not start work or authorize privileged operation
 Discussion, planning, read-only review and documentation-only work do not start
 the implementation pipeline. Dispatched agents perform only their assigned phase.
 
+## Scoped development approvals
+
+Local authorization is separate from verification selection, independent review
+and the original client's tool permissions. `scripts\development-policy.mjs`
+is the shared decision/description module, not a sandbox or a source of consent.
+An implementation request covers ordinary edits, existing local checks and agreed
+repairs in its worktree. A request for a local commit or PR adds only its stated
+delivery scope; installation, runtime control, cloud operations and merging remain
+separate actions.
+
+`developmentReviewRequirements` returns protected execution paths, sensitive review
+paths and concrete reasons. Ordinary test scripts, routine business code, issue
+templates and deployment-template edits are not human decisions merely because of
+their directory. Executing a deployment template is a different action. Known
+execution/acceptance inputs, agent instructions, dependencies/build configuration,
+active hooks and sensitive product paths retain protection. Unknown paths require
+inspection rather than an invented low-risk label. `inspectDevelopmentPolicy`
+reads actual input identities and exempts a package manifest's metadata-only change
+only when complete original/current execution settings compare equal. Invalid,
+missing or newly introduced manifests retain the dependency decision.
+
+Path classification screens code roles; it cannot prove the effects of arbitrary
+programs. Before using task authorization, inspect changed commands, execution
+sources, data access, network destinations and shared-resource effects. Newly
+introduced effects or unresolved scope need a concrete decision, including when
+the code is named a test. Use existing tools and locked dependencies only within
+the authorized environment. This module does not grant an allow-all permission.
+
+An approval request contains:
+
+- **Action and reason:** what is newly requested and why existing scope is insufficient.
+- **Target:** actual task, worktree/branch or external resource, not just a filename.
+- **Effects and exclusions:** what happens after acceptance, including which delivery
+  actions remain unauthorized.
+- **Validity:** task, target, allowed effects and relevant input versions; identify
+  changes since a prior decision instead of asking again about unchanged scope.
+- **Details:** the actual diff or original/proposed contents and command scope.
+  Hashes identify those details but do not replace the explanation.
+
+`formatDevelopmentApproval` supplies the common format. In skill-led work, add a
+plain-language description of the actual behavioral change and use the original
+client's question tool for the real user decision. Retain that actual response in
+session evidence. A copied JSON file, implementer assertion or AI review does not
+authenticate approval. Sensitive code review may use an applicable actual GitHub
+human review; this does not approve execution or bypass repository rules.
+
+The optional controller requests a decision through the runtime-bundled SDK's
+native `session.ui.elicitation`, only when its capability is present. It never
+answers its own question or substitutes a new permission handler. Its durable
+approval key binds the session/run, task contract, worktree/branch, base, requested
+effects, hooks and relevant input versions. Ordinary source edits are deliberately
+absent from that key: they invalidate applicable test/review evidence, not unchanged
+authority. Execution-policy requests explicitly cover execution and human review
+of those listed policy changes; distinct sensitive product changes are reviewed
+after verification and independent review.
+The controller retains task-affected policy paths through repairs, final review
+and readiness, including deleted/restored inputs. All these phases inspect the
+same subject rather than shrinking an approved combination into an unapproved
+subset. This policy history does not add paths to CI impact selection.
+
+Accepted decisions continue the pending phase in the same invocation, without
+dispatching implementation again. Repeated requests for the same scope replay the
+runtime-journaled decision, not an editable workspace receipt. The controller
+rechecks source, workspace, hooks, implementation and approval inputs after the
+answer and before continuing. Rejection/cancellation stays rejected for that key;
+it is not retried under another command. Malformed or missing answers are not
+approval. An unavailable UI returns the specific pending request, without running
+the action. Crashes, lost connections and uncertain commits retain the inspected
+recovery rules below; this approval continuation is not automatic side-effect replay.
+
+Execution integrity remains separate. A changed *loaded* controller/helper still
+requires explicit original-client reload and same-task recovery, not approval
+followed by hot adoption of mutable code. Hook/configuration changes still stop
+for direct inspection; this controller does not automatically install hooks or
+rewrite Git settings. Ordinary tests can be developed under a fixed controller;
+changing that controller itself does not get this exemption.
+
+Readiness recomputes requirements and checks the applicable actual decisions.
+`requiresHumanReview` describes a requirement, not an eternal stop after it has
+been satisfied. Unsatisfied decisions return `needs_human` with their action and
+reason. Evidence remains bound to the final source and native candidate, and
+publication remains separately authorized. These local rules do not configure
+GitHub rulesets, suppress native permission prompts or transfer grants to another
+task. Session artifacts are diagnostic records, not authority.
+
 ## Optional: registered workflow
 
 Use this route only when the user explicitly selects controller-managed
@@ -116,8 +201,11 @@ The controller follows **implement → local candidate commit → final verifica
    exact `sourceSnapshot` observed after its last edit/check. There is no mandatory
    full acceptance pass before committing.
 2. The controller checks ownership, source, index, branch and Git configuration.
-   Protected gate/dependency/workflow changes still stop for explicit human
+   Protected execution/dependency/instruction changes request explicit human
    policy review **before** committing or executing the modified policy.
+   An accepted native, input-bound decision continues this phase; missing or
+   rejected consent stops with the specific request. Ordinary code/test paths
+   no longer trigger this decision solely because of their directory.
    The controller also snapshots the active Git hooks directory before implementation;
    changed hook inputs stop for human policy approval before native mutation.
    Otherwise its guarded candidate helper holds the real index's exclusive lock
@@ -168,9 +256,11 @@ explicitly; disappearing inputs, unreadable, changing or unsupported hook eviden
 blocks execution rather than silently allowing it.
 Hooks may invoke programs outside that directory; these snapshots do not parse
 arbitrary hook dependencies or replace the original native permission policy.
-Candidate requests and controller journals use version 4 to bind hook,
-executable-input and prepared reference-transaction evidence. Older requests/results require inspected recovery;
-they are not replayed as approval for the new controller.
+Candidate requests retain version 4 to bind hook, executable-input and prepared
+reference-transaction evidence. Controller journals/results use version 5 for
+scoped native approval receipts and satisfied review requirements. Older
+requests/results require inspected recovery; they are not replayed as approval
+for the new controller.
 An operation-private hook route uses Git's `reference-transaction` prepared phase,
 while Git holds its ref locks, to bind the actual branch update, parent and
 inspected tree before advancing history. A verify-only transaction first proves the native veto
@@ -392,16 +482,14 @@ fields cannot become explanation text.
 The verifier reuses the commands in `package.json`. Android changes and affected
 runtime/wire changes require JVM/build checks **and** native emulator evidence.
 Protection is separate from impact selection. `scripts\development-policy.mjs`
-owns `isVerificationPolicyPath` and
-`developmentReviewRequirements(changedFiles)`. The protected-path stop still
-covers **all** scripts, `.github`, `AGENTS.md` and the existing dependency/build
-policy inputs, including tooling-only changes. The optional workflow pauses
-before executing modified policy and retains source-bound `policyReview`
-requirements in its handoff. After passing tests and independent review, local
-review requirements still determine `needs_human` versus `ready`; runtime,
-wire, operations, sensitive Android and unknown paths retain their requirements.
-The skill-led route records the same local decision and human approval separately
-from test evidence. Neither route defaults a missing local decision to approval.
+owns `isVerificationPolicyPath`, `developmentReviewRequirements(changedFiles)` and
+actual-input inspection. Its scoped approvals above replace directory-wide
+script/backend stops, without changing any selected checks. Execution-core,
+instruction, dependency/build and sensitive review decisions remain explicit.
+Both routes retain source-bound `policyReview` requirements and actual human
+decisions separately from test evidence. Satisfied requirements permit `ready`;
+specific pending requirements yield `needs_human`. Missing local evidence is
+never interpreted as approval.
 
 CI planning, lane selection and aggregation do not decide Agent or GitHub
 approval. GitHub merge review belongs to externally configured rulesets,
@@ -471,6 +559,9 @@ explicitly rather than silently dropping protection. Replace reads of
 `plan.requiresHumanReview` in **both** final-status and publication-freshness
 guards with `developmentReviewRequirements(plan.changedFiles)`, retain the
 decision with the exact source identity, and reject missing/stale local evidence.
+Current consumers also inspect actual inputs and match the scoped native decisions;
+a true requirement is resolved by its applicable human decision, not by changing
+the requirement to false or copying an approval flag into a CI report.
 Changing imports alone is not sufficient. This migration does not grant commit
 or publication authority, replace recorded human decisions, or weaken candidate
 identity, hook approval, independent review or source-bound evidence checks.

@@ -9,6 +9,8 @@ import { checkDevelopmentReadiness, runDevelopment } from "../development-workfl
 import { changedPaths, inspectWorktree, prepareCandidate, sha256 } from "../candidate-commit.mjs";
 import { executeVerification, git, sourceSnapshot } from "../verification.mjs";
 import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "../native-candidate.mjs";
+import { developmentApprovalRequest, developmentApprovalSatisfied, developmentReviewRequirements,
+  formatDevelopmentApproval, inspectDevelopmentPolicy, obtainDevelopmentApproval } from "../development-policy.mjs";
 
 const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
@@ -125,7 +127,8 @@ test("the skill freezes an authorized delivery candidate before final verificati
 function durable(ctx) {
   const journal = new Map();
   return { session: nativeSession(), phase() {}, log() {}, ...ctx, step: async (key, producer) => {
-    assert.equal(key, "devpocket-development-v4", "Older journals must not be replayed as current execution-policy evidence.");
+    assert.match(key, /^(?:devpocket-development-v5|devpocket-approval-v1:[a-f0-9]{64})$/,
+      "Older journals must not be replayed as current execution-policy evidence.");
     if (!journal.has(key)) journal.set(key, JSON.parse(JSON.stringify(await producer())));
     return journal.get(key);
   } };
@@ -622,10 +625,10 @@ test("gate changes and missing agent results stop rather than granting self-appr
 test("tooling-only impact retains the controller's protected-policy stop before any execution or review", isolatedCases, async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
   const { verificationPlan } = await import("../verification.mjs");
-  await Promise.all(["AGENTS.md", "scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs",
+  await Promise.all(["AGENTS.md", "scripts/workflow-extension.mjs",
     "scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
     "scripts/native-candidate.mjs", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
-    "scripts/verify.mjs", "scripts/verify.ps1", "scripts/tests/verification.test.mjs",
+    "scripts/verify.mjs", "scripts/verify.ps1",
     ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"].map((file) =>
     t.test(file, async (t) => {
       const { root } = await workspace(t);
@@ -646,9 +649,11 @@ test("tooling-only impact retains the controller's protected-policy stop before 
       assert.deepEqual(plan.requiredChecks, ["workflow-tests"]);
       assert.deepEqual(plan.requiredGroups, ["tooling"]);
       assert.equal(Object.hasOwn(plan, "requiresHumanReview"), false);
-      assert.deepEqual(result.policyReview, {
-        requiresHumanReview: true, protectedPaths: [file], source: plan.source,
-      });
+      assert.equal(result.policyReview.requiresHumanReview, true);
+      assert.deepEqual(result.policyReview.protectedPaths, [file]);
+      assert.deepEqual(result.policyReview.source, plan.source);
+      assert.equal(result.approval.stage, "execution");
+      assert.ok(result.approval.message.includes(file));
       assert.equal(result.verification, undefined);
       assert.equal(result.review, undefined);
     })));
@@ -660,7 +665,10 @@ test("local review requirements preserve trust boundaries independently of impac
     ["README.md", false, false], ["VALIDATION.md", false, false], ["docs/policy.md", false, false],
     ["AGENTS.md", true, true], ["scripts/development-workflow.mjs", true, true],
     ["scripts/development-policy.mjs", true, true], ["scripts/candidate-commit.mjs", true, true],
-    ["scripts/tests/development-workflow.test.mjs", true, true],
+    ["scripts/tests/development-workflow.test.mjs", false, false],
+    ["scripts/build-android.ps1", true, true], ["scripts/test-android.ps1", true, true],
+    ["scripts/android-runner.mjs", true, true], ["scripts/package-extension.ps1", true, true],
+    ["scripts/bundle-extension.mjs", true, true], ["scripts/export-schema.ts", true, true],
     [".github/agents/devpocket-reviewer.agent.md", true, true],
     [".github/skills/devpocket-development/SKILL.md", true, true],
     ["scripts/verification.mjs", true, true], ["scripts/verification-policy.mjs", true, true],
@@ -669,23 +677,274 @@ test("local review requirements preserve trust boundaries independently of impac
     ["deployment/azure/probe/requirements-test.txt", true, true],
     ["android/gradlew.bat", true, true], ["android/app/build.gradle.kts", true, true],
     ["android/app/src/main/java/dev/devpocket/app/ui/Screen.kt", false, false],
-    ["android/app/src/main/java/dev/devpocket/app/data/Store.kt", true, false],
+    ["android/app/src/main/java/dev/devpocket/app/data/Store.kt", false, false],
+    ["android/app/src/main/java/dev/devpocket/app/data/Vault.kt", true, false],
     ["android/app/src/main/AndroidManifest.xml", true, false],
     ["backend/tests/fixture.test.ts", false, false], ["backend/integration/fixture.ts", false, false],
-    ["backend/src/runtime.ts", true, false], ["extension/entry.mjs", true, false],
-    ["deployment/setup.ps1", true, false], ["infra/main.bicep", true, false], ["azure.yaml", true, false],
-    ["protocol.schema.json", true, false], ["test-fixtures/fixture.json", true, false],
+    ["backend/src/runtime.ts", true, false], ["backend/src/cli.ts", false, false], ["extension/entry.mjs", true, false],
+    ["deployment/setup.ps1", false, false], ["infra/main.bicep", false, false], ["azure.yaml", false, false],
+    [".github/ISSUE_TEMPLATE/ai-task.yml", false, false], [".github/CODEOWNERS", true, true],
+    ["protocol.schema.json", true, false], ["test-fixtures/fixture.json", false, false],
     ["unclassified.txt", true, false],
-  ]) assert.deepEqual(developmentReviewRequirements([file]), {
-    requiresHumanReview, protectedPaths: protectedPath ? [file] : [],
-  }, file);
-  assert.deepEqual(developmentReviewRequirements([]), { requiresHumanReview: false, protectedPaths: [] });
-  assert.deepEqual(developmentReviewRequirements(["README.md", "scripts/candidate-commit.mjs", "AGENTS.md", "AGENTS.md"]), {
-    requiresHumanReview: true, protectedPaths: ["AGENTS.md", "scripts/candidate-commit.mjs"],
-  });
-  for (const invalid of [undefined, null, {}, "README.md", [null], [""]]) {
+  ]) {
+    const result = developmentReviewRequirements([file]);
+    assert.equal(result.requiresHumanReview, requiresHumanReview, file);
+    assert.deepEqual(result.protectedPaths, protectedPath ? [file] : [], file);
+    assert.deepEqual(result.reviewPaths, requiresHumanReview && !protectedPath ? [file] : [], file);
+    assert.ok(result.reasons.every((reason) => reason.title && reason.why && reason.paths.includes(file)));
+  }
+  assert.deepEqual(developmentReviewRequirements([]), { requiresHumanReview: false, protectedPaths: [], reviewPaths: [], reasons: [] });
+  assert.deepEqual(developmentReviewRequirements(["README.md", "scripts/candidate-commit.mjs", "AGENTS.md", "AGENTS.md"]).protectedPaths,
+    ["AGENTS.md", "scripts/candidate-commit.mjs"]);
+  for (const invalid of [undefined, null, {}, "README.md", [null], [""], ["../package.json"], [".git/config"], ["C:/outside"]]) {
     assert.throws(() => developmentReviewRequirements(invalid), /actual changed-path list/);
   }
+});
+
+test("package metadata does not grant a dependency-policy exemption to executable changes", async (t) => {
+  const { root } = await workspace(t), file = "package.json";
+  const original = { name: "fixture", version: "1", scripts: { test: "node --test" }, dependencies: { example: "1.0.0" } };
+  await writeFile(path.join(root, file), JSON.stringify(original));
+  await git(root, ["add", "--", file]);
+  await git(root, ["commit", "--quiet", "-m", "Fixture manifest"]);
+  const base = (await sourceSnapshot(root)).head;
+  for (const [value, needsApproval] of [
+    [{ ...original, description: "Clearer description", version: "2" }, false],
+    [{ ...original, dependencies: { example: "2.0.0" } }, true],
+    [{ ...original, scripts: { test: "node new-runner.mjs" } }, true],
+    [{ ...original, config: { registry: "changed" } }, true],
+  ]) {
+    await writeFile(path.join(root, file), JSON.stringify(value));
+    const policy = await inspectDevelopmentPolicy(root, base, [file], git);
+    assert.equal(policy.requiresHumanReview, needsApproval);
+    assert.equal(policy.inputs.length, needsApproval ? 1 : 0);
+  }
+  await writeFile(path.join(root, file), "{invalid");
+  assert.equal((await inspectDevelopmentPolicy(root, base, [file], git)).requiresHumanReview, true);
+  assert.equal(developmentReviewRequirements([file]).requiresHumanReview, true, "Missing originals cannot establish metadata-only change.");
+});
+
+function approvalFixture() {
+  const file = "scripts/verify.mjs";
+  const scope = { sessionId: "fixture-session", runId: "fixture-run", base: "1".repeat(40),
+    workspace: { root: path.resolve(".data", "approval-fixture"), branch: "refs/heads/task" },
+    task: { goal: "Improve local verification", acceptance: ["Preserve required checks"] } };
+  const policy = { ...developmentReviewRequirements([file]), inputs: [
+    { path: file, kind: "file", mode: 0, sha256: "2".repeat(64) },
+  ] };
+  return { scope, policy, hooks: { directory: "fixture-hooks", fingerprint: "3".repeat(64) } };
+}
+
+test("scoped approval identity follows authority inputs, not unrelated source revisions", () => {
+  const { scope, policy, hooks } = approvalFixture();
+  const request = developmentApprovalRequest(scope, policy, "execution", hooks);
+  const unrelated = { ...policy, source: { head: "4".repeat(40), fingerprint: "5".repeat(64) } };
+  assert.equal(developmentApprovalRequest(scope, unrelated, "execution", hooks).id, request.id);
+  for (const next of [
+    developmentApprovalRequest({ ...scope, runId: "another-task" }, policy, "execution", hooks),
+    developmentApprovalRequest({ ...scope, sessionId: "another-session" }, policy, "execution", hooks),
+    developmentApprovalRequest({ ...scope, workspace: { ...scope.workspace, branch: "refs/heads/other" } }, policy, "execution", hooks),
+    developmentApprovalRequest(scope, { ...policy, inputs: [{ ...policy.inputs[0], sha256: "6".repeat(64) }] }, "execution", hooks),
+    developmentApprovalRequest(scope, policy, "execution", { ...hooks, fingerprint: "7".repeat(64) }),
+  ]) assert.notEqual(next.id, request.id);
+  const message = formatDevelopmentApproval(request, "actual-changes.txt");
+  for (const label of ["Approval requested:", "Why now:", "Target:", "Changes:", "After approval:", "Not included:", "Valid for:"]) {
+    assert.ok(message.includes(label), label);
+  }
+  assert.ok(message.includes(scope.workspace.root));
+  assert.ok(message.includes("scripts/verify.mjs"));
+  assert.ok(message.includes("actual-changes.txt"));
+  assert.equal(developmentApprovalSatisfied(request, [{ requestId: request.id, approved: true }]), false);
+  assert.throws(() => developmentApprovalRequest(scope, { ...policy, inputs: [] }, "execution", hooks), /every requested path/);
+});
+
+test("only exact native decisions are journaled and rejection is not automatically re-prompted", async () => {
+  const { scope, policy, hooks } = approvalFixture();
+  const request = developmentApprovalRequest(scope, policy, "execution", hooks);
+  for (const [response, expected] of [
+    [{ action: "accept", content: { decision: "approve" } }, "approved"],
+    [{ action: "accept", content: { decision: "reject" } }, "rejected"],
+    [{ action: "decline" }, "rejected"],
+    [{ action: "cancel" }, "cancelled"],
+    [{ action: "accept", content: { decision: true } }, "invalid"],
+    [{ action: "accept", content: { decision: "approve", extra: "scope" } }, "invalid"],
+    [{ action: "accept", content: { decision: "approve" }, inventedApproval: true }, "invalid"],
+    [null, "invalid"],
+  ]) {
+    let questions = 0;
+    const ctx = durable({ session: { capabilities: { ui: { elicitation: true } }, ui: {
+      elicitation: async (input) => {
+        questions++;
+        assert.deepEqual(input.requestedSchema.required, ["decision"]);
+        assert.equal(input.requestedSchema.properties.decision.default, undefined);
+        return response;
+      },
+    } } });
+    const result = await obtainDevelopmentApproval(ctx, request, "actual-changes.txt");
+    assert.equal((result.receipt ?? result.decision).decision, expected);
+    assert.deepEqual(await obtainDevelopmentApproval(ctx, request, "actual-changes.txt"), result);
+    assert.equal(questions, 1);
+    assert.equal(developmentApprovalSatisfied(request, [result.receipt]), expected === "approved");
+  }
+  const unavailable = await obtainDevelopmentApproval(durable({}), request, "actual-changes.txt");
+  assert.equal(unavailable.status, "needs_human");
+  assert.equal(unavailable.approval.id, request.id);
+  assert.match(unavailable.reason, /UI is unavailable/);
+});
+
+test("native policy approval continues the pending candidate and survives ordinary repair without another question", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  let questions = 0, implementations = 0, verifications = 0, reviews = 0;
+  session.capabilities = { ui: { elicitation: true } };
+  session.ui = { elicitation: async (input) => {
+    questions++;
+    assert.match(input.message, /scripts\/verify\.mjs/);
+    const detail = /Review the actual changes: ([^\n]+)/.exec(input.message)[1];
+    assert.match(await readFile(detail, "utf8"), /Proposed[\s\S]*policy fixture/);
+    assert.match(input.message, /No push, PR creation, merge/);
+    return { action: "accept", content: { decision: "approve" } };
+  } };
+  const result = await runDevelopment(durable({
+    runId: "approved-policy-repair", session, args: { goal: "Improve checks", acceptance: ["Keep coverage"], maxRepairRounds: 1 },
+    agent: async (_prompt, options) => {
+      if (options.agent === "devpocket-reviewer") return ++reviews === 1 ? blockingReview : passingReview;
+      implementations++;
+      if (implementations === 1) {
+        await mkdir(path.join(root, "scripts"));
+        await writeFile(path.join(root, "scripts", "verify.mjs"), "// policy fixture\n");
+      } else await writeFile(path.join(root, "README.md"), "Ordinary repair\n");
+      return implemented(root);
+    },
+  }), { root, verify: async (_root, plan) => { verifications++; return syntheticReport(plan); } });
+  assert.equal(result.status, "ready", result.reason);
+  assert.equal(questions, 1);
+  assert.equal(implementations, 2);
+  assert.equal(verifications, 2);
+  assert.equal(reviews, 2);
+  assert.equal(result.authorization.receipts.length, 1);
+  assert.equal(result.policyReview.requiresHumanReview, true, "A satisfied requirement is not a permanent blocker.");
+  assert.equal((await checkDevelopmentReadiness(root, result)).status, "ready");
+  assert.equal((await checkDevelopmentReadiness(root, { ...result, authorization: { ...result.authorization, receipts: [] } })).status, "blocked");
+  assert.equal(Object.hasOwn(result.policyReview, "contents"), false);
+  assert.equal(Object.hasOwn(result.policyReview, "beforeContents"), false);
+});
+
+test("ordinary test edits do not require project approval or reduce the selected checks", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  session.capabilities = { ui: { elicitation: true } };
+  session.ui = { elicitation: async () => { assert.fail("Routine local tests are within task scope."); } };
+  const result = await runDevelopment(documentationTask(root, { session, agent: async (_prompt, options) => {
+    if (options.agent === "devpocket-reviewer") return passingReview;
+    await mkdir(path.join(root, "scripts", "tests"), { recursive: true });
+    await writeFile(path.join(root, "scripts", "tests", "verification.test.mjs"), "// local regression\n");
+    return implemented(root);
+  } }), { root, verify: async (_root, plan) => {
+    assert.deepEqual(plan.requiredChecks, ["workflow-tests"]);
+    return syntheticReport(plan);
+  } });
+  assert.equal(result.status, "ready", result.reason);
+  assert.equal(result.authorization.receipts.length, 0);
+});
+
+test("known build execution entrypoints stop before candidate or verification without consent", isolatedCases, async (t) => {
+  await Promise.all(["scripts/build-android.ps1", "scripts/test-android.ps1", "scripts/android-runner.mjs"].map((file) =>
+    t.test(file, async (t) => {
+      const { root } = await workspace(t), session = nativeSession();
+      session.rpc.tools.execute = async () => { assert.fail("Changed build entrypoints need policy consent before candidate mutation."); };
+      const result = await runDevelopment(documentationTask(root, { session, agent: async () => {
+        await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+        await writeFile(path.join(root, file), "# changed build controller\n");
+        return implemented(root);
+      } }), { root, verify: async () => { assert.fail("Unapproved build policy must not execute."); } });
+      assert.equal(result.status, "needs_human");
+      assert.equal(result.approval.stage, "execution");
+      assert.deepEqual(result.policyReview.protectedPaths, [file]);
+      assert.equal(result.candidate, undefined);
+    })));
+});
+
+test("approved protected-path reversion retains the pending path set and continues the repair", isolatedCases, async (t) => {
+  await Promise.all([false, true].map((keepAnotherPolicy) => t.test(`remaining policy: ${keepAnotherPolicy}`, async (t) => {
+    const { root } = await workspace(t), session = nativeSession(), requests = [];
+    let implementations = 0, reviews = 0, verifications = 0;
+    const rounds = keepAnotherPolicy ? 3 : 2;
+    session.capabilities = { ui: { elicitation: true } };
+    session.ui = { elicitation: async (input) => {
+      requests.push(input.message);
+      return { action: "accept", content: { decision: "approve" } };
+    } };
+    const result = await runDevelopment(durable({
+      runId: "approved-policy-reversion", session,
+      args: { goal: "Repair the local gate", acceptance: ["Keep coverage"], maxRepairRounds: rounds - 1 },
+      agent: async (_prompt, options) => {
+        if (options.agent === "devpocket-reviewer") return ++reviews < rounds ? blockingReview : passingReview;
+        if (++implementations === 1) {
+          await mkdir(path.join(root, "scripts"));
+          await writeFile(path.join(root, "scripts", "verify.mjs"), "// task-added gate\n");
+          if (keepAnotherPolicy) await writeFile(path.join(root, "scripts", "verify.ps1"), "# another task gate\n");
+        } else {
+          if (implementations === 2) await rm(path.join(root, "scripts", "verify.mjs"));
+          await writeFile(path.join(root, "README.md"), `Ordinary repair ${implementations}\n`);
+        }
+        return implemented(root);
+      },
+    }), { root, verify: async (_root, plan) => {
+      if (++verifications >= 2) assert.deepEqual(plan.changedFiles,
+        keepAnotherPolicy ? ["README.md", "scripts/verify.ps1"] : ["README.md"]);
+      return syntheticReport(plan);
+    } });
+    assert.equal(result.status, "ready", result.reason);
+    assert.equal(implementations, rounds);
+    assert.equal(verifications, rounds);
+    assert.equal(reviews, rounds);
+    assert.equal(requests.length, 2);
+    assert.match(requests[1], /scripts\/verify\.mjs \[deleted\]/);
+    assert.equal(result.authorization.receipts.length, 2);
+    assert.deepEqual(result.policyPaths, keepAnotherPolicy ? ["scripts/verify.mjs", "scripts/verify.ps1"] : ["scripts/verify.mjs"]);
+    assert.deepEqual(result.policyReview.protectedPaths, result.policyPaths);
+    assert.equal((await checkDevelopmentReadiness(root, result)).status, "ready");
+  })));
+});
+
+test("changed source during a policy question cannot consume a stale approval", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  const parent = (await sourceSnapshot(root)).head;
+  session.capabilities = { ui: { elicitation: true } };
+  session.ui = { elicitation: async () => {
+    await writeFile(path.join(root, "README.md"), "Concurrent edit\n");
+    return { action: "accept", content: { decision: "approve" } };
+  } };
+  session.rpc.tools.execute = async () => { assert.fail("A stale approval cannot commit."); };
+  const result = await runDevelopment(documentationTask(root, { session, agent: async () => {
+    await mkdir(path.join(root, "scripts"));
+    await writeFile(path.join(root, "scripts", "verify.mjs"), "// policy fixture\n");
+    return implemented(root);
+  } }), { root, verify: async () => { assert.fail("A stale approval cannot execute policy."); } });
+  assert.equal(result.status, "blocked");
+  assert.match(result.reason, /changed while awaiting approval/);
+  assert.equal((await sourceSnapshot(root)).head, parent);
+});
+
+test("sensitive review accepts only a native decision after verification and independent review", isolatedCases, async (t) => {
+  await Promise.all(["approve", "reject"].map((decision) => t.test(decision, async (t) => {
+    const { root } = await workspace(t), session = nativeSession(), order = [];
+    session.capabilities = { ui: { elicitation: true } };
+    session.ui = { elicitation: async (input) => {
+      order.push("human");
+      assert.match(input.message, /Accept the listed sensitive code changes/);
+      return { action: "accept", content: { decision } };
+    } };
+    const result = await runDevelopment(documentationTask(root, { session, agent: async (_prompt, options) => {
+      if (options.agent === "devpocket-reviewer") { order.push("independent"); return passingReview; }
+      await mkdir(path.join(root, "extension"), { recursive: true });
+      await writeFile(path.join(root, "extension", "entry.mjs"), "// sensitive fixture\n");
+      return implemented(root);
+    } }), { root, verify: async (_root, plan) => { order.push("verify"); return syntheticReport(plan); } });
+    assert.deepEqual(order, ["verify", "independent", "human"]);
+    assert.equal(result.status, decision === "approve" ? "ready" : "needs_human", result.reason);
+    assert.equal(result.verification.complete, true);
+    assert.equal(result.review.verdict, "pass");
+  })));
 });
 
 test("post-review controller handoff uses local requirements even when verification carries a contrary review flag", isolatedCases, async (t) => {
@@ -713,7 +972,9 @@ test("post-review controller handoff uses local requirements even when verificat
       assert.equal(executions, 1);
       assert.deepEqual(calls, ["general-purpose", "devpocket-reviewer"]);
       assert.equal(result.status, requiresHumanReview ? "needs_human" : "ready");
-      assert.deepEqual(result.policyReview, { requiresHumanReview, protectedPaths: [], source: result.source });
+      assert.equal(result.policyReview.requiresHumanReview, requiresHumanReview);
+      assert.deepEqual(result.policyReview.protectedPaths, []);
+      assert.deepEqual(result.policyReview.source, result.source);
       assert.equal(result.verification.complete, true);
       assert.equal(result.review.verdict, "pass");
       assert.deepEqual(result.review.source, result.policyReview.source);
@@ -1926,10 +2187,10 @@ test("stale, partial, incomplete and missing-native verification cannot qualify 
 });
 
 test("high-risk review and protected policy boundaries remain distinct from committed readiness", isolatedCases, async (t) => {
-  await Promise.all(["deployment/change.txt", "scripts/candidate-commit.mjs", ".github/agents/devpocket-reviewer.agent.md", "AGENTS.md"].map((file) =>
+  await Promise.all(["extension/entry.mjs", "scripts/candidate-commit.mjs", ".github/agents/devpocket-reviewer.agent.md", "AGENTS.md"].map((file) =>
     t.test(file, async (t) => {
       const { root } = await workspace(t), session = nativeSession();
-      const policy = file !== "deployment/change.txt";
+      const policy = file !== "extension/entry.mjs";
       const original = (await sourceSnapshot(root)).head;
       if (policy) session.rpc.tools.execute = async () => { assert.fail("Protected-policy review precedes candidate mutation."); };
       const result = await runDevelopment(documentationTask(root, {
@@ -1945,14 +2206,15 @@ test("high-risk review and protected policy boundaries remain distinct from comm
         return syntheticReport(plan);
       } });
       assert.equal(result.status, "needs_human");
-      assert.deepEqual(result.policyReview, {
-        requiresHumanReview: true, protectedPaths: policy ? [file] : [], source: result.source,
-      });
+      assert.equal(result.policyReview.requiresHumanReview, true);
+      assert.deepEqual(result.policyReview.protectedPaths, policy ? [file] : []);
+      assert.deepEqual(result.policyReview.source, result.source);
       if (policy) assert.equal((await sourceSnapshot(root)).head, original);
       else {
         assert.notEqual(result.candidate.commit, original);
         assert.equal(result.review.verdict, "pass");
-        assert.match(result.reason, /Local development policy requires human review/);
+        assert.equal(result.approval.stage, "review");
+        assert.match(result.reason, /interactive approval UI is unavailable/);
         assert.equal(Object.hasOwn(result.verification, "requiresHumanReview"), false);
       }
       assert.equal((await checkDevelopmentReadiness(root, result)).status, "blocked");
