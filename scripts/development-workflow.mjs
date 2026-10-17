@@ -1,7 +1,7 @@
 import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { combineVerification, executeVerification, readOnlyGit, sourceSnapshot, verificationPlan } from "./verification.mjs";
-import { developmentApprovalRequest, developmentApprovalSatisfied, inspectDevelopmentPolicy,
+import { developmentApprovalDetails, developmentApprovalRequest, developmentApprovalSatisfied, inspectDevelopmentPolicy,
   obtainDevelopmentApproval } from "./development-policy.mjs";
 import { activeHookSnapshot, assertCandidate, assertIdentity, changedPaths, inspectWorktree, prepareCandidate, sameHooks, sameSource,
   sha256, taskPaths, validateCandidateCommit } from "./candidate-commit.mjs";
@@ -317,9 +317,7 @@ async function runAttempt(ctx, root, task, verify) {
       const expected = await sourceSnapshot(root);
       const details = path.join(directory, `approval-${request.id}.txt`);
       const files = request.inputs.map((input) => input.path);
-      const patch = `Original task base: ${base}\n` + files.map((file) =>
-        `\n=== ${file} ===\n--- Original ---\n${policy.beforeContents[file] ?? "(absent)"}\n` +
-        `--- Proposed ---\n${policy.contents[file] ?? "(deleted)"}\n`).join("");
+      const patch = developmentApprovalDetails(base, policy, files);
       try { await writeFile(details, patch, { flag: "wx", mode: 0o600 }); }
       catch (error) {
         if (error.code !== "EEXIST" || await readFile(details, "utf8") !== patch) throw error;
@@ -338,6 +336,9 @@ async function runAttempt(ctx, root, task, verify) {
         [...new Set([...await changedPaths(root, base), ...files])], readOnlyGit);
       if (developmentApprovalRequest(scope, refreshed, stage, approvedHooks)?.id !== request.id) {
         return blocked("Approval inputs changed while the decision was pending; no stale approval was consumed.");
+      }
+      if (sha256(await readFile(details)) !== request.detailsSha256) {
+        return blocked("Approval details changed before continuation; the action remains blocked.");
       }
       if (!receipts.some((receipt) => receipt.requestId === request.id)) receipts.push(decision.receipt);
       delete state.pendingApproval;

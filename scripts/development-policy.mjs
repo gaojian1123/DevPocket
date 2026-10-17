@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, open, realpath } from "node:fs/promises";
+import { lstat, open, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
 // Local authorization is independent of CI impact and never overrides native tool permissions.
@@ -48,6 +48,7 @@ function changedPaths(value) {
 function classification(file) {
   const lower = file.toLowerCase();
   if (/(?:^|\/)(?:agents|claude)\.md$/.test(lower) ||
+      lower === ".github/copilot-instructions.md" || /^\.github\/instructions\/.*\.instructions\.md$/.test(lower) ||
       /^\.github\/(?:agents|skills)\//.test(lower)) return "instructions";
   if (/^\.github\/(?:workflows|actions|extensions)\//.test(lower) || lower === ".github/codeowners" ||
       /^scripts\/([^/]+)\.(?:mjs|ps1|cs|py|ts)$/.test(lower) && executionScripts.has(lower.slice(8).replace(/\.[^.]+$/, ""))) {
@@ -154,17 +155,25 @@ export async function inspectDevelopmentPolicy(root, base, files, git) {
     contents: Object.fromEntries(Object.entries(contents).filter(([file]) => required.has(file))) };
 }
 
+export function developmentApprovalDetails(base, policy, files) {
+  return `Original task base: ${base}\n` + [...files].sort().map((file) =>
+    `\n=== ${file} ===\n--- Original ---\n${policy.beforeContents?.[file] ?? "(absent)"}\n` +
+    `--- Proposed ---\n${policy.contents?.[file] ?? "(deleted)"}\n`).join("");
+}
+
 export function developmentApprovalRequest(scope, policy, stage, hooks) {
   if (!scope || !scope.sessionId || !scope.runId || !scope.base || !scope.workspace || !scope.task ||
       !["execution", "review"].includes(stage)) throw new TypeError("A task-scoped approval subject is required.");
   const selected = policy.reasons.filter((item) => item.stage === stage);
   const paths = selected.flatMap((item) => item.paths).sort();
   if (!paths.length) return null;
+  const details = developmentApprovalDetails(scope.base, policy, paths);
   const request = {
     version: 1, scope, stage,
     action: stage === "execution" ? "Use the listed execution policy for this task" : "Accept the listed sensitive code changes",
     reasons: selected,
     inputs: policy.inputs.filter((input) => paths.includes(input.path)),
+    detailsSha256: hash(details), detailsBytes: Buffer.byteLength(details),
     hooks,
     effects: stage === "execution"
       ? ["Use these exact policy inputs for local checks and task-scoped candidate commits.",
@@ -190,8 +199,20 @@ export function formatDevelopmentApproval(request, details, summary) {
     `Not included: ${request.exclusions.join(" ")}`,
     `Valid for: ${request.validity}`,
     `Review the actual changes: ${details}`,
+    `Details SHA256: ${request.detailsSha256}`,
     `Request identity: ${request.id}`,
   ].join("\n\n");
+}
+
+async function matchingApprovalDetails(request, file) {
+  try {
+    const info = await lstat(file);
+    return info.isFile() && !info.isSymbolicLink() && info.size === request.detailsBytes &&
+      hash(await readFile(file)) === request.detailsSha256;
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR"].includes(error.code)) return false;
+    throw error;
+  }
 }
 
 export async function obtainDevelopmentApproval(ctx, request, details, summary) {
@@ -202,6 +223,10 @@ export async function obtainDevelopmentApproval(ctx, request, details, summary) 
       approval: { ...request, message } };
   }
   if (typeof ctx.step !== "function") throw new Error("Approval requires the original workflow journal.");
+  const changedDetails = () => ({ status: "blocked",
+    reason: "Approval details changed or are unavailable. No decision based on substituted contents may authorize execution.",
+    approval: { ...request, message } });
+  if (!await matchingApprovalDetails(request, details)) return changedDetails();
   const decision = await ctx.step(`devpocket-approval-v1:${request.id}`, async () => {
     const response = await ctx.session.ui.elicitation({
       message,
@@ -215,15 +240,18 @@ export async function obtainDevelopmentApproval(ctx, request, details, summary) 
       Object.keys(response).every((key) => ["action", "content"].includes(key)) &&
       (response.action !== "accept" || response.content && Object.keys(response.content).length === 1 &&
         ["approve", "reject"].includes(response.content.decision));
+    const approved = valid && response.action === "accept" && response.content.decision === "approve";
+    const detailsMatch = !approved || await matchingApprovalDetails(request, details);
     return { version: 1, requestId: request.id, origin: "original-client",
-      decision: !valid ? "invalid" : response.action === "cancel" ? "cancelled" :
-        response.action === "accept" && response.content.decision === "approve" ? "approved" : "rejected" };
+      decision: !valid || !detailsMatch ? "invalid" : response.action === "cancel" ? "cancelled" :
+        approved ? "approved" : "rejected" };
   });
   if (!developmentApprovalSatisfied(request, [decision])) return {
     status: decision?.decision === "invalid" ? "blocked" : "needs_human",
     reason: "This approval was rejected, cancelled or not established. No automatic retry or broader permission is inferred.",
     approval: { ...request, message }, decision,
   };
+  if (!await matchingApprovalDetails(request, details)) return changedDetails();
   return { receipt: decision };
 }
 

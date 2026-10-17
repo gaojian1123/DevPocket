@@ -9,7 +9,7 @@ import { checkDevelopmentReadiness, runDevelopment } from "../development-workfl
 import { changedPaths, inspectWorktree, prepareCandidate, sha256 } from "../candidate-commit.mjs";
 import { executeVerification, git, sourceSnapshot } from "../verification.mjs";
 import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "../native-candidate.mjs";
-import { developmentApprovalRequest, developmentApprovalSatisfied, developmentReviewRequirements,
+import { developmentApprovalDetails, developmentApprovalRequest, developmentApprovalSatisfied, developmentReviewRequirements,
   formatDevelopmentApproval, inspectDevelopmentPolicy, obtainDevelopmentApproval } from "../development-policy.mjs";
 
 const exec = promisify(execFile);
@@ -671,6 +671,10 @@ test("local review requirements preserve trust boundaries independently of impac
     ["scripts/bundle-extension.mjs", true, true], ["scripts/export-schema.ts", true, true],
     [".github/agents/devpocket-reviewer.agent.md", true, true],
     [".github/skills/devpocket-development/SKILL.md", true, true],
+    [".github/copilot-instructions.md", true, true],
+    [".github/instructions/backend.instructions.md", true, true],
+    [".github/instructions/nested/checks.instructions.md", true, true],
+    [".github/README.md", false, false],
     ["scripts/verification.mjs", true, true], ["scripts/verification-policy.mjs", true, true],
     ["scripts/verify.mjs", true, true], [".github/workflows/ci.yml", true, true],
     ["package-lock.json", true, true], [".NPMRC", true, true], ["backend/tsconfig.json", true, true],
@@ -729,7 +733,7 @@ function approvalFixture() {
   const scope = { sessionId: "fixture-session", runId: "fixture-run", base: "1".repeat(40),
     workspace: { root: path.resolve(".data", "approval-fixture"), branch: "refs/heads/task" },
     task: { goal: "Improve local verification", acceptance: ["Preserve required checks"] } };
-  const policy = { ...developmentReviewRequirements([file]), inputs: [
+  const policy = { ...developmentReviewRequirements([file]), contents: { [file]: "// policy fixture\n" }, inputs: [
     { path: file, kind: "file", mode: 0, sha256: "2".repeat(64) },
   ] };
   return { scope, policy, hooks: { directory: "fixture-hooks", fingerprint: "3".repeat(64) } };
@@ -745,6 +749,7 @@ test("scoped approval identity follows authority inputs, not unrelated source re
     developmentApprovalRequest({ ...scope, sessionId: "another-session" }, policy, "execution", hooks),
     developmentApprovalRequest({ ...scope, workspace: { ...scope.workspace, branch: "refs/heads/other" } }, policy, "execution", hooks),
     developmentApprovalRequest(scope, { ...policy, inputs: [{ ...policy.inputs[0], sha256: "6".repeat(64) }] }, "execution", hooks),
+    developmentApprovalRequest(scope, { ...policy, contents: { "scripts/verify.mjs": "Substituted presentation" } }, "execution", hooks),
     developmentApprovalRequest(scope, policy, "execution", { ...hooks, fingerprint: "7".repeat(64) }),
   ]) assert.notEqual(next.id, request.id);
   const message = formatDevelopmentApproval(request, "actual-changes.txt");
@@ -758,9 +763,14 @@ test("scoped approval identity follows authority inputs, not unrelated source re
   assert.throws(() => developmentApprovalRequest(scope, { ...policy, inputs: [] }, "execution", hooks), /every requested path/);
 });
 
-test("only exact native decisions are journaled and rejection is not automatically re-prompted", async () => {
+test("only exact native decisions are journaled and rejection is not automatically re-prompted", async (t) => {
   const { scope, policy, hooks } = approvalFixture();
   const request = developmentApprovalRequest(scope, policy, "execution", hooks);
+  await mkdir(".data/tests", { recursive: true });
+  const directory = await mkdtemp(path.resolve(".data/tests/approval-details-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const details = path.join(directory, "actual-changes.txt");
+  await writeFile(details, developmentApprovalDetails(scope.base, policy, policy.protectedPaths));
   for (const [response, expected] of [
     [{ action: "accept", content: { decision: "approve" } }, "approved"],
     [{ action: "accept", content: { decision: "reject" } }, "rejected"],
@@ -780,16 +790,41 @@ test("only exact native decisions are journaled and rejection is not automatical
         return response;
       },
     } } });
-    const result = await obtainDevelopmentApproval(ctx, request, "actual-changes.txt");
+    const result = await obtainDevelopmentApproval(ctx, request, details);
     assert.equal((result.receipt ?? result.decision).decision, expected);
-    assert.deepEqual(await obtainDevelopmentApproval(ctx, request, "actual-changes.txt"), result);
+    assert.deepEqual(await obtainDevelopmentApproval(ctx, request, details), result);
     assert.equal(questions, 1);
     assert.equal(developmentApprovalSatisfied(request, [result.receipt]), expected === "approved");
   }
-  const unavailable = await obtainDevelopmentApproval(durable({}), request, "actual-changes.txt");
+  const unavailable = await obtainDevelopmentApproval(durable({}), request, details);
   assert.equal(unavailable.status, "needs_human");
   assert.equal(unavailable.approval.id, request.id);
   assert.match(unavailable.reason, /UI is unavailable/);
+});
+
+test("substituted approval details cannot mint a reusable native grant", async (t) => {
+  const { scope, policy, hooks } = approvalFixture();
+  const request = developmentApprovalRequest(scope, policy, "execution", hooks);
+  await mkdir(".data/tests", { recursive: true });
+  const directory = await mkdtemp(path.resolve(".data/tests/approval-details-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const details = path.join(directory, "actual-changes.txt");
+  const text = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
+  await writeFile(details, text);
+  let questions = 0;
+  const ctx = durable({ session: { capabilities: { ui: { elicitation: true } }, ui: {
+    elicitation: async () => {
+      questions++;
+      await writeFile(details, text.replace("policy fixture", "benign fixture"));
+      return { action: "accept", content: { decision: "approve" } };
+    },
+  } } });
+  const rejected = await obtainDevelopmentApproval(ctx, request, details);
+  assert.equal(rejected.status, "blocked");
+  assert.equal(rejected.decision.decision, "invalid");
+  await writeFile(details, text);
+  assert.equal((await obtainDevelopmentApproval(ctx, request, details)).status, "blocked");
+  assert.equal(questions, 1, "Restoring the artifact cannot resurrect an invalid approval or repeat the question.");
 });
 
 test("native policy approval continues the pending candidate and survives ordinary repair without another question", async (t) => {
@@ -846,8 +881,10 @@ test("ordinary test edits do not require project approval or reduce the selected
   assert.equal(result.authorization.receipts.length, 0);
 });
 
-test("known build execution entrypoints stop before candidate or verification without consent", isolatedCases, async (t) => {
-  await Promise.all(["scripts/build-android.ps1", "scripts/test-android.ps1", "scripts/android-runner.mjs"].map((file) =>
+test("known execution and instruction entrypoints stop before candidate or verification without consent", isolatedCases, async (t) => {
+  await Promise.all(["scripts/build-android.ps1", "scripts/test-android.ps1", "scripts/android-runner.mjs",
+    ".github/copilot-instructions.md", ".github/instructions/backend.instructions.md",
+    ".github/instructions/nested/checks.instructions.md"].map((file) =>
     t.test(file, async (t) => {
       const { root } = await workspace(t), session = nativeSession();
       session.rpc.tools.execute = async () => { assert.fail("Changed build entrypoints need policy consent before candidate mutation."); };
@@ -861,6 +898,38 @@ test("known build execution entrypoints stop before candidate or verification wi
       assert.deepEqual(result.policyReview.protectedPaths, [file]);
       assert.equal(result.candidate, undefined);
     })));
+});
+
+test("ignored approval detail substitution stops before native candidate execution", isolatedCases, async (t) => {
+  await Promise.all(["replace", "delete"].map((change) => t.test(change, async (t) => {
+    const { root } = await workspace(t), session = nativeSession();
+    let requestedSource;
+    session.capabilities = { ui: { elicitation: true } };
+    session.ui = { elicitation: async (input) => {
+      requestedSource = await sourceSnapshot(root);
+      const details = /Review the actual changes: ([^\n]+)/.exec(input.message)[1];
+      if (change === "delete") await rm(details);
+      else {
+        const original = await readFile(details, "utf8");
+        const altered = original.replace("policy fixture", "benign fixture");
+        assert.notEqual(original, altered);
+        assert.equal(Buffer.byteLength(original), Buffer.byteLength(altered));
+        await writeFile(details, altered);
+      }
+      return { action: "accept", content: { decision: "approve" } };
+    } };
+    session.rpc.tools.execute = async () => { assert.fail("Substituted approval details must not authorize a commit."); };
+    const result = await runDevelopment(documentationTask(root, { session, agent: async () => {
+      await mkdir(path.join(root, "scripts"));
+      await writeFile(path.join(root, "scripts", "verify.mjs"), "// policy fixture\n");
+      return implemented(root);
+    } }), { root, verify: async () => { assert.fail("Substituted approval details must not authorize verification."); } });
+    assert.equal(result.status, "blocked");
+    assert.equal(result.decision.decision, "invalid");
+    assert.deepEqual(await sourceSnapshot(root), requestedSource, "Ignored detail mutation does not alter source identity.");
+    assert.equal(result.candidate, undefined);
+    assert.equal(result.authorization.receipts.length, 0);
+  })));
 });
 
 test("approved protected-path reversion retains the pending path set and continues the repair", isolatedCases, async (t) => {

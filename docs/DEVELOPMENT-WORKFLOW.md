@@ -49,6 +49,9 @@ inspection rather than an invented low-risk label. `inspectDevelopmentPolicy`
 reads actual input identities and exempts a package manifest's metadata-only change
 only when complete original/current execution settings compare equal. Invalid,
 missing or newly introduced manifests retain the dependency decision.
+Standard `.github\copilot-instructions.md` and path-specific
+`.github\instructions\*.instructions.md` are execution instructions, not ordinary
+GitHub Markdown documentation.
 
 Path classification screens code roles; it cannot prove the effects of arbitrary
 programs. Before using task authorization, inspect changed commands, execution
@@ -93,8 +96,12 @@ Accepted decisions continue the pending phase in the same invocation, without
 dispatching implementation again. Repeated requests for the same scope replay the
 runtime-journaled decision, not an editable workspace receipt. The controller
 rechecks source, workspace, hooks, implementation and approval inputs after the
-answer and before continuing. Rejection/cancellation stays rejected for that key;
-it is not retried under another command. Malformed or missing answers are not
+answer and before continuing.
+The exact original/proposed details digest and byte length are part of the request.
+Details are checked before presentation, before recording an accepted decision,
+and before continuation; substituted, missing or linked details cannot supply consent.
+Rejection/cancellation stays rejected for that key; it is not retried under another
+command. Malformed or missing answers are not
 approval. An unavailable UI returns the specific pending request, without running
 the action. Crashes, lost connections and uncertain commits retain the inspected
 recovery rules below; this approval continuation is not automatic side-effect replay.
