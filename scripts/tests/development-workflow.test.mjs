@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { describe, test } from "node:test";
+import { test } from "node:test";
 import { checkDevelopmentReadiness, runDevelopment } from "../development-workflow.mjs";
 import { changedPaths, inspectWorktree, prepareCandidate, sha256 } from "../candidate-commit.mjs";
 import { executeVerification, git, sourceSnapshot } from "../verification.mjs";
@@ -15,14 +15,6 @@ const verificationInputs = ["verification-executor.mjs", "verification-backend.m
   "verification-android.mjs", "backend-diagnostics.mjs"];
 // Top-level tests stay serial; only fresh-workspace cases without shared environment writes use this limit.
 const isolatedCases = { concurrency: 2 };
-
-const gitEnvironmentBeforeXcode = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_COUNT"].map((key) => [key, process.env[key]]);
-describe("Xcode MCP worktree setup", { concurrency: false }, async () => {
-  await import("./xcode-mcp.test.mjs");
-});
-test("Xcode MCP fixtures restore the parent Git environment", () => {
-  for (const [key, value] of gitEnvironmentBeforeXcode) assert.equal(process.env[key], value, key);
-});
 
 function nativeSession() {
   return { sessionId: "fixture-session", rpc: { tools: {

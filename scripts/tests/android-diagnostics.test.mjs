@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { LINUX_PLATFORM_TESTS } from "../backend-diagnostics.mjs";
+import { WORKFLOW_TEST_FILES } from "../test-workflow.mjs";
 
 const exec = promisify(execFile);
 const entry = path.resolve("scripts/android-diagnostics.mjs");
@@ -183,9 +184,8 @@ test("CI publishes only the diagnostic projection alongside the original Android
   assert.deepEqual(paths, [".data\\ci\\android\\report.json"]);
   assert.match(android, /if: always\(\) && steps\.android_diagnostics\.outputs\.report_ready == 'true'/);
   assert.match(android, /name: android-test-diagnostics\r?\n\s+path: \.data\/ci\/android\/android-diagnostics\.json/);
-  const manifest = JSON.parse(await readFile("package.json", "utf8"));
   for (const testFile of ["android-build.test.mjs", "android-diagnostics.test.mjs"]) {
-    assert.ok(manifest.scripts["test:workflow"].includes(`scripts/tests/${testFile}`));
+    assert.ok(WORKFLOW_TEST_FILES.includes(`scripts/tests/${testFile}`));
   }
 });
 
@@ -284,13 +284,11 @@ test("the independent tooling CI job runs the complete workflow suite without ap
   assert.ok(gate.includes("TOOLING_RESULT: ${{ needs.tooling.result }}"));
   assert.match(gate, /pattern: verification-\*/);
   const manifest = JSON.parse(await readFile("package.json", "utf8"));
-  assert.equal(manifest.scripts["test:workflow"], "node --test " + [
-    "verification", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
-    "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
-    "bounded-worker-log", "development-workflow", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime",
-  ].map((name) => `scripts/tests/${name}.test.mjs`).join(" "));
-  const development = await readFile("scripts/tests/development-workflow.test.mjs", "utf8");
-  assert.match(development, /describe\("Xcode MCP worktree setup", \{ concurrency: false \}, async \(\) => \{\s+await import\("\.\/xcode-mcp\.test\.mjs"\);/);
+  assert.equal(manifest.scripts["test:workflow"], "node scripts/test-workflow.mjs");
+  assert.ok(WORKFLOW_TEST_FILES.includes("scripts/tests/xcode-mcp.test.mjs"));
+  assert.ok(WORKFLOW_TEST_FILES.includes("scripts/tests/workflow-runner.test.mjs"));
+  const executor = await readFile("scripts/verification-executor.mjs", "utf8");
+  assert.match(executor, /args: \["-NoProfile", "-NonInteractive", "-Command", "& npm run test:workflow; exit \$LASTEXITCODE"\]/);
 });
 
 test("native startup diagnostics are manual-only, reuse the owned entry and never become a verification shard", async () => {
