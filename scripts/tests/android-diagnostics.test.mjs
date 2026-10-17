@@ -289,6 +289,8 @@ test("the independent tooling CI job runs the complete workflow suite without ap
     "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
     "bounded-worker-log", "development-workflow", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime",
   ].map((name) => `scripts/tests/${name}.test.mjs`).join(" "));
+  const development = await readFile("scripts/tests/development-workflow.test.mjs", "utf8");
+  assert.match(development, /describe\("Xcode MCP worktree setup", \{ concurrency: false \}, async \(\) => \{\s+await import\("\.\/xcode-mcp\.test\.mjs"\);/);
 });
 
 test("native startup diagnostics are manual-only, reuse the owned entry and never become a verification shard", async () => {
