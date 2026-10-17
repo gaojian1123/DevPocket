@@ -288,7 +288,8 @@ test("local Xcode setup and root ignore policy select tooling without weakening 
     assert.deepEqual(impact.requiredChecks, ["workflow-tests"]);
     assert.deepEqual(impact.requiredGroups, ["tooling"]);
     assert.equal(impact.layouts, false);
-    assert.equal(developmentReviewRequirements(files).requiresHumanReview, true);
+    // Tooling coverage is not an approval rule; the unclassified template still needs review.
+    assert.equal(developmentReviewRequirements(files).requiresHumanReview, files.includes("config/xcode-mcp.example.json"));
   }
   for (const file of ["package.json", "package-lock.json", "scripts/process.mjs", ".github/workflows/ci.yml",
     "scripts/setup-xcode-mcp-extra.mjs", "config/another-mcp.example.json",
