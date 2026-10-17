@@ -354,6 +354,10 @@ Focused checks use `node --test scripts/tests/xcode-mcp.test.mjs`. On a supporte
 Mac they exercise real Git worktree creation and read-only Xcode lookup, not an
 MCP connection or an App session. They also cover simulated unsupported
 platforms, missing Xcode, configuration preservation and hook conflicts.
+The same cases run as an isolated suite inside the existing development-workflow
+regression entry. The named initializer/template/tests and root ignore policy
+select tooling checks, not application builds; shared dependencies and unknown
+paths remain conservatively classified.
 
 ## Backend build and local development
 

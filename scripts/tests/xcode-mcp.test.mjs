@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
-import { devNull } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { after, before, test } from "node:test";
@@ -15,16 +14,22 @@ const previousGitEnvironment = new Map(["GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBA
   "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_TEMPLATE_DIR", "GIT_EXEC_PATH",
   "GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_OBJECT_DIRECTORY",
   "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_QUARANTINE_PATH"].map((key) => [key, process.env[key]]));
-before(() => {
+let gitConfigDirectory;
+before(async () => {
+  await mkdir(".data/tests", { recursive: true });
+  gitConfigDirectory = await mkdtemp(path.resolve(".data/tests/xcode-git-config-"));
+  const gitConfig = path.join(gitConfigDirectory, "config");
+  await writeFile(gitConfig, "", { mode: 0o600 });
   for (const key of previousGitEnvironment.keys()) delete process.env[key];
   process.env.GIT_CONFIG_NOSYSTEM = "1";
-  process.env.GIT_CONFIG_GLOBAL = devNull;
+  process.env.GIT_CONFIG_GLOBAL = gitConfig;
 });
-after(() => {
+after(async () => {
   for (const [key, value] of previousGitEnvironment) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
+  if (gitConfigDirectory) await rm(gitConfigDirectory, { recursive: true, force: true });
 });
 
 async function temporary(t) {
@@ -58,6 +63,12 @@ async function repository(t) {
 const configPath = (root) => path.join(root, ".mcp.json");
 const config = async (root) => JSON.parse(await readFile(configPath(root), "utf8"));
 const absent = async (file) => assert.rejects(lstat(file), { code: "ENOENT" });
+
+test("Git fixtures use a regular empty config instead of an OS-specific null device", async () => {
+  assert.equal(process.env.GIT_CONFIG_GLOBAL, path.join(gitConfigDirectory, "config"));
+  assert.equal((await lstat(process.env.GIT_CONFIG_GLOBAL)).isFile(), true);
+  assert.equal(await readFile(process.env.GIT_CONFIG_GLOBAL, "utf8"), "");
+});
 
 test("the shared template has the requested native configuration but is not an auto-loaded file", async () => {
   const template = JSON.parse(await readFile(new URL("../../config/xcode-mcp.example.json", import.meta.url), "utf8"));
@@ -237,7 +248,7 @@ test("installation is repository-local, durable, ignored and idempotent", async 
   const hook = await readFile(result.hook), ignores = await readFile(exclude, "utf8");
   assert.equal(ignores, "/existing-local-file\n/.mcp.json\n/.mcp.json.lock\n");
   assert.match(hook.toString(), /Darwin\) exec/);
-  assert.ok(hook.toString().includes("devpocket-xcode-mcp/scripts/setup-xcode-mcp.mjs"));
+  assert.ok(hook.toString().includes(path.join("devpocket-xcode-mcp", "scripts", "setup-xcode-mcp.mjs")));
   assert.deepEqual(await readFile(path.join(root, ".git/devpocket-xcode-mcp/scripts/setup-xcode-mcp.mjs")),
     await readFile(new URL("../setup-xcode-mcp.mjs", import.meta.url)));
   await installXcodeMcp(supported(root));
