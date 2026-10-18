@@ -682,6 +682,13 @@ state, not a changed Git/system setting. A live IPC owner and private inherited
 ticket let owned nested verifier fixtures share the parent's allocation without
 deadlocking it; a borrowed ticket cannot release the parent.
 
+Host capacity follows confirmed process-tree shutdown, independently of device
+file cleanup. A failed or unconfirmed device-data cleanup keeps that workspace's
+ownership lock and run unqualified, but does not reserve host capacity once all
+owned processes and probes are confirmed stopped. Missing process-cleanup proof
+still retains the host owner; a file-cleanup failure is never changed into
+successful verification or permission to resume.
+
 Queue waiting is reported separately as `admission.waitedMs`; command deadlines
 start only when their actual execution begins. Cancellation while waiting does
 not run a check or release another owner. A stale, damaged or unconfirmed owner
@@ -717,8 +724,14 @@ owned cleanup can still fail. The executor rechecks successful groups'
 environment identities before qualifying the attempt. Environment fingerprints
 include applicable versions/executables, installed Node package bytes, npm and
 Gradle configuration, Python packages where required, JDK/SDK inputs and image
-file identities. SDK/JDK directory metadata includes size, mode, inode and change
-times; ordinary package/artifact bytes are hashed. This is local applicability
+file identities. Toolchain, image and package/artifact bytes are hashed with
+their modes and bounded link identities; inode/timestamps guard each read but do
+not invalidate identical input bytes between reads. Selected native groups
+therefore read their large installed images as well; tooling-only checks do not.
+Per-prerequisite digests locate observed drift without exposing configuration
+values or private paths, and a changed prerequisite still blocks qualification.
+The execution identity also binds the canonical tooling entry, shard/admission
+and CI helpers, including their shared development policy. This is local applicability
 evidence, not protection from an administrator able to alter the verifier and
 its private storage together.
 

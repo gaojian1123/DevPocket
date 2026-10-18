@@ -73,6 +73,12 @@ async function changedRepository(t, files) {
   return root;
 }
 
+function isolatedAdmissionEnvironment(root) {
+  const env = { ...process.env, [process.platform === "win32" ? "LOCALAPPDATA" : "HOME"]: path.join(root, ".data", "fixture-profile") };
+  delete env.DEVPOCKET_VERIFIER_ADMISSION;
+  return env;
+}
+
 test("a documentation plan identifies the exact source without claiming checks ran", async (t) => {
   const root = await repository(t);
   await writeFile(path.join(root, "README.md"), "Revised documentation\n");
@@ -1256,7 +1262,7 @@ test("the real device runner failure phase survives PowerShell and controller wr
   const device = workflow.split("\n  device:")[1].split("\n  gate:")[0];
   assert.match(device, /node scripts\/device-diagnostics\.mjs --directory \.data\/ci\/device --github/);
   assert.match(device, /steps\.device_diagnostics\.outputs\.report_ready == 'true'/);
-  assert.match(device, /name: device-test-diagnostics\n\s+path: \.data\/ci\/device\/device-diagnostics\.json/);
+  assert.match(device, /name: device-test-diagnostics-attempt-\$\{\{ github\.run_attempt \}\}\n\s+path: \.data\/ci\/device\/device-diagnostics\.json/);
 });
 
 test("blocked worker diagnostics stay scoped and cannot publish raw process fields", async (t) => {
@@ -1561,6 +1567,7 @@ test("explicit recovery reuses a completed group, reruns failed and unstarted ch
   const first = await verify(root, []);
   assert.equal(first.report.status, "failed", JSON.stringify(first.report));
   assert.deepEqual(await counts(), { tooling: 1, typecheck: 1 });
+  const reusable = first.report.preflight.groups.find((group) => group.group === "tooling").reusable;
   const original = await readFile(first.reportPath);
   const directory = path.dirname(path.resolve(root, first.report.run.manifest));
   const failedGroup = await readFile(path.join(directory, "0001-backend.json"));
@@ -1568,15 +1575,17 @@ test("explicit recovery reuses a completed group, reruns failed and unstarted ch
   await t.test("a deterministic failing group is retried once only per explicit resume", async () => {
     const repeated = await verify(root, ["--resume", first.report.run.manifest]);
     assert.equal(repeated.report.status, "failed");
-    assert.deepEqual(await counts(), { tooling: 1, typecheck: 2 });
+    assert.deepEqual(await counts(), { tooling: reusable ? 1 : 2, typecheck: 2 });
+    if (!reusable) assert.ok(repeated.report.recovery.invalidated.some((item) =>
+      item.group === "tooling" && item.reason === "environment-unbound"));
   });
   await rm(marker);
   const second = await verify(root, ["--resume", first.report.run.manifest]);
   assert.equal(second.exitCode, 0, JSON.stringify(second.report));
   assert.equal(second.report.complete, true);
-  assert.deepEqual(second.report.recovery.reused, [{ group: "tooling", attempt: "0001" }]);
-  assert.deepEqual(second.report.recovery.executed, ["backend"]);
-  assert.deepEqual(await counts(), { tooling: 1, typecheck: 3, "backend-tests": 1, "backend-build": 1, schema: 1 });
+  assert.deepEqual(second.report.recovery.reused, reusable ? [{ group: "tooling", attempt: "0001" }] : []);
+  assert.deepEqual(second.report.recovery.executed, reusable ? ["backend"] : ["tooling", "backend"]);
+  assert.deepEqual(await counts(), { tooling: reusable ? 1 : 3, typecheck: 3, "backend-tests": 1, "backend-build": 1, schema: 1 });
   assert.deepEqual(await readFile(first.reportPath), original);
   assert.deepEqual(await readFile(path.join(directory, "0001-backend.json")), failedGroup);
   assert.equal((await verify(root, ["--combine", "--input", first.reportPath])).exitCode, 1);
@@ -1614,6 +1623,7 @@ test("ordinary aggregates retain execution origins and reject a HEAD-only relabe
 test("failed or unknown device-data cleanup retains the owner and blocks recovery after confirmed process exit", async (t) => {
   for (const kind of ["failed", "unknown"]) await t.test(kind, async (t) => {
     const root = await repository(t, { native: true });
+    const env = isolatedAdmissionEnvironment(root);
     await mkdir(path.join(root, "scripts"));
     await writeFile(path.join(root, "scripts", "test-android.ps1"), [
       "param($Jdk,$Sdk,$Image,$RunDirectory,$Owner,[switch]$Layouts)",
@@ -1625,23 +1635,69 @@ test("failed or unknown device-data cleanup retains the owner and blocks recover
       ] : []),
       "exit 23", "",
     ].join("\n"));
-    const first = await verify(root, ["--group", "device"]);
+    const first = await verify(root, ["--group", "device"], env);
     const check = first.report.checks.find((item) => item.id === "android-device");
     assert.equal(check.cleanup, kind);
     assert.equal(check.commandOutcome.cleanupFailure, null);
+    assert.equal(first.report.admission.state, "released", "Confirmed stopped processes must not reserve another workspace's host capacity.");
     const run = path.dirname(path.resolve(root, first.report.run.manifest));
     const finish = JSON.parse(await readFile(path.join(run, "0001-finish.json"), "utf8")).record;
     assert.equal(finish.safeToResume, false);
-    const second = await verify(root, ["--group", "device", "--resume", first.report.run.manifest]);
+    const second = await verify(root, ["--group", "device", "--resume", first.report.run.manifest], env);
     assert.equal(second.report.failure.reason, "run-locked");
     const retained = path.join(path.dirname(first.reportPath), "device", "fixture", "retained.txt");
     assert.equal((await readFile(retained, "utf8")).trim(), "retained");
     // Explicit fixture-only inspection cannot turn the original incomplete receipt into resumable evidence.
     await rm(path.join(root, ".data", "verification", "local", "execution.lock"));
-    const inspected = await verify(root, ["--group", "device", "--resume", first.report.run.manifest]);
+    const inspected = await verify(root, ["--group", "device", "--resume", first.report.run.manifest], env);
     assert.equal(inspected.report.failure.reason, "run-incomplete");
     assert.equal((await readFile(path.join(root, ".data", "device-count"), "utf8")).trim().split(/\r?\n/).length, 1);
+    const other = await changedRepository(t, ["scripts/tests/unrelated.test.mjs"]);
+    const independent = await verify(other, ["--group", "tooling"], env);
+    assert.equal(independent.exitCode, 0, JSON.stringify(independent.report));
+    assert.equal(independent.report.status, "partial");
+    assert.equal(independent.report.checks.find((item) => item.id === "workflow-tests").status, "passed");
+    assert.equal(independent.report.admission.state, "released");
   });
+});
+
+test("unconfirmed process cleanup retains host capacity even before a check starts", async (t) => {
+  const root = await changedRepository(t, ["scripts/tests/ownership.test.mjs"]);
+  const env = isolatedAdmissionEnvironment(root), home = process.platform === "win32" ? "LOCALAPPDATA" : "HOME";
+  const previous = new Map([home, "DEVPOCKET_VERIFIER_ADMISSION"].map((name) => [name, process.env[name]]));
+  const spawn = childProcess.spawn;
+  let intercepted = 0;
+  const replacement = t.mock.method(childProcess, "spawn", (file, args, options) => {
+    if (args.some((arg) => /owned-command-(?:windows\.mjs|linux\.py)$/.test(arg))) {
+      intercepted++;
+      return spawn(process.execPath, ["-e", "process.exit(0)"], options);
+    }
+    return spawn(file, args, options);
+  });
+  syncBuiltinESMExports();
+  process.env[home] = env[home];
+  delete process.env.DEVPOCKET_VERIFIER_ADMISSION;
+  try {
+    const { executeVerification } = await import("../verification.mjs");
+    const result = await executeVerification(root, await verificationPlan(root, "HEAD"), {
+      group: "tooling", directory: path.join(root, ".data", "verification", "unknown-process"),
+    });
+    assert.ok(intercepted > 0, JSON.stringify(result));
+    assert.equal(result.status, "blocked");
+    assert.equal(result.admission.state, "unconfirmed");
+    assert.ok(result.preflight.groups[0].issues.some((issue) =>
+      issue.failure.observedProcess === "owned-command-supervisor" && issue.failure.processTreeStopped === false));
+  } finally {
+    replacement.mock.restore();
+    syncBuiltinESMExports();
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  const other = await changedRepository(t, ["scripts/tests/unrelated.test.mjs"]);
+  const blocked = await verify(other, ["--group", "tooling"], env);
+  assert.equal(blocked.report.failure.reason, "admission-unconfirmed");
 });
 
 test("a fresh signed run survives Windows close-time metadata updates without accepting changed records", async (t) => {
@@ -1789,6 +1845,7 @@ test("observed environment drift cannot be erased by restoring the initial depen
     first = await running;
   }
   assert.equal(first.report.failure.reason, "environment-changed");
+  assert.equal(first.report.failure.prerequisite, "root-dependencies");
   assert.equal(first.report.checks[0].status, "passed");
   const bytes = await readFile(first.reportPath);
   const finish = JSON.parse(await readFile(path.join(path.dirname(first.reportPath), "run", "0001-finish.json"), "utf8")).record;
@@ -1893,7 +1950,10 @@ test("a checkout alias shares the physical verification owner without allowing l
   assert.equal(first.report.status, "partial", JSON.stringify(first.report));
   const resumed = await verify(alias, ["--group", "tooling", "--resume", first.report.run.manifest]);
   assert.equal(resumed.report.status, "partial", JSON.stringify(resumed.report));
-  assert.deepEqual(await counts(), { tooling: 1 });
+  const reusable = first.report.preflight.groups[0].reusable;
+  assert.deepEqual(await counts(), { tooling: reusable ? 1 : 2 });
+  assert.deepEqual(resumed.report.recovery.reused, reusable ? [{ group: "tooling", attempt: "0001" }] : []);
+  if (!reusable) assert.equal(resumed.report.recovery.invalidated[0].reason, "environment-unbound");
   if (process.platform === "win32") {
     const previous = path.dirname(first.reportPath);
     const output = path.join(path.dirname(previous), path.basename(previous).toUpperCase(), "same-output.json");
@@ -1960,6 +2020,47 @@ test("tooling-only preflight never inspects unrelated Java, SDK, image or probe-
       else process.env[name] = value;
     }
   }
+});
+
+test("native preflight binds tool bytes rather than incidental file timestamps", async (t) => {
+  const { verificationPreflight } = await import("../verification-preflight.mjs");
+  const root = await repository(t, { native: true }), tools = toolchains.get(root);
+  await mkdir(path.join(root, "scripts"));
+  await writeFile(path.join(root, "scripts", "test-android.ps1"), "# synthetic entry, never executed\n");
+  const plan = await verificationPlan(root, "HEAD", true);
+  const options = { group: "device", jdk: tools.jdk, sdk: tools.sdk, directory: path.join(root, ".data", "preflight") };
+  const preflight = async () => {
+    const result = await verificationPreflight(root, plan, options);
+    assert.equal(result.status, "passed", JSON.stringify(result));
+    return result.groups[0];
+  };
+  const files = [
+    ["jdk", path.join(tools.jdk, "release")],
+    ["build-tools", path.join(tools.sdk, "build-tools", "35.0.0", process.platform === "win32" ? "aapt2.exe" : "aapt2")],
+    ["image", path.join(tools.sdk, "system-images", "android-35", "google_apis", "x86_64", "system.img")],
+    ["emulator", path.join(tools.sdk, "emulator", process.platform === "win32" ? "emulator.exe" : "emulator")],
+  ];
+  for (const [, file] of files) await fileSystem.utimes(file, 1, 1);
+  const before = await preflight();
+  for (const [, file] of files) await fileSystem.utimes(file, 2, 1);
+  assert.deepEqual(await preflight(), before, "Access-time changes do not change the executable inputs.");
+  for (const [name, file] of files.filter(([name]) => name === "jdk" || name === "image")) {
+    const bytes = await readFile(file);
+    try {
+      await writeFile(file, Buffer.concat([bytes, Buffer.from("\n")]));
+      await fileSystem.utimes(file, 2, 1);
+      const after = await preflight(), prerequisite = name === "jdk" ? "jdk" : "android-image";
+      assert.notEqual(after.fingerprint, before.fingerprint, "Restoring timestamps must not hide changed bytes.");
+      assert.deepEqual(after.prerequisites.filter((item, index) =>
+        item.fingerprint !== before.prerequisites[index].fingerprint).map((item) => item.prerequisite), [prerequisite]);
+    } finally { await writeFile(file, bytes); }
+  }
+  const image = files.find(([name]) => name === "image")[1];
+  await rm(image);
+  await mkdir(image);
+  const missingImage = await verificationPreflight(root, plan, options);
+  assert.equal(missingImage.status, "blocked");
+  assert.ok(missingImage.groups[0].issues.some((issue) => issue.prerequisite === "android-image"));
 });
 
 test("native preflight binds ignored SDK overrides before the build can execute", async (t) => {
@@ -2284,6 +2385,14 @@ test("a changed captured execution policy cannot resume an earlier successful ru
   }
   const copiedPolicy = await import(pathToFileURL(path.join(copied, "verification-preflight.mjs")).href);
   assert.equal(await copiedPolicy.verificationExecutionPolicy(), first.policy, "The copied policy must match before mutation.");
+  for (const name of ["test-workflow.mjs", "verification-tooling.mjs", "verification-admission.mjs",
+    "verification-ci.mjs", "verification-ci-artifact.ps1", "development-policy.mjs"]) await t.test(name, async () => {
+    const file = path.join(copied, name), original = await readFile(file);
+    try {
+      await writeFile(file, Buffer.concat([original, Buffer.from("\n")]));
+      assert.notEqual(await copiedPolicy.verificationExecutionPolicy(), first.policy, `${name} must remain a bound execution input.`);
+    } finally { await writeFile(file, original); }
+  });
   const run = async (extra = []) => {
     const report = path.join(root, ".data", "verification", randomUUID(), "report.json");
     try {
@@ -2316,6 +2425,18 @@ async function commitFixtureCandidate(root) {
 
 test("a native candidate transition reuses content-only execution across Git normalization without rewriting its old HEAD or time", async (t) => {
   const { root, base, counts } = await recoveryFixture(t, { candidate: true });
+  // CI's process-level Git override otherwise takes precedence over the disposable repository's config.
+  const index = Number(process.env.GIT_CONFIG_COUNT ?? 0);
+  assert.ok(Number.isSafeInteger(index) && index >= 0 && index < 128);
+  const key = `GIT_CONFIG_KEY_${index}`, value = `GIT_CONFIG_VALUE_${index}`;
+  const originalGit = new Map(["GIT_CONFIG_COUNT", key, value].map((name) => [name, process.env[name]]));
+  Object.assign(process.env, { GIT_CONFIG_COUNT: String(index + 1), [key]: "core.autocrlf", [value]: "true" });
+  t.after(() => {
+    for (const [name, saved] of originalGit) {
+      if (saved === undefined) delete process.env[name];
+      else process.env[name] = saved;
+    }
+  });
   await exec("git", ["config", "core.autocrlf", "true"], { cwd: root });
   await writeFile(path.join(root, "backend", "tests", "normalized.txt"), "unchanged execution input\r\n");
   await rm(path.join(root, "README.md"));
@@ -2349,6 +2470,7 @@ test("a native candidate transition reuses content-only execution across Git nor
   };
   const first = await run();
   assert.equal(first.report.status, "passed", JSON.stringify(first.report));
+  const toolingReusable = first.report.preflight.groups.find((group) => group.group === "tooling").reusable;
   assert.equal(typecheckCommands, 1, "Observe the real npm typecheck command, not just its report.");
   const eligibility = first.report.preflight.groups.find((group) => group.group === "backend").candidateEligibility;
   const supportsReuse = eligibility.status === "bound";
@@ -2392,7 +2514,7 @@ test("a native candidate transition reuses content-only execution across Git nor
     const resumed = await run({ resume: failed.report.run.manifest });
     assert.equal(resumed.report.status, "passed", JSON.stringify(resumed.report));
     assert.equal(resumed.report.recovery.reusedChecks.includes("typecheck"), supportsReuse);
-    assert.deepEqual(await counts(), { tooling: 2, "backend-tests": 4, "backend-build": 3, schema: 3 });
+    assert.deepEqual(await counts(), { tooling: toolingReusable ? 2 : 4, "backend-tests": 4, "backend-build": 3, schema: 3 });
     assert.equal(typecheckCommands, supportsReuse ? 1 : 4);
     assert.deepEqual(await readFile(first.reportPath), original);
   });

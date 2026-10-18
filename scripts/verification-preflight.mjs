@@ -18,18 +18,19 @@ const directNode = (value, kind) => value?.kind === kind && /\.(?:com|exe)$/i.te
 const policyInputs = [
   "verify.mjs", "verify.ps1", "verification.mjs", "verification-policy.mjs", "verification-executor.mjs", "verification-preflight.mjs",
   "verification-run.mjs", "verification-transition.mjs", "verification-backend.mjs", "verification-android.mjs",
+  "test-workflow.mjs", "verification-tooling.mjs", "verification-admission.mjs", "verification-ci.mjs",
+  "verification-ci-artifact.ps1", "development-policy.mjs",
   "candidate-commit.mjs", "native-candidate.mjs", "git-state.mjs", "process.mjs",
   "owned-command-windows.mjs", "owned-command.cs", "owned-command.ps1", "owned-command-linux.py",
   "backend-diagnostics.mjs", "diagnostic-errors.mjs", "diagnostic-publication.mjs", "bounded-worker-log.mjs",
   "device-run.mjs", "worker-diagnostics.mjs", "device-diagnostics.mjs", "native-lifecycle.mjs",
 ];
 
-async function fileIdentity(file, { content = true, optional = false } = {}) {
+async function fileIdentity(file, { optional = false } = {}) {
   let info;
   try { info = await lstat(file); }
   catch (error) { if (optional && error.code === "ENOENT") return null; throw error; }
   if (!info.isFile() || info.isSymbolicLink()) throw diagnosticError("preflight-path");
-  if (!content) return { size: info.size, mode: info.mode, dev: info.dev, ino: info.ino, mtime: info.mtimeMs, ctime: info.ctimeMs };
   const handle = await open(file, "r");
   try {
     const current = await handle.stat(), hash = createHash("sha256");
@@ -54,7 +55,7 @@ async function fileIdentity(file, { content = true, optional = false } = {}) {
   } finally { await handle.close(); }
 }
 
-async function treeIdentity(directory, content = true) {
+async function treeIdentity(directory, requiredFile) {
   const root = await realpath(directory), files = [], identities = [];
   let count = 0;
   async function visit(current, relative, entry) {
@@ -80,9 +81,12 @@ async function treeIdentity(directory, content = true) {
     }
   }
   await visit(directory, "");
+  if (requiredFile && !files.some(({ relative, target }) => relative === requiredFile && target === undefined)) {
+    throw diagnosticError("preflight-path");
+  }
   for (let start = 0; start < files.length; start += 16) {
     identities.push(...await Promise.all(files.slice(start, start + 16).map(async ({ file, relative, target }) => {
-      const identity = await fileIdentity(file, { content });
+      const identity = await fileIdentity(file);
       return [relative, target === undefined ? identity : { target, identity }];
     })));
   }
@@ -589,14 +593,14 @@ export async function verificationPreflight(root, plan, options = {}) {
         const output = await probe(java, ["-version"]);
         if (!/(?:openjdk|java) version "(?:17|21)\./.test(output)) throw diagnosticError("preflight-version");
         return { jdk, java: await fileIdentity(java), release: await fileIdentity(path.join(jdk, "release")),
-          tree: await treeIdentity(jdk, false), version: digest(output) };
+          tree: await treeIdentity(jdk), version: digest(output) };
       }), "preflight-sdk");
       await check("android-platform-35", () => once(`sdk:${sdk}`, async () => ({
         sdk, platform: await fileIdentity(path.join(sdk, "platforms", "android-35", "android.jar")),
         license: await fileIdentity(path.join(sdk, "licenses", "android-sdk-license")),
         aapt: await fileIdentity(path.join(sdk, "build-tools", "35.0.0", executableName("aapt2"))),
         zipalign: await fileIdentity(path.join(sdk, "build-tools", "35.0.0", executableName("zipalign"))),
-        buildTools: await treeIdentity(path.join(sdk, "build-tools", "35.0.0"), false),
+        buildTools: await treeIdentity(path.join(sdk, "build-tools", "35.0.0")),
       })), "preflight-sdk");
       await check("gradle-wrapper", () => once("gradle-wrapper", async () => ({
         jar: await fileIdentity(path.join(root, "android", "gradle", "wrapper", "gradle-wrapper.jar")),
@@ -624,8 +628,8 @@ export async function verificationPreflight(root, plan, options = {}) {
             throw diagnosticError("preflight-sdk");
           }
           const directory = path.join(emulatorSdk, ...image.split("/"));
-          return { emulatorSdk, image, system: await fileIdentity(path.join(directory, "system.img"), { content: false }),
-            properties: await fileIdentity(path.join(directory, "source.properties")), tree: await treeIdentity(directory, false) };
+          return { emulatorSdk, image, properties: await fileIdentity(path.join(directory, "source.properties")),
+            tree: await treeIdentity(directory, "system.img") };
         }), "preflight-sdk");
         await check("adb", () => once(`adb:${emulatorSdk}`, async () => {
           const adb = path.join(emulatorSdk, "platform-tools", executableName("adb"));
@@ -639,7 +643,7 @@ export async function verificationPreflight(root, plan, options = {}) {
             if (!/KVM.*(?:installed and usable|usable)/i.test(output)) throw diagnosticError("preflight-acceleration");
           }
           return { binary: await fileIdentity(emulator), acceleration: digest(output),
-            version: digest(await probe(emulator, ["-version"])), tree: await treeIdentity(path.join(emulatorSdk, "emulator"), false) };
+            version: digest(await probe(emulator, ["-version"])), tree: await treeIdentity(path.join(emulatorSdk, "emulator")) };
         }), "preflight-acceleration");
       }
     }
@@ -661,7 +665,10 @@ export async function verificationPreflight(root, plan, options = {}) {
       candidateSafe, reusable: !issues.length && !unbound,
       ...(has("typecheck") ? { candidateEligibility: identities.find(([name]) => name === "typecheck-contract")?.[1] ??
         { status: "unavailable", reason: "prerequisites-blocked" } } : {}),
-      ...(issues.length ? {} : { fingerprint: digest(JSON.stringify({ platform: process.platform, arch: process.arch, identities })) }) });
+      ...(issues.length ? {} : {
+        fingerprint: digest(JSON.stringify({ platform: process.platform, arch: process.arch, identities })),
+        prerequisites: identities.map(([prerequisite, value]) => ({ prerequisite, fingerprint: digest(JSON.stringify(value)) })),
+      }) });
   }
   return { version: 1, status: results.some((item) => item.status !== "passed") ? "blocked" : "passed", groups: results };
 }

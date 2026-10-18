@@ -10,7 +10,7 @@ import { diagnosticDirectory, publishDiagnostic } from "./diagnostic-publication
 import { deviceSourceCatalogue } from "./device-diagnostics.mjs";
 import { projectStartupReport } from "./native-startup.mjs";
 
-const phases = ["arguments", "plan", "preflight", "command", "device-validation", "artifact-validation",
+const phases = ["arguments", "plan", "admission", "preflight", "command", "device-validation", "artifact-validation",
   "source-validation", "log", "aggregate", "report"];
 const states = ["passed", "failed", "blocked", "not_run"];
 const issueOperations = ["private-log", "device-catalogue", "device-report", "backend-catalogue", "controller-cleanup"];
@@ -73,6 +73,11 @@ export function checkLogHints(text, root, sources, check = "unknown") {
     const frame = /^[ \t]*File "([^"]+)", line (\d{1,6})(?:,|$)/.exec(line);
     if (frame) {
       const source = location(frame[1], Number(frame[2]));
+      if (source) add({ kind: "source-frame", ...source });
+    }
+    const scriptFrame = /^\s*at (?:[^()\r\n]+ \()?(.+\.(?:mjs|js|ts)):(\d{1,6}):(\d{1,6})\)?$/.exec(line);
+    if (scriptFrame) {
+      const source = location(scriptFrame[1], Number(scriptFrame[2]), Number(scriptFrame[3]));
       if (source) add({ kind: "source-frame", ...source });
     }
     const test = check === "workflow-tests" ? /^test at (.+\.mjs):(\d{1,6}):(\d{1,6})$/.exec(line.trim()) : undefined;

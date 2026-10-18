@@ -22,9 +22,15 @@ function reportFor(plan, group, checks) {
     environment: { node: process.version, platform: process.platform } };
 }
 
+function checkProcessCleanupConfirmed(check) {
+  if (check.status === "not_run" || check.executionState === "not-started") return true;
+  return check.executionState === "exited" && check.commandOutcome?.observedProcess === "owned-command-supervisor" &&
+    check.commandOutcome.cleanupFailure === null;
+}
+
 function checkCleanupConfirmed(check) {
   if (check.status === "not_run" || check.executionState === "not-started") return true;
-  if (check.executionState !== "exited" || check.commandOutcome?.cleanupFailure !== null) return false;
+  if (!checkProcessCleanupConfirmed(check)) return false;
   if (check.id !== "android-device") return true;
   if (check.diagnosticIssues?.some((issue) => issue.operation === "controller-cleanup")) return false;
   return check.cleanup === "completed" ||
@@ -46,7 +52,7 @@ export async function executeVerification(root, plan, options = {}) {
   const selected = plan.requiredGroups.filter((item) => group === "all" || item === group);
   const release = await acquireVerificationLock(root);
   let run, preflight, report, sourceFailure, policy, transition, qualificationFailed = false,
-    policyChanged = false, changed = false, safe = true, finished = false;
+    policyChanged = false, changed = false, safe = true, processesStopped = true, finished = false;
   const recovery = { reused: [], reusedChecks: [], invalidated: [], executed: [] };
   const qualifiedGroups = new Set();
   let candidateChecks = new Map();
@@ -72,6 +78,7 @@ export async function executeVerification(root, plan, options = {}) {
       preflight = await verificationPreflight(root, plan, options);
       safe = !preflight.groups.some((item) => item.issues.some(({ failure }) =>
         failure.observedProcess === "owned-command-supervisor" && failure.processTreeStopped !== true));
+      processesStopped = safe;
       if (preflight.status !== "passed") {
         for (const item of preflight.groups.filter((item) => item.status !== "passed")) {
           const check = checks.find((check) => CHECKS.find((definition) => definition.id === check.id).group === item.group);
@@ -108,7 +115,9 @@ export async function executeVerification(root, plan, options = {}) {
               continue;
             }
             safe = false;
+            processesStopped = false;
             await executeCheck(root, plan, check, { ...options, admissionEnvironment: admission?.environment }, backend);
+            processesStopped = checks.every(checkProcessCleanupConfirmed);
             safe = checks.every(checkCleanupConfirmed);
             if (check.status !== "passed") break;
           }
@@ -125,14 +134,19 @@ export async function executeVerification(root, plan, options = {}) {
         }
         if (!options.signal?.aborted && checks.some((check) => check.status === "passed")) {
           const after = await verificationPreflight(root, plan, options);
-          safe &&= !after.groups.some((item) => item.issues.some(({ failure }) =>
+          const probesStopped = !after.groups.some((item) => item.issues.some(({ failure }) =>
             failure.observedProcess === "owned-command-supervisor" && failure.processTreeStopped !== true));
+          safe &&= probesStopped;
+          processesStopped &&= probesStopped;
           let environmentFailure;
           for (const before of preflight.groups) {
             if (!checks.some((check) => check.status === "passed" && CHECKS.find((item) => item.id === check.id).group === before.group)) continue;
             const current = after.groups.find((item) => item.group === before.group);
             if (current?.status !== "passed" || current.fingerprint !== before.fingerprint) {
-              environmentFailure ??= verificationFault("environment-changed", { phase: "preflight", group: before.group });
+              const changed = current?.prerequisites && before.prerequisites?.find((input) =>
+                !current.prerequisites.some((item) => item.prerequisite === input.prerequisite && item.fingerprint === input.fingerprint));
+              environmentFailure ??= verificationFault("environment-changed", { phase: "preflight", group: before.group,
+                prerequisite: current?.issues[0]?.prerequisite ?? changed?.prerequisite });
             } else if (checks.filter((check) => CHECKS.find((item) => item.id === check.id).group === before.group)
               .every((check) => check.status === "passed" && !check.toolingShard)) {
               qualifiedGroups.add(before.group);
@@ -154,7 +168,7 @@ export async function executeVerification(root, plan, options = {}) {
       report = { ...reportFor(plan, group, checks), preflight, run: run.reference, recovery,
         ...(transition ? { transition } : { candidateConversion: run.promotion }) };
     } catch (error) {
-      if (error.processTreeStopped === false) safe = false;
+      if (error.processTreeStopped === false) { safe = false; processesStopped = false; }
       const failure = verificationFailure(error, error.verificationContext?.phase ?? "preflight");
       report = { ...reportFor(plan, group, checks), status: "blocked", complete: false, failure, error: failure.summary,
         ...(preflight ? { preflight } : {}), ...(run ? { run: run.reference } : {}), recovery, ...(transition ? { transition } : {}) };
@@ -196,9 +210,9 @@ export async function executeVerification(root, plan, options = {}) {
     }
     if (admission) {
       report.admission = { ...admission.evidence,
-        state: !safe ? "unconfirmed" : admission.evidence.mode === "inherited" ? "returned" : "released" };
+        state: !processesStopped ? "unconfirmed" : admission.evidence.mode === "inherited" ? "returned" : "released" };
       try {
-        await admission.release(safe);
+        await admission.release(processesStopped);
         admissionReleased = true;
       } catch (error) {
         safe = false;
@@ -215,7 +229,7 @@ export async function executeVerification(root, plan, options = {}) {
     }
     return report;
   } finally {
-    try { if (admission && !admissionReleased) await admission.release(false); }
+    try { if (admission && !admissionReleased) await admission.release(processesStopped); }
     finally { await release(safe && (!run || finished)); }
   }
 }

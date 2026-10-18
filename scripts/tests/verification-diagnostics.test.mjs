@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "../verification-policy.mjs";
 
 const exec = promisify(execFile);
@@ -205,18 +206,24 @@ test("historical local review flags are diagnostic-only and cannot manufacture a
 
 test("check log hints accept only source-indexed locations and fixed exception/code identifiers", async () => {
   const { checkLogHints } = await import("../verification-diagnostics.mjs");
-  const sources = new Set(["backend/src/known.ts", "deployment/azure/probe/test_receiver.py"]);
+  const sources = new Set(["backend/src/known.ts", "deployment/azure/probe/test_receiver.py", "scripts/tests/known.test.mjs"]);
+  const frame = pathToFileURL(path.join(process.cwd(), "scripts", "tests", "known.test.mjs")).href;
   const text = [
     "backend/src/known.ts(12,7): error TS2322: PRIVATE_ASSERTION_CANARY",
     "private/PRIVATE_PATH.ts(12,7): error TS2322: private",
     "ModuleNotFoundError: No module named 'PRIVATE_MODULE'",
     `  File "${path.join(process.cwd(), "deployment", "azure", "probe", "test_receiver.py")}", line 12, in PRIVATE_FUNCTION`,
+    `    at TestContext.PRIVATE_FUNCTION (${frame}:37:5)`,
+    `    at ${frame}:39:7`,
+    "    at PRIVATE_FUNCTION (file:///private/PRIVATE_PATH.mjs:12:7)",
     "private.secret.TokenError: PRIVATE_ERROR_VALUE",
   ].join("\n");
   const result = checkLogHints(text, process.cwd(), sources);
   assert.ok(result.some((item) => item.code === "TS2322" && item.file === "backend/src/known.ts"));
   assert.ok(result.some((item) => item.type === "ModuleNotFoundError"));
   assert.ok(result.some((item) => item.file === "deployment/azure/probe/test_receiver.py" && item.line === 12));
+  assert.ok(result.some((item) => item.kind === "source-frame" && item.file === "scripts/tests/known.test.mjs" && item.line === 37 && item.column === 5));
+  assert.ok(result.some((item) => item.kind === "source-frame" && item.file === "scripts/tests/known.test.mjs" && item.line === 39 && item.column === 7));
   assert.ok(!JSON.stringify(result).includes("PRIVATE_"));
 });
 

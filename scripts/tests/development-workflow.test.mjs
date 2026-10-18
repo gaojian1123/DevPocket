@@ -120,11 +120,14 @@ test("the skill freezes an authorized delivery candidate before final verificati
   assert.match(target, /once local commit\s+authorization is established/);
   assert.match(target, /clean tracked and non-ignored working tree/);
   assert.match(target, /Keep `BASE_COMMIT` at the original task baseline; never replace/);
-  assert.match(verification, /`source.head` to equal `CANDIDATE_COMMIT`/);
+  assert.match(verification, /For local candidate-commit evidence, require `source.head` to equal\s+`CANDIDATE_COMMIT`/);
+  assert.match(verification, /CI evidence uses the explicit qualification above instead/);
+  assert.match(target, /permission to publish pending work, not permission to claim verification, mark\s+ready or merge/);
   assert.match(repair, /new authorized follow-up commit/);
   assert.match(repair, /amend only if the user explicitly requests it/);
   assert.match(repair, /HEAD to remain `CANDIDATE_COMMIT` before publishing/);
-  assert.match(handoff, /Pending human policy review still blocks publication/);
+  assert.match(handoff, /Missing\s+execution consent blocks CI-triggering publication/);
+  assert.match(handoff, /unresolved final-review\s+requirements block ready delivery, not an otherwise authorized pending draft/);
   assert.match(handoff, /An unchanged push does not invalidate local source evidence/);
   assert.match(handoff, /Required remote CI and checks of a/);
 });

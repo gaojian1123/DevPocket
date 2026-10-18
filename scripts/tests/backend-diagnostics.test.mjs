@@ -374,8 +374,8 @@ test("backend-only CI reuses the normal job, conditionally exports validated dia
   assert.match(backend, /Export bounded backend test diagnostics\n\s+id: backend_diagnostics\n\s+if: always\(\)/);
   assert.match(backend, /node scripts\\backend-diagnostics\.mjs --directory \.data\\ci\\backend --github\n\s+exit \$LASTEXITCODE/);
   assert.deepEqual([...backend.matchAll(/^\s+(\.data\\[^\r\n]+)$/gm)].map((match) => match[1]),
-    [".data\\ci\\backend\\report.json", ".data\\ci\\backend\\backend-diagnostics.json"]);
-  assert.match(backend, /if: always\(\) && steps\.backend_diagnostics\.outputs\.report_ready == 'true'\n\s+with:\n\s+name: backend-test-diagnostics/);
+    [".data\\ci\\backend\\report.json", ".data\\ci\\backend\\ci-report.json", ".data\\ci\\backend\\backend-diagnostics.json"]);
+  assert.match(backend, /if: always\(\) && steps\.backend_diagnostics\.outputs\.report_ready == 'true'\n\s+with:\n\s+name: backend-test-diagnostics-attempt-\$\{\{ github\.run_attempt \}\}/);
   const originalUpload = backend.split("name: verification-backend")[1].split("- uses:")[0];
   assert.doesNotMatch(originalUpload, /backend-diagnostics\.json/);
   assert.ok(android.includes("!(github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic)"));
