@@ -284,6 +284,9 @@ The controller follows **implement → local candidate commit → final verifica
 
 Repairs create a new local commit on the failed candidate, then new selected
 verification and a fresh independent review. Prior commits/reports remain history.
+Each candidate's `review-<round>.patch` is persisted before verification and its
+path is included as `diff` in the failed-attempt history. Read-only diagnosis can
+therefore inspect earlier source changes even when verification never passed.
 After a repair still fails verification or acceptance review, the controller asks
 the same read/search-only reviewer profile for a separate **repair diagnosis**.
 It receives the fixed contract, current and previous failures, attempted approach,
@@ -1452,6 +1455,11 @@ completed journaled run may be read again only while its task/workspace/source
 still match and the candidate index/worktree remain clean. Inspect the recorded
 candidate request/receipt, current index and history after a commit interruption;
 preserve failed commits and reports rather than guessing whether to retry.
+Cancellation observed during final result persistence changes the recovery state
+to `cancelled` and removes only the handoff file created by that attempt. Candidate,
+verification and review evidence remain available, and the original cancellation
+still propagates. Invalidation failures are reported explicitly; recovery files
+never replace the runtime's durable outcome or establish readiness on their own.
 The candidate index lock records its owner PID and token. Inspect that owner
 before recovering an interrupted commit; existing or replaced locks are never
 removed automatically.

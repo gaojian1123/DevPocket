@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import fs, { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -397,6 +398,13 @@ test("failed checks keep repairing beyond two rounds while source-bound diagnosi
         assert.equal(options.agent, "devpocket-reviewer");
         assert.match(prompt, /This is not a final acceptance review/);
         assert.ok(prompt.includes(verified.at(-1).head));
+        const state = JSON.parse(await readFile(path.join(root, ".data", "development", "progressing-checks", "state.json"), "utf8"));
+        for (const attempt of state.repairHistory) {
+          assert.equal(typeof attempt.diff, "string");
+          assert.ok(prompt.includes(attempt.diff));
+          const patch = await readFile(path.join(root, attempt.diff), "utf8");
+          assert.ok(patch.includes(`+// fixture repair ${attempt.round + 1}`));
+        }
         return { status: "progressing", evidence: `Fixture failure ${verifications - 1} was resolved; a different case now fails.`,
           nextApproach: "Inspect and fix the next independently reproduced case." };
       }
@@ -662,6 +670,108 @@ test("cancellation after native phase results cannot become blocked verification
     assert.equal(reviews, ["review", "policy"].includes(phase) ? 1 : 0);
     await assert.rejects(readFile(path.join(root, ".data", "development", ctx.runId, "handoff.json")), { code: "ENOENT" });
   })));
+});
+
+test("cancellation during final persistence invalidates ready recovery files", async (t) => {
+  for (const phase of ["state", "handoff", "handoff-interrupted", "handoff-cleanup-failure"]) await t.test(phase, async (t) => {
+    const { root } = await workspace(t), controller = new AbortController(), session = nativeSession();
+    const error = new Error(`Cancelled while persisting ${phase}`);
+    const cleanupError = new Error("Fixture cancellation checkpoint failed");
+    const runId = `cancel-final-${phase}`;
+    const directory = path.join(root, ".data", "development", runId);
+    const statePath = path.join(directory, "state.json"), handoffPath = path.join(directory, "handoff.json");
+    const original = { rename: fs.rename, writeFile: fs.writeFile, open: fs.open };
+    let triggered = false;
+    const afterWrite = (file, text) => {
+      if (!triggered && phase.startsWith("handoff") && file === handoffPath && JSON.parse(text).status === "ready") {
+        triggered = true;
+        controller.abort(error);
+        if (phase === "handoff-interrupted") throw error;
+      }
+    };
+    session.rpc.tools.execute = async () => { assert.fail("The no-op fixture needs no candidate mutation."); };
+    t.mock.method(fs, "rename", async (...args) => {
+      if (phase === "handoff-cleanup-failure" && args[1] === statePath &&
+          JSON.parse(await readFile(args[0], "utf8")).stage === "cancelled") throw cleanupError;
+      const result = await original.rename(...args);
+      if (!triggered && phase === "state" && args[1] === statePath &&
+          JSON.parse(await readFile(statePath, "utf8")).stage === "ready") {
+        triggered = true;
+        controller.abort(error);
+      }
+      return result;
+    });
+    t.mock.method(fs, "writeFile", async (...args) => {
+      const result = await original.writeFile(...args);
+      afterWrite(args[0], args[1]);
+      return result;
+    });
+    t.mock.method(fs, "open", async (...args) => {
+      const handle = await original.open(...args);
+      if (args[0] === handoffPath && args[1] === "wx") {
+        const write = handle.writeFile.bind(handle);
+        t.mock.method(handle, "writeFile", async (...values) => {
+          const result = await write(...values);
+          afterWrite(handoffPath, values[0]);
+          return result;
+        });
+      }
+      return handle;
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(runDevelopment(durable({
+        runId, session, signal: controller.signal,
+        args: { goal: "Keep completed evidence on cancellation", acceptance: ["Never persist a cancelled task as ready"] },
+        agent: async (_prompt, options) => options.agent === "devpocket-reviewer" ? passingReview : implemented(root),
+      }), { root, verify: async (_root, plan) => syntheticReport(plan) }), (actual) => {
+        if (phase !== "handoff-cleanup-failure") return actual === error;
+        return actual instanceof AggregateError && actual.errors.includes(error) && actual.errors.includes(cleanupError) &&
+          /recovery artifact invalidation failed/.test(actual.message);
+      });
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+    assert.equal(triggered, true, "Cancel after the actual ready-state write, not before finalization.");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    if (phase !== "handoff-cleanup-failure") {
+      assert.equal(state.stage, "cancelled");
+      assert.equal(state.result.status, "cancelled");
+      assert.equal((await checkDevelopmentReadiness(root, state.result)).status, "blocked");
+    }
+    assert.equal(state.result.verification.status, "passed");
+    assert.equal(state.result.review.verdict, "pass");
+    assert.equal(state.result.candidate.commit, state.candidate.commit);
+    assert.equal((await sourceSnapshot(root)).head, state.candidate.commit);
+    assert.equal(JSON.parse(await readFile(path.join(directory, "verification-0.json"), "utf8")).status, "passed");
+    await assert.rejects(readFile(handoffPath), { code: "ENOENT" });
+  });
+});
+
+test("failed verification exposes a readable candidate diff before diagnosis or acceptance review", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  const runId = "failed-candidate-diff";
+  const expectedPatch = path.join(root, ".data", "development", runId, "review-0.patch");
+  let patchDuringVerification;
+  session.rpc.tools.execute = async () => { assert.fail("The no-op baseline needs no candidate mutation."); };
+  const result = await runDevelopment(durable({
+    runId, session, args: { goal: "Inspect failed candidates", acceptance: ["Retain readable source evidence"], maxRepairRounds: 0 },
+    agent: async (_prompt, options) => {
+      assert.equal(options.agent, "general-purpose", "Failed verification must not run an acceptance review.");
+      return implemented(root);
+    },
+  }), { root, verify: async (_root, plan) => {
+    try { patchDuringVerification = await readFile(expectedPatch, "utf8"); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    return { ...plan, group: "all", status: "failed", complete: false, checks: [] };
+  } });
+  assert.equal(result.status, "blocked");
+  assert.equal(typeof patchDuringVerification, "string", "Persist the diff before invoking verification.");
+  assert.equal(result.repairHistory.length, 1);
+  assert.equal(path.resolve(root, result.repairHistory[0].diff), expectedPatch);
+  assert.equal(await readFile(expectedPatch, "utf8"), patchDuringVerification);
+  assert.equal(patchDuringVerification, "", "An unchanged baseline has an empty, but still inspectable, diff.");
 });
 
 test("starter reuses a clean linked worktree through exactly one native workflow dispatch", async (t) => {

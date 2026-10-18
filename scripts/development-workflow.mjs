@@ -136,9 +136,15 @@ async function save(file, value) {
   await rename(temporary, file);
 }
 
-async function record(file, value) {
+async function record(file, value, onCreated) {
   const text = JSON.stringify(value, null, 2) + "\n";
-  await writeFile(file, text, { flag: "wx", mode: 0o600 });
+  const output = await open(file, "wx", 0o600);
+  try {
+    onCreated?.();
+    await output.writeFile(text);
+  } finally {
+    await output.close();
+  }
   return sha256(text);
 }
 
@@ -337,11 +343,30 @@ async function runAttempt(ctx, root, task, verify) {
         if (checked.status !== "ready") state.result = { ...state.result, ...checked };
       }
       ctx.signal?.throwIfAborted();
-      state.stage = state.result.status;
-      await save(statePath, state);
-      await record(path.join(directory, "handoff.json"), state.result);
-      ctx.signal?.throwIfAborted();
-      return state.result;
+      const handoffPath = path.join(directory, "handoff.json");
+      let ownsHandoff = false;
+      try {
+        state.stage = state.result.status;
+        await save(statePath, state);
+        ctx.signal?.throwIfAborted();
+        await record(handoffPath, state.result, () => { ownsHandoff = true; });
+        ctx.signal?.throwIfAborted();
+        return state.result;
+      } catch (error) {
+        if (!ctx.signal?.aborted) throw error;
+        state.stage = "cancelled";
+        state.result = { ...state.result, status: "cancelled",
+          reason: "Workflow cancelled while persisting its final result. Retain the candidate and evidence for inspected recovery." };
+        const invalidations = await Promise.allSettled([
+          save(statePath, state), ...(ownsHandoff ? [rm(handoffPath)] : []),
+        ]);
+        const failures = invalidations.filter((result) => result.status === "rejected");
+        if (failures.length) {
+          throw new AggregateError([error, ...failures.map((result) => result.reason)],
+            "Workflow cancelled, but recovery artifact invalidation failed.");
+        }
+        throw error;
+      }
     };
     const approvePolicy = async (policy, stage, summary) => {
       ctx.signal?.throwIfAborted();
@@ -389,6 +414,7 @@ async function runAttempt(ctx, root, task, verify) {
       const current = { verification, ...(review ? { review } : {}) };
       state.repairHistory.push({
         round: state.round, source: state.source,
+        diff: path.relative(root, path.join(directory, `review-${state.round}.patch`)),
         verification: path.relative(root, path.join(directory, `verification-${state.round}.json`)),
         ...(review ? { review: path.relative(root, path.join(directory, `review-${state.round}.json`)) } : {}),
       });
@@ -518,6 +544,9 @@ async function runAttempt(ctx, root, task, verify) {
       if (!sameSource(plan.source, state.candidate.source)) return finish(blocked("Source changed after the candidate commit."));
       const finalPolicy = await inspectDevelopmentPolicy(root, base, plan.changedFiles, readOnlyGit, [...policyPaths]);
       const policyReview = immutable(policyEvidence(finalPolicy, structuredClone(plan.source)));
+      const patchFile = path.join(directory, `review-${round}.patch`);
+      await writeFile(patchFile, await readOnlyGit(root, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+        base, state.candidate.commit, "--"]), { flag: "wx", mode: 0o600 });
       state.stage = "verifying";
       state.source = plan.source;
       await save(statePath, state);
@@ -551,9 +580,6 @@ async function runAttempt(ctx, root, task, verify) {
       ctx.phase("Review");
       state.stage = "reviewing";
       await save(statePath, state);
-      const patchFile = path.join(directory, `review-${round}.patch`);
-      await writeFile(patchFile, await readOnlyGit(root, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames",
-        base, state.candidate.commit, "--"]), { flag: "wx", mode: 0o600 });
       try { await assertCandidate(root, workspace, state.candidate); }
       catch (error) { return finish(blocked(`Candidate changed before review: ${error.message}`)); }
       const beforeReviewHooks = await checkHooks("before review");
