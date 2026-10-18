@@ -203,9 +203,13 @@ neither the development extension nor Dynamic Workflows. Discussion, planning
 and documentation-only tasks do not start the implementation pipeline.
 
 The skill distinguishes reviewed working-tree changes from authorized commit/PR
-delivery. For the latter, it fixes a candidate commit before final verification
-and review, retaining the original task base. Implementation alone does not
-authorize publication or turn working-tree evidence into final-commit evidence.
+delivery. **PR delivery is CI-first:** approved focused checks precede an
+authorized candidate commit and Draft PR; the existing grouped CI supplies the
+complete gate instead of repeating it locally before publication. A draft is
+pending evidence, not verified readiness. Independent review and live CI
+qualification still precede ready delivery, and the original task base remains
+fixed. Working-tree-only work does not gain upload permission; local full
+verification remains available when that is the authorized route.
 
 The **registered devpocket-development workflow** remains an explicit opt-in for
 controller-managed execution and bounded repairs, not the default entry point.
@@ -241,7 +245,11 @@ continues failed or unfinished groups while reusing still-valid successful
 groups; source/policy changes, unconfirmed cleanup and interrupted owners remain
 blocking. A separately authorized native candidate commit can use `-Promote`
 with its bound request/receipt to qualify eligible content-only checks for the
-candidate without rewriting their original execution HEAD or time. Ordinary
+candidate without rewriting their original execution HEAD or time. Supported
+Git text normalization is proved separately from unchanged execution bytes;
+CRLF/LF storage conversion alone no longer invalidates an otherwise proven
+transition. Unknown filters/encodings and unproven command contracts still
+refuse reuse. Ordinary
 aggregation, human approvals, independent review and remote CI remain separate.
 See the recovery and candidate-conversion sections in the development guide;
 these are local verification operations, not an App wake-up scheduler or a
@@ -253,6 +261,16 @@ It launches Node's test runner with separate file processes and Node's default
 concurrency, inherits the terminal streams, and preserves failures and exit status.
 It does not import the tests into one process or discover the entire test directory;
 extension packaging and the separate Linux process gate keep their own entries.
+Derived `WORKFLOW_TEST_SHARDS` use that same entry and catalogue. CI runs them
+independently; every required part must pass before `workflow-tests` qualifies.
+Version-5 aggregates retain each part's actual execution origin instead of
+inventing one full-suite execution.
+
+Updated local verifier entrypoints share one per-user host admission slot for
+heavy checks. Queue time is separate from command deadlines, and owned nested
+verifiers can borrow a live parent ticket. This is cooperative admission, not an
+OS throttle: older entrypoints and direct focused commands are unaffected.
+Interrupted ownership remains explicit; no lock is reclaimed merely from a PID.
 
 Local execution trust and human-review requirements belong to
 `scripts\development-policy.mjs`, shared by skill-led development and the optional
@@ -276,7 +294,7 @@ is needed. Windows local/manual emulator entry points retain their shared
 resource pool. Missing acceleration, failed fixtures and missing reports still
 block the required gate; moving CI does not repair historical Windows UI failures.
 See [development workflow](docs/DEVELOPMENT-WORKFLOW.md) for the skill-led route,
-`npm run verify`, optional workflow activation, runner prerequisites and CI
+`npm run verify`, CI-first draft/qualification steps, optional workflow activation, runner prerequisites and CI
 rules. Missing required device evidence blocks acceptance. Repository files do
 not by themselves enable a runner, enforce branch protection or authorize
 installation, runtime control, cloud operations, merging or publication.

@@ -10,9 +10,13 @@ Read AGENTS.md, the delivery target, the supplied diff against its explicit base
 every added/untracked file in the changed-path list, and the relevant implementation
 and tests. For working-tree implementation, review the exact source snapshot and
 its bound verification; do not require a commit or label it final-commit evidence.
-For candidate-commit delivery, including the registered workflow, require the
-exact candidate SHA, clean index/worktree and final verification bound to the
-same HEAD and source fingerprint. The owning session/controller checks that
+For candidate-commit delivery, require the exact candidate SHA and clean
+index/worktree. Local verification, including the registered workflow, binds to
+that HEAD and source fingerprint. CI-first delivery instead requires the actual
+live qualification and authenticated CI envelope: inspect repository/run/attempt,
+artifact digest, candidate, PR base and tested merge-ref relationship. Keep the
+CI report's actual source and checkout fingerprint unchanged. An authorized
+pending Draft PR is not evidence of readiness. The owning session checks that
 identity before and after review. Missing or inconsistent evidence cannot receive
 `pass`; do not rerun checks or relabel reports.
 For explicit working-tree-to-candidate conversion, inspect the original run,
@@ -21,7 +25,9 @@ the final candidate's source-bound qualification and all commit-sensitive reruns
 Issue your own conclusion for that candidate; a prior working-tree verdict or
 approval does not automatically transfer. Ordinary aggregation cannot accept
 forged conversion fields or an old report with an edited HEAD.
-Require version-4 per-check execution origins to survive aggregation. For reused
+Require version-5 per-check execution origins to survive aggregation, including
+every required tooling part under a sharded execution. A partial tooling part
+cannot qualify the whole group. For reused
 checks, verify the actual compiler/launcher and input contract, not just a declared
 package version; process termination does not substitute for owned-data cleanup.
 Successful groups require the run's terminal post-execution qualification.

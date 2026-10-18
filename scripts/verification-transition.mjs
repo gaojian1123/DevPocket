@@ -4,7 +4,7 @@ import { activeHookSnapshot, inspectWorktree, sameHooks, sameSource, sha256,
   validateCandidateCommit, validateCandidateReceiptProof } from "./candidate-commit.mjs";
 import { requireCandidateImplementation } from "./native-candidate.mjs";
 import { failureDetails } from "./diagnostic-errors.mjs";
-import { committedSourceInputs, readOnlyGit, sourceInputs } from "./git-state.mjs";
+import { committedInputsMatch, committedSourceInputs, commitSourceProjection, readOnlyGit, sourceInputs } from "./git-state.mjs";
 import { CHECKS } from "./verification-policy.mjs";
 import { combineVerification, requireCompletedVerificationGroup, requireVerificationResults, verificationFault } from "./verification.mjs";
 import { readCandidateInput, readVerificationRun, verificationStorageLocation } from "./verification-run.mjs";
@@ -33,11 +33,13 @@ export async function capturePromotionContext(root, plan) {
   }
   const inputs = await sourceInputs(root);
   if (!sameSource(workspace.source, plan.source) || sha256(JSON.stringify(inputs)) !== plan.source.fingerprint) fail();
-  return { eligible: true, workspace, inputs, hooks };
+  const projection = await commitSourceProjection(root, inputs);
+  if (projection.status !== "bound") return { eligible: false, reason: projection.reason };
+  return { eligible: true, workspace, inputs, hooks, projection };
 }
 
 async function validateTransition(root, plan, transition) {
-  if (transition?.version !== 1 || typeof transition.from !== "string" ||
+  if (transition?.version !== 2 || typeof transition.from !== "string" ||
       typeof transition.request !== "string" || !/^[a-f0-9]{64}$/.test(transition.requestHash ?? "") ||
       transition.candidate !== plan.source.head) fail();
   const original = await readVerificationRun(root, transition.from);
@@ -57,7 +59,8 @@ async function validateTransition(root, plan, transition) {
       !sameHooks(request.hooks, context.hooks) || !sameHooks(await activeHookSnapshot(root), context.hooks) ||
       !sameSource(request.expected.source, manifest.plan.source) ||
       !equal(liveInputs(await sourceInputs(root)), liveInputs(context.inputs)) ||
-      !equal(await committedSourceInputs(root, plan.source.head), liveInputs(context.inputs)) ||
+      !equal(await commitSourceProjection(root, context.inputs), context.projection) ||
+      !committedInputsMatch(context.inputs, await committedSourceInputs(root, plan.source.head), context.projection) ||
       (await readOnlyGit(root, ["merge-base", plan.base, manifest.plan.source.head])).trim() !== plan.base) fail();
   await requireCandidateImplementation(request.execution);
   const receipt = (await readCandidateInput(root, `${transition.request}.result.json`)).value;
@@ -73,7 +76,7 @@ export async function prepareVerificationTransition(root, plan, options) {
   const request = await readCandidateInput(root, options.candidateRequest);
   const from = await verificationStorageLocation(root, options.promote);
   const candidate = await verificationStorageLocation(root, options.candidateRequest);
-  const transition = { version: 1, from: path.relative(from.root, from.file),
+  const transition = { version: 2, from: path.relative(from.root, from.file),
     run: original.manifest.id, request: path.relative(candidate.root, candidate.file),
     requestHash: sha256(request.bytes), candidate: plan.source.head };
   await validateTransition(root, plan, transition);

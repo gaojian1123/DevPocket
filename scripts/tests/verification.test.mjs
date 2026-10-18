@@ -15,6 +15,7 @@ import { openVerificationRun, readVerificationRun } from "../verification-run.mj
 import { resolveVerificationExecutable, verificationExecutionPolicy } from "../verification-preflight.mjs";
 import { capturePromotionContext, prepareVerificationTransition } from "../verification-transition.mjs";
 import { WORKFLOW_TEST_FILES } from "../test-workflow.mjs";
+import { committedInputsMatch, committedSourceInputs, commitSourceProjection, sourceInputs } from "../git-state.mjs";
 
 const exec = promisify(execFile);
 const entry = path.resolve("scripts/verify.mjs");
@@ -443,7 +444,7 @@ test("public plan diagnostics preserve responsibility-specific selections withou
     }
     assert.deepEqual(result.report.changedFiles, [file]);
     const publicPlan = JSON.parse(result.stdout.split(/\r?\n/).find((line) => line.startsWith("{")));
-    assert.deepEqual(Object.keys(publicPlan).sort(), ["kind", "layouts", "requiredChecks", "requiredGroups", "selectionReasons"]);
+    assert.deepEqual(Object.keys(publicPlan).sort(), ["kind", "layouts", "requiredChecks", "requiredGroups", "selectionReasons", "toolingShards"]);
     assert.deepEqual(publicPlan.requiredGroups, impact.requiredGroups);
     const directory = path.dirname(result.reportPath);
     await rename(result.reportPath, path.join(directory, "plan.json"));
@@ -490,7 +491,7 @@ test("tooling and application regression deadlines remain bounded without maskin
   assert.match(android, /timeoutMs: 30 \* 60_000/);
   const tooling = ci.replaceAll("\r\n", "\n").split("\n  tooling:")[1].split("\n  backend:")[0];
   assert.match(tooling, /timeout-minutes: 30/);
-  assert.match(tooling, /--group tooling/);
+  assert.ok(tooling.includes("'--group', 'tooling'"));
 });
 
 test("tooling aggregation accepts only complete current evidence and ignores unselected skipped jobs", async (t) => {
@@ -2313,8 +2314,10 @@ async function commitFixtureCandidate(root) {
   return file;
 }
 
-test("a native candidate transition reuses content-only execution without rewriting its old HEAD or time", async (t) => {
+test("a native candidate transition reuses content-only execution across Git normalization without rewriting its old HEAD or time", async (t) => {
   const { root, base, counts } = await recoveryFixture(t, { candidate: true });
+  await exec("git", ["config", "core.autocrlf", "true"], { cwd: root });
+  await writeFile(path.join(root, "backend", "tests", "normalized.txt"), "unchanged execution input\r\n");
   await rm(path.join(root, "README.md"));
   const { executeVerification, verificationPlan } = await import("../verification.mjs");
   let typecheckCommands = 0;
@@ -2352,6 +2355,8 @@ test("a native candidate transition reuses content-only execution without rewrit
   if (process.platform === "win32") assert.ok(supportsReuse || eligibility.reason === "npm-unrecognized", JSON.stringify(eligibility));
   const original = await readFile(first.reportPath), check = first.report.checks.find((item) => item.id === "typecheck");
   const request = await commitFixtureCandidate(root);
+  assert.equal(await readFile(path.join(root, "backend", "tests", "normalized.txt"), "utf8"), "unchanged execution input\r\n");
+  assert.equal((await exec("git", ["show", "HEAD:backend/tests/normalized.txt"], { cwd: root })).stdout, "unchanged execution input\n");
   const result = await run({ promote: first.report.run.manifest, candidateRequest: request });
   assert.equal(result.report.status, "passed", JSON.stringify(result.report));
   assert.equal(result.report.complete, true);
@@ -2391,6 +2396,45 @@ test("a native candidate transition reuses content-only execution without rewrit
     assert.equal(typecheckCommands, supportsReuse ? 1 : 4);
     assert.deepEqual(await readFile(first.reportPath), original);
   });
+});
+
+test("commit projections bind text policy and permit only the proven storage representation", async (t) => {
+  const root = await repository(t);
+  await exec("git", ["config", "core.autocrlf", "false"], { cwd: root });
+  await writeFile(path.join(root, ".gitattributes"), "*.txt text=auto eol=lf\n*.bin -text\n");
+  await writeFile(path.join(root, "text.txt"), "checked bytes\r\n");
+  await writeFile(path.join(root, "opaque.bin"), Buffer.from([0, 13, 10, 255]));
+  const inputs = await sourceInputs(root), projection = await commitSourceProjection(root, inputs);
+  assert.equal(projection.status, "bound");
+  assert.deepEqual(projection.normalized.map(([file]) => file), ["text.txt"]);
+  await exec("git", ["add", "."], { cwd: root });
+  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--quiet", "-m", "Text conversion"], { cwd: root });
+  const head = (await exec("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+  const committed = await committedSourceInputs(root, head);
+  assert.deepEqual(await sourceInputs(root), inputs);
+  assert.notDeepEqual(committed, inputs);
+  assert.equal(committedInputsMatch(inputs, committed, projection), true);
+  for (const change of [
+    (rows) => rows.pop(),
+    (rows) => rows.push(["unexpected.txt", "100644", "file", "a".repeat(64)]),
+    (rows) => { rows.find(([file]) => file === "text.txt")[1] = "100755"; },
+    (rows) => { rows.find(([file]) => file === "text.txt")[3] = "a".repeat(64); },
+    (rows) => { rows.find(([file]) => file === "opaque.bin")[3] = "a".repeat(64); },
+  ]) {
+    const altered = structuredClone(committed); change(altered);
+    assert.equal(committedInputsMatch(inputs, altered, projection), false);
+  }
+  await writeFile(path.join(root, ".git", "info", "attributes"), "*.txt -text\n");
+  const changedPolicy = await commitSourceProjection(root, inputs);
+  assert.notEqual(changedPolicy.policy, projection.policy);
+  assert.equal(committedInputsMatch(inputs, committed, changedPolicy), false);
+  await exec("git", ["config", "filter.unsafe.clean",
+    "node -e \"require('node:fs').writeFileSync('.data/filter-executed','unexpected')\""], { cwd: root });
+  for (const attribute of ["filter=unsafe", "-filter", "working-tree-encoding=UTF-16", "ident"]) {
+    await writeFile(path.join(root, ".git", "info", "attributes"), `*.txt ${attribute}\n`);
+    assert.equal((await commitSourceProjection(root, inputs)).status, "unsupported");
+  }
+  await assert.rejects(readFile(path.join(root, ".data", "filter-executed")), { code: "ENOENT" });
 });
 
 test("a changed or commit-sensitive command cannot inherit content-only reuse", async (t) => {

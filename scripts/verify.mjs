@@ -16,6 +16,7 @@ async function main() {
     plan: { type: "boolean", default: false },
     all: { type: "boolean", default: false },
     group: { type: "string", default: "all" },
+    "tooling-shard": { type: "string" },
     resume: { type: "string" },
     promote: { type: "string" },
     "candidate-request": { type: "string" },
@@ -54,6 +55,9 @@ async function main() {
       plan = await verificationPlan(root, values.base, values.all);
       requirePlanCollection(plan);
       if (!["all", ...CHECK_GROUPS].includes(values.group)) throw verificationFault("configuration");
+      if (values["tooling-shard"] && (values.group !== "tooling" || values.plan || values.combine || values.promote)) {
+        throw verificationFault("configuration");
+      }
       if (values.plan && values.combine || values.resume && (values.plan || values.combine || values.input.length)) {
         throw verificationFault("configuration");
       }
@@ -88,6 +92,7 @@ async function main() {
         phase = values.plan ? "plan" : "command";
         report = values.plan ? { ...plan, status: "planned", complete: false, checks: [] }
           : await executeVerification(root, plan, { ...values, backendDiagnostics: values["backend-diagnostics"],
+            toolingShard: values["tooling-shard"],
             candidateRequest: values["candidate-request"],
             directory: path.dirname(reportPath), signal: cancellation.signal });
       }
@@ -129,7 +134,7 @@ async function main() {
   }
   if (report.status === "planned") console.log(JSON.stringify({
     kind: "verification-plan", requiredChecks: report.requiredChecks, requiredGroups: report.requiredGroups,
-    layouts: report.layouts, selectionReasons: report.selectionReasons,
+    layouts: report.layouts, selectionReasons: report.selectionReasons, toolingShards: report.toolingShards ?? null,
   }));
   if (report.failure) console.error(JSON.stringify({ kind: "verification-failure", ...report.failure }));
 }

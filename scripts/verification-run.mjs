@@ -4,7 +4,7 @@ import path from "node:path";
 import { diagnosticDirectory } from "./diagnostic-publication.mjs";
 import { diagnosticError } from "./diagnostic-errors.mjs";
 import { CHECKS, CHECK_GROUPS } from "./verification-policy.mjs";
-import { requireCheckPolicy, requireCompletedVerificationGroup, verificationFault } from "./verification.mjs";
+import { requireCheckPolicy, requireCompletedVerificationGroup, requireToolingShardReport, verificationFault } from "./verification.mjs";
 
 const version = 2;
 const limit = 512 * 1024;
@@ -25,7 +25,7 @@ function binding(plan, group, policy, options) {
   return { base: plan.base, source: plan.source, version: plan.version,
     requiredChecks: plan.requiredChecks, requiredGroups: plan.requiredGroups, layouts: plan.layouts,
     trustedDeviceClasses: plan.trustedDeviceClasses ?? [], group, policy,
-    backendDiagnostics: Boolean(options.backendDiagnostics) };
+    backendDiagnostics: Boolean(options.backendDiagnostics), toolingShard: options.toolingShard ?? null };
 }
 
 async function safeDirectory(root, directory, create = false) {
@@ -291,7 +291,10 @@ export async function openVerificationRun(root, plan, options, policy, promotion
     async record(report, environment, artifacts, reusable = false, validatedReuse = new Map()) {
       if (!CHECK_GROUPS.includes(report.group) || groups.includes(report.group)) throw diagnosticError("run-invalid");
       if (["passed", "partial"].includes(report.status)) {
-        requireCompletedVerificationGroup(plan, report, report.group, validatedReuse);
+        if (report.checks.some((check) => check.toolingShard)) {
+          requireToolingShardReport(plan, report);
+          reusable = false;
+        } else requireCompletedVerificationGroup(plan, report, report.group, validatedReuse);
       }
       await write(`${attempt}-${report.group}.json`, { version, run: manifest.id, attempt, report, environment, artifacts, reusable });
       groups.push(report.group);

@@ -23,7 +23,9 @@ Record the delivery target separately from the implementation goal:
 - **PR delivery** applies when the user requests a pull request. Reuse the
   authorization already given and resolve only missing scope before final
   verification. Track local commit, push and PR creation authorization separately;
-  a development request alone does not authorize those actions.
+  a development request alone does not authorize those actions. Prefer **CI-first**
+  delivery: approved focused local checks, an authorized candidate/Draft PR, then
+  complete CI evidence and independent review. A pending draft is not `ready`.
 
 If the user requests only a local commit, use the candidate-commit ordering below
 but stop at that local deliverable. Do not expand it into PR publication.
@@ -131,6 +133,17 @@ verification. Check again after commit hooks, and record the resulting HEAD as
 it with the candidate HEAD, which could hide the task's changes from selection.
 Missing authorization or an unresolved dirty candidate pauses this delivery path.
 
+For **CI-first PR delivery**, follow **CI-first delivery and live qualification**
+in `docs\DEVELOPMENT-WORKFLOW.md`. After approved focused checks and the native
+candidate commit, separately authorized push/Draft PR creation may precede full
+acceptance. First ensure execution consent covers the exact CI policy, hosted
+setup, repository and branch; local-only consent does not cover that target.
+Record the draft as `ci-pending`, with its candidate and original base. This is
+permission to publish pending work, not permission to claim verification, mark
+ready or merge. Do not run the full local gate merely to reach this draft step,
+then repeat it in CI. Missing CI/publication authority needs a specific decision
+or an explicitly chosen local route.
+
 If the user later changes a working-tree task into a delivery request, continue
 the same task and base through this step. Its earlier working-tree evidence does
 not become evidence for the new commit by changing report fields.
@@ -146,7 +159,22 @@ permits a plain HEAD substitution or an unapproved commit.
 
 Confirm Step 3's pre-execution human approval before invoking changed verification
 or dependency policy, including a modified planner.
-Follow the Verification section of `docs\DEVELOPMENT-WORKFLOW.md`:
+
+**CI-first:** require the candidate's actual `Required verification` success and
+run the guide's live `verification-ci.mjs --qualify` command from the clean
+candidate checkout. Use the original task base, exact repository/PR/run and a new
+output directory. Require `kind: ci-qualification`, `status: verified`, and the
+same local candidate source. Read its referenced CI envelope: the actual report
+must be complete and passing with every required check and per-shard origin.
+Keep the branch candidate, tested PR merge ref, PR base, artifact digest and run
+attempt distinct. The qualifier authenticates their relationship; do not rewrite
+CI `source.head` or compare its checkout fingerprint to local CRLF bytes as if
+they were the same execution. A saved qualification is a record, not authority
+to reuse it later without a live check. Retain any specifically required
+original-client-only evidence separately.
+
+**Local route:** for working-tree/local-commit delivery or an explicitly selected
+fallback, follow the Verification section of the guide:
 
 ```powershell
 npm run verify -- -Base BASE_COMMIT
@@ -161,11 +189,12 @@ Preflight and recovered partial groups are not final acceptance.
 Read the newly produced report. Require `status: passed`, `complete: true` and
 every required check; a plan, focused test, build-only result or partial shard
 is not completed verification. Combine CI shards through the existing verifier.
-Use current version-4 reports with retained execution origins. Earlier aggregates
+Use current version-5 reports with retained execution origins. Earlier aggregates
 without origins must be reverified, not upgraded by editing their version or HEAD.
 Required Android device evidence remains mandatory. Keep the report path, base,
 `source.head` and `source.fingerprint` with the task.
-For candidate-commit delivery, require `source.head` to equal `CANDIDATE_COMMIT`.
+For local candidate-commit evidence, require `source.head` to equal
+`CANDIDATE_COMMIT`. CI evidence uses the explicit qualification above instead.
 
 Evaluate the local `inspectDevelopmentPolicy` / `developmentReviewRequirements`
 from the trusted `scripts\development-policy.mjs` against the actual base, changed
@@ -189,6 +218,11 @@ paths, delivery target, current verification report, local policy requirements
 and recorded human decisions, and the source identity.
 For candidate-commit delivery, identify the candidate SHA as well. Ask it to
 inspect the files rather than rely on the implementer's summary.
+For CI-first delivery, supply the actual live-qualification result, authenticated
+CI envelope/digest/run attempt, candidate and tested merge ref/base, actual PR
+diff, policy decisions and all execution origins. The reviewer must assess that
+candidate and its qualified CI evidence, not treat an unverified draft as ready
+or reuse an earlier working-tree verdict.
 For converted evidence, also supply the immutable original run, native request
 and receipt, transition record and each check's actual execution origin. Obtain
 the reviewer's real conclusion for the final candidate; an earlier working-tree
@@ -217,8 +251,13 @@ fresh applicable verification and independent review of the new source. Reuse
 only still-applicable scoped human authorization, not old test/review evidence.
 Unresolved product decisions, permissions or exhausted repairs require human input.
 
-After a passing review, revalidate the report against the current source without
-rerunning checks solely to compare identities:
+After a passing review, revalidate without rerunning checks solely to compare
+identities. For CI-first delivery, repeat the live qualification into a new
+directory and require the unchanged candidate, PR base/tested ref, run attempt
+and full evidence covered by the review. A changed or unavailable binding needs
+new applicable evidence/review, not a relabelled record.
+
+For local evidence, revalidate the report against the current source:
 
 ```powershell
 node scripts\verify.mjs --base BASE_COMMIT --combine `
@@ -252,7 +291,11 @@ For working-tree implementation, stop at reviewed working-tree changes and state
 that they are not final-commit PR evidence. For local-commit-only delivery, stop
 at the verified local commit. For PR delivery, publish the unchanged verified
 candidate only within the user's authorized scope, using the host's normal
-push/PR tools. Pending human policy review still blocks publication.
+push/PR tools. If Step 4 already published its authorized pending draft, update
+that same PR to ready only after complete evidence, actual independent review,
+applicable human decisions and freshness. Do not create a duplicate PR. Missing
+execution consent blocks CI-triggering publication; unresolved final-review
+requirements block ready delivery, not an otherwise authorized pending draft.
 
 An unchanged push does not invalidate local source evidence; do not repeat local
 verification merely because it was pushed. Required remote CI and checks of a

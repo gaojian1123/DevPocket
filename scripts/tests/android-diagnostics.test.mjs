@@ -181,9 +181,9 @@ test("CI publishes only the diagnostic projection alongside the original Android
   assert.ok(uploadStart >= 0, "The Android report upload step must exist.");
   const upload = android.slice(uploadStart).split("- uses:")[0];
   const paths = [...upload.matchAll(/^\s+(\.data\\[^\r\n]+)$/gm)].map((match) => match[1]);
-  assert.deepEqual(paths, [".data\\ci\\android\\report.json"]);
+  assert.deepEqual(paths, [".data\\ci\\android\\report.json", ".data\\ci\\android\\ci-report.json"]);
   assert.match(android, /if: always\(\) && steps\.android_diagnostics\.outputs\.report_ready == 'true'/);
-  assert.match(android, /name: android-test-diagnostics\r?\n\s+path: \.data\/ci\/android\/android-diagnostics\.json/);
+  assert.match(android, /name: android-test-diagnostics-attempt-\$\{\{ github\.run_attempt \}\}\r?\n\s+path: \.data\/ci\/android\/android-diagnostics\.json/);
   for (const testFile of ["android-build.test.mjs", "android-diagnostics.test.mjs"]) {
     assert.ok(WORKFLOW_TEST_FILES.includes(`scripts/tests/${testFile}`));
   }
@@ -244,19 +244,20 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(device, /node scripts\/worker-diagnostics\.mjs --directory \.data\/ci\/device --github\n\s+exit \$LASTEXITCODE/);
   assert.deepEqual([...device.matchAll(/^\s+((?:\.data|android)\/[^\r\n]+)$/gm)].map((match) => match[1]), [
     ".data/ci/device/report.json",
+    ".data/ci/device/ci-report.json",
     "android/app/build/outputs/apk/debug/app-debug.apk",
     "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
     ".data/ci/device/device/device-report.json",
   ]);
   assert.match(device, /steps\.worker_diagnostics\.outputs\.report_ready == 'true'/);
-  assert.match(device, /name: owned-worker-diagnostics\n\s+path: \.data\/ci\/device\/worker-diagnostics\.json/);
+  assert.match(device, /name: owned-worker-diagnostics-attempt-\$\{\{ github\.run_attempt \}\}\n\s+path: \.data\/ci\/device\/worker-diagnostics\.json/);
   assert.match(device, /steps\.device_diagnostics\.outputs\.report_ready == 'true'/);
 
   const gate = workflow.split("\n  gate:")[1];
   assert.match(gate, /needs: \[plan, tooling, backend, android, device\]\n\s+if: always\(\)/);
   assert.match(gate, /- uses: actions\/download-artifact@v8\n\s+with:\n\s+pattern: verification-\*\n\s+path: \.data\\ci\\inputs/);
-  assert.ok(gate.includes("'--base', $env:BASE_SHA, '--combine'"));
-  assert.ok(gate.includes("Get-ChildItem -LiteralPath .data\\ci\\inputs -Filter report.json -File -Recurse"));
+  assert.ok(gate.includes("'scripts\\verification-ci.mjs', '--base', $env:BASE_SHA, '--collect'"));
+  assert.ok(gate.includes("'--inputs', '.data\\ci\\inputs'"));
   assert.match(gate, /node @arguments\n\s+if \(\$LASTEXITCODE -ne 0\) \{ throw /);
 });
 
@@ -273,11 +274,16 @@ test("the independent tooling CI job runs the complete workflow suite without ap
   assert.match(tooling, /actions\/setup-node@v7\n\s+with:\n\s+node-version: 24/);
   assert.match(tooling, /actions\/setup-python@v7\n\s+with:\n\s+python-version: '3\.12'/);
   assert.match(tooling, /- run: npm ci --no-audit --no-fund/);
-  assert.match(tooling, /node scripts\\verify\.mjs --base \$env:BASE_SHA --group tooling --report \.data\\ci\\tooling\\report\.json\n\s+exit \$LASTEXITCODE/);
+  assert.ok(tooling.includes("'scripts\\verify.mjs', '--base', $env:BASE_SHA, '--group', 'tooling'"));
+  assert.ok(tooling.includes("'--tooling-shard', $env:TOOLING_PART"));
+  assert.match(tooling, /fail-fast: false/);
+  assert.ok(tooling.includes("fromJSON(needs.plan.outputs.tooling_shards)"));
+  assert.match(tooling, /node @arguments\n\s+exit \$LASTEXITCODE/);
   assert.match(tooling, /--directory \.data\/ci\/tooling --job tooling --step-result \$env:STEP_RESULT --github/);
-  assert.match(tooling, /name: verification-tooling\n\s+path: \.data\\ci\\tooling\\report\.json\n\s+if-no-files-found: error/);
+  assert.match(tooling, /name: verification-tooling-\$\{\{ matrix\.part \}\}-attempt-\$\{\{ github\.run_attempt \}\}/);
+  assert.match(tooling, /path: \|\n\s+\.data\\ci\\tooling\\report\.json\n\s+\.data\\ci\\tooling\\ci-report\.json\n\s+if-no-files-found: error/);
   assert.match(tooling, /if: always\(\) && steps\.diagnostics\.outputs\.report_ready == 'true'/);
-  assert.match(tooling, /name: check-diagnostics-tooling\n\s+path: \.data\/ci\/tooling\/verification-diagnostics\.json/);
+  assert.match(tooling, /name: check-diagnostics-tooling-\$\{\{ matrix\.part \}\}-attempt-\$\{\{ github\.run_attempt \}\}\n\s+path: \.data\/ci\/tooling\/verification-diagnostics\.json/);
   assert.doesNotMatch(tooling, /setup-java|prepare-native|prepare-android|npm run build|npm --prefix|pip install|--(?:sdk|jdk|image)|continue-on-error/);
   const gate = workflow.split("\n  gate:")[1];
   assert.match(gate, /name: Required verification\n\s+needs: \[plan, tooling, backend, android, device\]\n\s+if: always\(\)/);
@@ -288,7 +294,10 @@ test("the independent tooling CI job runs the complete workflow suite without ap
   assert.ok(WORKFLOW_TEST_FILES.includes("scripts/tests/xcode-mcp.test.mjs"));
   assert.ok(WORKFLOW_TEST_FILES.includes("scripts/tests/workflow-runner.test.mjs"));
   const executor = await readFile("scripts/verification-executor.mjs", "utf8");
-  assert.match(executor, /args: \["-NoProfile", "-NonInteractive", "-Command", "& npm run test:workflow; exit \$LASTEXITCODE"\]/);
+  const adapter = executor.split('definition.group === "tooling" ? {')[1]?.split('} : definition.group === "backend"')[0];
+  assert.ok(adapter);
+  assert.ok(adapter.includes('"& npm run test:workflow; exit $LASTEXITCODE"'));
+  assert.ok(adapter.includes("& npm run test:workflow -- --workflow-shard ${check.toolingShard.id}; exit $LASTEXITCODE"));
 });
 
 test("native startup diagnostics are manual-only, reuse the owned entry and never become a verification shard", async () => {

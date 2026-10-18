@@ -10,9 +10,11 @@ when available; otherwise read the same file directly. A clean linked worktree
 stays in the current session. Follow-ups retain their task/workspace and evidence.
 
 The skill distinguishes working-tree implementation from authorized commit/PR
-delivery. Its candidate-commit step precedes final verification and independent
-review; the task's original base remains unchanged. This ordering does not grant
-publication permission or relax evidence identity. The optional controller below
+delivery. PR delivery defaults to **CI-first**: approved focused checks precede an
+authorized candidate and pending Draft PR; CI supplies the complete gate before
+independent review and ready delivery. The task's original base remains unchanged.
+Working-tree-only work does not acquire upload authority. This ordering does not
+grant publication permission or relax evidence identity. The optional controller below
 also creates a local candidate before final verification and review, through the
 original native tool permissions, and stops before remote publication.
 
@@ -81,6 +83,13 @@ session evidence. A copied JSON file, implementer assertion or AI review does no
 authenticate approval. Sensitive code review may use an applicable actual GitHub
 human review; this does not approve execution or bypass repository rules.
 
+For CI-first policy decisions, `scope.ci` names the exact GitHub repository and
+the task's attached branch. It adds the reviewed workflow's hosted setup/checks,
+including its PR merge ref, to the stated execution effects. The request identity
+changes with that target; a local-only decision cannot satisfy it. Commit,
+push/Draft PR creation, merge and deployment authority remain separately recorded.
+The optional local controller does not add this CI scope automatically.
+
 The optional controller requests a decision through the runtime-bundled SDK's
 native `session.ui.elicitation`, only when its capability is present. It never
 answers its own question or substitutes a new permission handler. Its durable
@@ -135,6 +144,75 @@ reason. Evidence remains bound to the final source and native candidate, and
 publication remains separately authorized. These local rules do not configure
 GitHub rulesets, suppress native permission prompts or transfer grants to another
 task. Session artifacts are diagnostic records, not authority.
+
+## CI-first delivery and live qualification
+
+Use this route for authorized PR delivery, not as an implicit upload of a
+working-tree-only task. Keep implementation, commits, GitHub operations and
+recovery in the owning session. The existing CI workflow remains the executor;
+there is no new scheduling service or registered workflow.
+
+After approved focused local checks, freeze the native candidate with all intended
+inputs and retain its request/receipt. Confirm a clean index/worktree, the original
+task base, execution-policy consent for the CI target, and separate commit/push/PR
+authorization. Push that candidate and create a **Draft PR**, explicitly
+`ci-pending`. Full verification and independent review need not precede this
+authorized pending draft. Missing execution consent still blocks CI-triggering
+publication; a draft never supplies acceptance or merge authority.
+
+The PR-triggered workflow runs the selected complete checks on its actual merge
+ref. Prefer that single formal run over a full local gate followed by CI, or a
+manual branch run followed by another PR run. Checks that require the user's
+original client or host still need their explicitly authorized local evidence.
+CI releases local CPU/memory but can still queue, spend runner minutes, prepare
+dependencies or time out. Existing deadlines and required coverage are unchanged.
+
+After **Required verification** succeeds, qualify it from the clean local
+candidate, using its actual repository, PR and run identifiers:
+
+```powershell
+node scripts\verification-ci.mjs --qualify --repository OWNER/REPO `
+  --pr PR_NUMBER --run RUN_ID --base BASE_COMMIT `
+  --report .data\verification\CI_QUALIFIED\qualification.json
+```
+
+This read-only GitHub.com adapter uses the existing authenticated `gh` CLI; it
+does not dispatch a run, push, open a PR, approve or merge anything. Every
+invocation needs a new local destination. It checks the open same-repository PR,
+candidate HEAD, run/attempt, real successful gate job and unexpired artifact.
+The archive must match GitHub's authenticated SHA256 digest and contain only the
+expected bounded JSON entries; it is read without extracting paths.
+
+The CI envelope retains the actual report, producer/run/attempt, candidate,
+PR base, tested merge commit/tree, workflow revision and selected input receipts.
+The tested commit must have the current PR base and candidate as its exact parents.
+Protected execution inputs must agree between the candidate, tested tree and
+workflow revision. A changed base policy requires review/reconciliation rather
+than silently trusting different executable inputs. The CI report must cover all
+checks/layouts required by the original local task plan, even if its comparison
+base differs from the task's retained baseline. Final live PR/run and local
+source/index/branch/config checks refuse concurrent changes.
+
+`kind: ci-qualification`, `status: verified` means **CI checks qualified**.
+It is not independent review, a human decision or permission to publish ready work.
+The local `candidate` and actual CI `tested` source remain separate: a PR merge
+SHA or LF checkout fingerprint is never rewritten to look like execution on the
+local branch/CRLF checkout. The referenced envelope and ZIP remain evidence
+records; an editable qualification JSON is not an offline readiness credential.
+
+Give the configured independent reviewer the actual live result, CI envelope,
+artifact digest, original task base, candidate/tested refs, actual PR diff and
+scoped policy decisions. After its passing conclusion, repeat live qualification
+into a new directory, without rerunning checks merely to compare identities.
+Require the same source/ref/attempt bindings covered by the review before marking
+the existing draft ready within the user's delivery authorization. Changed,
+missing or incomplete evidence remains pending; do not create a duplicate PR or
+turn old review/test records into a new source by editing their fields.
+
+The optional registered controller below remains local-only. It does not upload
+pending candidates or consume a CI qualification as if it were its own local
+verification report. Its shared verifier still understands complete sharded
+origins; its durable-result and native-approval requirements remain intact.
 
 ## Optional: registered workflow
 
@@ -537,7 +615,8 @@ are not a completed source-bound gate or independent-review approval.
 
 For CI shards, use `-Group tooling`, `-Group backend`, `-Group android` or
 `-Group device` with a separate `-Report` for each. The tooling check remains
-the **complete** `npm run test:workflow` suite, not a per-test-file selection.
+the **complete** `npm run test:workflow` suite. Its CI parts are derived from the
+same explicit catalogue; individual parts never substitute for the whole check.
 A successful shard is `partial` unless it covers the whole plan. For a full
 plan, aggregate all four reports using:
 
@@ -569,16 +648,19 @@ still requires all selected checks. A documentation-only plan needs no shards.
 
 Aggregation rejects missing checks, failed/blocked/planned evidence, duplicate
 results, wrong-group checks, mismatched policy, and stale base/source identities.
-Verification reports are now **version 4**. Every passing check requires its
-actual `execution.source`, `startedAt` and `completedAt`; aggregates preserve
-these allowlisted fields through subsequent aggregation. Removing origins,
+Verification reports are now **version 5**. Every directly executed passing check
+requires its actual `execution.source`, `startedAt` and `completedAt`. A complete
+tooling aggregate instead carries `execution.kind: tooling-shards` and every
+part's original execution. It does not invent one full-suite start/end interval.
+Aggregates preserve these fields through subsequent aggregation. Removing origins,
 reversing timestamps or changing only an aggregate's HEAD cannot qualify.
 `requiredGroups` must match the catalogue and there is no `requiresHumanReview`
-decision. Version-1/2/3 reports, absent origin/group policy and reports that place
+decision. Version-1/2/3/4 reports, absent origin/group policy and reports that place
 `workflow-tests` in backend cannot qualify; rerun rather than relabel old evidence.
 Non-acceptance diagnostic exporters still read historical versions: version 1
 retains its backend workflow-test group, versions 2/3 retain tooling, and version
 3 retains its selection explanations. Historical check selections remain intact.
+Version 4 retains its historical direct execution origins for diagnostics.
 An old version-1/2 review flag is projected only under
 `legacyAgentReview`, with `approval: "not-established"` even when the old flag
 was false. Current diagnostics ignore injected review/approval fields.
@@ -589,6 +671,29 @@ Detailed logs remain private in ignored run directories. Share only the
 allowlisted machine reports and explicitly selected candidate artifacts.
 Report destinations must be new files beneath `.data\verification` or `.data\ci`;
 existing reports and sealed/operational evidence cannot be overwritten.
+
+### Host-wide local admission
+
+Updated verifier entrypoints share one heavy-execution slot per OS user across
+worktrees. The registry is under
+`%LOCALAPPDATA%\DevPocket\verification\admission` on Windows and
+`~/.cache/DevPocket/verification/admission` on other supported hosts. It is runtime
+state, not a changed Git/system setting. A live IPC owner and private inherited
+ticket let owned nested verifier fixtures share the parent's allocation without
+deadlocking it; a borrowed ticket cannot release the parent.
+
+Queue waiting is reported separately as `admission.waitedMs`; command deadlines
+start only when their actual execution begins. Cancellation while waiting does
+not run a check or release another owner. A stale, damaged or unconfirmed owner
+is an explicit stop, not automatic PID-based takeover. Inspect its retained
+`owner.json` and resource cleanup before any operator recovery. This scheduling
+record never grants runtime permission or resolves a workspace's interrupted
+verification evidence.
+
+Admission is cooperative: old loaded verifiers, direct focused commands and
+unrelated programs do not participate. No other workload is terminated or
+reconfigured. Hosted CI jobs already run on separate machines; this slot also
+keeps nested execution in each job within its owning allocation.
 
 ### Selected-group preflight and explicit recovery
 
@@ -752,12 +857,22 @@ npm run verify -- -Base BASE_COMMIT `
 
 The converter checks the original base, exact one-commit ancestry, unchanged
 branch/config/hooks and captured implementation, request/receipt signature,
-clean final index/worktree and actual candidate tree. It compares the complete
-verified input inventory with both the post-commit worktree and raw committed
-blob bytes/Git modes/link identities. Added/deleted inputs are accounted for;
-partial commits, extra history, hook changes and filter/newline transformations
-that cannot be proved byte-exact are refused. Equality of file text, `git diff`
-or a single fingerprint is insufficient.
+clean final index/worktree and actual candidate tree. The complete verified
+execution inventory still compares byte-for-byte with the post-commit worktree,
+including modes, links and added/deleted inputs. A separate captured
+`commitSourceProjection` binds effective Git text attributes/configuration to
+the allowed stored blob representation. Supported `core.autocrlf` and text/eol
+rules can account for CRLF-to-LF storage conversion without rewriting the raw
+execution fingerprint. Automatic conversion is limited to unambiguous UTF-8
+text; binary/ambiguous inputs remain byte-exact.
+
+Projection collection reads attributes but never invokes clean filters. Effective
+filter, encoding, ident or legacy crlf attributes are explicitly unsupported.
+Any different bytes beyond the proved text transformation, changed effective
+policy, modes/links, partial commit, extra history or changed hooks refuses reuse.
+Transition version 2 requires this captured projection; older proofs are not
+upgraded. Equality of displayed text, `git diff` or a single fingerprint remains
+insufficient.
 Ordinary verification also supports primary and detached linked checkouts:
 their reports explicitly mark candidate conversion unavailable. Unsupported
 candidate-only hook/index inspection does not silently approve conversion or
@@ -861,6 +976,21 @@ catalogue and passes that full list to a child `node --test` invocation. Tests a
 CI contracts read the same catalogue rather than parse a package script. The
 impact policy independently names the approved tooling paths; unknown tests and
 runner lookalikes still require all checks.
+
+`WORKFLOW_TEST_SHARDS` is derived from that catalogue, not a second list. CI runs
+the candidate, verification, diagnostics and native parts independently with
+`--tooling-shard PART` on the verifier. The verifier calls the same npm entry with
+`--workflow-shard PART`; this mode rejects additional filters. The canonical
+runner identity and catalogue are bound, and unknown startup/lifecycle settings
+cannot qualify formal shard execution. A replacement package script does not
+become a complete CI tooling gate.
+
+Each part reports `partial`, including on a tooling-only plan. Aggregation needs
+every exact part once, with matching source, base, catalogue and execution origins.
+Missing, failed, duplicated or mismatched parts block `workflow-tests`. Parts
+cannot seed a successful local group receipt; normal full-group recovery keeps
+its positive terminal qualification rule. The CI matrix disables fail-fast so
+one failure does not discard unrelated successful jobs.
 
 Each listed file runs in its own process with Node's default file concurrency.
 The wrapper adds no concurrency, isolation, reporter or filtering flags by default,
@@ -1575,10 +1705,11 @@ Project toolchains remain Node 24, Temurin JDK 21 and Python 3.12. The Windows
 Android job passes its explicit project-local SDK; the Linux device job passes
 the explicit hosted SDK path after the required stable packages are available.
 
-The upload keeps its explicit file lists and default archived, non-overwriting
-behavior. The downloader retains separate artifact directories when multiple
-artifacts match; recursive `report.json` discovery also handles a single match
-extracted directly into the destination. Keep
+The upload keeps explicit file lists and archived, non-overwriting behavior.
+Names include the run attempt, preserving earlier failed reports. Each producer
+adds a `ci-report.json` envelope without rewriting its raw `report.json`.
+The downloader retains separate artifact directories when multiple artifacts
+match; the collector also handles a single archive extracted into the destination. Keep
 [v8's failing digest-mismatch default](https://github.com/actions/download-artifact/releases/tag/v8.0.0):
 do not merge same-named reports or downgrade integrity failures to warnings.
 An empty download cannot satisfy a nonempty required-check plan; a
@@ -1597,9 +1728,14 @@ gain device execution through an unsafe checkout. When device checks are
 selected, missing or failed evidence still blocks **Required verification**,
 never counts as skipped success.
 
-The unchanged, always-run **Required verification** job depends on plan and all
-four lanes, downloads `verification-*` artifacts, and forwards every lane's
-actual outcome to the source-bound combiner. Required lanes come only from
+The always-run **Required verification** job depends on plan and all
+four lanes, downloads `verification-*` artifacts, and gives every lane's
+actual outcome to the source-bound CI collector. It selects the newest attempt
+for each required producer unit, validates context and then invokes the ordinary
+strict combiner. An older passing unit cannot hide a newer failed one; older
+failed artifacts remain immutable rather than being relabelled or overwritten.
+GitHub's same-run failed-job rerun can therefore reuse unchanged successful
+units without re-executing them. Required lanes come only from
 the current planner. Tooling-only changes run plan/tooling/gate and skip
 backend/android/device; documentation-only changes run plan/gate; full-impact
 changes require all four lanes. Artifact/collector failure in a selected job
@@ -1614,8 +1750,8 @@ All jobs retain `contents: read`, full-history checkout with
 identity hashes tracked bytes and Git index modes, not absolute checkout paths;
 cross-platform reports must match rather than normalize away discrepancies.
 Device reports and tested APKs use explicit Linux artifact paths. The Windows
-combiner still recursively finds only `report.json` and rejects incomplete,
-duplicate, failed or mismatched reports.
+collector validates the selected envelopes and rejects incomplete, duplicate,
+failed or mismatched reports. Prior gate summaries are history, not input units.
 
 An administrator should still require **Required verification**, appropriate
 approvals, code-owner review for protected paths and dismissal of stale
@@ -1629,8 +1765,9 @@ process (or an organization-controlled required workflow) must guard changes to
 the checks themselves. The optional workflow enforces independent review through
 its controller; skill-led development relies on the agent to request that review.
 The verifier checks source-bound test evidence, not the authenticity of an AI
-review. Neither route creates a separately authenticated GitHub review/check
-publisher for PRs.
+review. CI-first live qualification authenticates existing Actions artifacts;
+it does not create another GitHub review/check publisher or replace those review
+and ruleset protections.
 
 The device job uploads only its tested candidate APKs and device report. A
 candidate is not a signed release, full real-CLI/physical-device acceptance, or

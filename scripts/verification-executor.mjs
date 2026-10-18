@@ -2,7 +2,7 @@ import { open } from "node:fs/promises";
 import path from "node:path";
 import { runCommand } from "./process.mjs";
 import { sourceSnapshot } from "./git-state.mjs";
-import { diagnosticError, failureDetails, commandDetails } from "./diagnostic-errors.mjs";
+import { diagnosticError, failureDetails, commandDetails, contextualFailure } from "./diagnostic-errors.mjs";
 import { boundedDiagnosticBytes } from "./bounded-worker-log.mjs";
 import { CHECKS, CHECK_GROUPS } from "./verification-policy.mjs";
 import { combineVerification, requireCheckPolicy, requirePlanCollection, verificationFailure, verificationFault } from "./verification.mjs";
@@ -11,11 +11,13 @@ import { androidVerification } from "./verification-android.mjs";
 import { acquireVerificationLock, openVerificationRun, readVerificationRun } from "./verification-run.mjs";
 import { verificationArtifacts, verificationExecutionPolicy, verificationPreflight } from "./verification-preflight.mjs";
 import { candidateReusableChecks, capturePromotionContext, prepareVerificationTransition, validateCandidateVerification } from "./verification-transition.mjs";
+import { toolingShardDescriptor } from "./verification-tooling.mjs";
+import { acquireHostVerificationSlot } from "./verification-admission.mjs";
 
 function reportFor(plan, group, checks) {
   const failed = checks.some((check) => check.status === "failed");
   const blocked = checks.some((check) => check.status === "blocked");
-  const complete = checks.every((check) => check.status === "passed");
+  const complete = checks.every((check) => check.status === "passed" && !check.toolingShard);
   return { ...plan, group, checks, complete, status: failed ? "failed" : blocked ? "blocked" : complete ? "passed" : "partial",
     environment: { node: process.version, platform: process.platform } };
 }
@@ -34,7 +36,13 @@ export async function executeVerification(root, plan, options = {}) {
   requireCheckPolicy(plan);
   const group = options.group ?? "all";
   if (!["all", ...CHECK_GROUPS].includes(group)) throw verificationFault("configuration");
+  if (options.toolingShard && (group !== "tooling" || options.promote)) throw verificationFault("configuration");
   const checks = plan.requiredChecks.map((id) => ({ id, status: "not_run" }));
+  if (options.toolingShard) {
+    const check = checks.find((check) => check.id === "workflow-tests");
+    if (!check) throw verificationFault("configuration");
+    check.toolingShard = toolingShardDescriptor(plan, options.toolingShard);
+  }
   const selected = plan.requiredGroups.filter((item) => group === "all" || item === group);
   const release = await acquireVerificationLock(root);
   let run, preflight, report, sourceFailure, policy, transition, qualificationFailed = false,
@@ -42,8 +50,19 @@ export async function executeVerification(root, plan, options = {}) {
   const recovery = { reused: [], reusedChecks: [], invalidated: [], executed: [] };
   const qualifiedGroups = new Set();
   let candidateChecks = new Map();
+  let admission, admissionReleased = false;
   try {
     try {
+      if (selected.length) {
+        try {
+          admission = await acquireHostVerificationSlot(root, { signal: options.signal,
+            onWait: () => console.error("Verification queued for the host slot; check execution deadlines have not started.") });
+        } catch (error) {
+          const failure = contextualFailure(error, options.signal);
+          failure.verificationContext = { phase: "admission" };
+          throw failure;
+        }
+      }
       policy = await verificationExecutionPolicy();
       transition = options.promote ? await prepareVerificationTransition(root, plan, options)
         : options.resume ? (await readVerificationRun(root, options.resume)).manifest.transition : null;
@@ -62,6 +81,10 @@ export async function executeVerification(root, plan, options = {}) {
             reason: `${issue.failure.summary} (${issue.prerequisite}).` });
         }
       } else {
+        if (options.toolingShard && (process.env.NODE_TEST_CONTEXT ||
+            preflight.groups.find((item) => item.group === "tooling")?.candidateSafe !== true)) {
+          throw verificationFault("environment-unbound", { phase: "preflight", group: "tooling" });
+        }
         candidateChecks = transition ? await candidateReusableChecks(root, plan, transition, preflight, options) : new Map();
         for (const selectedGroup of selected) {
           options.signal?.throwIfAborted();
@@ -85,7 +108,7 @@ export async function executeVerification(root, plan, options = {}) {
               continue;
             }
             safe = false;
-            await executeCheck(root, plan, check, options, backend);
+            await executeCheck(root, plan, check, { ...options, admissionEnvironment: admission?.environment }, backend);
             safe = checks.every(checkCleanupConfirmed);
             if (check.status !== "passed") break;
           }
@@ -111,7 +134,7 @@ export async function executeVerification(root, plan, options = {}) {
             if (current?.status !== "passed" || current.fingerprint !== before.fingerprint) {
               environmentFailure ??= verificationFault("environment-changed", { phase: "preflight", group: before.group });
             } else if (checks.filter((check) => CHECKS.find((item) => item.id === check.id).group === before.group)
-              .every((check) => check.status === "passed")) {
+              .every((check) => check.status === "passed" && !check.toolingShard)) {
               qualifiedGroups.add(before.group);
             }
           }
@@ -171,20 +194,38 @@ export async function executeVerification(root, plan, options = {}) {
         Object.assign(report, { complete: false, status: "blocked", failure, error: failure.summary });
       }
     }
+    if (admission) {
+      report.admission = { ...admission.evidence,
+        state: !safe ? "unconfirmed" : admission.evidence.mode === "inherited" ? "returned" : "released" };
+      try {
+        await admission.release(safe);
+        admissionReleased = true;
+      } catch (error) {
+        safe = false;
+        report.admission.state = "unconfirmed";
+        report.admission.failure = verificationFailure(error, "admission");
+        report.status = report.status === "failed" ? "failed" : "blocked";
+        report.complete = false;
+        qualifiedGroups.clear();
+      }
+    }
     if (run) {
       await run.finish(report, safe && !changed && !sourceFailure && !policyChanged && !qualificationFailed, [...qualifiedGroups]);
       finished = true;
     }
     return report;
   } finally {
-    await release(safe && (!run || finished));
+    try { if (admission && !admissionReleased) await admission.release(false); }
+    finally { await release(safe && (!run || finished)); }
   }
 }
 
 async function executeCheck(root, plan, check, options, backend) {
   const definition = CHECKS.find((item) => item.id === check.id);
   const adapter = definition.group === "tooling" ? {
-    args: ["-NoProfile", "-NonInteractive", "-Command", "& npm run test:workflow; exit $LASTEXITCODE"],
+    args: ["-NoProfile", "-NonInteractive", "-Command", check.toolingShard
+      ? `& npm run test:workflow -- --workflow-shard ${check.toolingShard.id}; exit $LASTEXITCODE`
+      : "& npm run test:workflow; exit $LASTEXITCODE"],
     timeoutMs: 30 * 60_000, graceMs: 5000,
   } : definition.group === "backend" ? backendVerification(root, check, backend)
     : await androidVerification(root, check, plan, options);
@@ -228,7 +269,8 @@ async function executeCheck(root, plan, check, options, backend) {
     check.executionState = "started";
     check.execution = { source: structuredClone(plan.source), startedAt: new Date().toISOString() };
     output = await runCommand("pwsh", adapter.args, {
-      cwd: root, env: adapter.env, timeoutMs: adapter.timeoutMs, graceMs: adapter.graceMs, signal: options.signal,
+      cwd: root, env: options.admissionEnvironment ? { ...(adapter.env ?? process.env), ...options.admissionEnvironment } : adapter.env,
+      timeoutMs: adapter.timeoutMs, graceMs: adapter.graceMs, signal: options.signal,
     });
     check.executionState = "exited";
     check.commandOutcome = commandDetails(output.commandOutcome);

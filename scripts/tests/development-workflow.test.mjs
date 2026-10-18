@@ -18,7 +18,8 @@ import { developmentApprovalDetails, developmentApprovalRequest, developmentAppr
 const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
   "verification-android.mjs", "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs",
-  "verification-transition.mjs", "test-workflow.mjs"];
+  "verification-transition.mjs", "test-workflow.mjs", "verification-tooling.mjs",
+  "verification-admission.mjs", "verification-ci.mjs", "verification-ci-artifact.ps1"];
 // Top-level tests stay serial; only fresh-workspace cases without shared environment writes use this limit.
 const isolatedCases = { concurrency: 2 };
 
@@ -694,6 +695,8 @@ test("local review requirements preserve trust boundaries independently of impac
     ["scripts/verification.mjs", true, true], ["scripts/verification-policy.mjs", true, true],
     ["scripts/verification-preflight.mjs", true, true], ["scripts/verification-run.mjs", true, true],
     ["scripts/verification-transition.mjs", true, true],
+    ["scripts/verification-tooling.mjs", true, true], ["scripts/verification-admission.mjs", true, true],
+    ["scripts/verification-ci.mjs", true, true], ["scripts/verification-ci-artifact.ps1", true, true],
     ["scripts/verify.mjs", true, true], [".github/workflows/ci.yml", true, true],
     ["package-lock.json", true, true], [".NPMRC", true, true], ["backend/tsconfig.json", true, true],
     ["deployment/azure/probe/requirements-test.txt", true, true],
@@ -830,6 +833,25 @@ test("approval snapshots cannot escape their native-question code block", () => 
   const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
   const message = formatDevelopmentApproval(request, "reference-only.txt", undefined, snapshot);
   assert.ok(message.includes(`\n\`\`\`\`text\n${snapshot}\n\`\`\`\``));
+});
+
+test("CI execution consent binds the repository and branch without inheriting local-only consent", () => {
+  const { scope, policy, hooks } = approvalFixture();
+  const local = developmentApprovalRequest(scope, policy, "execution", hooks);
+  const target = { repository: "fixture/verification", ref: scope.workspace.branch };
+  const request = developmentApprovalRequest({ ...scope, ci: target }, policy, "execution", hooks);
+  assert.notEqual(request.id, local.id);
+  assert.equal(developmentApprovalSatisfied(request, [{ version: 1, requestId: local.id,
+    origin: "original-client", decision: "approved" }]), false);
+  const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
+  const message = formatDevelopmentApproval(request, "reference-only.txt", "CI-first task", snapshot);
+  assert.match(message, /CI target: fixture\/verification/);
+  assert.match(message, /No push, PR creation, merge/);
+  assert.ok(request.effects.some((effect) => effect.includes("hosted-runner setup")));
+  for (const ci of [
+    { ...target, ref: "refs/heads/other" }, { ...target, repository: "../verification" },
+    { ...target, workflow: "different.yml" },
+  ]) assert.throws(() => developmentApprovalRequest({ ...scope, ci }, policy, "execution", hooks), /exact repository and branch/);
 });
 
 test("only exact native decisions are journaled and rejection is not automatically re-prompted", async (t) => {
