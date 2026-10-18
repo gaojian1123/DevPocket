@@ -67,30 +67,48 @@ Make the agreed change, relevant regression coverage and documentation updates.
 The current session owns implementation and repairs; another implementation
 session is not a prerequisite.
 
-Before execution, inspect the protected-policy diff read-only using the trusted
-`isVerificationPolicyPath` rules in `scripts\development-policy.mjs`. Do not run
-a modified planner to decide whether its own policy needs approval.
-**Require explicit human approval of the actual changed execution or dependency
-policy before executing it.** This includes focused checks, dependency restoration
-and its install/lifecycle hooks, and Git commit hooks. Changed agent instructions
-also need approval before adopting them as execution policy.
+Use the trusted, pre-edit `scripts\development-policy.mjs` for local authorization,
+independently of CI selection. `inspectDevelopmentPolicy` uses the actual paths,
+base and current inputs; `developmentReviewRequirements` explains each remaining
+execution or review decision. Read the **Scoped development approvals** section
+of `docs\DEVELOPMENT-WORKFLOW.md` when a decision is needed or recovered.
 
-Record the human decision, approved policy diff or content hashes, and permitted
-command scope with the task. General task/workflow authorization, implementer
-self-review and an AI review are not approval of newly changed policy.
-Any further change to the approved policy or hook inputs invalidates that
-approval; obtain renewed human approval before the next affected execution,
-including during repairs.
+An implementation request covers ordinary code/test edits, existing local checks
+and agreed repairs in this task's worktree. Reuse that scope without another
+project approval for each file, repair or retry. Path classification is a screening
+rule, not proof that arbitrary test code is safe: inspect changes to commands,
+dependencies, accessed data, destinations and shared resources. An additional
+effect or unresolved execution scope needs a concrete decision.
 
-If approval is missing or its scope cannot be established, report `needs_human`.
-Inspection and editing may continue. Run unchanged, already approved checks only
-after establishing that they cannot load the modified policy or hooks; otherwise
-stop before execution. The standalone verifier does not enforce this approval.
+**Require explicit human approval of actual changed execution-core, dependency
+or instruction inputs before executing or adopting them.** The same applies to
+changed active Git hooks. Use an unchanged trusted reader to inspect them; the
+modified policy cannot decide its own approval. A running controller's captured
+implementation stays fixed; changed controller inputs need explicit original-client
+reload and same-task recovery, not an automatic hot swap.
 
-After this gate, use the existing checks for focused feedback.
-Restore missing dependencies from lockfiles only after an actual missing-dependency
-failure. Runtime experiments, installation/reload, enrollment, cloud operations
-and publication still require their specific authorization.
+Present the action, reason, exact target, effects, exclusions and validity using
+`formatDevelopmentApproval`; add a plain-language description of the actual behavior
+change and include the hash-validated, immutable diff/contents in the native question
+itself (or an immutable authenticated attachment). A mutable local file is only a
+reference copy, never the approval source. Ask only for missing scope. A manifest
+filename or hash alone is not an approval request. Record the actual user answer, task/target,
+actions and relevant input versions in the session. An agent-written JSON record
+or AI review alone is not human approval.
+
+Ordinary source changes require applicable new verification/review, not renewed
+authority. Reuse a human decision only while its task, target, allowed effects and
+relevant policy/hook inputs still match. Changed critical inputs, new execution
+sources or expanded effects require a new decision showing the delta. Rejection
+or cancellation does not authorize a retry; retain one pending item, without
+repeated prompts. Inspect uncertain side effects before considering another attempt.
+
+When a decision remains unresolved, report `needs_human` with that specific item.
+Inspection/editing may continue, and unaffected trusted checks may run. Use existing
+checks for focused feedback; restore unchanged locked dependencies only after a real
+missing-dependency failure and within the authorized environment. New installation,
+runtime experiments, extension reload, enrollment, cloud operations and publication
+retain their target-specific authorization. The verifier does not enforce consent.
 
 ## 4. Freeze the verification target
 
@@ -149,13 +167,17 @@ Required Android device evidence remains mandatory. Keep the report path, base,
 `source.head` and `source.fingerprint` with the task.
 For candidate-commit delivery, require `source.head` to equal `CANDIDATE_COMMIT`.
 
-Evaluate the local `developmentReviewRequirements(plan.changedFiles)` from the
-trusted `scripts\development-policy.mjs` against the actual changed-path list.
-Retain its `requiresHumanReview`, protected paths and the plan's source identity
-as `policyReview` for review and handoff. CI reports do not supply this decision;
-an absent decision is not `false` or permission to publish. Neither the local
-requirement nor a passing report supplies the human approval required before
-executing changed policy.
+Evaluate the local `inspectDevelopmentPolicy` / `developmentReviewRequirements`
+from the trusted `scripts\development-policy.mjs` against the actual base, changed
+paths and relevant inputs. Retain `requiresHumanReview`, protected/review paths,
+reasons, input identities and source identity as `policyReview`, alongside actual
+human decisions. Pass retained policy-subject paths through inspection and later
+repairs/readiness; a policy-bound manifest stays bound when its execution settings
+return to the task base. Metadata-only exemptions apply only to never-bound manifests.
+The requirement describes what must be satisfied, not a permanent
+stop after it is satisfied. CI reports do not supply these decisions; absent or
+stale evidence is not permission to publish. Execution consent and code review
+remain distinct; reuse one decision for both only if its stated scope covers both.
 Missing tools, failed checks, changed source and unavailable evidence remain
 blockers; use the guide's relevant diagnostics rather than weakening the gate.
 
@@ -191,9 +213,9 @@ Allow at most two repair rounds unless the user chooses a different bound.
 For candidate-commit delivery, put a repair into a new authorized follow-up commit
 before final verification; amend only if the user explicitly requests it. Keep
 the original base and update the candidate SHA. Each source-changing repair needs
-fresh applicable verification and independent review of the new source; old
-approval does not carry forward. Unresolved product decisions, permissions or
-exhausted repairs require human input.
+fresh applicable verification and independent review of the new source. Reuse
+only still-applicable scoped human authorization, not old test/review evidence.
+Unresolved product decisions, permissions or exhausted repairs require human input.
 
 After a passing review, revalidate the report against the current source without
 rerunning checks solely to compare identities:
@@ -221,8 +243,10 @@ This aggregate validates test evidence; it does not authenticate an AI review.
 Report the delivery target, workspace, base, evidence path and independent review
 outcome. Identify a verified candidate by its exact commit SHA.
 Use `ready` only when acceptance, verification and review are complete for the
-unchanged source. Use `blocked` for missing/failed evidence and `needs_human` for
-unresolved decisions or `policyReview.requiresHumanReview`; preserve those qualifications.
+unchanged source and every required human decision is satisfied. Use `blocked`
+for missing/failed evidence and `needs_human` for specific unsatisfied decisions;
+`policyReview.requiresHumanReview` alone does not mean an approved decision is
+still pending. Preserve these qualifications and identify the next permitted action.
 
 For working-tree implementation, stop at reviewed working-tree changes and state
 that they are not final-commit PR evidence. For local-commit-only delivery, stop

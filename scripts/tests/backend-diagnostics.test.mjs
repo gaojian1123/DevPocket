@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { runCommand } from "../process.mjs";
+import { WORKFLOW_TEST_FILES } from "../test-workflow.mjs";
 
 const runId = "11111111-1111-4111-8111-111111111111";
 const exec = promisify(execFile);
@@ -384,7 +385,7 @@ test("backend-only CI reuses the normal job, conditionally exports validated dia
   assert.doesNotMatch(workflow, /continue-on-error:|--test-concurrency|--test-name-pattern|\.data[\\/]\*\*/);
   const manifest = JSON.parse(await readFile("package.json", "utf8"));
   assert.equal(manifest.scripts.test, "node --import tsx --test backend/tests/*.test.ts");
-  assert.ok(manifest.scripts["test:workflow"].includes("scripts/tests/backend-diagnostics.test.mjs"));
+  assert.ok(WORKFLOW_TEST_FILES.includes("scripts/tests/backend-diagnostics.test.mjs"));
 });
 
 test("an actual reporter catalogue exception remains failed after the test command restores catalogue health", async (t) => {

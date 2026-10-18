@@ -12,11 +12,15 @@ import { changedPaths, inspectWorktree, prepareCandidate, sha256 } from "../cand
 import { executeVerification, git, sourceSnapshot, validateVerificationEvidence } from "../verification.mjs";
 import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "../native-candidate.mjs";
 import { syntheticExecution } from "./fixtures/verification-tools.mjs";
+import { developmentApprovalDetails, developmentApprovalRequest, developmentApprovalSatisfied, developmentReviewRequirements,
+  formatDevelopmentApproval, inspectDevelopmentPolicy, isVerificationPolicyPath, obtainDevelopmentApproval } from "../development-policy.mjs";
 
 const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
   "verification-android.mjs", "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs",
-  "verification-transition.mjs"];
+  "verification-transition.mjs", "test-workflow.mjs"];
+// Top-level tests stay serial; only fresh-workspace cases without shared environment writes use this limit.
+const isolatedCases = { concurrency: 2 };
 
 function nativeSession() {
   return { sessionId: "fixture-session", rpc: { tools: {
@@ -127,7 +131,8 @@ test("the skill freezes an authorized delivery candidate before final verificati
 function durable(ctx) {
   const journal = new Map();
   return { session: nativeSession(), phase() {}, log() {}, ...ctx, step: async (key, producer) => {
-    assert.equal(key, "devpocket-development-v4", "Older journals must not be replayed as current execution-policy evidence.");
+    assert.match(key, /^(?:devpocket-development-v5|devpocket-approval-v1:[a-f0-9]{64})$/,
+      "Older journals must not be replayed as current execution-policy evidence.");
     if (!journal.has(key)) journal.set(key, JSON.parse(JSON.stringify(await producer())));
     return journal.get(key);
   } };
@@ -365,10 +370,11 @@ test("starter reuses a clean linked worktree through exactly one native workflow
   }]);
 });
 
-test("starter blocks dirty checkouts without dropping unresolved task dependencies", async (t) => {
+test("starter blocks dirty checkouts without dropping unresolved task dependencies", isolatedCases, async (t) => {
+  const cases = [];
   for (const checkout of ["primary", "linked"]) {
     for (const change of ["staged", "unstaged", "untracked"]) {
-      await t.test(`${checkout}: ${change}`, async (t) => {
+      cases.push(t.test(`${checkout}: ${change}`, async (t) => {
         const { main, root: linked } = await workspace(t);
         const root = checkout === "primary" ? main : linked;
         const starter = await registeredStarter(root);
@@ -386,9 +392,10 @@ test("starter blocks dirty checkouts without dropping unresolved task dependenci
         assert.match(result.textResultForLlm, /depend/i);
         assert.equal((await status()).stdout, before);
         assert.equal(await readFile(path.join(root, file), "utf8"), "Unfinished task dependency\n");
-      });
+      }));
     }
   }
+  await Promise.all(cases);
 });
 
 test("starter allows ignored artifacts and inspects Git without refreshing the index", async (t) => {
@@ -598,10 +605,10 @@ test("workflow registration stays inert without repository dependencies or a usa
   await exec(process.execPath, ["--input-type=module", "-e", script]);
 });
 
-test("gate changes and missing agent results stop rather than granting self-approval", async (t) => {
+test("gate changes and missing agent results stop rather than granting self-approval", isolatedCases, async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
-  for (const scenario of ["policy", "missing-result"]) {
-    await t.test(scenario, async (t) => {
+  await Promise.all(["policy", "missing-result"].map((scenario) =>
+    t.test(scenario, async (t) => {
       const { root } = await workspace(t);
       let calls = 0;
       const result = await runDevelopment(durable({
@@ -616,18 +623,16 @@ test("gate changes and missing agent results stop rather than granting self-appr
       }), { root, verify: async () => { assert.fail("Unreviewed replacement policy must not run."); } });
       assert.equal(result.status, scenario === "policy" ? "needs_human" : "blocked");
       assert.equal(calls, 1);
-    });
-  }
+    })));
 });
 
-test("tooling-only impact retains the controller's protected-policy stop before any execution or review", async (t) => {
+test("tooling-only impact retains the controller's protected-policy stop before any execution or review", isolatedCases, async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
   const { verificationPlan } = await import("../verification.mjs");
-  const { developmentReviewRequirements } = await import("../development-policy.mjs");
   const files = ["AGENTS.md", "scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs",
     "scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
     "scripts/native-candidate.mjs", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
-    "scripts/verify.mjs", "scripts/verify.ps1", "scripts/tests/verification.test.mjs",
+    "scripts/verify.mjs", "scripts/verify.ps1", "scripts/test-workflow.mjs", "scripts/tests/verification.test.mjs",
     ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"];
   const { root } = await workspace(t);
   for (const file of files) {
@@ -640,9 +645,10 @@ test("tooling-only impact retains the controller's protected-policy stop before 
         assert.deepEqual(plan.requiredChecks, ["workflow-tests"]);
         assert.deepEqual(plan.requiredGroups, ["tooling"]);
         assert.equal(Object.hasOwn(plan, "requiresHumanReview"), false);
-        assert.deepEqual(developmentReviewRequirements(plan.changedFiles), {
-          requiresHumanReview: true, protectedPaths: [file],
-        });
+        const requirements = developmentReviewRequirements(plan.changedFiles);
+        assert.equal(requirements.requiresHumanReview, isVerificationPolicyPath(file));
+        assert.deepEqual(requirements.protectedPaths, isVerificationPolicyPath(file) ? [file] : []);
+        assert.deepEqual(requirements.reviewPaths, []);
       } finally { await rm(absolute); }
     });
   }
@@ -659,9 +665,11 @@ test("tooling-only impact retains the controller's protected-policy stop before 
   const plan = await verificationPlan(root, "HEAD");
   assert.equal(result.status, "needs_human");
   assert.equal(calls, 1);
-  assert.deepEqual(result.policyReview, {
-    requiresHumanReview: true, protectedPaths: [...files].sort(), source: plan.source,
-  });
+  assert.equal(result.policyReview.requiresHumanReview, true);
+  assert.deepEqual(result.policyReview.protectedPaths, files.filter(isVerificationPolicyPath).sort());
+  assert.deepEqual(result.policyReview.source, plan.source);
+  assert.equal(result.approval.stage, "execution");
+  for (const file of result.policyReview.protectedPaths) assert.ok(result.approval.message.includes(file));
   assert.equal(result.verification, undefined);
   assert.equal(result.review, undefined);
 });
@@ -672,38 +680,529 @@ test("local review requirements preserve trust boundaries independently of impac
     ["README.md", false, false], ["VALIDATION.md", false, false], ["docs/policy.md", false, false],
     ["AGENTS.md", true, true], ["scripts/development-workflow.mjs", true, true],
     ["scripts/development-policy.mjs", true, true], ["scripts/candidate-commit.mjs", true, true],
-    ["scripts/tests/development-workflow.test.mjs", true, true],
+    ["scripts/tests/development-workflow.test.mjs", false, false],
+    ["scripts/test-workflow.mjs", true, true], ["scripts/tests/workflow-runner.test.mjs", false, false],
+    ["scripts/build-android.ps1", true, true], ["scripts/test-android.ps1", true, true],
+    ["scripts/android-runner.mjs", true, true], ["scripts/package-extension.ps1", true, true],
+    ["scripts/bundle-extension.mjs", true, true], ["scripts/export-schema.ts", true, true],
     [".github/agents/devpocket-reviewer.agent.md", true, true],
     [".github/skills/devpocket-development/SKILL.md", true, true],
+    [".github/copilot-instructions.md", true, true],
+    [".github/instructions/backend.instructions.md", true, true],
+    [".github/instructions/nested/checks.instructions.md", true, true],
+    [".github/README.md", false, false],
     ["scripts/verification.mjs", true, true], ["scripts/verification-policy.mjs", true, true],
+    ["scripts/verification-preflight.mjs", true, true], ["scripts/verification-run.mjs", true, true],
+    ["scripts/verification-transition.mjs", true, true],
     ["scripts/verify.mjs", true, true], [".github/workflows/ci.yml", true, true],
     ["package-lock.json", true, true], [".NPMRC", true, true], ["backend/tsconfig.json", true, true],
     ["deployment/azure/probe/requirements-test.txt", true, true],
     ["android/gradlew.bat", true, true], ["android/app/build.gradle.kts", true, true],
     ["android/app/src/main/java/dev/devpocket/app/ui/Screen.kt", false, false],
-    ["android/app/src/main/java/dev/devpocket/app/data/Store.kt", true, false],
+    ["android/app/src/main/java/dev/devpocket/app/data/Store.kt", false, false],
+    ["android/app/src/main/java/dev/devpocket/app/data/Vault.kt", true, false],
     ["android/app/src/main/AndroidManifest.xml", true, false],
     ["backend/tests/fixture.test.ts", false, false], ["backend/integration/fixture.ts", false, false],
-    ["backend/src/runtime.ts", true, false], ["extension/entry.mjs", true, false],
-    ["deployment/setup.ps1", true, false], ["infra/main.bicep", true, false], ["azure.yaml", true, false],
-    ["protocol.schema.json", true, false], ["test-fixtures/fixture.json", true, false],
+    ["backend/src/runtime.ts", true, false], ["backend/src/push.ts", true, false],
+    ["backend/src/cli.ts", false, false], ["extension/entry.mjs", true, false],
+    ["deployment/setup.ps1", false, false], ["infra/main.bicep", false, false], ["azure.yaml", false, false],
+    [".github/ISSUE_TEMPLATE/ai-task.yml", false, false], [".github/CODEOWNERS", true, true],
+    ["protocol.schema.json", true, false], ["test-fixtures/fixture.json", false, false],
     ["unclassified.txt", true, false],
-  ]) assert.deepEqual(developmentReviewRequirements([file]), {
-    requiresHumanReview, protectedPaths: protectedPath ? [file] : [],
-  }, file);
-  assert.deepEqual(developmentReviewRequirements([]), { requiresHumanReview: false, protectedPaths: [] });
-  assert.deepEqual(developmentReviewRequirements(["README.md", "scripts/candidate-commit.mjs", "AGENTS.md", "AGENTS.md"]), {
-    requiresHumanReview: true, protectedPaths: ["AGENTS.md", "scripts/candidate-commit.mjs"],
-  });
-  for (const invalid of [undefined, null, {}, "README.md", [null], [""]]) {
+  ]) {
+    const result = developmentReviewRequirements([file]);
+    assert.equal(result.requiresHumanReview, requiresHumanReview, file);
+    assert.deepEqual(result.protectedPaths, protectedPath ? [file] : [], file);
+    assert.deepEqual(result.reviewPaths, requiresHumanReview && !protectedPath ? [file] : [], file);
+    assert.ok(result.reasons.every((reason) => reason.title && reason.why && reason.paths.includes(file)));
+  }
+  assert.deepEqual(developmentReviewRequirements([]), { requiresHumanReview: false, protectedPaths: [], reviewPaths: [], reasons: [] });
+  assert.deepEqual(developmentReviewRequirements(["README.md", "scripts/candidate-commit.mjs", "AGENTS.md", "AGENTS.md"]).protectedPaths,
+    ["AGENTS.md", "scripts/candidate-commit.mjs"]);
+  for (const invalid of [undefined, null, {}, "README.md", [null], [""], ["../package.json"], [".git/config"], ["C:/outside"]]) {
     assert.throws(() => developmentReviewRequirements(invalid), /actual changed-path list/);
   }
 });
 
-test("post-review controller handoff uses local requirements even when verification carries a contrary review flag", async (t) => {
+test("package metadata does not grant a dependency-policy exemption to executable changes", async (t) => {
+  const { root } = await workspace(t), file = "package.json";
+  const original = { name: "fixture", version: "1", scripts: { test: "node --test" }, dependencies: { example: "1.0.0" } };
+  await writeFile(path.join(root, file), JSON.stringify(original));
+  await git(root, ["add", "--", file]);
+  await git(root, ["commit", "--quiet", "-m", "Fixture manifest"]);
+  const base = (await sourceSnapshot(root)).head;
+  for (const [value, needsApproval] of [
+    [{ ...original, description: "Clearer description", version: "2" }, false],
+    [{ ...original, dependencies: { example: "2.0.0" } }, true],
+    [{ ...original, scripts: { test: "node new-runner.mjs" } }, true],
+    [{ ...original, config: { registry: "changed" } }, true],
+  ]) {
+    await writeFile(path.join(root, file), JSON.stringify(value));
+    const policy = await inspectDevelopmentPolicy(root, base, [file], git);
+    assert.equal(policy.requiresHumanReview, needsApproval);
+    assert.equal(policy.inputs.length, needsApproval ? 1 : 0);
+  }
+  await writeFile(path.join(root, file), JSON.stringify(original));
+  assert.equal((await inspectDevelopmentPolicy(root, base, [file], git)).requiresHumanReview, false);
+  const retained = await inspectDevelopmentPolicy(root, base, [], git, [file]);
+  assert.equal(retained.requiresHumanReview, true, "Restoring a bound manifest must not erase its policy subject.");
+  assert.deepEqual(retained.protectedPaths, [file]);
+  assert.equal(retained.inputs.length, 1);
+  await writeFile(path.join(root, file), "{invalid");
+  assert.equal((await inspectDevelopmentPolicy(root, base, [file], git)).requiresHumanReview, true);
+  assert.equal(developmentReviewRequirements([file]).requiresHumanReview, true, "Missing originals cannot establish metadata-only change.");
+});
+
+function approvalFixture() {
+  const file = "scripts/verify.mjs";
+  const scope = { sessionId: "fixture-session", runId: "fixture-run", base: "1".repeat(40),
+    workspace: { root: path.resolve(".data", "approval-fixture"), branch: "refs/heads/task" },
+    task: { goal: "Improve local verification", acceptance: ["Preserve required checks"] } };
+  const policy = { ...developmentReviewRequirements([file]), contents: { [file]: "// policy fixture\n" }, inputs: [
+    { path: file, kind: "file", mode: 0, sha256: "2".repeat(64) },
+  ] };
+  return { scope, policy, hooks: { directory: "fixture-hooks", fingerprint: "3".repeat(64) } };
+}
+
+test("approval inspection and rendering preserve prototype-like added and existing filenames", async (t) => {
+  const { root } = await workspace(t), files = ["__proto__", "constructor", "toString"];
+  const base = (await sourceSnapshot(root)).head;
+  for (const file of files) await writeFile(path.join(root, file), `original ${file}\n`);
+  const added = await inspectDevelopmentPolicy(root, base, files, git);
+  assert.equal(Object.getPrototypeOf(added.contents), null);
+  assert.equal(Object.getPrototypeOf(added.beforeContents), null);
+  for (const file of files) {
+    assert.equal(Object.hasOwn(added.contents, file), true);
+    assert.equal(added.contents[file], `original ${file}\n`);
+    assert.equal(Object.hasOwn(added.beforeContents, file), false);
+  }
+  const addedDetails = developmentApprovalDetails(base, added, files);
+  assert.doesNotMatch(addedDetails, /\[object Object\]|function Object|function toString/);
+  assert.ok(files.every((file) => addedDetails.includes(`original ${file}\n`)));
+  const inherited = developmentApprovalDetails(base, { beforeContents: {}, contents: {} }, files);
+  assert.doesNotMatch(inherited, /\[object Object\]|function/);
+  await git(root, ["add", "--", ...files]);
+  await git(root, ["commit", "--quiet", "-m", "Fixture named inputs"]);
+  const existingBase = (await sourceSnapshot(root)).head;
+  for (const file of files) await writeFile(path.join(root, file), `updated ${file}\n`);
+  const existing = await inspectDevelopmentPolicy(root, existingBase, files, git);
+  for (const file of files) {
+    assert.equal(Object.hasOwn(existing.beforeContents, file), true);
+    assert.equal(existing.beforeContents[file], `original ${file}\n`);
+    assert.equal(existing.contents[file], `updated ${file}\n`);
+  }
+  const existingDetails = developmentApprovalDetails(existingBase, existing, files);
+  assert.ok(files.every((file) => existingDetails.includes(`original ${file}\n`) && existingDetails.includes(`updated ${file}\n`)));
+});
+
+test("scoped approval identity follows authority inputs, not unrelated source revisions", () => {
+  const { scope, policy, hooks } = approvalFixture();
+  const request = developmentApprovalRequest(scope, policy, "execution", hooks);
+  const unrelated = { ...policy, source: { head: "4".repeat(40), fingerprint: "5".repeat(64) } };
+  assert.equal(developmentApprovalRequest(scope, unrelated, "execution", hooks).id, request.id);
+  for (const next of [
+    developmentApprovalRequest({ ...scope, runId: "another-task" }, policy, "execution", hooks),
+    developmentApprovalRequest({ ...scope, sessionId: "another-session" }, policy, "execution", hooks),
+    developmentApprovalRequest({ ...scope, workspace: { ...scope.workspace, branch: "refs/heads/other" } }, policy, "execution", hooks),
+    developmentApprovalRequest(scope, { ...policy, inputs: [{ ...policy.inputs[0], sha256: "6".repeat(64) }] }, "execution", hooks),
+    developmentApprovalRequest(scope, { ...policy, contents: { "scripts/verify.mjs": "Substituted presentation" } }, "execution", hooks),
+    developmentApprovalRequest(scope, policy, "execution", { ...hooks, fingerprint: "7".repeat(64) }),
+  ]) assert.notEqual(next.id, request.id);
+  const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
+  const message = formatDevelopmentApproval(request, "actual-changes.txt", undefined, snapshot);
+  for (const label of ["Approval requested:", "Why now:", "Target:", "Changes:", "After approval:", "Not included:", "Valid for:"]) {
+    assert.ok(message.includes(label), label);
+  }
+  assert.ok(message.includes(scope.workspace.root));
+  assert.ok(message.includes("scripts/verify.mjs"));
+  assert.ok(message.includes("actual-changes.txt"));
+  assert.ok(message.includes(snapshot));
+  assert.throws(() => formatDevelopmentApproval(request, "actual-changes.txt"), /immutable approval snapshot/);
+  assert.throws(() => formatDevelopmentApproval(request, "actual-changes.txt", undefined, "Substituted"), /immutable approval snapshot/);
+  assert.equal(developmentApprovalSatisfied(request, [{ requestId: request.id, approved: true }]), false);
+  assert.throws(() => developmentApprovalRequest(scope, { ...policy, inputs: [] }, "execution", hooks), /every requested path/);
+});
+
+test("approval snapshots cannot escape their native-question code block", () => {
+  const { scope, policy, hooks } = approvalFixture();
+  policy.contents["scripts/verify.mjs"] = "```text\nuntrusted contents\n```\n";
+  const request = developmentApprovalRequest(scope, policy, "execution", hooks);
+  const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
+  const message = formatDevelopmentApproval(request, "reference-only.txt", undefined, snapshot);
+  assert.ok(message.includes(`\n\`\`\`\`text\n${snapshot}\n\`\`\`\``));
+});
+
+test("only exact native decisions are journaled and rejection is not automatically re-prompted", async (t) => {
+  const { scope, policy, hooks } = approvalFixture();
+  const request = developmentApprovalRequest(scope, policy, "execution", hooks);
+  await mkdir(".data/tests", { recursive: true });
+  const directory = await mkdtemp(path.resolve(".data/tests/approval-details-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const details = path.join(directory, "actual-changes.txt");
+  await writeFile(details, developmentApprovalDetails(scope.base, policy, policy.protectedPaths));
+  for (const [response, expected] of [
+    [{ action: "accept", content: { decision: "approve" } }, "approved"],
+    [{ action: "accept", content: { decision: "reject" } }, "rejected"],
+    [{ action: "decline" }, "rejected"],
+    [{ action: "cancel" }, "cancelled"],
+    [{ action: "accept", content: { decision: true } }, "invalid"],
+    [{ action: "accept", content: { decision: "approve", extra: "scope" } }, "invalid"],
+    [{ action: "accept", content: { decision: "approve" }, inventedApproval: true }, "invalid"],
+    [null, "invalid"],
+  ]) {
+    let questions = 0;
+    const ctx = durable({ session: { capabilities: { ui: { elicitation: true } }, ui: {
+      elicitation: async (input) => {
+        questions++;
+        assert.deepEqual(input.requestedSchema.required, ["decision"]);
+        assert.equal(input.requestedSchema.properties.decision.default, undefined);
+        return response;
+      },
+    } } });
+    const result = await obtainDevelopmentApproval(ctx, request, details);
+    assert.equal((result.receipt ?? result.decision).decision, expected);
+    assert.deepEqual(await obtainDevelopmentApproval(ctx, request, details), result);
+    assert.equal(questions, 1);
+    assert.equal(developmentApprovalSatisfied(request, [result.receipt]), expected === "approved");
+  }
+  const unavailable = await obtainDevelopmentApproval(durable({}), request, details);
+  assert.equal(unavailable.status, "needs_human");
+  assert.equal(unavailable.approval.id, request.id);
+  assert.match(unavailable.reason, /UI is unavailable/);
+});
+
+test("substituted approval details cannot mint a reusable native grant", async (t) => {
+  const { scope, policy, hooks } = approvalFixture();
+  const request = developmentApprovalRequest(scope, policy, "execution", hooks);
+  await mkdir(".data/tests", { recursive: true });
+  const directory = await mkdtemp(path.resolve(".data/tests/approval-details-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const details = path.join(directory, "actual-changes.txt");
+  const text = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
+  await writeFile(details, text);
+  let questions = 0;
+  const ctx = durable({ session: { capabilities: { ui: { elicitation: true } }, ui: {
+    elicitation: async () => {
+      questions++;
+      await writeFile(details, text.replace("policy fixture", "benign fixture"));
+      return { action: "accept", content: { decision: "approve" } };
+    },
+  } } });
+  const rejected = await obtainDevelopmentApproval(ctx, request, details);
+  assert.equal(rejected.status, "blocked");
+  assert.equal(rejected.decision.decision, "invalid");
+  await writeFile(details, text);
+  assert.equal((await obtainDevelopmentApproval(ctx, request, details)).status, "blocked");
+  assert.equal(questions, 1, "Restoring the artifact cannot resurrect an invalid approval or repeat the question.");
+});
+
+test("substitution and restoration cannot alter contents presented by the native question", async (t) => {
+  const { scope, policy, hooks } = approvalFixture();
+  const request = developmentApprovalRequest(scope, policy, "execution", hooks);
+  await mkdir(".data/tests", { recursive: true });
+  const directory = await mkdtemp(path.resolve(".data/tests/approval-snapshot-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const details = path.join(directory, "reference.txt");
+  const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
+  await writeFile(details, snapshot);
+  const ctx = durable({ session: { capabilities: { ui: { elicitation: true } }, ui: {
+    elicitation: async (input) => {
+      const shown = input.message;
+      assert.ok(shown.includes(snapshot));
+      assert.match(shown, /Local detail copy \(not authoritative\)/);
+      await writeFile(details, snapshot.replace("policy fixture", "benign fixture"));
+      assert.match(await readFile(details, "utf8"), /benign fixture/);
+      assert.equal(input.message, shown);
+      assert.doesNotMatch(input.message, /benign fixture/);
+      await writeFile(details, snapshot);
+      return { action: "accept", content: { decision: "approve" } };
+    },
+  } } });
+  const decision = await obtainDevelopmentApproval(ctx, request, details);
+  assert.equal(developmentApprovalSatisfied(request, [decision.receipt]), true,
+    "The decision applies to the original immutable contents shown in the native question, not the substituted copy.");
+});
+
+test("native policy approval survives ordinary repair after the interactive UI becomes unavailable", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  let questions = 0, implementations = 0, verifications = 0, reviews = 0;
+  session.capabilities = { ui: { elicitation: true } };
+  session.ui = { elicitation: async (input) => {
+    questions++;
+    assert.match(input.message, /scripts\/verify\.mjs/);
+    const detail = /Local detail copy \(not authoritative\): ([^\n]+)/.exec(input.message)[1];
+    assert.match(await readFile(detail, "utf8"), /Proposed[\s\S]*policy fixture/);
+    assert.match(input.message, /No push, PR creation, merge/);
+    session.capabilities.ui.elicitation = false;
+    return { action: "accept", content: { decision: "approve" } };
+  } };
+  const result = await runDevelopment(durable({
+    runId: "approved-policy-repair", session, args: { goal: "Improve checks", acceptance: ["Keep coverage"], maxRepairRounds: 1 },
+    agent: async (_prompt, options) => {
+      if (options.agent === "devpocket-reviewer") return ++reviews === 1 ? blockingReview : passingReview;
+      implementations++;
+      if (implementations === 1) {
+        await mkdir(path.join(root, "scripts"));
+        await writeFile(path.join(root, "scripts", "verify.mjs"), "// policy fixture\n");
+      } else await writeFile(path.join(root, "README.md"), "Ordinary repair\n");
+      return implemented(root);
+    },
+  }), { root, verify: async (_root, plan) => { verifications++; return syntheticReport(plan); } });
+  assert.equal(result.status, "ready", result.reason);
+  assert.equal(questions, 1);
+  assert.equal(implementations, 2);
+  assert.equal(verifications, 2);
+  assert.equal(reviews, 2);
+  assert.equal(result.authorization.receipts.length, 1);
+  assert.equal(result.policyReview.requiresHumanReview, true, "A satisfied requirement is not a permanent blocker.");
+  assert.equal((await checkDevelopmentReadiness(root, result)).status, "ready");
+  assert.equal((await checkDevelopmentReadiness(root, { ...result, authorization: { ...result.authorization, receipts: [] } })).status, "blocked");
+  assert.equal(Object.hasOwn(result.policyReview, "contents"), false);
+  assert.equal(Object.hasOwn(result.policyReview, "beforeContents"), false);
+});
+
+test("a policy-bound manifest requires a new decision when restored to its task base", isolatedCases, async (t) => {
+  await Promise.all(["approve", "reject"].map((restorationDecision) => t.test(restorationDecision, async (t) => {
+    const { root } = await workspace(t), session = nativeSession();
+    const file = "deployment/policy-fixture/package.json";
+    const original = JSON.stringify({ name: "fixture", scripts: { test: "node original.mjs" } }) + "\n";
+    await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+    await writeFile(path.join(root, file), original);
+    await git(root, ["add", "--", file]);
+    await git(root, ["commit", "--quiet", "-m", "Fixture original manifest"]);
+    let implementations = 0, questions = 0, verifications = 0, reviews = 0;
+    session.capabilities = { ui: { elicitation: true } };
+    session.ui = { elicitation: async (input) => {
+      questions++;
+      assert.ok(input.message.includes(file));
+      return { action: "accept", content: { decision: questions === 1 ? "approve" : restorationDecision } };
+    } };
+    const result = await runDevelopment(durable({
+      runId: "manifest-policy-restoration", session,
+      args: { goal: "Restore approved execution settings", acceptance: ["Preserve consent history"], maxRepairRounds: 1 },
+      agent: async (_prompt, options) => {
+        if (options.agent === "devpocket-reviewer") return ++reviews === 1 ? blockingReview : passingReview;
+        if (++implementations === 1) {
+          await writeFile(path.join(root, file), JSON.stringify({ name: "fixture", scripts: { test: "node changed.mjs" } }) + "\n");
+        } else {
+          await writeFile(path.join(root, file), original);
+          await writeFile(path.join(root, "README.md"), "Ordinary repair\n");
+        }
+        return implemented(root);
+      },
+    }), { root, verify: async (_root, plan) => {
+      verifications++;
+      if (verifications === 2) assert.deepEqual(plan.changedFiles, ["README.md"]);
+      return syntheticReport(plan);
+    } });
+    assert.equal(questions, 2);
+    assert.equal(implementations, 2);
+    assert.deepEqual(result.policyPaths, [file]);
+    assert.deepEqual(result.policyReview.protectedPaths, [file]);
+    assert.equal(result.status, restorationDecision === "approve" ? "ready" : "needs_human", result.reason);
+    assert.equal(verifications, restorationDecision === "approve" ? 2 : 1);
+    assert.equal(result.authorization.receipts.length, restorationDecision === "approve" ? 2 : 1);
+    if (restorationDecision === "approve") assert.equal((await checkDevelopmentReadiness(root, result)).status, "ready");
+  })));
+});
+
+test("an existing tampered detail copy records a blocked handoff instead of escaping as EEXIST", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  let implementations = 0, verifications = 0, questions = 0, detailPath;
+  session.capabilities = { ui: { elicitation: true } };
+  session.ui = { elicitation: async (input) => {
+    questions++;
+    detailPath = /Local detail copy \(not authoritative\): ([^\n]+)/.exec(input.message)[1];
+    return { action: "accept", content: { decision: "approve" } };
+  } };
+  const ctx = durable({
+    runId: "retained-tampered-details", session,
+    args: { goal: "Reject altered reference copies", acceptance: ["Persist the blocked result"], maxRepairRounds: 1 },
+    agent: async (_prompt, options) => {
+      if (options.agent === "devpocket-reviewer") return blockingReview;
+      if (++implementations === 1) {
+        await mkdir(path.join(root, "scripts"));
+        await writeFile(path.join(root, "scripts", "verify.mjs"), "// policy fixture\n");
+      } else {
+        await writeFile(path.join(root, "README.md"), "Ordinary repair\n");
+        await writeFile(detailPath, (await readFile(detailPath, "utf8")).replace("policy fixture", "benign fixture"));
+        session.capabilities.ui.elicitation = false;
+      }
+      return implemented(root);
+    },
+  });
+  const result = await runDevelopment(ctx, { root, verify: async (_root, plan) => {
+    verifications++;
+    return syntheticReport(plan);
+  } });
+  assert.equal(result.status, "blocked");
+  assert.match(result.reason, /details changed|unsupported file type/);
+  assert.equal(questions, 1);
+  assert.equal(verifications, 1);
+  for (const file of ["state.json", "handoff.json"]) {
+    const saved = JSON.parse(await readFile(path.join(root, ".data", "development", ctx.runId, file), "utf8"));
+    assert.equal((file === "state.json" ? saved.result : saved).status, "blocked");
+  }
+  ctx.agent = async () => { assert.fail("A recorded block must not replay implementation."); };
+  assert.equal((await runDevelopment(ctx, { root })).status, "blocked");
+});
+
+test("ordinary test edits do not require project approval or reduce the selected checks", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  session.capabilities = { ui: { elicitation: true } };
+  session.ui = { elicitation: async () => { assert.fail("Routine local tests are within task scope."); } };
+  const result = await runDevelopment(documentationTask(root, { session, agent: async (_prompt, options) => {
+    if (options.agent === "devpocket-reviewer") return passingReview;
+    await mkdir(path.join(root, "scripts", "tests"), { recursive: true });
+    await writeFile(path.join(root, "scripts", "tests", "verification.test.mjs"), "// local regression\n");
+    return implemented(root);
+  } }), { root, verify: async (_root, plan) => {
+    assert.deepEqual(plan.requiredChecks, ["workflow-tests"]);
+    return syntheticReport(plan);
+  } });
+  assert.equal(result.status, "ready", result.reason);
+  assert.equal(result.authorization.receipts.length, 0);
+});
+
+test("known execution and instruction entrypoints stop before candidate or verification without consent", isolatedCases, async (t) => {
+  await Promise.all(["scripts/build-android.ps1", "scripts/test-android.ps1", "scripts/android-runner.mjs",
+    ".github/copilot-instructions.md", ".github/instructions/backend.instructions.md",
+    ".github/instructions/nested/checks.instructions.md"].map((file) =>
+    t.test(file, async (t) => {
+      const { root } = await workspace(t), session = nativeSession();
+      session.rpc.tools.execute = async () => { assert.fail("Changed build entrypoints need policy consent before candidate mutation."); };
+      const result = await runDevelopment(documentationTask(root, { session, agent: async () => {
+        await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+        await writeFile(path.join(root, file), "# changed build controller\n");
+        return implemented(root);
+      } }), { root, verify: async () => { assert.fail("Unapproved build policy must not execute."); } });
+      assert.equal(result.status, "needs_human");
+      assert.equal(result.approval.stage, "execution");
+      assert.deepEqual(result.policyReview.protectedPaths, [file]);
+      assert.equal(result.candidate, undefined);
+    })));
+});
+
+test("ignored approval detail substitution stops before native candidate execution", isolatedCases, async (t) => {
+  await Promise.all(["replace", "delete"].map((change) => t.test(change, async (t) => {
+    const { root } = await workspace(t), session = nativeSession();
+    let requestedSource;
+    session.capabilities = { ui: { elicitation: true } };
+    session.ui = { elicitation: async (input) => {
+      requestedSource = await sourceSnapshot(root);
+      const details = /Local detail copy \(not authoritative\): ([^\n]+)/.exec(input.message)[1];
+      if (change === "delete") await rm(details);
+      else {
+        const original = await readFile(details, "utf8");
+        const altered = original.replace("policy fixture", "benign fixture");
+        assert.notEqual(original, altered);
+        assert.equal(Buffer.byteLength(original), Buffer.byteLength(altered));
+        await writeFile(details, altered);
+      }
+      return { action: "accept", content: { decision: "approve" } };
+    } };
+    session.rpc.tools.execute = async () => { assert.fail("Substituted approval details must not authorize a commit."); };
+    const result = await runDevelopment(documentationTask(root, { session, agent: async () => {
+      await mkdir(path.join(root, "scripts"));
+      await writeFile(path.join(root, "scripts", "verify.mjs"), "// policy fixture\n");
+      return implemented(root);
+    } }), { root, verify: async () => { assert.fail("Substituted approval details must not authorize verification."); } });
+    assert.equal(result.status, "blocked");
+    assert.equal(result.decision.decision, "invalid");
+    assert.deepEqual(await sourceSnapshot(root), requestedSource, "Ignored detail mutation does not alter source identity.");
+    assert.equal(result.candidate, undefined);
+    assert.equal(result.authorization.receipts.length, 0);
+  })));
+});
+
+test("approved protected-path reversion retains the pending path set and continues the repair", isolatedCases, async (t) => {
+  await Promise.all([false, true].map((keepAnotherPolicy) => t.test(`remaining policy: ${keepAnotherPolicy}`, async (t) => {
+    const { root } = await workspace(t), session = nativeSession(), requests = [];
+    let implementations = 0, reviews = 0, verifications = 0;
+    const rounds = keepAnotherPolicy ? 3 : 2;
+    session.capabilities = { ui: { elicitation: true } };
+    session.ui = { elicitation: async (input) => {
+      requests.push(input.message);
+      return { action: "accept", content: { decision: "approve" } };
+    } };
+    const result = await runDevelopment(durable({
+      runId: "approved-policy-reversion", session,
+      args: { goal: "Repair the local gate", acceptance: ["Keep coverage"], maxRepairRounds: rounds - 1 },
+      agent: async (_prompt, options) => {
+        if (options.agent === "devpocket-reviewer") return ++reviews < rounds ? blockingReview : passingReview;
+        if (++implementations === 1) {
+          await mkdir(path.join(root, "scripts"));
+          await writeFile(path.join(root, "scripts", "verify.mjs"), "// task-added gate\n");
+          if (keepAnotherPolicy) await writeFile(path.join(root, "scripts", "verify.ps1"), "# another task gate\n");
+        } else {
+          if (implementations === 2) await rm(path.join(root, "scripts", "verify.mjs"));
+          await writeFile(path.join(root, "README.md"), `Ordinary repair ${implementations}\n`);
+        }
+        return implemented(root);
+      },
+    }), { root, verify: async (_root, plan) => {
+      if (++verifications >= 2) assert.deepEqual(plan.changedFiles,
+        keepAnotherPolicy ? ["README.md", "scripts/verify.ps1"] : ["README.md"]);
+      return syntheticReport(plan);
+    } });
+    assert.equal(result.status, "ready", result.reason);
+    assert.equal(implementations, rounds);
+    assert.equal(verifications, rounds);
+    assert.equal(reviews, rounds);
+    assert.equal(requests.length, 2);
+    assert.match(requests[1], /scripts\/verify\.mjs \[deleted\]/);
+    assert.equal(result.authorization.receipts.length, 2);
+    assert.deepEqual(result.policyPaths, keepAnotherPolicy ? ["scripts/verify.mjs", "scripts/verify.ps1"] : ["scripts/verify.mjs"]);
+    assert.deepEqual(result.policyReview.protectedPaths, result.policyPaths);
+    assert.equal((await checkDevelopmentReadiness(root, result)).status, "ready");
+  })));
+});
+
+test("changed source during a policy question cannot consume a stale approval", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  const parent = (await sourceSnapshot(root)).head;
+  session.capabilities = { ui: { elicitation: true } };
+  session.ui = { elicitation: async () => {
+    await writeFile(path.join(root, "README.md"), "Concurrent edit\n");
+    return { action: "accept", content: { decision: "approve" } };
+  } };
+  session.rpc.tools.execute = async () => { assert.fail("A stale approval cannot commit."); };
+  const result = await runDevelopment(documentationTask(root, { session, agent: async () => {
+    await mkdir(path.join(root, "scripts"));
+    await writeFile(path.join(root, "scripts", "verify.mjs"), "// policy fixture\n");
+    return implemented(root);
+  } }), { root, verify: async () => { assert.fail("A stale approval cannot execute policy."); } });
+  assert.equal(result.status, "blocked");
+  assert.match(result.reason, /changed while awaiting approval/);
+  assert.equal((await sourceSnapshot(root)).head, parent);
+});
+
+test("sensitive review accepts only a native decision after verification and independent review", isolatedCases, async (t) => {
+  await Promise.all(["approve", "reject"].map((decision) => t.test(decision, async (t) => {
+    const { root } = await workspace(t), session = nativeSession(), order = [];
+    session.capabilities = { ui: { elicitation: true } };
+    session.ui = { elicitation: async (input) => {
+      order.push("human");
+      assert.match(input.message, /Accept the listed sensitive code changes/);
+      return { action: "accept", content: { decision } };
+    } };
+    const result = await runDevelopment(documentationTask(root, { session, agent: async (_prompt, options) => {
+      if (options.agent === "devpocket-reviewer") { order.push("independent"); return passingReview; }
+      await mkdir(path.join(root, "extension"), { recursive: true });
+      await writeFile(path.join(root, "extension", "entry.mjs"), "// sensitive fixture\n");
+      return implemented(root);
+    } }), { root, verify: async (_root, plan) => { order.push("verify"); return syntheticReport(plan); } });
+    assert.deepEqual(order, ["verify", "independent", "human"]);
+    assert.equal(result.status, decision === "approve" ? "ready" : "needs_human", result.reason);
+    assert.equal(result.verification.complete, true);
+    assert.equal(result.review.verdict, "pass");
+  })));
+});
+
+test("post-review controller handoff uses local requirements even when verification carries a contrary review flag", isolatedCases, async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
-  for (const [file, requiresHumanReview] of [["backend/tests/fixture.test.ts", false], ["extension/entry.mjs", true]]) {
-    await t.test(file, async (t) => {
+  await Promise.all([["backend/tests/fixture.test.ts", false], ["extension/entry.mjs", true]].map(([file, requiresHumanReview]) =>
+    t.test(file, async (t) => {
       const { root } = await workspace(t), calls = [];
       let executions = 0;
       const result = await runDevelopment(durable({
@@ -725,7 +1224,9 @@ test("post-review controller handoff uses local requirements even when verificat
       assert.equal(executions, 1);
       assert.deepEqual(calls, ["general-purpose", "devpocket-reviewer"]);
       assert.equal(result.status, requiresHumanReview ? "needs_human" : "ready");
-      assert.deepEqual(result.policyReview, { requiresHumanReview, protectedPaths: [], source: result.source });
+      assert.equal(result.policyReview.requiresHumanReview, requiresHumanReview);
+      assert.deepEqual(result.policyReview.protectedPaths, []);
+      assert.deepEqual(result.policyReview.source, result.source);
       assert.equal(result.verification.complete, true);
       assert.equal(result.review.verdict, "pass");
       assert.deepEqual(result.review.source, result.policyReview.source);
@@ -742,14 +1243,14 @@ test("post-review controller handoff uses local requirements even when verificat
         stale.policyReview.source.head = "0".repeat(40);
         assert.equal((await checkDevelopmentReadiness(root, stale)).status, "blocked");
       }
-    });
-  }
+    })));
 });
 
-test("configured active hooks require policy approval before staging or committing changes", async (t) => {
+test("configured active hooks require policy approval before staging or committing changes", isolatedCases, async (t) => {
+  const cases = [];
   for (const [folder, hook, absolute] of [[".githooks", "pre-commit", false], ["custom-hooks", "post-index-change", true]]) {
     for (const changed of [false, true]) {
-      await t.test(`${folder}: ${hook}: ${changed ? "changed" : "unchanged"}`, async (t) => {
+      cases.push(t.test(`${folder}: ${hook}: ${changed ? "changed" : "unchanged"}`, async (t) => {
         const { root } = await workspace(t);
         const directory = path.join(root, folder), file = path.join(directory, hook);
         const marker = path.join(root, ".data", "hook-observation");
@@ -798,9 +1299,10 @@ test("configured active hooks require policy approval before staging or committi
           assert.equal(verifications, 1);
           assert.equal(reviews, 1);
         }
-      });
+      }));
     }
   }
+  await Promise.all(cases);
 });
 
 test("a configured hook changed after candidate preparation cannot execute", async (t) => {
@@ -963,14 +1465,15 @@ test("changed filesystem-monitor configuration is rejected before it can execute
   assert.equal(await readFile(path.join(root, "README.md"), "utf8"), "Task edit\n");
 });
 
-test("skill, compiler, Gradle launcher and nested dependency policy require review before execution", async (t) => {
+test("skill, compiler, Gradle launcher and nested dependency policy require review before execution", isolatedCases, async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
-  const { developmentReviewRequirements } = await import("../development-policy.mjs");
   const files = [".github/skills/devpocket-development/SKILL.md", ".npmrc", ".NPMRC", "backend/tsconfig.json", "android/gradlew.bat",
     "android/gradle/wrapper/gradle-wrapper.properties", "deployment/azure/package.json"];
   for (const file of files) {
     await t.test(file, () => {
-      assert.deepEqual(developmentReviewRequirements([file]), { requiresHumanReview: true, protectedPaths: [file] });
+      const requirements = developmentReviewRequirements([file]);
+      assert.equal(requirements.requiresHumanReview, true);
+      assert.deepEqual(requirements.protectedPaths, [file]);
     });
   }
   const { root } = await workspace(t);
@@ -1131,10 +1634,56 @@ test("cold capture only settles byte-identical Windows metadata, never a changed
   });
 });
 
-test("native approval cannot execute a changed helper, import or wrapper", async (t) => {
-  for (const name of ["candidate-commit.mjs", "git-state.mjs", "native-candidate.mjs", "development-workflow.mjs",
-    "development-policy.mjs", "workflow-extension.mjs", ...verificationInputs]) {
-    await t.test(name, async (t) => {
+test("native capture retries identical metadata churn but rejects content changes or persistent instability", async () => {
+  const entry = new URL("../native-candidate.mjs", import.meta.url).href;
+  const script = [
+    'import assert from "node:assert/strict";',
+    'import fs from "node:fs/promises";',
+    'import { syncBuiltinESMExports } from "node:module";',
+    `const target = await fs.realpath(new URL(${JSON.stringify(entry)}));`,
+    'const original = fs.lstat, originalOpen = fs.open, mode = process.argv[1];',
+    'let observed = 0, reads = 0;',
+    'fs.lstat = async (file, ...args) => {',
+    '  const info = await original(file, ...args);',
+    '  if (file === target) {',
+    '    observed++;',
+    '    if (mode === "open" && observed === 1) info.ctimeMs -= 1;',
+    '    if (["transient", "content"].includes(mode) && observed === 2) info.ctimeMs += 1;',
+    '    if (mode === "during" && observed > 1) info.ctimeMs += 1;',
+    '  }',
+    '  return info;',
+    '};',
+    'fs.open = async (file, ...args) => {',
+    '  const handle = await originalOpen(file, ...args);',
+    '  if (file === target && mode === "content") {',
+    '    const read = handle.read.bind(handle);',
+    '    handle.read = async (...options) => {',
+    '      const result = await read(...options);',
+    '      if (++reads === 2) result.buffer[0] ^= 1;',
+    '      return result;',
+    '    };',
+    '  }',
+    '  return handle;',
+    '};',
+    'syncBuiltinESMExports();',
+    `const { captureCandidateImplementation } = await import(${JSON.stringify(entry)});`,
+    'if (mode === "open" || mode === "transient" && process.platform === "win32") {',
+    '  const result = await captureCandidateImplementation();',
+    '  assert.ok(result.files.some(file => file.name === "native-candidate.mjs"));',
+    '} else await assert.rejects(captureCandidateImplementation(), /changed while being captured/);',
+    'assert.equal(observed, mode === "open" || process.platform !== "win32" ? 2 : 3);',
+    'console.log("capture validated");',
+  ].join("\n");
+  for (const mode of ["open", "transient", "during", "content"]) {
+    const result = await exec(process.execPath, ["--input-type=module", "-e", script, mode], { timeout: 30_000 });
+    assert.match(result.stdout, /capture validated/);
+  }
+});
+
+test("native approval cannot execute a changed helper, import or wrapper", isolatedCases, async (t) => {
+  await Promise.all(["candidate-commit.mjs", "git-state.mjs", "native-candidate.mjs", "development-workflow.mjs",
+    "development-policy.mjs", "workflow-extension.mjs", ...verificationInputs].map((name) =>
+    t.test(name, async (t) => {
       const { root } = await workspace(t), session = nativeSession();
       const { directory, controller } = await copiedController(root);
       const originalHead = (await sourceSnapshot(root)).head;
@@ -1154,8 +1703,7 @@ test("native approval cannot execute a changed helper, import or wrapper", async
       assert.equal((await sourceSnapshot(root)).head, originalHead);
       assert.equal(await git(root, ["diff", "--cached", "--name-only"]), "");
       await assert.rejects(readFile(marker), { code: "ENOENT" });
-    });
-  }
+    })));
 });
 
 test("capturing verification adapters does not widen the closed native candidate loader", async (t) => {
@@ -1181,9 +1729,9 @@ test("capturing verification adapters does not widen the closed native candidate
   assert.equal(await git(root, ["diff", "--cached", "--name-only"]), "");
 });
 
-test("native startup refuses unbound Node preloads before they can execute", async (t) => {
-  for (const option of ["import", "require"]) {
-    await t.test(option, async (t) => {
+test("native startup refuses unbound Node preloads before they can execute", isolatedCases, async (t) => {
+  await Promise.all(["import", "require"].map((option) =>
+    t.test(option, async (t) => {
       const { root } = await workspace(t), session = nativeSession();
       const directory = path.join(root, ".data");
       await mkdir(directory);
@@ -1215,12 +1763,11 @@ test("native startup refuses unbound Node preloads before they can execute", asy
       const receipt = JSON.parse(await readFile(path.join(root, ".data", "development", "candidate-test",
         "candidate-0.json.result.json"), "utf8"));
       assert.equal(receipt.failure, "execution-startup-unbound");
-    });
-  }
+    })));
 });
 
-test("a stale loaded controller cannot adopt a newer on-disk implementation", async (t) => {
-  for (const name of ["candidate-commit.mjs", ...verificationInputs]) await t.test(name, async (t) => {
+test("a stale loaded controller cannot adopt a newer on-disk implementation", isolatedCases, async (t) => {
+  await Promise.all(["candidate-commit.mjs", ...verificationInputs].map((name) => t.test(name, async (t) => {
     const { root } = await workspace(t);
     const { directory, controller } = await copiedController(root);
     const file = path.join(directory, name);
@@ -1230,12 +1777,12 @@ test("a stale loaded controller cannot adopt a newer on-disk implementation", as
     }), { root });
     assert.equal(result.status, "needs_human");
     assert.match(result.reason, /implementation changed/);
-  });
+  })));
 });
 
-test("verifiers cannot mutate the controller's source or check-selection snapshot", async (t) => {
-  for (const field of ["source", "checks"]) {
-    await t.test(field, async (t) => {
+test("verifiers cannot mutate the controller's source or check-selection snapshot", isolatedCases, async (t) => {
+  await Promise.all(["source", "checks"].map((field) =>
+    t.test(field, async (t) => {
       const { root } = await workspace(t);
       let reviewCalls = 0, mutationBlocked = false;
       const result = await runDevelopment(documentationTask(root, {
@@ -1261,8 +1808,7 @@ test("verifiers cannot mutate the controller's source or check-selection snapsho
       assert.equal(mutationBlocked, true);
       assert.equal(result.status, "blocked");
       assert.equal(reviewCalls, 0, "A verifier cannot weaken the policy consumed by independent review.");
-    });
-  }
+    })));
 });
 
 test("pre-existing user changes are preserved without dispatching or staging", async (t) => {
@@ -1278,10 +1824,10 @@ test("pre-existing user changes are preserved without dispatching or staging", a
   assert.deepEqual(await inspectWorktree(root), before);
 });
 
-test("commit permission, native-tool and hook failures never reach final verification", async (t) => {
-  for (const scenario of ["denied", "missing-tool", "missing-pipeline", "missing-session", "missing-receipt",
-    "hook-error", "hook-post-commit-error", "hook-post-index-error", "hook-mutates", "hook-removes-trailer"]) {
-    await t.test(scenario, async (t) => {
+test("commit permission, native-tool and hook failures never reach final verification", isolatedCases, async (t) => {
+  await Promise.all(["denied", "missing-tool", "missing-pipeline", "missing-session", "missing-receipt",
+    "hook-error", "hook-post-commit-error", "hook-post-index-error", "hook-mutates", "hook-removes-trailer"].map((scenario) =>
+    t.test(scenario, async (t) => {
       const { root, main } = await workspace(t), session = nativeSession();
       const parent = (await sourceSnapshot(root)).head;
       if (scenario === "denied") session.rpc.tools.execute = async () => ({ resultType: "denied" });
@@ -1333,8 +1879,7 @@ test("commit permission, native-tool and hook failures never reach final verific
         }]);
         assert.equal(JSON.stringify(receipt).includes("fixture-hook-failed"), false);
       }
-    });
-  }
+    })));
 });
 
 test("nested Git hook failures cannot qualify an otherwise successful commit", async (t) => {
@@ -1373,9 +1918,9 @@ test("nested Git hook failures cannot qualify an otherwise successful commit", a
   assert.equal(JSON.stringify(receipt).includes("private nested hook detail"), false);
 });
 
-test("nested hook evidence is not limited to the candidate routing set", async (t) => {
-  for (const [hook, exitCode] of [["post-checkout", 0], ["post-checkout", 19], ["fixture-unsupported-hook", 0]]) {
-    await t.test(`${hook}: ${exitCode}`, async (t) => {
+test("nested hook evidence is not limited to the candidate routing set", isolatedCases, async (t) => {
+  await Promise.all([["post-checkout", 0], ["post-checkout", 19], ["fixture-unsupported-hook", 0]].map(([hook, exitCode]) =>
+    t.test(`${hook}: ${exitCode}`, async (t) => {
       const { root, main } = await workspace(t);
       let unknownHookOption = "";
       if (hook === "fixture-unsupported-hook") {
@@ -1430,8 +1975,7 @@ test("nested hook evidence is not limited to the candidate routing set", async (
         assert.equal(current.index, before.index, "Failure must not publish the private index.");
         if (hook === "post-checkout") assert.deepEqual(receipt.hookFailures, [{ hook, exitCode }]);
       }
-    });
-  }
+    })));
 });
 
 test("successful hooks run once normally even when their output or nested Git commands look like failures", async (t) => {
@@ -1449,9 +1993,9 @@ test("successful hooks run once normally even when their output or nested Git co
   assert.equal(await readFile(path.join(root, ".data", "hook-invocations"), "utf8"), "ran\n");
 });
 
-test("unavailable hook-exit evidence blocks a completed commit without replaying it", async (t) => {
-  for (const body of [': > "$GIT_TRACE2_EVENT"', 'echo invalid-json >> "$GIT_TRACE2_EVENT"']) {
-    await t.test(body, async (t) => {
+test("unavailable hook-exit evidence blocks a completed commit without replaying it", isolatedCases, async (t) => {
+  await Promise.all([': > "$GIT_TRACE2_EVENT"', 'echo invalid-json >> "$GIT_TRACE2_EVENT"'].map((body) =>
+    t.test(body, async (t) => {
       const { root, main } = await workspace(t);
       const parent = (await sourceSnapshot(root)).head;
       await writeFile(path.join(main, ".git", "hooks", "post-commit"), `#!/bin/sh\n${body}\nexit 0\n`, { mode: 0o755 });
@@ -1466,8 +2010,7 @@ test("unavailable hook-exit evidence blocks a completed commit without replaying
         "candidate-0.json.result.json"), "utf8"));
       assert.equal(receipt.failure, "hook-evidence");
       assert.equal(receipt.exitCode, 0);
-    });
-  }
+    })));
 });
 
 test("candidate and publication inspections do not refresh the index or invoke its hook", async (t) => {
@@ -1499,9 +2042,9 @@ test("candidate and publication inspections do not refresh the index or invoke i
   await assert.rejects(readFile(path.join(root, ".data", "index-refreshed")), { code: "ENOENT" });
 });
 
-test("unowned or post-inspection changes and implementer history/index changes stop before committing", async (t) => {
-  for (const scenario of ["unowned", "source", "index", "history", "branch", "configuration"]) {
-    await t.test(scenario, async (t) => {
+test("unowned or post-inspection changes and implementer history/index changes stop before committing", isolatedCases, async (t) => {
+  await Promise.all(["unowned", "source", "index", "history", "branch", "configuration"].map((scenario) =>
+    t.test(scenario, async (t) => {
       const { root } = await workspace(t);
       const session = nativeSession();
       session.rpc.tools.execute = async () => { assert.fail("Unexpected changes cannot be committed by the controller."); };
@@ -1529,13 +2072,12 @@ test("unowned or post-inspection changes and implementer history/index changes s
       assert.match(result.reason, /source|concurrent|index|history|branch|configuration/i);
       if (scenario === "unowned") assert.equal(await readFile(path.join(root, "user-notes.md"), "utf8"), "Concurrent user notes\n");
       if (scenario === "configuration") assert.equal((await git(root, ["config", "user.name"])).trim(), "Concurrent user");
-    });
-  }
+    })));
 });
 
-test("the native candidate boundary rejects concurrent changes instead of committing new content", async (t) => {
-  for (const scenario of ["source", "index", "history", "branch", "request", "existing-receipt"]) {
-    await t.test(scenario, async (t) => {
+test("the native candidate boundary rejects concurrent changes instead of committing new content", isolatedCases, async (t) => {
+  await Promise.all(["source", "index", "history", "branch", "request", "existing-receipt"].map((scenario) =>
+    t.test(scenario, async (t) => {
       const { root } = await workspace(t), session = nativeSession();
       const original = (await sourceSnapshot(root)).head, execute = session.rpc.tools.execute;
       session.rpc.tools.execute = async (request) => {
@@ -1562,8 +2104,7 @@ test("the native candidate boundary rejects concurrent changes instead of commit
       if (scenario === "index") assert.match(await git(root, ["diff", "--cached", "--name-only"]), /README.md/);
       if (scenario === "existing-receipt") assert.equal(await readFile(path.join(root, ".data", "development",
         "candidate-test", "candidate-0.json.result.json"), "utf8"), '{"status":"committed","candidate":{"commit":"forged"}}\n');
-    });
-  }
+    })));
 });
 
 test("a hook-staged unowned file cannot enter retained candidate history", async (t) => {
@@ -1606,9 +2147,9 @@ test("late AUTO_MERGE creation cannot be deleted as an assumed no-op", async (t)
   assert.equal(receipt.status, "blocked");
 });
 
-test("reference preparing notifications stay advisory until locked admission", async (t) => {
-  for (const scenario of ["commit", "hook-tree-change", "hook-veto", "unknown-phase"]) {
-    await t.test(scenario, async (t) => {
+test("reference preparing notifications stay advisory until locked admission", isolatedCases, async (t) => {
+  await Promise.all(["commit", "hook-tree-change", "hook-veto", "unknown-phase"].map((scenario) =>
+    t.test(scenario, async (t) => {
       const { root, main } = await workspace(t);
       const directory = path.join(root, ".data");
       await mkdir(directory);
@@ -1704,13 +2245,12 @@ test("reference preparing notifications stay advisory until locked admission", a
           assert.equal(await readFile(path.join(directory, "preparing-count"), "utf8"), "preparing");
         } else assert.equal(observed, "probe:entered\n");
       }
-    });
-  }
+    })));
 });
 
-test("transaction guards preserve configured hooks, original configuration and hook vetoes", async (t) => {
-  for (const veto of [false, true]) {
-    await t.test(veto ? "reference veto" : "normal reference hooks", async (t) => {
+test("transaction guards preserve configured hooks, original configuration and hook vetoes", isolatedCases, async (t) => {
+  await Promise.all([false, true].map((veto) =>
+    t.test(veto ? "reference veto" : "normal reference hooks", async (t) => {
       const { root } = await workspace(t);
       const hooks = path.join(root, ".githooks"), data = path.join(root, ".data");
       await mkdir(hooks); await mkdir(data);
@@ -1744,13 +2284,12 @@ test("transaction guards preserve configured hooks, original configuration and h
         assert.equal(result.candidate.reference.parent, before.source.head);
         assert.equal(result.candidate.reference.tree, result.candidate.tree);
       }
-    });
-  }
+    })));
 });
 
-test("ref changes at commit admission cannot advance an unintended branch or parent", async (t) => {
-  for (const scenario of ["branch", "parent", "commit-hook-branch"]) {
-    await t.test(scenario, async (t) => {
+test("ref changes at commit admission cannot advance an unintended branch or parent", isolatedCases, async (t) => {
+  await Promise.all(["branch", "parent", "commit-hook-branch"].map((scenario) =>
+    t.test(scenario, async (t) => {
       const { root, main } = await workspace(t);
       const parent = (await sourceSnapshot(root)).head;
       const tree = (await git(root, ["rev-parse", "HEAD^{tree}"])).trim();
@@ -1806,8 +2345,7 @@ test("ref changes at commit admission cannot advance an unintended branch or par
         scenario === "parent" ? otherParent : parent, "The candidate must not replace the concurrent parent update.");
       const receipt = JSON.parse(await readFile(`${file}.result.json`, "utf8"));
       assert.equal(receipt.status, "blocked");
-    });
-  }
+    })));
 });
 
 test("a staged-only edit between preflight and staging is never overwritten", async (t) => {
@@ -2003,11 +2541,11 @@ test("stale, partial, incomplete and missing-native verification cannot qualify 
   assert.notEqual(result.candidate.commit, result.base);
 });
 
-test("high-risk review and protected policy boundaries remain distinct from committed readiness", async (t) => {
-  for (const file of ["deployment/change.txt", "scripts/candidate-commit.mjs", ".github/agents/devpocket-reviewer.agent.md", "AGENTS.md"]) {
-    await t.test(file, async (t) => {
+test("high-risk review and protected policy boundaries remain distinct from committed readiness", isolatedCases, async (t) => {
+  await Promise.all(["extension/entry.mjs", "scripts/candidate-commit.mjs", ".github/agents/devpocket-reviewer.agent.md", "AGENTS.md"].map((file) =>
+    t.test(file, async (t) => {
       const { root } = await workspace(t), session = nativeSession();
-      const policy = file !== "deployment/change.txt";
+      const policy = file !== "extension/entry.mjs";
       const original = (await sourceSnapshot(root)).head;
       if (policy) session.rpc.tools.execute = async () => { assert.fail("Protected-policy review precedes candidate mutation."); };
       const result = await runDevelopment(documentationTask(root, {
@@ -2023,24 +2561,24 @@ test("high-risk review and protected policy boundaries remain distinct from comm
         return syntheticReport(plan);
       } });
       assert.equal(result.status, "needs_human");
-      assert.deepEqual(result.policyReview, {
-        requiresHumanReview: true, protectedPaths: policy ? [file] : [], source: result.source,
-      });
+      assert.equal(result.policyReview.requiresHumanReview, true);
+      assert.deepEqual(result.policyReview.protectedPaths, policy ? [file] : []);
+      assert.deepEqual(result.policyReview.source, result.source);
       if (policy) assert.equal((await sourceSnapshot(root)).head, original);
       else {
         assert.notEqual(result.candidate.commit, original);
         assert.equal(result.review.verdict, "pass");
-        assert.match(result.reason, /Local development policy requires human review/);
+        assert.equal(result.approval.stage, "review");
+        assert.match(result.reason, /interactive approval UI is unavailable/);
         assert.equal(Object.hasOwn(result.verification, "requiresHumanReview"), false);
       }
       assert.equal((await checkDevelopmentReadiness(root, result)).status, "blocked");
-    });
-  }
+    })));
 });
 
-test("clean-tree and source guards reject edits during final verification or independent review", async (t) => {
-  for (const phase of ["verify", "review"]) {
-    await t.test(phase, async (t) => {
+test("clean-tree and source guards reject edits during final verification or independent review", isolatedCases, async (t) => {
+  await Promise.all(["verify", "review"].map((phase) =>
+    t.test(phase, async (t) => {
       const { root } = await workspace(t);
       const mutateIndex = async () => {
         const text = await readFile(path.join(root, "README.md"), "utf8");
@@ -2063,8 +2601,7 @@ test("clean-tree and source guards reject edits during final verification or ind
       assert.match(result.reason, /changed during/);
       assert.deepEqual(await sourceSnapshot(root), result.candidate.source, "HEAD plus working bytes alone cannot detect the dirty index.");
       assert.notEqual((await inspectWorktree(root)).status, "");
-    });
-  }
+    })));
 });
 
 test("readiness rejects later commits, changed branch/index, and legacy or nonready evidence", async (t) => {

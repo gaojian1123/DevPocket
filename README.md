@@ -247,10 +247,25 @@ See the recovery and candidate-conversion sections in the development guide;
 these are local verification operations, not an App wake-up scheduler or a
 cross-commit cache.
 
+`npm run test:workflow` uses `scripts/test-workflow.mjs`, which owns the complete
+explicit tooling test list, including Xcode setup and the runner's own contracts.
+It launches Node's test runner with separate file processes and Node's default
+concurrency, inherits the terminal streams, and preserves failures and exit status.
+It does not import the tests into one process or discover the entire test directory;
+extension packaging and the separate Linux process gate keep their own entries.
+
 Local execution trust and human-review requirements belong to
 `scripts\development-policy.mjs`, shared by skill-led development and the optional
-controller. Tooling-only selection still stops before unapproved protected-policy
-execution. Passing tests and independent AI review do not supply human approval.
+controller. Ordinary code/test changes and same-scope repairs reuse the task's
+local-development authorization; entire script/backend directories are not
+automatic human-review gates. Execution-core, dependency, instruction and
+sensitive product changes retain concrete decisions, independently of CI impact.
+Requests describe the action, reason, target, effects, exclusions and validity,
+with actual changes available as details. The optional controller consumes only
+native interactive decisions journaled for the same task and input versions;
+approval continues the pending phase without another implementation dispatch.
+Passing tests and independent AI review do not supply human approval. See
+**Scoped development approvals** in `docs\DEVELOPMENT-WORKFLOW.md`.
 GitHub merge review is enforced separately by repository rulesets/required
 reviews/CODEOWNERS when configured; this tooling does not configure them.
 Android-affecting changes require actual emulator
@@ -301,6 +316,76 @@ artifacts fail closed instead of executing stale code or silently falling
 back to compilation. A new source/toolchain identity prepares a separate
 artifact; interrupted preparation directories are not executable cache entries.
 No global installation, concurrency limit or configuration is changed.
+
+## Optional project-local Xcode MCP on macOS
+
+`config/xcode-mcp.example.json` is a template, not an automatically loaded MCP
+configuration. Windows and Linux checkouts do not configure or launch Xcode.
+On a Mac with Node 24 and Xcode providing `mcpbridge`, review
+`scripts/setup-xcode-mcp.mjs` and the template, then opt in once per local clone:
+
+```sh
+node scripts/setup-xcode-mcp.mjs install
+```
+
+The installer checks `/usr/bin/xcrun --find mcpbridge` without starting the MCP
+server. Unsupported platforms and an unavailable bridge produce an explicit
+skip without writing configuration or hooks. On a supported Mac it merges only
+`xcode` into the current checkout's root `.mcp.json`, preserving other servers.
+Existing wrapped (`mcpServers`) and bare server maps are supported. Invalid JSON,
+a different existing `xcode` definition, tracked `.mcp.json` files and symlinks
+are refused rather than overwritten. Both the configuration and its temporary
+lock must be effectively ignored before either is written. A conflicting
+`.gitignore` negation stops initialization without rewriting the user's rules.
+Shared servers can remain in
+`.github/mcp.json`; the local `xcode` definition takes precedence only for that
+name. Existing user-level disablement is respected; this does not enable tools
+that you have explicitly disabled in GitHub Copilot.
+
+Installation writes a `post-checkout` hook, a copy of the reviewed script and
+template under `devpocket-xcode-mcp/`, and root-only ignore entries in
+`info/exclude`, all inside this clone's shared Git directory. It does not modify
+global Git/Copilot settings, `core.hooksPath`, tracked project settings, or other
+worktrees' working files. An existing hook or configured hooks path is preserved
+and blocks installation; integrate the `sync` command with its owner instead of
+replacing that hook. Reinstalling identical inputs is safe; a changed installed
+snapshot requires explicit review and replacement, not an automatic upgrade.
+
+Ordinary `git worktree add` runs the shared hook, so future worktrees on this
+Mac receive the ignored local configuration automatically, even when their
+branch has no setup script. The installed copy does not depend on retaining
+the worktree used for installation. Other clones, including Windows clones,
+do not receive `.git` metadata or `.mcp.json` through Git.
+
+Existing worktrees are not visited or changed during installation. Initialize
+one when needed with the installed script, from that worktree:
+
+```sh
+node "$(git rev-parse --path-format=absolute --git-common-dir)/devpocket-xcode-mcp/scripts/setup-xcode-mcp.mjs" sync
+```
+
+`git worktree add --no-checkout`, clients that suppress Git hooks, and sessions
+already running before initialization are not automatic-load guarantees.
+Verify a newly created Copilot App worktree before relying on its hook behavior;
+Git's standard hook behavior alone does not prove the app's creation path.
+Hook errors can be reported after Git has already created the worktree; fix the
+reported conflict and run `sync` there rather than assuming Git rolled it back.
+The installer does not restart Copilot or Xcode. If Xcode is later removed,
+remove the local `xcode` entry explicitly; initialization never deletes existing
+server definitions. A moved Node executable or clone requires reviewing and
+reinstalling the hook's absolute paths. To uninstall, remove only the installed
+`post-checkout` after reviewing that it is still the unmodified generated hook,
+then remove its `devpocket-xcode-mcp/` snapshot; local MCP definitions remain yours.
+
+Focused checks use `node --test scripts/tests/xcode-mcp.test.mjs`. On a supported
+Mac they exercise real Git worktree creation and read-only Xcode lookup, not an
+MCP connection or an App session. They also cover simulated unsupported
+platforms, missing Xcode, configuration preservation and hook conflicts.
+The same file runs as a peer in the complete `npm run test:workflow` list, in its
+own Node test process. Its Git fixtures still restore and check their inherited
+environment. The named initializer/template/tests and root ignore policy
+select tooling checks, not application builds; shared dependencies and unknown
+paths remain conservatively classified.
 
 ## Backend build and local development
 

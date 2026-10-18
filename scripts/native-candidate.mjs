@@ -9,7 +9,7 @@ const implementationFiles = [...new Set([...nativeFiles, "native-candidate.mjs",
   "device-diagnostics.mjs", "diagnostic-errors.mjs", "bounded-worker-log.mjs", "diagnostic-publication.mjs",
   "native-lifecycle.mjs", "verification-executor.mjs", "verification-backend.mjs", "verification-android.mjs",
   "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs", "verification-transition.mjs",
-  "verify.mjs", "verify.ps1", "owned-command-windows.mjs", "owned-command.cs", "owned-command.ps1", "owned-command-linux.py"])].sort();
+  "verify.mjs", "verify.ps1", "test-workflow.mjs", "owned-command-windows.mjs", "owned-command.cs", "owned-command.ps1", "owned-command-linux.py"])].sort();
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 export async function captureCandidateImplementation(directory = fileURLToPath(new URL(".", import.meta.url))) {
