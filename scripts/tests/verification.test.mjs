@@ -2067,6 +2067,47 @@ test("tooling-only preflight never inspects unrelated Java, SDK, image or probe-
   }
 });
 
+test("emulator prerequisites bind capability and version rather than per-process probe logging", async (t) => {
+  const { verificationPreflight } = await import("../verification-preflight.mjs");
+  const root = await repository(t, { native: true, emulatorNoise: true }), tools = toolchains.get(root);
+  await mkdir(path.join(root, "scripts"));
+  await writeFile(path.join(root, "scripts", "test-android.ps1"), "# not executed\n");
+  const library = path.join(tools.sdk, "emulator", "fixture-library");
+  await writeFile(library, "original-code");
+  const plan = await verificationPlan(root, "HEAD", true);
+  const preflight = () => verificationPreflight(root, plan, {
+    group: "device", jdk: tools.jdk, sdk: tools.sdk, directory: path.join(root, ".data", "verification", "probe"),
+  });
+  const before = await preflight(), after = await preflight();
+  assert.equal(before.status, "passed");
+  assert.equal(after.status, "passed");
+  assert.equal(after.groups[0].fingerprint, before.groups[0].fingerprint);
+  assert.ok(!JSON.stringify(after).includes("PRIVATE_PROBE_PATH"));
+  await writeFile(library, "modified-code");
+  const changed = await preflight();
+  assert.notEqual(changed.groups[0].fingerprint, before.groups[0].fingerprint);
+});
+
+test("missing or conflicting emulator facts cannot supply preflight evidence", async (t) => {
+  const { verificationPreflight } = await import("../verification-preflight.mjs");
+  for (const [configuration, reason] of [
+    [{ emulatorVersion: "unknown" }, "preflight-version"],
+    [{ emulatorVersion: "35.0.1\nAndroid emulator version 36.0.0" }, "preflight-version"],
+    [{ emulatorAcceleration: "KVM is not usable." }, "preflight-acceleration"],
+    [{ emulatorAcceleration: "KVM (version 12) is installed and usable.\nKVM (version 13) is installed and usable." }, "preflight-acceleration"],
+  ]) {
+    const root = await repository(t, { native: true, ...configuration }), tools = toolchains.get(root);
+    await mkdir(path.join(root, "scripts"));
+    await writeFile(path.join(root, "scripts", "test-android.ps1"), "# not executed\n");
+    const result = await verificationPreflight(root, await verificationPlan(root, "HEAD", true), {
+      group: "device", jdk: tools.jdk, sdk: tools.sdk, directory: path.join(root, ".data", "verification", "version"),
+    });
+    assert.equal(result.status, "blocked");
+    assert.ok(result.groups[0].issues.some((issue) =>
+      issue.prerequisite === "emulator-acceleration" && issue.failure.reason === reason));
+  }
+});
+
 test("native preflight binds tool bytes rather than incidental file timestamps", async (t) => {
   const { verificationPreflight } = await import("../verification-preflight.mjs");
   const root = await repository(t, { native: true }), tools = toolchains.get(root);

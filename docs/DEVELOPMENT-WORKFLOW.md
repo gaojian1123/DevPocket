@@ -730,6 +730,11 @@ live outside that directory. Native CI prepares a job-local JDK copy in
 changing the original JDK, trust store or Java version. Other links stay subject
 to the unchanged bounded-tree preflight rules; they are not blindly dereferenced.
 
+Emulator probe identity uses an unambiguous usable-acceleration description and
+validated version, not incidental log prefixes, process IDs or crash-log paths.
+The executable and complete installation tree remain content-hashed. Missing,
+unsupported or conflicting probe facts still block before device execution.
+
 Preflight failures identify a fixed prerequisite and safe diagnostic reason
 before any expensive selected check starts. A passing preflight is not
 acceptance: later downloads, fixtures, device execution, artifact validation and

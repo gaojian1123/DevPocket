@@ -118,7 +118,10 @@ export async function windowsNodeLauncher(root, base) {
   return binary;
 }
 
-export async function verificationTools(root, { native = false, operations = false, jdk, sdk } = {}) {
+export async function verificationTools(root, {
+  native = false, operations = false, jdk, sdk, emulatorNoise = false, emulatorVersion = "35.0.1",
+  emulatorAcceleration = process.platform === "win32" ? "WHPX is installed and usable" : "KVM is installed and usable",
+} = {}) {
   const directory = path.join(root, ".data", "synthetic-tools");
   await mkdir(directory, { recursive: true });
   const binary = path.join(directory, process.platform === "win32" ? "tool.exe" : "tool");
@@ -128,9 +131,10 @@ export async function verificationTools(root, { native = false, operations = fal
       "using System; using System.Diagnostics; using System.IO;",
       "class Tool { static void Main(string[] args) {",
       "string name=Path.GetFileNameWithoutExtension(Process.GetCurrentProcess().MainModule.FileName);",
+      ...(emulatorNoise ? ['if(name=="emulator") Console.Error.WriteLine("INFO | Storing crashdata in: PRIVATE_PROBE_PATH, detection is enabled for process: "+Process.GetCurrentProcess().Id);'] : []),
       "if(name==\"java\") Console.Error.WriteLine(\"openjdk version \\\"21.0.1\\\"\");",
       "else if(name==\"adb\") Console.WriteLine(\"Android Debug Bridge version 1.0.41\");",
-      "else if(name==\"emulator\") Console.WriteLine(args.Length>0 && args[0]==\"-accel-check\" ? \"WHPX is installed and usable\" : \"Android emulator version 35.0.1\");",
+      `else if(name=="emulator") Console.WriteLine(args.Length>0 && args[0]=="-accel-check" ? ${JSON.stringify(emulatorAcceleration)} : ${JSON.stringify(`Android emulator version ${emulatorVersion}`)});`,
       "else if(args.Length>0 && args[0]==\"--version\") Console.WriteLine(\"Python 3.12.0\");",
       "else Console.WriteLine(\"{\\\"version\\\":[3,12,0],\\\"executable\\\":\\\"synthetic-python\\\",\\\"dependencies\\\":\\\"synthetic\\\"}\");",
       "} }",
@@ -140,10 +144,11 @@ export async function verificationTools(root, { native = false, operations = fal
   } else {
     await writeFile(binary, [
       "#!/bin/sh",
+      ...(emulatorNoise ? ['if [ "$(basename "$0")" = emulator ]; then echo "INFO | Storing crashdata in: PRIVATE_PROBE_PATH, detection is enabled for process: $$" >&2; fi'] : []),
       "case \"$(basename \"$0\")\" in",
       "java) echo 'openjdk version \"21.0.1\"' >&2 ;;",
       "adb) echo 'Android Debug Bridge version 1.0.41' ;;",
-      "emulator) echo 'KVM is installed and usable' ;;",
+      `emulator) if [ "$1" = '-accel-check' ]; then printf '%s\\n' '${emulatorAcceleration.replaceAll("'", "'\\''")}'; else printf '%s\\n' '${`Android emulator version ${emulatorVersion}`.replaceAll("'", "'\\''")}'; fi ;;`,
       "*) if [ \"$1\" = '--version' ]; then echo 'Python 3.12.0'; else echo '{\"version\":[3,12,0],\"executable\":\"synthetic-python\",\"dependencies\":\"synthetic\"}'; fi ;;",
       "esac", "",
     ].join("\n"));

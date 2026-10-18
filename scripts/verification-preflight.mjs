@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCommand } from "./process.mjs";
 import { readOnlyGit, sourceInputs } from "./git-state.mjs";
-import { diagnosticError, failureDetails } from "./diagnostic-errors.mjs";
+import { diagnosticError, diagnosticVersion, failureDetails } from "./diagnostic-errors.mjs";
 import { CHECKS } from "./verification-policy.mjs";
 import { verificationStorageLocation } from "./verification-run.mjs";
 
@@ -640,12 +640,18 @@ export async function verificationPreflight(root, plan, options = {}) {
         await check("emulator-acceleration", () => once(`emulator:${emulatorSdk}`, async () => {
           const emulator = path.join(emulatorSdk, "emulator", executableName("emulator"));
           const output = await probe(emulator, ["-accel-check"]);
-          if (!/installed and usable/i.test(output)) throw diagnosticError("preflight-acceleration");
-          if (process.platform === "linux") {
-            if (!/KVM.*(?:installed and usable|usable)/i.test(output)) throw diagnosticError("preflight-acceleration");
+          const acceleration = [...new Set([...output.matchAll(
+            /\b((?:KVM|WHPX|HAXM|AEHD|Hypervisor\.Framework|Android Emulator hypervisor driver)[^\r\n]*\bis installed and usable)\.?[ \t]*$/gmi,
+          )].map((match) => match[1].trim()))];
+          if (acceleration.length !== 1 || process.platform === "linux" && !/^KVM\b/i.test(acceleration[0])) {
+            throw diagnosticError("preflight-acceleration");
           }
-          return { binary: await fileIdentity(emulator), acceleration: digest(output),
-            version: digest(await probe(emulator, ["-version"])), tree: await treeIdentity(path.join(emulatorSdk, "emulator")) };
+          const versionOutput = await probe(emulator, ["-version"]);
+          const versions = [...new Set([...versionOutput.matchAll(/Android emulator version ([A-Za-z0-9._+-]+)/g)]
+            .map((match) => diagnosticVersion(match[1])))];
+          if (versions.length !== 1 || !versions[0]) throw diagnosticError("preflight-version");
+          return { binary: await fileIdentity(emulator), acceleration: digest(acceleration[0]),
+            version: digest(versions[0]), tree: await treeIdentity(path.join(emulatorSdk, "emulator")) };
         }), "preflight-acceleration");
       }
     }
