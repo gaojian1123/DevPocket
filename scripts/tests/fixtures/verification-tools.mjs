@@ -9,6 +9,85 @@ export const syntheticExecution = (source) => ({
   source: { ...source }, startedAt: "2026-01-01T00:00:00.000Z", completedAt: "2026-01-01T00:00:01.000Z",
 });
 
+export async function sdkPreparationFixture(root) {
+  for (const directory of ["scripts", "android/gradle/wrapper", "existing-sdk/licenses", "fixtures"]) {
+    await mkdir(path.join(root, ...directory.split("/")), { recursive: true });
+  }
+  await copyFile(path.resolve("scripts", "prepare-android.ps1"), path.join(root, "scripts", "prepare-android.ps1"));
+  await writeFile(path.join(root, "existing-sdk", "licenses", "android-sdk-license"), "fixture-already-accepted\n");
+  await writeFile(path.join(root, "fixtures", "wrapper.jar"), "fixture-wrapper\n");
+  const entry = path.join(root, "prepare-fixture.ps1");
+  await writeFile(entry, String.raw`$ErrorActionPreference = 'Stop'
+$global:FixtureRoot = $PSScriptRoot
+$packages = @(
+    @{ Path='platforms;android-35'; Revision='2'; Archive='platform.zip'; Type='sdk:platformDetailsType'; Details='<api-level>35</api-level><layoutlib api="15"/>' },
+    @{ Path='build-tools;35.0.0'; Revision='35.0.0'; Archive='build-tools.zip'; Type='generic:genericDetailsType'; Details='' }
+)
+$nodes = foreach ($package in $packages) {
+    $directory = Join-Path $PSScriptRoot ('fixtures\' + $package.Archive + '.source\package')
+    $null = New-Item -ItemType Directory -Force -Path $directory
+    [IO.File]::WriteAllText((Join-Path $directory 'source.properties'), "Pkg.Revision=$($package.Revision)")
+    [IO.File]::WriteAllText((Join-Path $directory 'fixture.bin'), 'unchanged-tool-bytes')
+    $zip = Join-Path $PSScriptRoot ('fixtures\' + $package.Archive)
+    if (-not (Test-Path -LiteralPath $zip)) { Compress-Archive -LiteralPath $directory -DestinationPath $zip }
+    $checksum = (Get-FileHash -LiteralPath $zip -Algorithm SHA1).Hash
+    $revision = if ($package.Revision -eq '2') { '<major>2</major>' } else { '<major>35</major><minor>0</minor><micro>0</micro>' }
+    @"
+<remotePackage path="$($package.Path)">
+  <type-details xsi:type="$($package.Type)">$($package.Details)</type-details>
+  <revision>$revision</revision><display-name>Fixture package</display-name>
+  <uses-license ref="android-sdk-license"/><channelRef ref="channel-0"/>
+  <archives><archive><host-os>windows</host-os><complete><url>$($package.Archive)</url><checksum type="sha1">$checksum</checksum></complete></archive></archives>
+</remotePackage>
+"@
+}
+$global:FixtureRepository = @"
+<sdk:sdk-repository xmlns:sdk="http://schemas.android.com/sdk/android/repo/repository2/03"
+ xmlns:common="http://schemas.android.com/repository/android/common/02"
+ xmlns:generic="http://schemas.android.com/repository/android/generic/02"
+ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+ <license id="android-sdk-license" type="text">fixture license text</license>
+ $($nodes -join '')
+</sdk:sdk-repository>
+"@
+function Invoke-WebRequest {
+    param([string]$Uri, [string]$OutFile, [int]$TimeoutSec)
+    if ($Uri -eq 'https://dl.google.com/android/repository/repository2-3.xml') {
+        return @{Content=$global:FixtureRepository}
+    }
+    if ($Uri -eq 'https://services.gradle.org/distributions/gradle-8.11.1-wrapper.jar.sha256') {
+        return @{Content=(Get-FileHash -LiteralPath (Join-Path $global:FixtureRoot 'fixtures\wrapper.jar') -Algorithm SHA256).Hash}
+    }
+    $name = switch ($Uri) {
+        'https://dl.google.com/android/repository/platform.zip' { 'platform.zip' }
+        'https://dl.google.com/android/repository/build-tools.zip' { 'build-tools.zip' }
+        'https://raw.githubusercontent.com/gradle/gradle/v8.11.1/gradle/wrapper/gradle-wrapper.jar' { 'wrapper.jar' }
+        default { throw 'Unexpected network request in fixture.' }
+    }
+    if (-not $OutFile) { throw 'Unexpected download shape in fixture.' }
+    Copy-Item -LiteralPath (Join-Path $global:FixtureRoot ('fixtures\' + $name)) -Destination $OutFile
+}
+function Invoke-RestMethod { throw 'Unexpected network request in fixture.' }
+& (Join-Path $PSScriptRoot 'scripts\prepare-android.ps1') -ExistingSdk (Join-Path $PSScriptRoot 'existing-sdk') | Out-Null
+$result = foreach ($relative in @('platforms\android-35', 'build-tools\35.0.0')) {
+    $file = Join-Path $PSScriptRoot ('.tools\android-sdk\' + $relative + '\package.xml')
+    if (-not (Test-Path -LiteralPath $file)) { @{path=$relative;exists=$false}; continue }
+    [xml]$xml = Get-Content -LiteralPath $file -Raw
+    $package = $xml.SelectSingleNode('//*[local-name()="localPackage"]')
+    $type = $package.SelectSingleNode('./*[local-name()="type-details"]')
+    $typeName = $type.GetAttribute('type', 'http://www.w3.org/2001/XMLSchema-instance')
+    @{
+        path=$package.GetAttribute('path'); exists=$true; rootNamespace=$xml.DocumentElement.NamespaceURI
+        typeNamespace=$type.GetNamespaceOfPrefix($typeName.Split(':')[0])
+        remoteNodes=$package.SelectNodes('./*[local-name()="archives" or local-name()="channelRef"]').Count
+        license=$package.SelectSingleNode('./*[local-name()="uses-license"]').GetAttribute('ref')
+    }
+}
+ConvertTo-Json -InputObject @($result) -Depth 4
+`);
+  return entry;
+}
+
 export async function windowsNodeLauncher(root, base) {
   const directory = path.join(root, ".data", "node-launcher");
   await mkdir(directory, { recursive: true });
@@ -94,7 +173,8 @@ export async function verificationTools(root, { native = false, operations = fal
     for (const name of ["aapt2", "zipalign"]) await putTool(path.join(sdk, "build-tools", "35.0.0", executable(name)));
     await putTool(path.join(sdk, "platform-tools", executable("adb")));
     await putTool(path.join(sdk, "emulator", executable("emulator")));
-    for (const relative of ["platforms/android-35/android.jar", "licenses/android-sdk-license",
+    for (const relative of ["platforms/android-35/android.jar", "platforms/android-35/package.xml",
+      "build-tools/35.0.0/package.xml", "licenses/android-sdk-license",
       "system-images/android-35/google_apis/x86_64/system.img", "system-images/android-35/google_apis/x86_64/source.properties"]) {
       const file = path.join(sdk, ...relative.split("/"));
       await mkdir(path.dirname(file), { recursive: true });

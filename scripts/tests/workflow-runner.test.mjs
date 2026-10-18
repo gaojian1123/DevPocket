@@ -54,11 +54,14 @@ test("the runner preserves Node file isolation, inherited environment, complete 
     await writeFile(path.join(item.root, file), [
       'import assert from "node:assert/strict";',
       'import { writeFile } from "node:fs/promises";',
+      'import { performance } from "node:perf_hooks";',
       'import { test } from "node:test";',
+      'import { isMainThread } from "node:worker_threads";',
       `test("workflow fixture ${index}", async () => {`,
       '  assert.equal(process.env.DEVPOCKET_WORKFLOW_ISOLATION, "parent");',
+      '  assert.equal(isMainThread, true);',
       `  process.env.DEVPOCKET_WORKFLOW_ISOLATION = ${JSON.stringify(file)};`,
-      `  await writeFile("records/${index}.json", JSON.stringify({ file: ${JSON.stringify(file)}, pid: process.pid }));`,
+      `  await writeFile("records/${index}.json", JSON.stringify({ file: ${JSON.stringify(file)}, pid: process.pid, startedAt: performance.timeOrigin }));`,
       `  if (process.env.DEVPOCKET_WORKFLOW_FAIL === ${JSON.stringify(file)}) assert.fail("fixture failure");`,
       '});',
     ].join("\n"));
@@ -78,7 +81,9 @@ test("the runner preserves Node file isolation, inherited environment, complete 
     const records = await Promise.all((await readdir(path.join(item.root, "records"))).map(async (file) =>
       JSON.parse(await readFile(path.join(item.root, "records", file), "utf8"))));
     assert.deepEqual(records.map((record) => record.file).sort(), [...WORKFLOW_TEST_FILES].sort());
-    assert.equal(new Set(records.map((record) => record.pid)).size, WORKFLOW_TEST_FILES.length);
+    assert.ok(records.every((record) => Number.isFinite(record.startedAt) && record.startedAt > 0));
+    // An exited child's PID can be recycled before later files start on a small runner.
+    assert.equal(new Set(records.map((record) => `${record.pid}:${record.startedAt}`)).size, WORKFLOW_TEST_FILES.length);
     for (const output of [direct.stdout, result.stdout]) {
       assert.match(output, new RegExp(`^# tests ${WORKFLOW_TEST_FILES.length}\\r?$`, "m"));
       assert.match(output, new RegExp(`^# fail ${failing ? 1 : 0}\\r?$`, "m"));

@@ -717,6 +717,13 @@ license acceptance, cache reset, Git/config change or real Copilot runtime
 startup is a preflight operation. The existing owned-command helper may prepare
 its source-bound local executable cache.
 
+The SDK preparation script writes local `package.xml` records from the selected
+repository metadata only when the installed `source.properties` revision matches.
+It preserves existing matching package records and already accepted license
+files; it does not accept licenses. Native preflight requires platform/build-tool
+metadata before executing a build. This prevents the SDK's legacy loader from
+creating package records during a first build and invalidating that run's inputs.
+
 Preflight failures identify a fixed prerequisite and safe diagnostic reason
 before any expensive selected check starts. A passing preflight is not
 acceptance: later downloads, fixtures, device execution, artifact validation and

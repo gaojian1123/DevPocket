@@ -1988,6 +1988,21 @@ test("selected-group preflight blocks missing dependencies and SDKs before any e
   });
 });
 
+test("missing SDK package metadata blocks before executing the native build", async (t) => {
+  const root = await repository(t, { native: true }), tools = toolchains.get(root);
+  await mkdir(path.join(root, "scripts"));
+  await writeFile(path.join(root, "scripts", "build-android.ps1"), [
+    "param($Jdk,$Sdk,[switch]$Lint,[switch]$Instrumentation)",
+    "Set-Content -LiteralPath '.data/native-ran' -Value 'yes'", "",
+  ].join("\n"));
+  await rm(path.join(tools.sdk, "build-tools", "35.0.0", "package.xml"));
+  const result = await verify(root, ["--group", "android"]);
+  assert.equal(result.report.status, "blocked", JSON.stringify(result.report));
+  assert.ok(result.report.preflight.groups[0].issues.some((issue) => issue.prerequisite === "android-platform-35"));
+  assert.equal(result.report.checks.find((item) => item.id === "android-build").executionState, "not-started");
+  await assert.rejects(readFile(path.join(root, ".data", "native-ran")), { code: "ENOENT" });
+});
+
 test("tooling-only preflight never inspects unrelated Java, SDK, image or probe-Python settings", async (t) => {
   const { verificationPreflight } = await import("../verification-preflight.mjs");
   const { root, counts } = await recoveryFixture(t);
@@ -2509,7 +2524,9 @@ test("a native candidate transition reuses content-only execution across Git nor
     await rm(path.join(root, "dist", "result.js"));
     const failed = await run({ resume: result.report.run.manifest });
     assert.equal(failed.report.status, "failed", JSON.stringify(failed.report));
-    assert.ok(failed.report.recovery.invalidated.some((item) => item.group === "backend" && item.reason === "artifact-changed"));
+    const backendReusable = result.report.preflight.groups.find((group) => group.group === "backend").reusable;
+    assert.ok(failed.report.recovery.invalidated.some((item) =>
+      item.group === "backend" && item.reason === (backendReusable ? "artifact-changed" : "environment-unbound")));
     await rm(marker);
     const resumed = await run({ resume: failed.report.run.manifest });
     assert.equal(resumed.report.status, "passed", JSON.stringify(resumed.report));

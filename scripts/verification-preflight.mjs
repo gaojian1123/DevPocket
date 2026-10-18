@@ -597,9 +597,11 @@ export async function verificationPreflight(root, plan, options = {}) {
       }), "preflight-sdk");
       await check("android-platform-35", () => once(`sdk:${sdk}`, async () => ({
         sdk, platform: await fileIdentity(path.join(sdk, "platforms", "android-35", "android.jar")),
+        platformMetadata: await fileIdentity(path.join(sdk, "platforms", "android-35", "package.xml")),
         license: await fileIdentity(path.join(sdk, "licenses", "android-sdk-license")),
         aapt: await fileIdentity(path.join(sdk, "build-tools", "35.0.0", executableName("aapt2"))),
         zipalign: await fileIdentity(path.join(sdk, "build-tools", "35.0.0", executableName("zipalign"))),
+        buildToolsMetadata: await fileIdentity(path.join(sdk, "build-tools", "35.0.0", "package.xml")),
         buildTools: await treeIdentity(path.join(sdk, "build-tools", "35.0.0")),
       })), "preflight-sdk");
       await check("gradle-wrapper", () => once("gradle-wrapper", async () => ({

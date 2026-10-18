@@ -17,6 +17,78 @@ function Fetch-Verified([string]$Url, [string]$Destination, [string]$Algorithm, 
     }
 }
 
+function Write-LocalPackage([xml]$Repository, [System.Xml.XmlElement]$Package, [string]$Destination) {
+    if (-not $Package) { throw "Package metadata is unavailable: $Destination" }
+    $cursor = [IO.Path]::GetFullPath($Destination)
+    while ($cursor -ne $root) {
+        if (-not $cursor.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Package metadata must remain in this project.'
+        }
+        $item = Get-Item -LiteralPath $cursor -Force
+        if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Package metadata requires an unlinked local directory: $cursor"
+        }
+        $cursor = Split-Path -Parent $cursor
+    }
+    $file = Join-Path $Destination 'package.xml'
+    if (Test-Path -LiteralPath $file) {
+        $item = Get-Item -LiteralPath $file -Force
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Package metadata requires a regular file: $file"
+        }
+        [xml]$existing = Get-Content -LiteralPath $file -Raw
+        $local = @($existing.SelectNodes('//*[local-name()="localPackage"]'))
+        if ($local.Count -ne 1 -or $local[0].GetAttribute('path') -ne $Package.GetAttribute('path')) {
+            throw "Existing package metadata does not identify the selected package: $file"
+        }
+        return
+    }
+    $sourceProperties = Join-Path $Destination 'source.properties'
+    $item = Get-Item -LiteralPath $sourceProperties -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Package revision requires a regular source.properties file: $Destination"
+    }
+    $properties = Get-Content -LiteralPath $sourceProperties -Raw
+    $revision = [regex]::Matches($properties, '(?m)^Pkg\.Revision\s*=\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\s+rc(\d+))?\s*$')
+    if ($revision.Count -ne 1) { throw "Installed package revision is unavailable: $Destination" }
+    $installed = foreach ($index in 1..4) { [int]$revision[0].Groups[$index].Value }
+    $expected = foreach ($name in @('major', 'minor', 'micro', 'preview')) {
+        $value = $Package.SelectSingleNode("./*[local-name()='revision']/*[local-name()='$name']")
+        if ($value -and $value.InnerText -notmatch '^\d+$') { throw 'Unsupported package revision metadata.' }
+        if ($value) { [int]$value.InnerText } else { 0 }
+    }
+    if (($installed -join '.') -ne ($expected -join '.')) {
+        throw "Installed package revision does not match the available metadata; no metadata was written: $Destination"
+    }
+    $namespace = 'http://schemas.android.com/repository/android/common/02'
+    $prefix = $Repository.DocumentElement.GetNamespaceOfPrefix('local')
+    if ($prefix -and $prefix -ne $namespace) { throw 'Unsupported package namespace binding.' }
+    $document = [xml]::new()
+    $container = $document.CreateElement('local', 'repository', $namespace)
+    foreach ($attribute in $Repository.DocumentElement.Attributes) {
+        if ($attribute.Prefix -eq 'xmlns' -or $attribute.Name -eq 'xmlns') {
+            $null = $container.Attributes.Append($document.ImportNode($attribute, $true))
+        }
+    }
+    $null = $document.AppendChild($container)
+    $local = $document.CreateElement('localPackage')
+    $local.SetAttribute('path', $Package.GetAttribute('path'))
+    $local.SetAttribute('obsolete', $(if ($Package.HasAttribute('obsolete')) { $Package.GetAttribute('obsolete') } else { 'false' }))
+    foreach ($child in $Package.ChildNodes) {
+        if ($child.LocalName -in @('type-details', 'revision', 'display-name', 'uses-license', 'dependencies')) {
+            $null = $local.AppendChild($document.ImportNode($child, $true))
+        }
+    }
+    $licenseId = $Package.SelectSingleNode('./*[local-name()="uses-license"]').GetAttribute('ref')
+    $licenses = @($Repository.SelectNodes('//*[local-name()="license"]') | Where-Object { $_.GetAttribute('id') -eq $licenseId })
+    if ($licenses.Count -ne 1) { throw 'The selected package license metadata is unavailable.' }
+    $null = $container.AppendChild($document.ImportNode($licenses[0], $true))
+    $null = $container.AppendChild($local)
+    $stream = [IO.File]::Open($file, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $document.Save($stream); $stream.Flush($true) }
+    finally { $stream.Dispose() }
+}
+
 if (-not $ExistingSdk) { $ExistingSdk = Join-Path $env:LOCALAPPDATA 'Android\Sdk' }
 $license = Join-Path $ExistingSdk 'licenses\android-sdk-license'
 if (-not (Test-Path -LiteralPath $license)) {
@@ -38,8 +110,11 @@ if ($Emulator) {
 }
 foreach ($spec in $packages) {
     $dest = Join-Path $sdk $spec.Destination
-    if (Test-Path -LiteralPath $dest) { continue }
     $pkg = $repo.SelectSingleNode("//*[local-name()='remotePackage' and @path='$($spec.Package)']")
+    if (Test-Path -LiteralPath $dest) {
+        Write-LocalPackage $repo $pkg $dest
+        continue
+    }
     $archive = @($pkg.archives.archive | Where-Object { -not $_.'host-os' -or $_.'host-os' -eq 'windows' })[0].complete
     if (-not $archive.url -or -not $archive.checksum.InnerText) { throw "No verified package found: $($spec.Package)" }
     $zip = Join-Path $tools $archive.url
@@ -50,10 +125,11 @@ foreach ($spec in $packages) {
     if ($top.Count -ne 1) { throw "Unexpected archive layout in $stage" }
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
     Move-Item -LiteralPath $top[0].FullName -Destination $dest
+    Write-LocalPackage $repo $pkg $dest
 }
 if ($Emulator) {
     $image = Join-Path $sdk 'system-images\android-35\google_apis\x86_64'
-    if (-not (Test-Path -LiteralPath $image)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $image 'package.xml'))) {
         [xml]$images = (Invoke-WebRequest -Uri 'https://dl.google.com/android/repository/sys-img/google_apis/sys-img2-3.xml' -TimeoutSec 90).Content
         $pkg = $images.SelectSingleNode("//*[local-name()='remotePackage' and @path='system-images;android-35;google_apis;x86_64']")
         $licenseId = $pkg.'uses-license'.ref
@@ -62,16 +138,19 @@ if ($Emulator) {
             throw 'The selected system image license must already be accepted in the existing SDK.'
         }
         Copy-Item -LiteralPath $acceptedLicense -Destination (Join-Path $sdk "licenses\$licenseId")
-        $archive = @($pkg.archives.archive | Where-Object { -not $_.'host-os' -or $_.'host-os' -eq 'windows' })[0].complete
-        if (-not $archive.url -or -not $archive.checksum.InnerText) { throw 'No verified API-35 x86_64 image archive was found.' }
-        $zip = Join-Path $tools ('api35-' + $archive.url)
-        Fetch-Verified "https://dl.google.com/android/repository/sys-img/google_apis/$($archive.url)" $zip 'SHA1' $archive.checksum.InnerText
-        $stage = Join-Path $tools 'api35-image.unpack'
-        Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
-        $top = @(Get-ChildItem -LiteralPath $stage -Directory)
-        if ($top.Count -ne 1) { throw 'Unexpected API-35 image archive layout.' }
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $image) | Out-Null
-        Move-Item -LiteralPath $top[0].FullName -Destination $image
+        if (-not (Test-Path -LiteralPath $image)) {
+            $archive = @($pkg.archives.archive | Where-Object { -not $_.'host-os' -or $_.'host-os' -eq 'windows' })[0].complete
+            if (-not $archive.url -or -not $archive.checksum.InnerText) { throw 'No verified API-35 x86_64 image archive was found.' }
+            $zip = Join-Path $tools ('api35-' + $archive.url)
+            Fetch-Verified "https://dl.google.com/android/repository/sys-img/google_apis/$($archive.url)" $zip 'SHA1' $archive.checksum.InnerText
+            $stage = Join-Path $tools 'api35-image.unpack'
+            Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
+            $top = @(Get-ChildItem -LiteralPath $stage -Directory)
+            if ($top.Count -ne 1) { throw 'Unexpected API-35 image archive layout.' }
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $image) | Out-Null
+            Move-Item -LiteralPath $top[0].FullName -Destination $image
+        }
+        Write-LocalPackage $images $pkg $image
     }
 }
 if ($DownloadJdk) {

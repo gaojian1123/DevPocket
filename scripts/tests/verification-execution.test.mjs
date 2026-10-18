@@ -9,7 +9,7 @@ import { acquireHostVerificationSlot, admissionVariable } from "../verification-
 import { toolingCatalogue, toolingShardDescriptor } from "../verification-tooling.mjs";
 import { combineVerification, verificationPlan } from "../verification.mjs";
 import { VERIFICATION_REPORT_VERSION } from "../verification-policy.mjs";
-import { syntheticExecution } from "./fixtures/verification-tools.mjs";
+import { sdkPreparationFixture, syntheticExecution } from "./fixtures/verification-tools.mjs";
 import { WORKFLOW_TEST_FILES, WORKFLOW_TEST_SHARDS } from "../test-workflow.mjs";
 import { ciReportEnvelope, collectCIReports, githubVerificationContext, validateLiveCIEnvelope } from "../verification-ci.mjs";
 
@@ -21,6 +21,31 @@ async function fixture(t) {
   t.after(() => rm(root, { recursive: true, force: true }));
   return root;
 }
+
+test("SDK preparation initializes matching package metadata without accepting licenses or rewriting existing metadata", async (t) => {
+  const root = await fixture(t), entry = await sdkPreparationFixture(root);
+  const run = () => exec("pwsh", ["-NoProfile", "-NonInteractive", "-File", entry], { timeout: 30000 });
+  const models = JSON.parse((await run()).stdout);
+  assert.ok(models.every((item) => item.exists), "Archive extraction alone must not leave SDK package metadata missing.");
+  assert.deepEqual(models.map((item) => item.path), ["platforms;android-35", "build-tools;35.0.0"]);
+  assert.ok(models.every((item) => item.rootNamespace === "http://schemas.android.com/repository/android/common/02" &&
+    item.remoteNodes === 0 && item.license === "android-sdk-license"));
+  assert.deepEqual(models.map((item) => item.typeNamespace), [
+    "http://schemas.android.com/sdk/android/repo/repository2/03",
+    "http://schemas.android.com/repository/android/generic/02",
+  ]);
+  const metadata = models.map((item) => path.join(root, ".tools", "android-sdk", ...item.path.split(";"), "package.xml"));
+  const bytes = await Promise.all(metadata.map((file) => readFile(file)));
+  await run();
+  assert.deepEqual(await Promise.all(metadata.map((file) => readFile(file))), bytes);
+  assert.equal(await readFile(path.join(root, ".tools", "android-sdk", "licenses", "android-sdk-license"), "utf8"), "fixture-already-accepted\n");
+  await writeFile(path.join(root, ".tools", "android-sdk", "build-tools", "35.0.0", "source.properties"), "Pkg.Revision=34.0.0\n");
+  await rm(metadata[1]);
+  await assert.rejects(run(), (error) => error.code === 1 && /revision/.test(error.stderr));
+  await assert.rejects(readFile(metadata[1]), { code: "ENOENT" });
+  await rm(path.join(root, "existing-sdk", "licenses", "android-sdk-license"));
+  await assert.rejects(run(), (error) => error.code === 1 && /license has not been accepted/.test(error.stderr));
+});
 
 test("tooling shards partition the complete declared suite and preserve every execution origin", async () => {
   const catalogue = await toolingCatalogue(process.cwd());
