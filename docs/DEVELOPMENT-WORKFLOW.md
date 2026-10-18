@@ -742,6 +742,11 @@ by a path hash; absolute paths, link targets and file contents are not published
 These observations come from the same guarded reads as the acceptance identity.
 They never qualify a blocked run or suppress a changed input.
 
+A failed final prerequisite probe is `environment-unconfirmed`, retaining its
+original bounded failure (including the exit code); it is not evidence that a
+file hash changed. Only a completed probe with a different identity reports
+`environment-changed`. Both outcomes block qualification and reuse.
+
 Preflight failures identify a fixed prerequisite and safe diagnostic reason
 before any expensive selected check starts. A passing preflight is not
 acceptance: later downloads, fixtures, device execution, artifact validation and
@@ -1549,9 +1554,13 @@ Python 3 and Android command-line tools. The
 [runner image inventory](https://github.com/actions/runner-images/blob/8197087fc536320d1441203fdb5da9ae1b44b863/images/ubuntu/Ubuntu2404-Readme.md)
 is a snapshot, not proof of any future job's installed versions.
 
-Setup requires `/dev/kvm` and, only when necessary, grants this job's UID
-read/write access with `setfacl`. It does not grant world access, change the
-developer machine's virtualization or install a self-hosted runner.
+Setup requires `/dev/kvm` and a GitHub-hosted runner. An invocation-specific udev
+rule keeps that device owned by the job's UID with mode `0600` across add/change
+events, instead of relying on a one-time ACL that can disappear during the run.
+The rule is applied before verification and disappears with the disposable VM.
+Setup does not grant world access, modify local developer virtualization or
+install a self-hosted runner. Failed post-run access is never silently repaired
+by the verifier or accepted as a successful environment check.
 `sdkmanager --channel=0` installs the required stable platform/build tools,
 emulator and API-35 Google APIs x86_64 image into the disposable VM's existing
 SDK. Stdin is closed: no `yes`, `--licenses` or invented acceptance hash is used.

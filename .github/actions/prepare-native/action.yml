@@ -33,12 +33,23 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        [[ "${GITHUB_ACTIONS:-}" == true && "${RUNNER_ENVIRONMENT:-}" == github-hosted ]] || {
+          echo "::error title=Native preparation::HOSTED_RUNNER_REQUIRED"; exit 78;
+        }
         test -c /dev/kvm || { echo "::error title=Native preparation::KVM_DEVICE_MISSING"; exit 78; }
-        if [[ ! -r /dev/kvm || ! -w /dev/kvm ]]; then
-          if sudo setfacl -m "u:$(id -u):rw" /dev/kvm; then :; else
-            code=$?; echo "::error title=Native preparation::KVM_ACCESS_SETUP_FAILED"; exit "$code"
-          fi
+        uid="$(id -u)"
+        [[ "$uid" =~ ^[0-9]+$ && "$GITHUB_RUN_ID" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+        rule="/etc/udev/rules.d/99-devpocket-kvm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.rules"
+        sudo -n test ! -e "$rule"
+        temporary_rule="$(mktemp "$RUNNER_TEMP/devpocket-kvm.XXXXXX")"
+        printf 'ACTION=="add|change", SUBSYSTEM=="misc", KERNEL=="kvm", OWNER:="%s", MODE:="0600"\n' "$uid" > "$temporary_rule"
+        if sudo -n install -m 0644 "$temporary_rule" "$rule" &&
+          sudo -n udevadm control --reload-rules &&
+          sudo -n udevadm trigger --action=change --name-match=kvm &&
+          sudo -n udevadm settle --timeout=30; then :; else
+          code=$?; echo "::error title=Native preparation::KVM_ACCESS_SETUP_FAILED"; exit "$code"
         fi
+        rm -- "$temporary_rule"
         test -r /dev/kvm && test -w /dev/kvm || { echo "::error title=Native preparation::KVM_ACCESS_UNAVAILABLE"; exit 78; }
         test -s "$ANDROID_HOME/licenses/android-sdk-license" || { echo "::error title=Native preparation::SDK_LICENSE_MISSING"; exit 78; }
         if "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --channel=0 \

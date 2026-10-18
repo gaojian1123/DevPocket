@@ -148,7 +148,8 @@ export async function executeVerification(root, plan, options = {}) {
             if (current?.status !== "passed" || current.fingerprint !== before.fingerprint) {
               const changed = current?.prerequisites && before.prerequisites?.find((input) =>
                 !current.prerequisites.some((item) => item.prerequisite === input.prerequisite && item.fingerprint === input.fingerprint));
-              environmentFailure ??= verificationFault("environment-changed", { phase: "preflight", group: before.group,
+              const reason = current?.status === "passed" ? "environment-changed" : "environment-unconfirmed";
+              environmentFailure ??= verificationFault(reason, { phase: "preflight", group: before.group,
                 prerequisite: current?.issues[0]?.prerequisite ?? changed?.prerequisite });
             } else if (checks.filter((check) => CHECKS.find((item) => item.id === check.id).group === before.group)
               .every((check) => check.status === "passed" && !check.toolingShard)) {

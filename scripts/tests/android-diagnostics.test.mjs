@@ -228,7 +228,10 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(device, /runs-on: ubuntu-24\.04/);
   assert.doesNotMatch(device, /self-hosted|DEVPOCKET_ANDROID_RUNNER_ENABLED|environment:|container:|ubuntu-slim/);
   assert.match(device, /uses: \.\/\.github\/actions\/prepare-native/);
-  assert.ok(preparation.includes('sudo setfacl -m "u:$(id -u):rw" /dev/kvm'));
+  assert.ok(preparation.includes('OWNER:="%s", MODE:="0600"'));
+  assert.ok(preparation.includes('RUNNER_ENVIRONMENT:-'));
+  assert.ok(preparation.includes('sudo -n udevadm trigger --action=change --name-match=kvm'));
+  assert.ok(preparation.includes('sudo -n udevadm settle --timeout=30'));
   assert.ok(preparation.includes("--channel=0"));
   assert.ok(preparation.includes("</dev/null"));
   assert.doesNotMatch(preparation, /yes\s*\||--licenses|chmod\s+666/);

@@ -1390,6 +1390,7 @@ test("a device shard accepts current complete case and APK evidence without fabr
     `import {sourceSnapshot} from ${JSON.stringify(module)};`,
     "const [directory,runId]=process.argv.slice(2); await mkdir(directory);",
     "if(existsSync('.data/emulator-drift')) await writeFile('.tools/android-sdk/emulator/fixture-library','SDK_MUTATION_CANARY');",
+    "if(existsSync('.data/emulator-permission-trigger')) await writeFile('.data/emulator-permission-lost','denied');",
     "await writeFile(path.join(directory,'owner.json'),JSON.stringify({version:1,root:process.cwd(),runId,pid:process.pid}));",
     "const apk=path.resolve('android/app/build/outputs/apk/debug/app-debug.apk');",
     "const testApk=path.resolve('android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk');",
@@ -1427,6 +1428,17 @@ test("a device shard accepts current complete case and APK evidence without fabr
   assert.ok(!JSON.stringify(drifted.report).includes("SDK_MUTATION_CANARY"));
   await rm(path.join(root, ".data", "emulator-drift"));
   await rm(path.join(root, ".tools", "android-sdk", "emulator", "fixture-library"));
+  await writeFile(path.join(root, ".data", "emulator-permission-trigger"), "deny after execution");
+  const unconfirmed = await verify(root, ["--group", "device"]);
+  assert.equal(unconfirmed.report.status, "blocked");
+  assert.equal(unconfirmed.report.complete, false);
+  assert.equal(unconfirmed.report.failure.reason, "environment-unconfirmed");
+  assert.equal(unconfirmed.report.preflight.groups[0].issues[0].failure.exitCode, 11);
+  assert.equal(unconfirmed.report.checks.find((check) => check.id === "android-device").status, "passed");
+  assert.equal(unconfirmed.report.emulatorInputChanges.availability, "incomplete");
+  assert.ok(!JSON.stringify(unconfirmed.report).includes("PRIVATE_KVM_PERMISSION_CANARY"));
+  await rm(path.join(root, ".data", "emulator-permission-trigger"));
+  await rm(path.join(root, ".data", "emulator-permission-lost"));
   const fixture = path.join(root, "scripts", "device-fixture.mjs");
   const source = await readFile(fixture, "utf8");
   const modified = source.replace("tests:8,cases,discoveredClasses:",

@@ -131,6 +131,7 @@ export async function verificationTools(root, {
       "using System; using System.Diagnostics; using System.IO;",
       "class Tool { static void Main(string[] args) {",
       "string name=Path.GetFileNameWithoutExtension(Process.GetCurrentProcess().MainModule.FileName);",
+      'if(name=="emulator" && args.Length>0 && args[0]=="-accel-check" && File.Exists(".data/emulator-permission-lost")){Console.Error.WriteLine("PRIVATE_KVM_PERMISSION_CANARY");Environment.Exit(11);}',
       ...(emulatorNoise ? ['if(name=="emulator") Console.Error.WriteLine("INFO | Storing crashdata in: PRIVATE_PROBE_PATH, detection is enabled for process: "+Process.GetCurrentProcess().Id);'] : []),
       "if(name==\"java\") Console.Error.WriteLine(\"openjdk version \\\"21.0.1\\\"\");",
       "else if(name==\"adb\") Console.WriteLine(\"Android Debug Bridge version 1.0.41\");",
@@ -144,6 +145,7 @@ export async function verificationTools(root, {
   } else {
     await writeFile(binary, [
       "#!/bin/sh",
+      'if [ "$(basename "$0")" = emulator ] && [ "$1" = "-accel-check" ] && [ -f .data/emulator-permission-lost ]; then echo PRIVATE_KVM_PERMISSION_CANARY >&2; exit 11; fi',
       ...(emulatorNoise ? ['if [ "$(basename "$0")" = emulator ]; then echo "INFO | Storing crashdata in: PRIVATE_PROBE_PATH, detection is enabled for process: $$" >&2; fi'] : []),
       "case \"$(basename \"$0\")\" in",
       "java) echo 'openjdk version \"21.0.1\"' >&2 ;;",
