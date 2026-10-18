@@ -735,6 +735,13 @@ validated version, not incidental log prefixes, process IDs or crash-log paths.
 The executable and complete installation tree remain content-hashed. Missing,
 unsupported or conflicting probe facts still block before device execution.
 
+An emulator applicability failure also retains bounded input-difference
+diagnostics: changed fact digests and up to 32 relative installation-file names,
+sizes, modes and hashes. Unsafe or credential-shaped names are represented only
+by a path hash; absolute paths, link targets and file contents are not published.
+These observations come from the same guarded reads as the acceptance identity.
+They never qualify a blocked run or suppress a changed input.
+
 Preflight failures identify a fixed prerequisite and safe diagnostic reason
 before any expensive selected check starts. A passing preflight is not
 acceptance: later downloads, fixtures, device execution, artifact validation and

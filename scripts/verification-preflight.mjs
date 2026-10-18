@@ -55,7 +55,7 @@ async function fileIdentity(file, { optional = false } = {}) {
   } finally { await handle.close(); }
 }
 
-async function treeIdentity(directory, requiredFile) {
+async function treeInputs(directory, requiredFile) {
   const root = await realpath(directory), files = [], identities = [];
   let count = 0;
   async function visit(current, relative, entry) {
@@ -90,7 +90,38 @@ async function treeIdentity(directory, requiredFile) {
       return [relative, target === undefined ? identity : { target, identity }];
     })));
   }
-  return digest(JSON.stringify(identities));
+  return identities;
+}
+
+async function treeIdentity(directory, requiredFile) {
+  return digest(JSON.stringify(await treeInputs(directory, requiredFile)));
+}
+
+export function emulatorInputDifference(before, after) {
+  if (!before || !after) return { version: 1, acceptance: false, availability: "incomplete" };
+  const fingerprint = (value) => value === undefined ? null : digest(JSON.stringify(value));
+  const facts = ["binary", "acceleration", "version", "tree"].filter((name) =>
+    fingerprint(before.identity[name]) !== fingerprint(after.identity[name]))
+    .map((name) => ({ name, before: fingerprint(before.identity[name]), after: fingerprint(after.identity[name]) }));
+  const previous = new Map(before.files), current = new Map(after.files);
+  const changed = [...new Set([...previous.keys(), ...current.keys()])].sort()
+    .filter((name) => fingerprint(previous.get(name)) !== fingerprint(current.get(name)));
+  const describe = (value) => {
+    if (!value) return null;
+    const file = value.identity ?? value;
+    return { sha256: file.sha256, bytes: file.size, mode: file.mode,
+      ...(value.target === undefined ? {} : { linkTargetSha256: digest(value.target) }) };
+  };
+  return { version: 1, acceptance: false, availability: "complete", facts,
+    files: { changed: changed.length, omitted: Math.max(0, changed.length - 32),
+      entries: changed.slice(0, 32).map((name) => {
+        const relative = name.replaceAll("\\", "/");
+        const publicPath = relative.length <= 240 && /^[A-Za-z0-9_.+-]+(?:\/[A-Za-z0-9_.+-]+)*$/.test(relative) &&
+          !relative.split("/").some((part) => part === "." || part === "..") &&
+          !/(?:gh[pousr]_|github_pat_|dpp_|credential|password|secret|token|private)/i.test(relative);
+        return { ...(publicPath ? { path: relative } : {}), pathSha256: digest(relative),
+          before: describe(previous.get(name)), after: describe(current.get(name)) };
+      }) } };
 }
 
 function properties(text) {
@@ -650,8 +681,11 @@ export async function verificationPreflight(root, plan, options = {}) {
           const versions = [...new Set([...versionOutput.matchAll(/Android emulator version ([A-Za-z0-9._+-]+)/g)]
             .map((match) => diagnosticVersion(match[1])))];
           if (versions.length !== 1 || !versions[0]) throw diagnosticError("preflight-version");
-          return { binary: await fileIdentity(emulator), acceleration: digest(acceleration[0]),
-            version: digest(versions[0]), tree: await treeIdentity(path.join(emulatorSdk, "emulator")) };
+          const binary = await fileIdentity(emulator), files = await treeInputs(path.join(emulatorSdk, "emulator"));
+          const identity = { binary, acceleration: digest(acceleration[0]),
+            version: digest(versions[0]), tree: digest(JSON.stringify(files)) };
+          options.onEmulatorIdentity?.(structuredClone({ identity, files }));
+          return identity;
         }), "preflight-acceleration");
       }
     }

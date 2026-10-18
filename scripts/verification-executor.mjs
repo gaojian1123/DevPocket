@@ -9,7 +9,7 @@ import { combineVerification, requireCheckPolicy, requirePlanCollection, verific
 import { backendVerification, prepareBackendVerification } from "./verification-backend.mjs";
 import { androidVerification } from "./verification-android.mjs";
 import { acquireVerificationLock, openVerificationRun, readVerificationRun } from "./verification-run.mjs";
-import { verificationArtifacts, verificationExecutionPolicy, verificationPreflight } from "./verification-preflight.mjs";
+import { emulatorInputDifference, verificationArtifacts, verificationExecutionPolicy, verificationPreflight } from "./verification-preflight.mjs";
 import { candidateReusableChecks, capturePromotionContext, prepareVerificationTransition, validateCandidateVerification } from "./verification-transition.mjs";
 import { toolingShardDescriptor } from "./verification-tooling.mjs";
 import { acquireHostVerificationSlot } from "./verification-admission.mjs";
@@ -57,6 +57,7 @@ export async function executeVerification(root, plan, options = {}) {
   const qualifiedGroups = new Set();
   let candidateChecks = new Map();
   let admission, admissionReleased = false;
+  let initialEmulator, finalEmulator, emulatorChanges;
   try {
     try {
       if (selected.length) {
@@ -75,7 +76,8 @@ export async function executeVerification(root, plan, options = {}) {
       const promotionContext = transition ? null : await capturePromotionContext(root, plan);
       run = await openVerificationRun(root, plan, { ...options, transition }, policy, promotionContext);
       const backend = await prepareBackendVerification(root, plan, options);
-      preflight = await verificationPreflight(root, plan, options);
+      preflight = await verificationPreflight(root, plan, { ...options,
+        onEmulatorIdentity: (value) => { initialEmulator = value; } });
       safe = !preflight.groups.some((item) => item.issues.some(({ failure }) =>
         failure.observedProcess === "owned-command-supervisor" && failure.processTreeStopped !== true));
       processesStopped = safe;
@@ -133,7 +135,8 @@ export async function executeVerification(root, plan, options = {}) {
           if (changed || sourceFailure || selectedChecks.some((check) => check.status !== "passed")) break;
         }
         if (!options.signal?.aborted && checks.some((check) => check.status === "passed")) {
-          const after = await verificationPreflight(root, plan, options);
+          const after = await verificationPreflight(root, plan, { ...options,
+            onEmulatorIdentity: (value) => { finalEmulator = value; } });
           const probesStopped = !after.groups.some((item) => item.issues.some(({ failure }) =>
             failure.observedProcess === "owned-command-supervisor" && failure.processTreeStopped !== true));
           safe &&= probesStopped;
@@ -162,7 +165,10 @@ export async function executeVerification(root, plan, options = {}) {
             }
           }
           preflight = after;
-          if (environmentFailure) throw environmentFailure;
+          if (environmentFailure) {
+            if (selected.includes("device")) emulatorChanges = emulatorInputDifference(initialEmulator, finalEmulator);
+            throw environmentFailure;
+          }
         }
       }
       report = { ...reportFor(plan, group, checks), preflight, run: run.reference, recovery,
@@ -171,7 +177,8 @@ export async function executeVerification(root, plan, options = {}) {
       if (error.processTreeStopped === false) { safe = false; processesStopped = false; }
       const failure = verificationFailure(error, error.verificationContext?.phase ?? "preflight");
       report = { ...reportFor(plan, group, checks), status: "blocked", complete: false, failure, error: failure.summary,
-        ...(preflight ? { preflight } : {}), ...(run ? { run: run.reference } : {}), recovery, ...(transition ? { transition } : {}) };
+        ...(preflight ? { preflight } : {}), ...(run ? { run: run.reference } : {}), recovery, ...(transition ? { transition } : {}),
+        ...(emulatorChanges ? { emulatorInputChanges: emulatorChanges } : {}) };
     }
     try {
       const current = await sourceSnapshot(root);

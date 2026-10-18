@@ -12,7 +12,7 @@ import { developmentReviewRequirements, isVerificationPolicyPath } from "../deve
 import { syntheticExecution, verificationTools, windowsNodeLauncher } from "./fixtures/verification-tools.mjs";
 import { combineVerification, verificationPlan } from "../verification.mjs";
 import { openVerificationRun, readVerificationRun } from "../verification-run.mjs";
-import { resolveVerificationExecutable, verificationExecutionPolicy } from "../verification-preflight.mjs";
+import { emulatorInputDifference, resolveVerificationExecutable, verificationExecutionPolicy } from "../verification-preflight.mjs";
 import { capturePromotionContext, prepareVerificationTransition } from "../verification-transition.mjs";
 import { WORKFLOW_TEST_FILES } from "../test-workflow.mjs";
 import { committedInputsMatch, committedSourceInputs, commitSourceProjection, sourceInputs } from "../git-state.mjs";
@@ -1386,8 +1386,10 @@ test("a device shard accepts current complete case and APK evidence without fabr
   const module = pathToFileURL(path.resolve("scripts/verification.mjs")).href;
   await writeFile(path.join(root, "scripts", "device-fixture.mjs"), [
     "import {mkdir,writeFile} from 'node:fs/promises'; import path from 'node:path'; import {createHash} from 'node:crypto';",
+    "import {existsSync} from 'node:fs';",
     `import {sourceSnapshot} from ${JSON.stringify(module)};`,
     "const [directory,runId]=process.argv.slice(2); await mkdir(directory);",
+    "if(existsSync('.data/emulator-drift')) await writeFile('.tools/android-sdk/emulator/fixture-library','SDK_MUTATION_CANARY');",
     "await writeFile(path.join(directory,'owner.json'),JSON.stringify({version:1,root:process.cwd(),runId,pid:process.pid}));",
     "const apk=path.resolve('android/app/build/outputs/apk/debug/app-debug.apk');",
     "const testApk=path.resolve('android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk');",
@@ -1413,6 +1415,18 @@ test("a device shard accepts current complete case and APK evidence without fabr
   assert.equal(result.report.checks.find((check) => check.id === "android-device").status, "passed");
   assert.ok(!JSON.stringify(result.report).includes("private-worker-argv"),
     "Both deviceEvidence and the direct worker projection must exclude raw process fields.");
+  await writeFile(path.join(root, ".data", "emulator-drift"), "mutate");
+  const drifted = await verify(root, ["--group", "device"]);
+  assert.equal(drifted.report.status, "blocked");
+  assert.equal(drifted.report.complete, false);
+  assert.equal(drifted.report.failure.reason, "environment-changed");
+  assert.equal(drifted.report.checks.find((check) => check.id === "android-device").status, "passed");
+  assert.deepEqual(drifted.report.emulatorInputChanges.facts.map((fact) => fact.name), ["tree"]);
+  assert.equal(drifted.report.emulatorInputChanges.files.entries[0].path, "fixture-library");
+  assert.equal(drifted.report.emulatorInputChanges.files.entries[0].before, null);
+  assert.ok(!JSON.stringify(drifted.report).includes("SDK_MUTATION_CANARY"));
+  await rm(path.join(root, ".data", "emulator-drift"));
+  await rm(path.join(root, ".tools", "android-sdk", "emulator", "fixture-library"));
   const fixture = path.join(root, "scripts", "device-fixture.mjs");
   const source = await readFile(fixture, "utf8");
   const modified = source.replace("tests:8,cases,discoveredClasses:",
@@ -2075,17 +2089,42 @@ test("emulator prerequisites bind capability and version rather than per-process
   const library = path.join(tools.sdk, "emulator", "fixture-library");
   await writeFile(library, "original-code");
   const plan = await verificationPlan(root, "HEAD", true);
+  const observed = [];
   const preflight = () => verificationPreflight(root, plan, {
     group: "device", jdk: tools.jdk, sdk: tools.sdk, directory: path.join(root, ".data", "verification", "probe"),
+    onEmulatorIdentity: (value) => observed.push(value),
   });
   const before = await preflight(), after = await preflight();
   assert.equal(before.status, "passed");
   assert.equal(after.status, "passed");
   assert.equal(after.groups[0].fingerprint, before.groups[0].fingerprint);
+  assert.deepEqual(emulatorInputDifference(observed[0], observed[1]).facts, []);
   assert.ok(!JSON.stringify(after).includes("PRIVATE_PROBE_PATH"));
   await writeFile(library, "modified-code");
   const changed = await preflight();
   assert.notEqual(changed.groups[0].fingerprint, before.groups[0].fingerprint);
+  assert.equal(emulatorInputDifference(observed[0], observed[2]).files.entries[0].path, "fixture-library");
+  assert.equal(Object.hasOwn(changed, "files"), false);
+});
+
+test("emulator input diagnostics are bounded and never expose absolute paths, link targets or credential-shaped names", () => {
+  const file = { sha256: "a".repeat(64), size: 7, mode: 0o100644 };
+  const before = { identity: { binary: file, acceleration: "a", version: "v", tree: "old" }, files: [] };
+  const after = { identity: { ...before.identity, tree: "new" },
+    files: [
+      ["../PRIVATE_PATH", { target: "PRIVATE_TARGET", identity: file }],
+      ["ghp_PRIVATE_TOKEN", file],
+      ...Array.from({ length: 40 }, (_, index) => [`lib64/library-${String(index).padStart(2, "0")}.so`, file]),
+    ] };
+  const result = emulatorInputDifference(before, after);
+  assert.equal(result.acceptance, false);
+  assert.equal(result.files.changed, 42);
+  assert.equal(result.files.entries.length, 32);
+  assert.equal(result.files.omitted, 10);
+  assert.deepEqual(result.facts.map((fact) => fact.name), ["tree"]);
+  assert.ok(!JSON.stringify(result).includes("PRIVATE_"));
+  assert.ok(result.files.entries.every((entry) => /^[a-f0-9]{64}$/.test(entry.pathSha256)));
+  assert.deepEqual(emulatorInputDifference(before, undefined), { version: 1, acceptance: false, availability: "incomplete" });
 });
 
 test("missing or conflicting emulator facts cannot supply preflight evidence", async (t) => {
