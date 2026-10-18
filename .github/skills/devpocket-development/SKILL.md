@@ -116,6 +116,13 @@ Missing authorization or an unresolved dirty candidate pauses this delivery path
 If the user later changes a working-tree task into a delivery request, continue
 the same task and base through this step. Its earlier working-tree evidence does
 not become evidence for the new commit by changing report fields.
+For an unchanged, completely verified working tree, follow **Working-tree
+evidence to an authorized candidate** in `docs\DEVELOPMENT-WORKFLOW.md`: use the
+verified run's workspace/hook snapshot with the existing native candidate helper,
+retain its successful hash-bound request/receipt, then explicitly `-Promote`
+the old run. This can reuse only proven content-only checks. Missing proof or
+an unsupported transition requires fresh candidate verification; it never
+permits a plain HEAD substitution or an unapproved commit.
 
 ## 5. Obtain source-bound verification
 
@@ -127,9 +134,17 @@ Follow the Verification section of `docs\DEVELOPMENT-WORKFLOW.md`:
 npm run verify -- -Base BASE_COMMIT
 ```
 
+For a cleanup-confirmed environment failure on the same source, use the guide's
+explicit `-Resume RUN_JSON` operation with a new report directory and unchanged
+base/selection. Check its invalidation and execution records. Interrupted or
+unconfirmed owners require inspection, not automatic retry or lock removal.
+Preflight and recovered partial groups are not final acceptance.
+
 Read the newly produced report. Require `status: passed`, `complete: true` and
 every required check; a plan, focused test, build-only result or partial shard
 is not completed verification. Combine CI shards through the existing verifier.
+Use current version-4 reports with retained execution origins. Earlier aggregates
+without origins must be reverified, not upgraded by editing their version or HEAD.
 Required Android device evidence remains mandatory. Keep the report path, base,
 `source.head` and `source.fingerprint` with the task.
 For candidate-commit delivery, require `source.head` to equal `CANDIDATE_COMMIT`.
@@ -152,6 +167,10 @@ paths, delivery target, current verification report, local policy requirements
 and recorded human decisions, and the source identity.
 For candidate-commit delivery, identify the candidate SHA as well. Ask it to
 inspect the files rather than rely on the implementer's summary.
+For converted evidence, also supply the immutable original run, native request
+and receipt, transition record and each check's actual execution origin. Obtain
+the reviewer's real conclusion for the final candidate; an earlier working-tree
+review, human approval or permission is not automatically inherited.
 
 Request `verdict: pass | changes_requested | needs_human` and findings containing
 `severity: blocking | advisory`, repository-relative `file`, `line`, `impact` and
@@ -187,6 +206,9 @@ node scripts\verify.mjs --base BASE_COMMIT --combine `
 Use a new report destination and the actual retained report path. Require a
 complete passing aggregate whose source identity matches the review. Any edit,
 including a commit/ref change, invalidates mismatched verification and review.
+For an explicitly converted candidate report, add `--candidate-evidence` and
+retain the same applicable tool settings; this revalidates its local proof and
+old execution origins rather than treating them as fresh execution.
 For candidate-commit delivery, also require the working tree to remain clean and
 HEAD to remain `CANDIDATE_COMMIT` before publishing.
 Recompute the local review requirement for the unchanged source before any

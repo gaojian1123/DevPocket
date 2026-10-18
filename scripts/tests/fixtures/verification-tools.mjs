@@ -1,0 +1,109 @@
+import { execFile } from "node:child_process";
+import { chmod, copyFile, mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { promisify } from "node:util";
+
+const exec = promisify(execFile);
+
+export const syntheticExecution = (source) => ({
+  source: { ...source }, startedAt: "2026-01-01T00:00:00.000Z", completedAt: "2026-01-01T00:00:01.000Z",
+});
+
+export async function windowsNodeLauncher(root, base) {
+  const directory = path.join(root, ".data", "node-launcher");
+  await mkdir(directory, { recursive: true });
+  const source = path.join(directory, "node.cs"), binary = path.join(directory, "node.exe");
+  const literal = (value) => `@"${value.replaceAll('"', '""')}"`;
+  await writeFile(source, [
+    "using System; using System.Diagnostics; using System.IO;",
+    "class NodeLauncher { static int Main(string[] args) {",
+    'if(args.Length>0 && args[0]=="--lookup-path"){Console.WriteLine(Process.GetCurrentProcess().MainModule.FileName);return 0;}',
+    ...(base ? [
+      'if(args.Length>0 && args[0].Replace(\'\\\\\',\'/\').EndsWith("/typescript/bin/tsc")){',
+      'File.AppendAllText(".data/node-launch-count","called\\n");',
+      'var git=new ProcessStartInfo("git","rev-parse HEAD"){UseShellExecute=false,RedirectStandardOutput=true,CreateNoWindow=true};',
+      "using(var child=Process.Start(git)){string head=child.StandardOutput.ReadToEnd().Trim();child.WaitForExit();",
+      `if(child.ExitCode!=0 || head!=${literal(base)})return 23;}}`,
+    ] : []),
+    "string command=Environment.CommandLine.TrimStart();",
+    'int end=command[0]==\'"\' ? command.IndexOf(\'"\',1)+1 : command.IndexOf(\' \');',
+    'string tail=end<0 ? "" : command.Substring(end).TrimStart();',
+    `var start=new ProcessStartInfo(${literal(process.execPath)},tail){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};`,
+    "using(var child=Process.Start(start)){",
+    "var output=child.StandardOutput.ReadToEndAsync();var error=child.StandardError.ReadToEndAsync();child.WaitForExit();",
+    "Console.Write(output.GetAwaiter().GetResult());Console.Error.Write(error.GetAwaiter().GetResult());return child.ExitCode;}",
+    "} }",
+  ].join("\n"));
+  const compiler = path.join(process.env.SystemRoot ?? process.env.WINDIR, "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
+  await exec(compiler, ["/nologo", `/out:${binary}`, source], { timeout: 30000 });
+  return binary;
+}
+
+export async function verificationTools(root, { native = false, operations = false, jdk, sdk } = {}) {
+  const directory = path.join(root, ".data", "synthetic-tools");
+  await mkdir(directory, { recursive: true });
+  const binary = path.join(directory, process.platform === "win32" ? "tool.exe" : "tool");
+  if (process.platform === "win32") {
+    const source = path.join(directory, "tool.cs");
+    await writeFile(source, [
+      "using System; using System.Diagnostics; using System.IO;",
+      "class Tool { static void Main(string[] args) {",
+      "string name=Path.GetFileNameWithoutExtension(Process.GetCurrentProcess().MainModule.FileName);",
+      "if(name==\"java\") Console.Error.WriteLine(\"openjdk version \\\"21.0.1\\\"\");",
+      "else if(name==\"adb\") Console.WriteLine(\"Android Debug Bridge version 1.0.41\");",
+      "else if(name==\"emulator\") Console.WriteLine(args.Length>0 && args[0]==\"-accel-check\" ? \"WHPX is installed and usable\" : \"Android emulator version 35.0.1\");",
+      "else if(args.Length>0 && args[0]==\"--version\") Console.WriteLine(\"Python 3.12.0\");",
+      "else Console.WriteLine(\"{\\\"version\\\":[3,12,0],\\\"executable\\\":\\\"synthetic-python\\\",\\\"dependencies\\\":\\\"synthetic\\\"}\");",
+      "} }",
+    ].join("\n"));
+    const compiler = path.join(process.env.SystemRoot ?? process.env.WINDIR, "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
+    await exec(compiler, ["/nologo", `/out:${binary}`, source], { timeout: 30000 });
+  } else {
+    await writeFile(binary, [
+      "#!/bin/sh",
+      "case \"$(basename \"$0\")\" in",
+      "java) echo 'openjdk version \"21.0.1\"' >&2 ;;",
+      "adb) echo 'Android Debug Bridge version 1.0.41' ;;",
+      "emulator) echo 'KVM is installed and usable' ;;",
+      "*) if [ \"$1\" = '--version' ]; then echo 'Python 3.12.0'; else echo '{\"version\":[3,12,0],\"executable\":\"synthetic-python\",\"dependencies\":\"synthetic\"}'; fi ;;",
+      "esac", "",
+    ].join("\n"));
+    await chmod(binary, 0o755);
+  }
+  const putTool = async (file) => {
+    await mkdir(path.dirname(file), { recursive: true });
+    await copyFile(binary, file);
+    if (process.platform !== "win32") await chmod(file, 0o755);
+  };
+  const executable = (name) => process.platform === "win32" ? `${name}.exe` : name;
+  const env = {};
+  if (operations) {
+    const python = path.join(directory, executable("python"));
+    await putTool(python);
+    env.PATH = `${directory}${path.delimiter}${process.env.PATH ?? process.env.Path}`;
+    env.DEVPOCKET_PROBE_PYTHON = python;
+    const requirements = path.join(root, "deployment", "azure", "probe", "requirements-test.txt");
+    await mkdir(path.dirname(requirements), { recursive: true });
+    await writeFile(requirements, "cryptography==50.0.1\n");
+  }
+  if (native) {
+    jdk ??= path.join(root, ".tools", "jdk-21");
+    sdk ??= path.join(root, ".tools", "android-sdk");
+    await putTool(path.join(jdk, "bin", executable("java")));
+    await writeFile(path.join(jdk, "release"), 'JAVA_VERSION="21.0.1"\n');
+    for (const name of ["aapt2", "zipalign"]) await putTool(path.join(sdk, "build-tools", "35.0.0", executable(name)));
+    await putTool(path.join(sdk, "platform-tools", executable("adb")));
+    await putTool(path.join(sdk, "emulator", executable("emulator")));
+    for (const relative of ["platforms/android-35/android.jar", "licenses/android-sdk-license",
+      "system-images/android-35/google_apis/x86_64/system.img", "system-images/android-35/google_apis/x86_64/source.properties"]) {
+      const file = path.join(sdk, ...relative.split("/"));
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, "synthetic SDK input\n");
+    }
+    const wrapper = path.join(root, "android", "gradle", "wrapper");
+    await mkdir(wrapper, { recursive: true });
+    await writeFile(path.join(wrapper, "gradle-wrapper.jar"), "synthetic wrapper\n");
+    await writeFile(path.join(wrapper, "gradle-wrapper.properties"), "distributionUrl=synthetic-only\n");
+  }
+  return { jdk, sdk, env };
+}

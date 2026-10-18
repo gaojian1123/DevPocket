@@ -365,7 +365,8 @@ evidence and authorized mutations; probe overrides do not rewrite user settings.
 
 The controller's fixed implementation capture includes `verification-executor.mjs`,
 `verification-backend.mjs`, `verification-android.mjs` and `backend-diagnostics.mjs`
-alongside `git-state.mjs` and the existing imports. Re-capture, explicitly approve
+alongside `git-state.mjs`, the recovery/preflight/transition modules, owned-command
+launcher inputs and the existing imports. Re-capture, explicitly approve
 and reload the changed implementation; an old loaded snapshot cannot silently
 acquire the new inputs. The native candidate loader still permits only its
 captured candidate helper and Git module, not the verification adapters.
@@ -446,14 +447,17 @@ still requires all selected checks. A documentation-only plan needs no shards.
 
 Aggregation rejects missing checks, failed/blocked/planned evidence, duplicate
 results, wrong-group checks, mismatched policy, and stale base/source identities.
-Verification reports are now **version 3**, with required `requiredGroups`
-matching the current catalogue and no `requiresHumanReview` decision.
-Version-1/2 reports, absent group policy and reports that place `workflow-tests`
-in backend cannot qualify; rerun rather than relabel old evidence.
-Non-acceptance diagnostic exporters still read both historical versions:
-version 1 retains its backend workflow-test group, version 2 retains tooling,
-and neither gets explanations rebuilt using current rules. Historical check
-selections remain intact. An old review flag is projected only under
+Verification reports are now **version 4**. Every passing check requires its
+actual `execution.source`, `startedAt` and `completedAt`; aggregates preserve
+these allowlisted fields through subsequent aggregation. Removing origins,
+reversing timestamps or changing only an aggregate's HEAD cannot qualify.
+`requiredGroups` must match the catalogue and there is no `requiresHumanReview`
+decision. Version-1/2/3 reports, absent origin/group policy and reports that place
+`workflow-tests` in backend cannot qualify; rerun rather than relabel old evidence.
+Non-acceptance diagnostic exporters still read historical versions: version 1
+retains its backend workflow-test group, versions 2/3 retain tooling, and version
+3 retains its selection explanations. Historical check selections remain intact.
+An old version-1/2 review flag is projected only under
 `legacyAgentReview`, with `approval: "not-established"` even when the old flag
 was false. Current diagnostics ignore injected review/approval fields.
 Device/startup evidence formats are unchanged. A required check
@@ -463,6 +467,255 @@ Detailed logs remain private in ignored run directories. Share only the
 allowlisted machine reports and explicitly selected candidate artifacts.
 Report destinations must be new files beneath `.data\verification` or `.data\ci`;
 existing reports and sealed/operational evidence cannot be overwritten.
+
+### Selected-group preflight and explicit recovery
+
+Every execution first checks the groups selected by the planner and `--group`.
+The read-only probes cover Node 24, PowerShell 7 and command ownership; selected
+Node checks also inspect npm, declared installed dependencies and effective npm
+configuration. Tooling adds Git/SSH and standard-library Python prerequisites,
+not Java, an Android SDK, an emulator or operational Python packages. Backend
+operational entries additionally inspect their own npm/Python dependencies.
+Native entries inspect their selected JDK, platform/build tools, existing
+license, wrapper and writable output/cache paths; device entries add the
+installed image, ADB, emulator and acceleration. No dependency installation,
+license acceptance, cache reset, Git/config change or real Copilot runtime
+startup is a preflight operation. The existing owned-command helper may prepare
+its source-bound local executable cache.
+
+Preflight failures identify a fixed prerequisite and safe diagnostic reason
+before any expensive selected check starts. A passing preflight is not
+acceptance: later downloads, fixtures, device execution, artifact validation and
+owned cleanup can still fail. The executor rechecks successful groups'
+environment identities before qualifying the attempt. Environment fingerprints
+include applicable versions/executables, installed Node package bytes, npm and
+Gradle configuration, Python packages where required, JDK/SDK inputs and image
+file identities. SDK/JDK directory metadata includes size, mode, inode and change
+times; ordinary package/artifact bytes are hashed. This is local applicability
+evidence, not protection from an administrator able to alter the verifier and
+its private storage together.
+
+Unbound Node/TypeScript, Python or Java startup paths, custom npm script shells
+and Gradle initialization hooks disable reuse for the affected groups. JVM
+arguments supplied in project or cache properties also disable native reuse
+unless every argument is an explicitly recognized memory/UTF-8 flag. An external
+`-javaagent`, native agent, custom class path or unknown JVM switch cannot inherit
+a prior success just because the properties text is unchanged. Source
+links also disable reuse: the Git link identity does not bind an external target.
+Commands can still execute normally; an unchanged option string is not proof
+that an external preload or init script's bytes stayed unchanged.
+Native preflight binds ignored SDK/JVM properties too, refusing conflicting
+overrides or unsupported daemon-JVM criteria instead of inspecting the wrong
+toolchain. Environment-provided `ORG_GRADLE_PROJECT_*` values are hashed into
+native applicability without exposing their contents; changing them cannot reuse
+an APK built with different effective project properties. Successful native groups
+retain hashes of their available Gradle
+executable/dependency artifacts alongside the APKs. Cleaned, disposable hosted
+device caches cannot seed native reuse. Small immutable-file reads are bounded
+in batches without omitting checks. Tooling, backend, native build and device
+commands retain their 30-minute deadlines. A late result is still a timeout,
+and neither a timeout nor a passing subset qualifies acceptance.
+
+The regression suite tests data contracts through the same planner, signed-ledger
+and evidence-validation functions used by the CLI/controller. Corrupt-record and
+qualification matrices use explicitly synthetic reports in disposable repositories,
+not a fresh expensive verification run merely to create input data. They are not
+application acceptance evidence. Representative CLI failures and real end-to-end
+recovery/conversion retain their actual commands and execution-count assertions;
+native permission, hooks, signing, index, source-change and cleanup cases still use
+real processes. Test scheduling and required check selection are unchanged.
+Per-path impact matrices call the production classifier directly instead of
+creating a repository and CLI process for every name. Representative CLI plans,
+public projections and raw Git-state cases still exercise those boundaries.
+Compiler/shim recognition tests use a genuine control and reject both altered
+forms at the production preflight boundary without executing their payloads.
+Real candidate conversion, commit-sensitive commands, npm-prefix and Windows
+launcher cases retain end-to-end coverage of qualification consumption and native
+execution; recognition alone does not need another complete candidate lifecycle.
+Environment/artifact decision matrices exercise signed record, terminal
+qualification and reopening directly, including adoption of the new environment
+checkpoint. Real preflight still checks TZ changes and unrelated-side isolation;
+the copied-policy refusal still uses the CLI after proving the copy matches its
+seed. Actual environment-drift and candidate-artifact recovery cases retain their
+process execution and command-count assertions.
+Dependency discovery uses directory entries instead of a redundant sequential
+metadata query for every ordinary file; each file still receives the same opened
+descriptor, identity, before/after metadata and content-hash checks.
+
+The report prints a `run.json` path. Use that exact run, the original base,
+selection flags and a **new** report directory:
+
+```powershell
+npm run verify -- -Base BASE_COMMIT -Resume .data\verification\FIRST\run\run.json `
+  -Report .data\verification\RETRY\report.json
+```
+
+Run format **2** is separate from verification report version **4**. Each
+attempt writes new start, group and finish receipts; original reports, logs,
+execution HEAD/fingerprint/timestamps and failures remain unchanged. A successful
+group is recorded directly when its commands finish, not extracted by rewriting
+a failed report as `partial`. Recovery validates the original base, source,
+required checks/groups/layouts, execution policy, diagnostics mode and applicable
+environment/artifact identities. It reuses only complete successful groups.
+Changed environment or missing artifacts explicitly invalidate the affected
+groups; source, base, scope or policy changes require a new run. A failed group
+reruns in full, including its earlier successful checks. There is no automatic
+retry loop, permission-denial retry or external wait/wake mechanism.
+The terminal receipt records which complete groups passed their post-execution
+environment check. A successful command without that qualification is permanently
+invalidated for reuse in that run, even if earlier environment bytes are restored.
+Unaffected qualified groups remain reusable; the affected group must execute again.
+Version-1 runs without this terminal qualification cannot resume or seed candidate
+conversion; keep them as history and start a new run rather than adding fields.
+
+Receipts are locally authenticated with an ignored checkout-local key at
+`.data\verification\local\receipt.key`; never upload or copy that key. Imported
+reports, older runs without receipts, missing/corrupt records and altered
+signatures cannot seed recovery. Reports remain portable for ordinary CI
+aggregation, but recovery is deliberately not portable between checkouts.
+An authenticated private run tip detects missing/truncated attempt history;
+only that control index advances atomically, never the original evidence.
+Paths must remain under the owning checkout's verification/CI/development
+storage, without linked parents; readers never execute paths from a record.
+A supported checkout-root alias resolves to the same physical storage owner;
+links inside evidence storage still fail closed, and native workspace identity
+continues to retain the caller's original checkout path.
+One exclusive `.data\verification\local\execution.lock` protects shared outputs
+in this worktree. Another attempt is refused, not queued or silently taken over.
+If the owner was killed, inspect its exact process family, original logs and
+owned device cleanup before an operator removes the specific stale lock.
+An attempt missing its terminal receipt or confirmed cleanup is not resumable;
+after inspection, start a new run rather than manufacturing a finish receipt.
+Process-tree termination alone does not prove device-data cleanup: an unknown
+or failed owned-data cleanup retains the lock and records a non-resumable finish.
+Gracefully cancelled attempts require both cleanup confirmations before explicit
+recovery.
+
+`--plan` still performs no execution/preflight; `--group` still returns a
+partial shard unless it covers all required checks. Ordinary `--combine` still
+rejects failed reports, missing checks, source mismatches and conflicting
+evidence. A partial shard or preflight result never completes the final gate.
+The optional workflow retains its own journal and candidate/review ordering:
+resuming a verifier run does not resume, approve or publish a controller run.
+
+### Working-tree evidence to an authorized candidate
+
+Use `--promote` only after a complete passing working-tree run in a linked
+worktree and a separately authorized candidate commit. This is one direct
+parent-to-child conversion, not a cache across arbitrary commits. The existing
+native candidate helper must produce the commit through the original session's
+native permission pipeline. Its new optional, locally authenticated receipt
+binds the approved request bytes and completed candidate result; older unsigned,
+missing, blocked or uncertain commit receipts cannot qualify conversion.
+Neither the receipt nor the verifier grants commit authority or human approval.
+
+For skill-led delivery, retain the run's signed `promotionContext` and use the
+existing `prepareCandidate`, `captureCandidateImplementation` and
+`nativeCandidateCommand` APIs. Prepare the request with the verified workspace
+snapshot, exact `changedPaths(root, oldHead)`, original session ID, task goal and
+unchanged hook snapshot. Write that request once beneath this task's
+`.data\verification` or `.data\development` directory. Execute the returned
+hash-bound native command only after commit/hook authorization, require the
+native tool's successful result and retain `REQUEST.json.result.json`.
+This reuses the existing candidate staging, index lock, reference-transaction,
+hook-exit, signature/config and closed-loader protections; plain `git commit`
+without that receipt is not a conversion proof.
+
+```powershell
+npm run verify -- -Base BASE_COMMIT `
+  -Promote .data\verification\WORKTREE\run\run.json `
+  -CandidateRequest .data\verification\CANDIDATE\request.json `
+  -Report .data\verification\QUALIFIED\report.json
+```
+
+The converter checks the original base, exact one-commit ancestry, unchanged
+branch/config/hooks and captured implementation, request/receipt signature,
+clean final index/worktree and actual candidate tree. It compares the complete
+verified input inventory with both the post-commit worktree and raw committed
+blob bytes/Git modes/link identities. Added/deleted inputs are accounted for;
+partial commits, extra history, hook changes and filter/newline transformations
+that cannot be proved byte-exact are refused. Equality of file text, `git diff`
+or a single fingerprint is insufficient.
+Ordinary verification also supports primary and detached linked checkouts:
+their reports explicitly mark candidate conversion unavailable. Unsupported
+candidate-only hook/index inspection does not silently approve conversion or
+prevent otherwise valid ordinary verification.
+
+Only explicitly proven content-only command contracts can reuse execution.
+Initially this is `typecheck` under the recognized Windows/default-npm launcher:
+the fixed command, TypeScript compiler implementation, npm shim, package metadata
+and two configuration files must match inspected content, without pre/post hooks,
+shadowing executables or injected startup options. Read-only `--listFilesOnly`
+probes must resolve every compilation input to the verified source inventory or
+the fingerprinted local dependency tree. Version strings and unchanged custom
+shim bytes do not establish HEAD independence.
+The npm launcher and entire npm implementation are also attested against the
+inspected Windows npm 11.16.0 distribution. The verified adjacent prefix helper
+is queried with its colocated trusted Node executable; if it would redirect the
+genuine launcher to a different prefix package, reuse is disabled. The verifier
+does not confuse an attested adjacent package with the effective implementation.
+Custom wrappers, altered npm code, unknown launcher locations, startup injection
+and unproven prefix redirection disable both same-source group reuse and candidate
+typecheck reuse. They do not qualify merely by reporting a version or keeping
+configuration strings unchanged. Such environments can still run fresh checks;
+the verifier neither installs a different npm nor rewrites prefix configuration.
+Other platforms, changed compilers/configuration, unresolved inputs and unknown
+launchers rerun normally. Backend builds/schema generation, workflow regressions,
+backend/operational tests, packaging, Android JVM tests/lint and device checks
+remain conservatively unproven or commit-sensitive and rerun.
+The original selected checks are never reduced. Current environment and retained
+build artifacts must also qualify; changing those reruns the applicable checks.
+Extending the content-only contracts is an execution-policy change requiring
+fresh human approval and regression evidence, not an automatic classifier.
+
+On Windows, preflight separately resolves native Node lookup (COM before EXE)
+and npm's default CMD lookup (the actual `PATHEXT` order). Both use the verification
+directory for relative PATH entries, recognize quoted entries and account for
+current-directory search suppression. The selected executables and search
+environment are bound; an unrecognized `node.com`, batch launcher or other
+selected Node path disables both reuse routes, even if its version is unchanged.
+PowerShell's external-script precedence is also bound in the Node environment:
+an earlier `node.ps1` cannot hide behind a later executable seen by CMD or native
+lookup. Discovery fingerprints an unknown script without executing it, and its
+presence disables reuse while ordinary authorized execution remains available.
+The selected locator, physical target and invocation kind remain distinct:
+resolving a script/batch alias to the Node executable does not turn it into a
+direct executable launch. Such aliases cannot seed reuse and are not executed
+as version probes. Classification tests use real PowerShell discovery and a
+narrow simulated alias resolution, not a claimed OS-level alias execution test.
+Ambiguous PATH syntax or an unavailable selected command blocks preflight rather
+than silently attesting a later executable. These probes do not modify PATH,
+PATHEXT or operating-system configuration.
+
+The resulting report's `source` is the candidate being qualified. A reused
+check retains its actual old `execution.source`, start/end time and command
+result, with an explicit `candidateReuse` reference. `transition` links the
+immutable old run and native request. It says that **old execution qualifies
+for this candidate**, not that the check executed on the new HEAD. A failed
+candidate attempt can subsequently use `--resume` on its own new run; its proof
+is revalidated before further reuse.
+
+Ordinary aggregation rejects conversion fields and missing/mismatched execution
+origins, including origin-less historical aggregates. Explicit conversion
+validation compares reused checks with authenticated originals without removing
+or substituting their execution sources.
+After independent review of the final candidate, explicitly revalidate a
+converted report using its local receipts and the same applicable tool settings:
+
+```powershell
+node scripts\verify.mjs --base BASE_COMMIT --combine --candidate-evidence `
+  --input .data\verification\QUALIFIED\report.json `
+  --report .data\verification\REVIEWED\report.json
+```
+
+This reads the signed terminal report, validates the conversion and current
+applicability, and checks full coverage without rerunning test commands. It
+does not authenticate an AI review. The reviewer must issue an actual conclusion
+for the final candidate, examining the transition, rerun checks and applicability
+of its earlier findings; changing an old review's HEAD is never a new review.
+Human policy review, runtime permissions, push/PR authority and remote CI remain
+independent. CI does not receive the private local receipt key and continues to
+execute its selected lanes and aggregate their ordinary reports.
 
 Controller and publication consumers must import local trust helpers from
 `scripts\development-policy.mjs`. The former `isVerificationPolicyPath` exports

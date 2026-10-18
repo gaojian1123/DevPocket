@@ -1,18 +1,22 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import fileSystem from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { checkDevelopmentReadiness, runDevelopment } from "../development-workflow.mjs";
 import { changedPaths, inspectWorktree, prepareCandidate, sha256 } from "../candidate-commit.mjs";
-import { executeVerification, git, sourceSnapshot } from "../verification.mjs";
+import { executeVerification, git, sourceSnapshot, validateVerificationEvidence } from "../verification.mjs";
 import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "../native-candidate.mjs";
+import { syntheticExecution } from "./fixtures/verification-tools.mjs";
 
 const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
-  "verification-android.mjs", "backend-diagnostics.mjs"];
+  "verification-android.mjs", "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs",
+  "verification-transition.mjs"];
 
 function nativeSession() {
   return { sessionId: "fixture-session", rpc: { tools: {
@@ -200,7 +204,7 @@ test("skill delivery verifies a committed candidate against the original task ba
   assert.deepEqual(plan.changedFiles, ["README.md"]);
   assert.deepEqual((await verificationPlan(root, "HEAD")).changedFiles, [],
     "Replacing the task base with the candidate would hide the task's changes.");
-  const report = await executeVerification(root, plan, { directory: path.join(root, ".data", "candidate") });
+  const report = await executeVerification(root, plan, { directory: path.join(root, ".data", "verification", "candidate") });
   assert.equal(report.status, "passed");
   assert.equal(report.complete, true);
   assert.equal(combineVerification(plan, [report]).status, "passed");
@@ -619,37 +623,47 @@ test("gate changes and missing agent results stop rather than granting self-appr
 test("tooling-only impact retains the controller's protected-policy stop before any execution or review", async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
   const { verificationPlan } = await import("../verification.mjs");
-  for (const file of ["AGENTS.md", "scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs",
+  const { developmentReviewRequirements } = await import("../development-policy.mjs");
+  const files = ["AGENTS.md", "scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs",
     "scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
     "scripts/native-candidate.mjs", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
     "scripts/verify.mjs", "scripts/verify.ps1", "scripts/tests/verification.test.mjs",
-    ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"]) {
-    await t.test(file, async (t) => {
-      const { root } = await workspace(t);
-      let calls = 0;
-      const result = await runDevelopment(durable({
-        runId: "tooling-protection", args: { goal: "Task", acceptance: ["Behavior"] }, phase() {}, log() {},
-        agent: async (_prompt, options) => {
-          calls++;
-          assert.equal(options.agent, "general-purpose");
-          await mkdir(path.dirname(path.join(root, file)), { recursive: true });
-          await writeFile(path.join(root, file), "// fixture\n");
-          return implemented(root, "Changed routing policy.");
-        },
-      }), { root, verify: async () => { assert.fail("Tooling-only impact cannot authorize modified policy."); } });
-      assert.equal(result.status, "needs_human");
-      assert.equal(calls, 1);
-      const plan = await verificationPlan(root, "HEAD");
-      assert.deepEqual(plan.requiredChecks, ["workflow-tests"]);
-      assert.deepEqual(plan.requiredGroups, ["tooling"]);
-      assert.equal(Object.hasOwn(plan, "requiresHumanReview"), false);
-      assert.deepEqual(result.policyReview, {
-        requiresHumanReview: true, protectedPaths: [file], source: plan.source,
-      });
-      assert.equal(result.verification, undefined);
-      assert.equal(result.review, undefined);
+    ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"];
+  const { root } = await workspace(t);
+  for (const file of files) {
+    await t.test(file, async () => {
+      const absolute = path.join(root, file);
+      await mkdir(path.dirname(absolute), { recursive: true });
+      await writeFile(absolute, "// fixture\n");
+      try {
+        const plan = await verificationPlan(root, "HEAD");
+        assert.deepEqual(plan.requiredChecks, ["workflow-tests"]);
+        assert.deepEqual(plan.requiredGroups, ["tooling"]);
+        assert.equal(Object.hasOwn(plan, "requiresHumanReview"), false);
+        assert.deepEqual(developmentReviewRequirements(plan.changedFiles), {
+          requiresHumanReview: true, protectedPaths: [file],
+        });
+      } finally { await rm(absolute); }
     });
   }
+  let calls = 0;
+  const result = await runDevelopment(durable({
+    runId: "tooling-protection", args: { goal: "Task", acceptance: ["Behavior"] }, phase() {}, log() {},
+    agent: async (_prompt, options) => {
+      calls++;
+      assert.equal(options.agent, "general-purpose");
+      for (const file of files) await writeFile(path.join(root, file), "// fixture\n");
+      return implemented(root, "Changed routing policy.");
+    },
+  }), { root, verify: async () => { assert.fail("Tooling-only impact cannot authorize modified policy."); } });
+  const plan = await verificationPlan(root, "HEAD");
+  assert.equal(result.status, "needs_human");
+  assert.equal(calls, 1);
+  assert.deepEqual(result.policyReview, {
+    requiresHumanReview: true, protectedPaths: [...files].sort(), source: plan.source,
+  });
+  assert.equal(result.verification, undefined);
+  assert.equal(result.review, undefined);
 });
 
 test("local review requirements preserve trust boundaries independently of impact rules", async () => {
@@ -706,7 +720,7 @@ test("post-review controller handoff uses local requirements even when verificat
         assert.equal(Object.hasOwn(plan, "requiresHumanReview"), false);
         assert.deepEqual(plan.requiredGroups, ["tooling", "backend"]);
         return { ...plan, status: "passed", complete: true, group: "all", requiresHumanReview: !requiresHumanReview,
-          checks: plan.requiredChecks.map((id) => ({ id, status: "passed", exitCode: 0 })) };
+          checks: plan.requiredChecks.map((id) => ({ id, status: "passed", exitCode: 0, execution: syntheticExecution(plan.source) })) };
       } });
       assert.equal(executions, 1);
       assert.deepEqual(calls, ["general-purpose", "devpocket-reviewer"]);
@@ -951,21 +965,26 @@ test("changed filesystem-monitor configuration is rejected before it can execute
 
 test("skill, compiler, Gradle launcher and nested dependency policy require review before execution", async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
-  for (const file of [".github/skills/devpocket-development/SKILL.md", ".npmrc", ".NPMRC", "backend/tsconfig.json", "android/gradlew.bat",
-    "android/gradle/wrapper/gradle-wrapper.properties", "deployment/azure/package.json"]) {
-    await t.test(file, async (t) => {
-      const { root } = await workspace(t);
-      const result = await runDevelopment(durable({
-        runId: "policy-input", args: { goal: "Task", acceptance: ["Behavior"] }, phase() {}, log() {},
-        agent: async () => {
-          await mkdir(path.dirname(path.join(root, file)), { recursive: true });
-          await writeFile(path.join(root, file), "{}\n");
-          return implemented(root, "Changed a policy input.");
-        },
-      }), { root, verify: async () => { assert.fail("The replacement policy must not execute."); } });
-      assert.equal(result.status, "needs_human");
+  const { developmentReviewRequirements } = await import("../development-policy.mjs");
+  const files = [".github/skills/devpocket-development/SKILL.md", ".npmrc", ".NPMRC", "backend/tsconfig.json", "android/gradlew.bat",
+    "android/gradle/wrapper/gradle-wrapper.properties", "deployment/azure/package.json"];
+  for (const file of files) {
+    await t.test(file, () => {
+      assert.deepEqual(developmentReviewRequirements([file]), { requiresHumanReview: true, protectedPaths: [file] });
     });
   }
+  const { root } = await workspace(t);
+  const result = await runDevelopment(durable({
+    runId: "policy-input", args: { goal: "Task", acceptance: ["Behavior"] }, phase() {}, log() {},
+    agent: async () => {
+      for (const file of files.filter((file) => file !== ".NPMRC")) {
+        await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+        await writeFile(path.join(root, file), "{}\n");
+      }
+      return implemented(root, "Changed policy inputs.");
+    },
+  }), { root, verify: async () => { assert.fail("The replacement policy must not execute."); } });
+  assert.equal(result.status, "needs_human");
 });
 
 function documentationTask(root, overrides = {}) {
@@ -982,7 +1001,7 @@ function documentationTask(root, overrides = {}) {
 
 function syntheticReport(plan) {
   return { ...plan, group: "all", status: "passed", complete: true,
-    checks: plan.requiredChecks.map((id) => ({ id, status: "passed", exitCode: 0 })) };
+    checks: plan.requiredChecks.map((id) => ({ id, status: "passed", exitCode: 0, execution: syntheticExecution(plan.source) })) };
 }
 
 test("a no-op initial task verifies and reviews the existing clean HEAD without an empty commit", async (t) => {
@@ -1064,6 +1083,52 @@ test("candidate implementation capture includes every verification adapter and r
   await requireCandidateImplementation(captured);
   const legacy = { ...captured, files: captured.files.filter((file) => !verificationInputs.includes(file.name)) };
   await assert.rejects(requireCandidateImplementation(legacy), /captured controller\/helper implementation/);
+});
+
+test("cold capture only settles byte-identical Windows metadata, never a changed executable input", async (t) => {
+  for (const changedBytes of [false, true]) await t.test(changedBytes ? "changed bytes" : "metadata only", async (t) => {
+    const { root } = await workspace(t);
+    const { directory } = await copiedController(root);
+    const target = await fileSystem.realpath(path.join(directory, "verification-backend.mjs"));
+    const expected = await readFile(target);
+    await fileSystem.utimes(target, 1, 1);
+    const originalOpen = fileSystem.open;
+    let injected = false;
+    const mocked = t.mock.method(fileSystem, "open", async (file, ...args) => {
+      const handle = await originalOpen(file, ...args);
+      if (file !== target) return handle;
+      return new Proxy(handle, { get(value, key) {
+        if (key === "read") return async (...parameters) => {
+          const result = await value.read(...parameters);
+          if (!injected) {
+            injected = true;
+            if (changedBytes) {
+              const altered = Buffer.from(expected);
+              altered[0] ^= 1;
+              await writeFile(target, altered);
+            }
+            await fileSystem.utimes(target, 2, 1);
+          }
+          return result;
+        };
+        const member = Reflect.get(value, key, value);
+        return typeof member === "function" ? member.bind(value) : member;
+      } });
+    });
+    syncBuiltinESMExports();
+    try {
+      if (changedBytes || process.platform !== "win32") {
+        await assert.rejects(captureCandidateImplementation(directory), /changed while being captured/);
+      } else {
+        const captured = await captureCandidateImplementation(directory);
+        assert.equal(captured.files.find((file) => file.name === "verification-backend.mjs").sha256, sha256(expected));
+      }
+      assert.equal(injected, true);
+    } finally {
+      mocked.mock.restore();
+      syncBuiltinESMExports();
+    }
+  });
 });
 
 test("native approval cannot execute a changed helper, import or wrapper", async (t) => {
@@ -1911,28 +1976,31 @@ test("a no-op repair retains the failed candidate instead of repeating acceptanc
 });
 
 test("stale, partial, incomplete and missing-native verification cannot qualify a committed candidate", async (t) => {
-  for (const scenario of ["stale-head", "partial", "missing-check", "missing-native"]) {
-    await t.test(scenario, async (t) => {
-      const { root } = await workspace(t);
-      const result = await runDevelopment(documentationTask(root, {
-        agent: async (_prompt, options) => {
-          assert.notEqual(options.agent, "devpocket-reviewer", "Invalid verification is never sent for approval.");
-          const directory = path.join(root, "backend", scenario === "missing-native" ? "src" : "tests");
-          await mkdir(directory, { recursive: true });
-          await writeFile(path.join(directory, "fixture.ts"), "// fixture\n");
-          return implemented(root);
-        },
-      }), { root, verify: async (_root, plan) => {
+  const { root } = await workspace(t);
+  const result = await runDevelopment(documentationTask(root, {
+    agent: async (_prompt, options) => {
+      assert.notEqual(options.agent, "devpocket-reviewer", "Invalid verification is never sent for approval.");
+      const directory = path.join(root, "backend", "src");
+      await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, "fixture.ts"), "// fixture\n");
+      return implemented(root);
+    },
+  }), { root, verify: async (_root, plan) => {
+    for (const scenario of ["stale-head", "partial", "missing-check", "missing-native"]) {
+      await t.test(scenario, async () => {
         const value = syntheticReport(plan);
         if (scenario === "stale-head") value.source = { ...plan.source, head: plan.base };
         if (scenario === "partial") { value.status = "partial"; value.complete = false; }
         if (scenario === "missing-check") value.checks = [];
-        return value;
-      } });
-      assert.equal(result.status, "blocked");
-      assert.notEqual(result.candidate.commit, result.base);
-    });
-  }
+        await assert.rejects(validateVerificationEvidence(root, plan, [value], {
+          candidateEvidence: true, requireComplete: true,
+        }));
+      });
+    }
+    return syntheticReport(plan);
+  } });
+  assert.equal(result.status, "blocked");
+  assert.notEqual(result.candidate.commit, result.base);
 });
 
 test("high-risk review and protected policy boundaries remain distinct from committed readiness", async (t) => {

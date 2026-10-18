@@ -235,6 +235,18 @@ Shared process execution, cross-lane CI, shared dependencies and unknown paths
 remain conservative full impact. Runtime/wire compatibility coverage is retained,
 and mixed changes take the union. Plans explain responsibilities, not approval.
 
+Verification now preflights only selected groups before expensive checks and
+retains immutable, checkout-local run receipts. Explicit `-Resume RUN_JSON`
+continues failed or unfinished groups while reusing still-valid successful
+groups; source/policy changes, unconfirmed cleanup and interrupted owners remain
+blocking. A separately authorized native candidate commit can use `-Promote`
+with its bound request/receipt to qualify eligible content-only checks for the
+candidate without rewriting their original execution HEAD or time. Ordinary
+aggregation, human approvals, independent review and remote CI remain separate.
+See the recovery and candidate-conversion sections in the development guide;
+these are local verification operations, not an App wake-up scheduler or a
+cross-commit cache.
+
 Local execution trust and human-review requirements belong to
 `scripts\development-policy.mjs`, shared by skill-led development and the optional
 controller. Tooling-only selection still stops before unapproved protected-policy

@@ -23,6 +23,10 @@ export async function readOnlyGit(root, args) {
 
 export async function sourceSnapshot(root) {
   const head = (await git(root, ["rev-parse", "--verify", "HEAD"])).trim();
+  return { head, fingerprint: digest(JSON.stringify(await sourceInputs(root))) };
+}
+
+export async function sourceInputs(root) {
   const modes = new Map();
   for (const entry of splitPaths(await readOnlyGit(root, ["ls-files", "--stage", "-z"]))) {
     const tab = entry.indexOf("\t");
@@ -45,5 +49,33 @@ export async function sourceSnapshot(root) {
       entries.push([file, "deleted"]);
     }
   }
-  return { head, fingerprint: digest(JSON.stringify(entries)) };
+  return entries;
+}
+
+export async function committedSourceInputs(root, commit) {
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) throw new Error("An exact commit is required.");
+  const entries = splitPaths(await readOnlyGit(root, ["ls-tree", "-r", "-z", "--full-tree", commit])).map((entry) => {
+    const tab = entry.indexOf("\t"), [mode, type, oid] = entry.slice(0, tab).split(" ");
+    if (type !== "blob" || !["100644", "100755", "120000"].includes(mode)) throw new Error("Unsupported committed input.");
+    return { file: entry.slice(tab + 1), mode, oid };
+  }).sort((a, b) => a.file < b.file ? -1 : a.file > b.file ? 1 : 0);
+  const reading = exec("git", ["--no-pager", ...readOnlyGitArgs(["cat-file", "--batch"])],
+    { cwd: root, encoding: "buffer", maxBuffer: 64 * 1024 * 1024, timeout: 30000 });
+  reading.child.stdin.end(entries.map((entry) => entry.oid).join("\n") + (entries.length ? "\n" : ""));
+  const { stdout } = await reading;
+  let offset = 0;
+  const inputs = entries.map(({ file, mode, oid }) => {
+    const end = stdout.indexOf(10, offset);
+    if (end < offset) throw new Error("Incomplete committed input evidence.");
+    const [actual, type, length] = stdout.subarray(offset, end).toString("ascii").split(" ");
+    const size = Number(length);
+    offset = end + 1;
+    if (actual !== oid || type !== "blob" || !Number.isSafeInteger(size) || size < 0 ||
+        offset + size >= stdout.length || stdout[offset + size] !== 10) throw new Error("Invalid committed input evidence.");
+    const hash = digest(stdout.subarray(offset, offset + size));
+    offset += size + 1;
+    return [file, mode, mode === "120000" ? "link" : "file", hash];
+  });
+  if (offset !== stdout.length) throw new Error("Unexpected committed input evidence.");
+  return inputs;
 }

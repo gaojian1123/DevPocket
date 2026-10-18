@@ -27,6 +27,11 @@ export function verificationFailure(error, phase = "command") {
     ...(Number.isSafeInteger(index) && index >= 0 && index < 128 ? { inputIndex: index } : {}),
     ...(["app", "instrumentation"].includes(artifact) ? { artifact } : {}),
     ...(Array.isArray(missing) ? { missingChecks: CHECKS.filter((item) => missing.includes(item.id)).map((item) => item.id) } : {}),
+    ...(["node", "command-ownership", "powershell", "output-directory", "root-dependencies", "npm", "git",
+      "ssh-keygen", "python", "azure-dependencies", "probe-python", "operations-python", "jdk", "android-platform-35",
+      "gradle-wrapper", "android-entry", "android-output", "backend-output", "gradle-cache", "native-configuration",
+      "android-image", "adb", "emulator-acceleration", "typecheck-contract"]
+      .includes(ownValue(context, "prerequisite")) ? { prerequisite: ownValue(context, "prerequisite") } : {}),
   };
 }
 
@@ -92,6 +97,17 @@ export async function executeVerification(root, plan, options = {}) {
   return executor.executeVerification(root, plan, options);
 }
 
+export async function validateVerificationEvidence(root, plan, reports, options = {}) {
+  if (options.requireComplete === true &&
+      (reports.length !== 1 || reports[0]?.status !== "passed" || reports[0].complete !== true)) {
+    throw verificationFault("check-failed");
+  }
+  if (!reports.some((report) => report?.transition)) return combineVerification(plan, reports);
+  if (!options.candidateEvidence || reports.length !== 1) throw verificationFault("candidate-evidence-required");
+  const { validateCandidateVerification } = await import("./verification-transition.mjs");
+  return validateCandidateVerification(root, plan, reports[0], options);
+}
+
 export function requireCheckPolicy(plan) {
   if (plan.version !== VERIFICATION_REPORT_VERSION || !Array.isArray(plan.requiredChecks) ||
       JSON.stringify(plan.requiredChecks) !== JSON.stringify(CHECKS.filter((check) => plan.requiredChecks.includes(check.id)).map((check) => check.id)) ||
@@ -105,38 +121,12 @@ export function combineVerification(plan, reports) {
   requireCheckPolicy(plan);
   const passed = new Map();
   for (const [inputIndex, report] of reports.entries()) {
-    const context = { inputIndex, group: report?.group };
-    if (!report || typeof report !== "object" || !Array.isArray(report.checks)) throw verificationFault("report-invalid", context);
-    if (report.version !== plan.version) throw verificationFault("policy-mismatch", context);
-    if (report.base !== plan.base ||
-        report.source?.head !== plan.source.head || report.source?.fingerprint !== plan.source.fingerprint) {
-      throw verificationFault("source-mismatch", context);
-    }
-    if (!["passed", "partial"].includes(report.status)) {
-      const failed = report.checks.find((item) => CHECKS.some((check) => check.id === item?.id) &&
-        ["failed", "blocked"].includes(item.status));
-      throw verificationFault("check-failed", { ...context, check: failed?.id });
-    }
-    if (JSON.stringify(report.requiredChecks) !== JSON.stringify(plan.requiredChecks) ||
-        JSON.stringify(report.requiredGroups) !== JSON.stringify(plan.requiredGroups)) throw verificationFault("policy-mismatch", context);
-    if (!["all", ...CHECK_GROUPS].includes(report.group)) throw verificationFault("check-group", context);
-    const seen = new Set();
-    for (const check of report.checks ?? []) {
-      const definition = CHECKS.find((item) => item.id === check?.id);
-      if (!definition || !plan.requiredChecks.includes(check.id)) throw verificationFault("check-unexpected", context);
-      if (seen.has(check.id)) throw verificationFault("check-duplicate", { ...context, check: check.id });
-      seen.add(check.id);
-      if (check.status === "not_run") continue;
-      if (report.group !== "all" && definition.group !== report.group) throw verificationFault("check-group", { ...context, check: check.id });
-      if (check.status !== "passed" || check.exitCode !== 0) throw verificationFault("check-failed", { ...context, check: check.id });
-      if (check.collectionStatus === "failed" || check.reportedDeviceCollectionStatus === "failed" ||
-          check.workerDiagnostics?.collectionStatus === "failed" || check.deviceDiagnostics?.collectionStatus === "failed") {
-        throw verificationFault("collector-failed", { ...context, check: check.id });
-      }
+    for (const check of validatedReportChecks(plan, report, inputIndex)) {
+      const context = { inputIndex, group: report.group };
       if (passed.has(check.id)) throw verificationFault("check-duplicate", { ...context, check: check.id });
-      if (check.id === "android-device") validateDeviceEvidence(check.deviceEvidence, plan, report.environment?.platform);
       passed.set(check.id, {
-        id: definition.id, status: "passed", exitCode: 0,
+        id: check.id, status: "passed", exitCode: 0,
+        execution: checkExecution(check, plan.source),
         ...(Number.isSafeInteger(check.durationMs) && check.durationMs >= 0 && check.durationMs <= 86400000
           ? { durationMs: check.durationMs } : {}),
         ...(check.id === "android-device" ? { deviceEvidence: publicDeviceEvidence(check.deviceEvidence) } : {}),
@@ -147,6 +137,93 @@ export function combineVerification(plan, reports) {
   if (missing.length) throw verificationFault("shard-missing", { missing });
   return { ...plan, group: "all", status: "passed", complete: true,
     checks: plan.requiredChecks.map((id) => passed.get(id)) };
+}
+
+function checkExecution(check, source) {
+  const value = check.execution;
+  const timestamp = (text) => typeof text === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(text) &&
+    Number.isFinite(Date.parse(text)) && new Date(text).toISOString() === text;
+  if (!value || !timestamp(value.startedAt) || !timestamp(value.completedAt) ||
+      value.completedAt < value.startedAt || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value.source?.head ?? "") ||
+      !/^[a-f0-9]{64}$/.test(value.source?.fingerprint ?? "")) {
+    throw verificationFault("execution-origin", { check: check.id });
+  }
+  if (value.source.head !== source.head || value.source.fingerprint !== source.fingerprint) {
+    throw verificationFault("candidate-evidence-required", { check: check.id });
+  }
+  return { source: { head: value.source.head, fingerprint: value.source.fingerprint },
+    startedAt: value.startedAt, completedAt: value.completedAt };
+}
+
+function validatedReportChecks(plan, report, inputIndex) {
+  const context = { inputIndex, group: report?.group };
+  if (!report || typeof report !== "object" || !Array.isArray(report.checks)) throw verificationFault("report-invalid", context);
+  if (report.version !== plan.version) throw verificationFault("policy-mismatch", context);
+  if (report.base !== plan.base ||
+      report.source?.head !== plan.source.head || report.source?.fingerprint !== plan.source.fingerprint) {
+    throw verificationFault("source-mismatch", context);
+  }
+  if (report.transition || report.checks.some((check) => check?.candidateReuse ||
+      check?.execution?.source && (check.execution.source.head !== report.source?.head ||
+        check.execution.source.fingerprint !== report.source?.fingerprint))) {
+    throw verificationFault("candidate-evidence-required", context);
+  }
+  if (!["passed", "partial"].includes(report.status)) {
+    const failed = report.checks.find((item) => CHECKS.some((check) => check.id === item?.id) &&
+      ["failed", "blocked"].includes(item.status));
+    throw verificationFault("check-failed", { ...context, check: failed?.id });
+  }
+  if (JSON.stringify(report.requiredChecks) !== JSON.stringify(plan.requiredChecks) ||
+      JSON.stringify(report.requiredGroups) !== JSON.stringify(plan.requiredGroups)) throw verificationFault("policy-mismatch", context);
+  if (!["all", ...CHECK_GROUPS].includes(report.group)) throw verificationFault("check-group", context);
+  const seen = new Set(), passed = [];
+  for (const check of report.checks) {
+    const definition = CHECKS.find((item) => item.id === check?.id);
+    if (!definition || !plan.requiredChecks.includes(check.id)) throw verificationFault("check-unexpected", context);
+    if (seen.has(check.id)) throw verificationFault("check-duplicate", { ...context, check: check.id });
+    seen.add(check.id);
+    if (check.status === "not_run") continue;
+    if (report.group !== "all" && definition.group !== report.group) throw verificationFault("check-group", { ...context, check: check.id });
+    if (check.status !== "passed" || check.exitCode !== 0) throw verificationFault("check-failed", { ...context, check: check.id });
+    checkExecution(check, plan.source);
+    if (check.collectionStatus === "failed" || check.reportedDeviceCollectionStatus === "failed" ||
+        check.workerDiagnostics?.collectionStatus === "failed" || check.deviceDiagnostics?.collectionStatus === "failed") {
+      throw verificationFault("collector-failed", { ...context, check: check.id });
+    }
+    if (check.id === "android-device") validateDeviceEvidence(check.deviceEvidence, plan, report.environment?.platform);
+    passed.push(check);
+  }
+  return passed;
+}
+
+export function requireCompletedVerificationGroup(plan, report, group, validatedReuse = new Map()) {
+  requirePlanCollection(plan);
+  requireCheckPolicy(plan);
+  if (!plan.requiredGroups.includes(group) || report.group !== group) throw verificationFault("check-group", { group });
+  const checks = requireVerificationResults(plan, report, validatedReuse);
+  const required = CHECKS.filter((check) => check.group === group && plan.requiredChecks.includes(check.id)).map((check) => check.id);
+  if (JSON.stringify(checks.map((check) => check.id)) !== JSON.stringify(required) ||
+      report.sourceValidation?.status === "failed" || report.failure ||
+      checks.some((check) => check.executionState !== "exited" || check.privateLog?.availability !== "retained" ||
+        check.commandOutcome?.observedProcess !== "owned-command-supervisor" || check.commandOutcome.reason !== "exit" ||
+        check.commandOutcome.exitCode !== 0 || check.commandOutcome.cleanupFailure !== null)) {
+    throw verificationFault("check-failed", { group });
+  }
+  return checks;
+}
+
+export function requireVerificationResults(plan, report, validatedReuse = new Map()) {
+  requirePlanCollection(plan);
+  requireCheckPolicy(plan);
+  if (!Array.isArray(report.checks)) throw verificationFault("report-invalid");
+  for (const check of report.checks.filter((item) => item?.candidateReuse)) {
+    if (!validatedReuse.has(check.id) || JSON.stringify(check) !== JSON.stringify(validatedReuse.get(check.id))) {
+      throw verificationFault("candidate-evidence-required", { check: check.id });
+    }
+  }
+  const checks = validatedReportChecks(plan, { ...report, checks: report.checks.filter((item) => !item?.candidateReuse) });
+  return report.checks.filter((item) => item?.candidateReuse || checks.includes(item));
 }
 
 export function validateDeviceEvidence(evidence, plan, platform) {

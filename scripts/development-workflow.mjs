@@ -1,6 +1,6 @@
 import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { combineVerification, executeVerification, readOnlyGit, sourceSnapshot, verificationPlan } from "./verification.mjs";
+import { executeVerification, readOnlyGit, sourceSnapshot, validateVerificationEvidence, verificationPlan } from "./verification.mjs";
 import { developmentReviewRequirements } from "./development-policy.mjs";
 import { activeHookSnapshot, assertCandidate, assertIdentity, changedPaths, inspectWorktree, prepareCandidate, sameHooks, sameSource,
   sha256, taskPaths, validateCandidateCommit } from "./candidate-commit.mjs";
@@ -151,7 +151,7 @@ export async function checkDevelopmentReadiness(root, result) {
         !result.verification?.complete || result.verification.status !== "passed" ||
         result.review?.verdict !== "pass" || result.review.reviewer !== "devpocket-reviewer" ||
         !sameSource(result.review.source, plan.source)) throw new Error("Source-bound verification and independent review no longer qualify.");
-    combineVerification(plan, [result.verification]);
+    await validateVerificationEvidence(root, plan, [result.verification], { candidateEvidence: true, requireComplete: true });
     await assertCandidate(root, current, result.candidate);
     return result;
   } catch (error) {
@@ -377,7 +377,7 @@ async function runAttempt(ctx, root, task, verify) {
         if (round === task.maxRepairRounds) return finish({ status: "blocked", reason: "Automatic repair rounds exhausted.", verification });
         continue;
       }
-      try { combineVerification(plan, [verification]); }
+      try { await validateVerificationEvidence(root, plan, [verification], { candidateEvidence: true, requireComplete: true }); }
       catch (error) { return finish(blocked(`Verification evidence rejected: ${error.message}`)); }
       ctx.phase("Review");
       state.stage = "reviewing";

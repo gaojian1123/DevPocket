@@ -1,5 +1,5 @@
-export const VERIFICATION_REPORT_VERSION = 3;
-export const isDiagnosticVerificationVersion = (version) => [1, 2, VERIFICATION_REPORT_VERSION].includes(version);
+export const VERIFICATION_REPORT_VERSION = 4;
+export const isDiagnosticVerificationVersion = (version) => [1, 2, 3, VERIFICATION_REPORT_VERSION].includes(version);
 
 export const CHECKS = [
   { id: "workflow-tests", group: "tooling" },
@@ -50,7 +50,7 @@ const rules = [
       "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
       "bounded-worker-log", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime",
     ].some((name) => file === `scripts/tests/${name}.test.mjs`) ||
-      file === "scripts/tests/fixtures/emulator-lease-peer.mjs", checks: tooling },
+      ["scripts/tests/fixtures/emulator-lease-peer.mjs", "scripts/tests/fixtures/verification-tools.mjs"].includes(file), checks: tooling },
   { id: "backend-execution", description: "Backend command adaptation, builds and packaging require backend checks, not native execution.",
     matches: (file) => ["scripts/verification-backend.mjs", "scripts/bundle-extension.mjs", "scripts/package-extension.ps1",
       "scripts/launch-cli-proof.ps1", "scripts/tests/extension-package.test.mjs", "scripts/tests/fixtures/proof-cli-process.mjs",
@@ -67,7 +67,8 @@ const rules = [
       /^(?:android\/gradle\/|android\/gradlew(?:\.bat)?$)/.test(file) ||
       /^android\/.*(?:\.gradle(?:\.kts)?|gradle\.properties)$/.test(file), ...nativeExecution },
   { id: "shared-execution", description: "The shared executor, process ownership, bounded logs and shared backend/native preflight require all downstream checks.",
-    matches: (file) => ["scripts/verification-executor.mjs", "scripts/process.mjs", "scripts/owned-command.ps1",
+    matches: (file) => ["scripts/verification-executor.mjs", "scripts/verification-preflight.mjs", "scripts/verification-run.mjs",
+      "scripts/verification-transition.mjs", "scripts/process.mjs", "scripts/owned-command.ps1",
       "scripts/owned-command.cs", "scripts/owned-command-windows.mjs", "scripts/owned-command-linux.py",
       "scripts/bounded-worker-log.mjs", "scripts/backend-diagnostics.mjs"].includes(file), ...full },
   { id: "operations", description: "Deployment and infrastructure changes, including their dependencies, require backend and operational fixtures.",
@@ -131,7 +132,7 @@ export function projectVerificationSelection(report, sourcePaths) {
   if (!Array.isArray(report?.requiredChecks)) return null;
   const selected = CHECKS.filter((check) => report.requiredChecks.includes(check.id));
   const requiredChecks = selected.map((check) => check.id);
-  const reasons = report.version === VERIFICATION_REPORT_VERSION && Array.isArray(report.selectionReasons) ? report.selectionReasons : [];
+  const reasons = [3, VERIFICATION_REPORT_VERSION].includes(report.version) && Array.isArray(report.selectionReasons) ? report.selectionReasons : [];
   let remainingPaths = pathLimit;
   return {
     requiredChecks, requiredGroups: [...new Set(selected.map((check) => diagnosticCheckGroup(check, report.version)))],

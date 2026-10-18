@@ -16,13 +16,13 @@ test("an actual compiler check exposes its trusted source/code through the publi
   await writeFile(path.join(root, ".gitignore"), ".data/\n");
   await writeFile(path.join(root, "README.md"), "fixture\n");
   await exec("git", ["init", "--quiet"], { cwd: root });
-  await exec("git", ["add", "."], { cwd: root });
-  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Fixture"], { cwd: root });
   const compiler = path.resolve("node_modules/typescript/bin/tsc");
   await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: {
     "test:workflow": "node -e \"process.exit(0)\"",
     typecheck: `node "${compiler}" --noEmit --pretty false --skipLibCheck backend/src/failure.ts`,
   } }));
+  await exec("git", ["add", "."], { cwd: root });
+  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Fixture"], { cwd: root });
   await mkdir(path.join(root, "backend", "src"), { recursive: true });
   await writeFile(path.join(root, "backend", "src", "failure.ts"), 'const value: number = "PRIVATE_COMPILER_CANARY";\n');
   const directory = path.join(root, ".data", "ci", "backend"), report = path.join(directory, "report.json");
@@ -162,12 +162,12 @@ test("historical local review flags are diagnostic-only and cannot manufacture a
   const file = "scripts/development-workflow.mjs";
   await mkdir(path.join(root, "scripts"));
   await writeFile(path.join(root, file), "// fixture\n");
-  for (const version of [1, 2, VERIFICATION_REPORT_VERSION]) {
+  for (const version of [1, 2, 3, VERIFICATION_REPORT_VERSION]) {
     for (const [label, requirement] of [["true", true], ["false", false], ["absent", undefined], ["invalid", "PRIVATE_REVIEW_CANARY"]]) {
       await t.test(`${version}: ${label}`, async () => {
         const directory = path.join(root, ".data", "ci", `review-${version}-${label}`);
         await mkdir(directory, { recursive: true });
-        const current = version === VERIFICATION_REPORT_VERSION;
+        const current = [3, VERIFICATION_REPORT_VERSION].includes(version);
         const checks = current ? ["workflow-tests"] : CHECKS.map((check) => check.id);
         await writeFile(path.join(directory, "plan.json"), JSON.stringify({
           version, status: "planned", complete: false, checks: [], requiredChecks: checks,

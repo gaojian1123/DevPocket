@@ -157,6 +157,17 @@ export async function collectVerificationDiagnostics(root, directory, job, stepR
       privateLog: { availability: input.status === "not_run" ? "not-produced" : "not-sampled", truncated: false },
       hints: [],
     };
+    const execution = input.execution;
+    if (/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(execution?.source?.head ?? "") &&
+        /^[a-f0-9]{64}$/.test(execution?.source?.fingerprint ?? "") &&
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(execution?.startedAt ?? "") &&
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(execution?.completedAt ?? "")) {
+      check.executionEvidence = {
+        kind: input.candidateReuse ? "candidate-reuse-claim" : "executed",
+        source: { head: execution.source.head, fingerprint: execution.source.fingerprint },
+        startedAt: execution.startedAt, completedAt: execution.completedAt, approval: "not-established",
+      };
+    }
     if (["failed", "blocked"].includes(input.status)) {
       if (input.privateLog?.availability === "not-produced") check.privateLog.availability = "not-produced";
       else {
