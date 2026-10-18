@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, open } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { executeVerification, validateVerificationEvidence, verificationPlan, verificationFailure, verificationFault, requirePlanCollection } from "./verification.mjs";
+import { executeVerification, validateVerificationEvidence, verificationPlan, verificationFailure, verificationFault,
+  requirePlanCollection, requireVerificationOutputDirectory } from "./verification.mjs";
 import { readDiagnosticReport } from "./worker-diagnostics.mjs";
 import { CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "./verification-policy.mjs";
 
@@ -36,6 +37,9 @@ async function main() {
   if (!["verification", "ci"].some((folder) => relative.startsWith(path.join(".data", folder) + path.sep))) {
     throw verificationFault("ownership-mismatch");
   }
+  const name = path.basename(reportPath);
+  if ((process.platform === "win32" ? name.toLowerCase() : name) === "run.json") throw verificationFault("run-output-reused");
+  await requireVerificationOutputDirectory(root, path.dirname(reportPath), [values.resume, values.promote]);
   let parent = root;
   for (const part of path.relative(root, path.dirname(reportPath)).split(path.sep)) {
     parent = path.join(parent, part);

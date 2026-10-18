@@ -4,7 +4,9 @@ import path from "node:path";
 import { diagnosticDirectory } from "./diagnostic-publication.mjs";
 import { diagnosticError } from "./diagnostic-errors.mjs";
 import { CHECKS, CHECK_GROUPS } from "./verification-policy.mjs";
-import { requireCheckPolicy, requireCompletedVerificationGroup, requireToolingShardReport, verificationFault } from "./verification.mjs";
+import { requireCheckPolicy, requireCompletedVerificationGroup, requireToolingShardReport, requireVerificationOutputDirectory,
+  verificationFault, verificationStorageLocation } from "./verification.mjs";
+export { verificationStorageLocation } from "./verification.mjs";
 
 const version = 2;
 const limit = 512 * 1024;
@@ -13,13 +15,6 @@ const samePath = (a, b) => process.platform === "win32" ? a.toLowerCase() === b.
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const tipPath = (root, id) => path.join(root, ".data", "verification", "local", `${id}.json`);
 const pathKey = (value) => process.platform === "win32" ? value.toLowerCase() : value;
-
-export async function verificationStorageLocation(root, value) {
-  const logical = path.resolve(root), physical = await realpath(logical);
-  const absolute = path.resolve(logical, value), relative = path.relative(logical, absolute);
-  return { root: physical, file: relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
-    ? absolute : path.resolve(physical, relative) };
-}
 
 function binding(plan, group, policy, options) {
   return { base: plan.base, source: plan.source, version: plan.version,
@@ -182,10 +177,14 @@ async function history(root, directory, manifest, signing) {
       latest.set(selected, receipt);
     }
     for (const selected of selectedGroups) {
+      const receipt = latest.get(selected);
+      const preflight = finish.report.preflight?.groups?.find((item) => item.group === selected);
+      const environmentChanged = preflight?.status === "passed" && preflight.fingerprint !== receipt?.environment;
       if (!finish.qualifiedGroups.includes(selected) && latest.has(selected) &&
-          finish.report.checks.some((check) => check.status === "passed" &&
-            CHECKS.some((definition) => definition.id === check.id && definition.group === selected))) {
-        latest.set(selected, { ...latest.get(selected), invalidated:
+          (preflight && preflight.status !== "passed" || environmentChanged ||
+            finish.report.checks.some((check) => check.status === "passed" &&
+              CHECKS.some((definition) => definition.id === check.id && definition.group === selected)))) {
+        latest.set(selected, { ...receipt, invalidated: environmentChanged ? "environment-changed" :
           ["environment-changed", "artifact-changed"].includes(finish.report.failure?.reason)
             ? finish.report.failure.reason : "environment-unconfirmed" });
       }
@@ -229,7 +228,7 @@ export async function readCandidateInput(root, file) {
 }
 
 export async function openVerificationRun(root, plan, options, policy, promotionContext = null) {
-  const location = await verificationStorageLocation(root, options.directory);
+  const location = await requireVerificationOutputDirectory(root, options.directory, [options.resume, options.promote]);
   const resume = options.resume ? (await verificationStorageLocation(root, options.resume)).file : undefined;
   root = location.root;
   options = { ...options, directory: location.file, resume };

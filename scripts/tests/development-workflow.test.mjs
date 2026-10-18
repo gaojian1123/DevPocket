@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { checkDevelopmentReadiness, runDevelopment } from "../development-workflow.mjs";
-import { changedPaths, inspectWorktree, prepareCandidate, sha256 } from "../candidate-commit.mjs";
+import { changedPaths, inspectWorktree, prepareCandidate, sha256, validateCandidateReceiptProof } from "../candidate-commit.mjs";
 import { executeVerification, git, sourceSnapshot, validateVerificationEvidence } from "../verification.mjs";
 import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "../native-candidate.mjs";
 import { syntheticExecution } from "./fixtures/verification-tools.mjs";
@@ -1352,6 +1352,48 @@ test("a configured hook changed after candidate preparation cannot execute", asy
   const after = await inspectWorktree(root);
   assert.equal(after.source.head, before.source.head);
   assert.equal(after.index, before.index);
+});
+
+test("native receipt proof prerequisites are checked before candidate mutation", isolatedCases, async (t) => {
+  await Promise.all(["missing", "valid", "truncated", "hook-change"].map((scenario) =>
+    t.test(scenario, async (t) => {
+      const { root, main } = await workspace(t), directory = path.join(root, ".data", "verification", "local");
+      await mkdir(directory, { recursive: true });
+      const key = path.join(directory, "receipt.key");
+      if (scenario !== "missing") await writeFile(key, Buffer.alloc(scenario === "truncated" ? 31 : 32, 7), { mode: 0o600 });
+      if (scenario === "hook-change") await writeFile(path.join(main, ".git", "hooks", "pre-commit"),
+        "#!/bin/sh\nprintf changed > .data/verification/local/receipt.key\n", { mode: 0o755 });
+      const before = await inspectWorktree(root);
+      await writeFile(path.join(root, "README.md"), "Candidate proof fixture\n");
+      const { request } = await prepareCandidate(root, before, await sourceSnapshot(root),
+        ["README.md"], "fixture-session", "Keep commit outcome separate from proof availability",
+        undefined, await captureCandidateImplementation());
+      const file = path.join(root, ".data", "candidate-proof.json"), bytes = JSON.stringify(request) + "\n";
+      await writeFile(file, bytes);
+      let failure;
+      try {
+        await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", nativeCandidateCommand(file, sha256(bytes))],
+          { cwd: root, timeout: 60000 });
+      } catch (error) { failure = error; }
+      const receipt = JSON.parse(await readFile(`${file}.result.json`, "utf8")), after = await inspectWorktree(root);
+      if (scenario === "truncated") {
+        assert.equal(receipt.status, "blocked");
+        assert.equal(failure?.code, 1);
+        assert.equal(after.source.head, before.source.head, "Invalid proof storage must stop before advancing HEAD.");
+        assert.equal(after.index, before.index);
+      } else {
+        assert.equal(receipt.status, "committed", failure?.stderr);
+        assert.equal(failure, undefined);
+        assert.equal(receipt.candidate.commit, after.source.head);
+        assert.equal(receipt.candidate.parent, before.source.head);
+        if (scenario === "valid") await validateCandidateReceiptProof(root, sha256(bytes), receipt);
+        else if (scenario === "missing") assert.equal(receipt.verificationProof, undefined);
+        else {
+          assert.match(receipt.verificationProof.signature, /^[a-f0-9]{64}$/);
+          await assert.rejects(validateCandidateReceiptProof(root, sha256(bytes), receipt));
+        }
+      }
+    })));
 });
 
 test("verification cannot refresh changed external hooks into a repair baseline", async (t) => {

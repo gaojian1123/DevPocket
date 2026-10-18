@@ -1,3 +1,5 @@
+import { lstat, realpath } from "node:fs/promises";
+import path from "node:path";
 import { readOnlyGit, sourceSnapshot } from "./git-state.mjs";
 import { deviceSourceCatalogue } from "./device-diagnostics.mjs";
 import { diagnosticError, failureDetails, ownValue, diagnosticVersion } from "./diagnostic-errors.mjs";
@@ -11,6 +13,43 @@ const baselineDeviceClasses = ["NativeFlowTest", "AdaptiveLayoutTest", "FixtureF
 
 export function verificationFault(reason, context = {}, cause) {
   return Object.assign(diagnosticError(reason, cause), { verificationContext: context });
+}
+
+export async function verificationStorageLocation(root, value) {
+  const logical = path.resolve(root), physical = await realpath(logical);
+  const absolute = path.resolve(logical, value), relative = path.relative(logical, absolute);
+  return { root: physical, file: relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
+    ? absolute : path.resolve(physical, relative) };
+}
+
+export async function requireVerificationOutputDirectory(root, directory, retainedRuns = []) {
+  const location = await verificationStorageLocation(root, directory);
+  const inside = (parent, value) => {
+    const relative = path.relative(parent, value);
+    return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  };
+  const relative = path.relative(location.root, location.file);
+  if (!["verification", "ci", "development"].some((name) => {
+    const allowed = path.join(".data", name);
+    return relative === allowed || relative.startsWith(allowed + path.sep);
+  })) throw verificationFault("ownership-mismatch");
+  for (const file of retainedRuns.filter(Boolean)) {
+    const retained = await verificationStorageLocation(root, file);
+    if (inside(path.dirname(retained.file), location.file)) throw verificationFault("run-output-reused");
+  }
+  let current = location.root;
+  for (const [index, part] of relative.split(path.sep).entries()) {
+    current = path.join(current, part);
+    let info;
+    try { info = await lstat(current); }
+    catch (error) { if (error.code === "ENOENT") return location; throw error; }
+    if (!info.isDirectory() || info.isSymbolicLink()) throw verificationFault("ownership-mismatch");
+    if (index === 0) continue;
+    try { await lstat(path.join(current, "run.json")); }
+    catch (error) { if (error.code === "ENOENT") continue; throw error; }
+    throw verificationFault("run-output-reused");
+  }
+  return location;
 }
 
 export function verificationFailure(error, phase = "command") {

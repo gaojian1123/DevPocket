@@ -5,7 +5,8 @@ import { sourceSnapshot } from "./git-state.mjs";
 import { diagnosticError, failureDetails, commandDetails, contextualFailure } from "./diagnostic-errors.mjs";
 import { boundedDiagnosticBytes } from "./bounded-worker-log.mjs";
 import { CHECKS, CHECK_GROUPS } from "./verification-policy.mjs";
-import { combineVerification, requireCheckPolicy, requirePlanCollection, verificationFailure, verificationFault } from "./verification.mjs";
+import { combineVerification, requireCheckPolicy, requirePlanCollection, requireVerificationOutputDirectory,
+  verificationFailure, verificationFault } from "./verification.mjs";
 import { backendVerification, prepareBackendVerification } from "./verification-backend.mjs";
 import { androidVerification } from "./verification-android.mjs";
 import { acquireVerificationLock, openVerificationRun, readVerificationRun } from "./verification-run.mjs";
@@ -50,6 +51,7 @@ export async function executeVerification(root, plan, options = {}) {
     check.toolingShard = toolingShardDescriptor(plan, options.toolingShard);
   }
   const selected = plan.requiredGroups.filter((item) => group === "all" || item === group);
+  await requireVerificationOutputDirectory(root, options.directory, [options.resume, options.promote]);
   const release = await acquireVerificationLock(root);
   let run, preflight, report, sourceFailure, policy, transition, qualificationFailed = false,
     policyChanged = false, changed = false, safe = true, processesStopped = true, finished = false;
@@ -134,7 +136,8 @@ export async function executeVerification(root, plan, options = {}) {
           }
           if (changed || sourceFailure || selectedChecks.some((check) => check.status !== "passed")) break;
         }
-        if (!options.signal?.aborted && checks.some((check) => check.status === "passed")) {
+        options.signal?.throwIfAborted();
+        if (checks.some((check) => check.status === "passed")) {
           const after = await verificationPreflight(root, plan, { ...options,
             onEmulatorIdentity: (value) => { finalEmulator = value; } });
           const probesStopped = !after.groups.some((item) => item.issues.some(({ failure }) =>
@@ -176,7 +179,7 @@ export async function executeVerification(root, plan, options = {}) {
         ...(transition ? { transition } : { candidateConversion: run.promotion }) };
     } catch (error) {
       if (error.processTreeStopped === false) { safe = false; processesStopped = false; }
-      const failure = verificationFailure(error, error.verificationContext?.phase ?? "preflight");
+      const failure = verificationFailure(contextualFailure(error, options.signal), error.verificationContext?.phase ?? "preflight");
       report = { ...reportFor(plan, group, checks), status: "blocked", complete: false, failure, error: failure.summary,
         ...(preflight ? { preflight } : {}), ...(run ? { run: run.reference } : {}), recovery, ...(transition ? { transition } : {}),
         ...(emulatorChanges ? { emulatorInputChanges: emulatorChanges } : {}) };
@@ -230,6 +233,11 @@ export async function executeVerification(root, plan, options = {}) {
         report.complete = false;
         qualifiedGroups.clear();
       }
+    }
+    if (options.signal?.aborted && ["passed", "partial"].includes(report.status)) {
+      const failure = verificationFailure(contextualFailure(options.signal.reason, options.signal), "preflight");
+      Object.assign(report, { status: "blocked", complete: false, failure, error: failure.summary });
+      qualifiedGroups.clear();
     }
     if (run) {
       await run.finish(report, safe && !changed && !sourceFailure && !policyChanged && !qualificationFailed, [...qualifiedGroups]);

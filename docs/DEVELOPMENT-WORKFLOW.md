@@ -854,6 +854,12 @@ The terminal receipt records which complete groups passed their post-execution
 environment check. A successful command without that qualification is permanently
 invalidated for reuse in that run, even if earlier environment bytes are restored.
 Unaffected qualified groups remain reusable; the affected group must execute again.
+An initial preflight failure or observed fingerprint change also invalidates
+that group's earlier receipt when no check ran in the new attempt. Restoring
+the old inputs cannot erase this recorded observation. Cancellation after a
+command finishes but before terminal qualification blocks partial groups and
+tooling shards as well as complete runs; their passed checks cannot be aggregated
+as qualified results.
 Version-1 runs without this terminal qualification cannot resume or seed candidate
 conversion; keep them as history and start a new run rather than adding fields.
 
@@ -869,6 +875,12 @@ storage, without linked parents; readers never execute paths from a record.
 Each storage root itself is a valid run directory, not just its descendants.
 CLI report destinations remain limited to verification/CI storage; development
 storage is an internal controller surface, not an additional CLI destination.
+Report/output directories cannot be a retained ledger directory or anything
+beneath it. The pure CLI path guard checks this before creating directories or
+opening a report, including planning/aggregation; direct execution and run APIs
+apply the same guard before acquiring ownership or writing attempt records.
+`run.json` is reserved for ledger manifests, not a CLI report filename. Invalid
+destinations produce an explicit entry error without adding files to old evidence.
 A supported checkout-root alias resolves to the same physical storage owner;
 links inside evidence storage still fail closed, and native workspace identity
 continues to retain the caller's original checkout path.
@@ -900,6 +912,13 @@ native permission pipeline. Its new optional, locally authenticated receipt
 binds the approved request bytes and completed candidate result; older unsigned,
 missing, blocked or uncertain commit receipts cannot qualify conversion.
 Neither the receipt nor the verifier grants commit authority or human approval.
+When a local verification key exists, the native path validates and snapshots
+it before any Git mutation. A truncated or unreadable key therefore cannot
+advance HEAD and then turn a successful commit into a failed-commit receipt.
+Proof generation uses that snapshot, not a fallible post-commit key read. If a
+hook changes the key, the committed outcome is retained but its old-key proof
+cannot validate against the changed store. Missing keys preserve the existing
+unsigned-commit path; those receipts still cannot qualify promotion.
 
 For skill-led delivery, retain the run's signed `promotionContext` and use the
 existing `prepareCandidate`, `captureCandidateImplementation` and

@@ -1783,6 +1783,49 @@ test("preflight preserves cancellation and owned-process cleanup evidence rather
     failure.observedProcess === "owned-command-supervisor" && failure.processTreeStopped === true), JSON.stringify(failures));
 });
 
+test("late cancellation blocks partial groups and tooling shards before terminal qualification", async (t) => {
+  const root = await repository(t), scripts = path.join(root, "scripts");
+  await mkdir(path.join(scripts, "tests"), { recursive: true });
+  await copyFile(path.resolve("scripts", "test-workflow.mjs"), path.join(scripts, "test-workflow.mjs"));
+  for (const [index, file] of WORKFLOW_TEST_FILES.entries()) await writeFile(path.join(root, file),
+    `import {test} from 'node:test';test('fixture-${index}',()=>{});\n`);
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: {
+    "test:workflow": "node scripts/test-workflow.mjs", typecheck: "node -e \"console.log('completed fixture')\"",
+  } }));
+  const program = path.join(root, ".data", "late-cancellation.mjs");
+  await mkdir(path.dirname(program), { recursive: true });
+  await writeFile(program, [
+    "import fs from 'node:fs/promises';import path from 'node:path';import {syncBuiltinESMExports} from 'node:module';",
+    `import {executeVerification,verificationPlan} from ${JSON.stringify(pathToFileURL(path.resolve("scripts/verification.mjs")).href)};`,
+    "const group=process.argv[2], root=process.cwd(), controller=new AbortController();",
+    "const plan={...await verificationPlan(root,'HEAD'),requiredChecks:['workflow-tests','typecheck'],requiredGroups:['tooling','backend'],layouts:false};",
+    "const directory=path.join(root,'.data','verification',group);await fs.mkdir(directory,{recursive:true});",
+    "const original=fs.open;let intercepted=false;",
+    "fs.open=async(file,...args)=>{const handle=await original(file,...args);",
+    " if(path.basename(file)==='0001-'+group+'.json'){const sync=handle.sync.bind(handle);",
+    "  handle.sync=async()=>{await sync();intercepted=true;controller.abort(new Error('PRIVATE_LATE_CANCEL'));};}",
+    " return handle;};syncBuiltinESMExports();",
+    "try{const report=await executeVerification(root,plan,{directory,group,signal:controller.signal,",
+    " ...(group==='tooling'?{toolingShard:plan.toolingShards.parts[0].id}:{})});",
+    " console.log(JSON.stringify({plan,report,intercepted}));}",
+    "finally{fs.open=original;syncBuiltinESMExports();}",
+  ].join("\n"));
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  for (const group of ["backend", "tooling"]) await t.test(group, async () => {
+    const { stdout } = await exec(process.execPath, [program, group], { cwd: root, env, timeout: 120000 });
+    const { plan, report, intercepted } = JSON.parse(stdout.trim());
+    assert.equal(intercepted, true);
+    assert.equal(report.checks.find((check) => check.id === (group === "backend" ? "typecheck" : "workflow-tests")).status, "passed");
+    assert.equal(report.status, "blocked");
+    assert.equal(report.complete, false);
+    assert.equal(report.failure.reason, "command-cancelled");
+    assert.equal(JSON.stringify(report).includes("PRIVATE_LATE_CANCEL"), false);
+    assert.throws(() => combineVerification(plan, [report]), { diagnosticCode: "check-failed" });
+    await assert.rejects(readFile(path.join(root, ".data", "verification", "local", "execution.lock")), { code: "ENOENT" });
+  });
+});
+
 test("recovery rejects changed HEAD, source bytes, base, requirements and selected group before execution", async (t) => {
   const { root, base, counts } = await recoveryFixture(t);
   const first = await recordedVerification(root, base);
@@ -1860,6 +1903,67 @@ test("terminal qualification invalidates only unconfirmed groups and cannot revi
     { status: "invalidated", reason: "environment-changed" });
   assert.equal((await third.reusable("backend", first.environment, first.artifacts, true)).status, "reused");
   await assert.rejects(third.finish(first.report, true), { diagnosticCode: "run-invalid" });
+});
+
+test("preflight-only failures invalidate affected history even after its original inputs return", async (t) => {
+  for (const changed of [false, true]) await t.test(changed ? "changed fingerprint" : "blocked prerequisite", async (t) => {
+    const { root, base } = await recoveryFixture(t), first = await recordedVerification(root, base);
+    const second = await openVerificationRun(root, first.plan, {
+      directory: path.join(root, ".data", "verification", randomUUID()), resume: first.report.run.manifest,
+    }, first.policy);
+    await second.finish({ ...first.report, run: second.reference, status: "blocked", complete: false,
+      checks: first.report.checks.map(({ id }) => ({ id, status: !changed && id === "typecheck" ? "blocked" : "not_run" })),
+      ...(changed ? { failure: { reason: "command-cancelled" } } : {}),
+      preflight: { status: changed ? "passed" : "blocked", groups: [
+        { group: "tooling", status: "passed", fingerprint: first.environment, issues: [] },
+        { group: "backend", status: changed ? "passed" : "blocked",
+          ...(changed ? { fingerprint: "d".repeat(64), issues: [] }
+            : { issues: [{ prerequisite: "root-dependencies", failure: { reason: "preflight-dependencies" } }] }) },
+      ] },
+    }, true);
+    const third = await openVerificationRun(root, first.plan, {
+      directory: path.join(root, ".data", "verification", randomUUID()), resume: first.report.run.manifest,
+    }, first.policy);
+    assert.deepEqual(await third.reusable("backend", first.environment, first.artifacts, true),
+      { status: "invalidated", reason: changed ? "environment-changed" : "environment-unconfirmed" });
+    assert.equal((await third.reusable("tooling", first.environment, first.artifacts, true)).status, "reused");
+    await third.finish({ ...first.report, run: third.reference, status: "blocked", complete: false,
+      checks: first.report.checks.map(({ id }) => ({ id, status: "not_run" })) }, true);
+  });
+});
+
+test("verification output cannot add files or attempts inside an immutable retained ledger", async (t) => {
+  for (const mode of ["resume", "promote", "plan", "combine", "execute", "open", "reserved-name"]) await t.test(mode, async (t) => {
+    const root = await repository(t);
+    await writeFile(path.join(root, "README.md"), "Ledger output fixture\n");
+    const first = await recordedVerification(root, "HEAD");
+    const ledger = path.dirname(path.resolve(root, first.report.run.manifest)), names = await readdir(ledger);
+    const bytes = await Promise.all(names.map((name) => readFile(path.join(ledger, name))));
+    const output = path.join(ledger, "nested", "retry.json");
+    const options = { directory: path.dirname(output), resume: first.report.run.manifest };
+    if (mode === "execute") {
+      const { executeVerification } = await import("../verification.mjs");
+      await assert.rejects(executeVerification(root, first.plan, options), { diagnosticCode: "run-output-reused" });
+    } else if (mode === "open") {
+      await assert.rejects(openVerificationRun(root, first.plan, options, first.policy), { diagnosticCode: "run-output-reused" });
+    } else {
+      const report = mode === "reserved-name" ? path.join(root, ".data", "verification", "new", "run.json") : output;
+      const args = mode === "resume" ? ["--resume", first.report.run.manifest]
+        : mode === "promote" ? ["--promote", first.report.run.manifest, "--candidate-request", path.join(root, ".data", "unused.json")]
+          : mode === "plan" ? ["--plan"] : mode === "combine" ? ["--combine", "--input", first.reportPath] : [];
+      await assert.rejects(exec(process.execPath, [entry, "--repo", root, "--base", "HEAD", "--report", report, ...args],
+        { timeout: 30000 }), (error) => error.code === 1 && /run-output-reused/.test(error.stderr));
+      await assert.rejects(readFile(report), { code: "ENOENT" });
+    }
+    assert.deepEqual(await readdir(ledger), names);
+    assert.deepEqual(await Promise.all(names.map((name) => readFile(path.join(ledger, name)))), bytes);
+    assert.equal((await readVerificationRun(root, first.report.run.manifest)).count, 1);
+    const next = await openVerificationRun(root, first.plan, {
+      directory: `${ledger}-next`, resume: first.report.run.manifest,
+    }, first.policy);
+    await next.finish({ ...first.report, run: next.reference }, true, first.plan.requiredGroups);
+    assert.equal((await readVerificationRun(root, first.report.run.manifest)).count, 2);
+  });
 });
 
 test("observed environment drift cannot be erased by restoring the initial dependency bytes", async (t) => {

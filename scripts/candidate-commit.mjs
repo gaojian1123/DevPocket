@@ -310,8 +310,7 @@ async function verificationReceiptKey(root) {
   return key;
 }
 
-async function candidateReceiptProof(root, requestHash, candidate) {
-  const key = await verificationReceiptKey(root);
+function candidateReceiptProof(key, requestHash, candidate) {
   return { version: 1, request: requestHash,
     signature: createHmac("sha256", key).update(`candidate-receipt-v1\n${requestHash}\n${JSON.stringify(candidate)}`).digest("hex") };
 }
@@ -320,7 +319,7 @@ export async function validateCandidateReceiptProof(root, requestHash, receipt) 
   const proof = receipt?.verificationProof;
   if (receipt?.status !== "committed" || proof?.version !== 1 || proof.request !== requestHash ||
       !/^[a-f0-9]{64}$/.test(proof.signature ?? "")) fail("A locally bound completed native commit receipt is required.");
-  const expected = await candidateReceiptProof(root, requestHash, receipt.candidate);
+  const expected = candidateReceiptProof(await verificationReceiptKey(root), requestHash, receipt.candidate);
   if (!timingSafeEqual(Buffer.from(expected.signature, "hex"), Buffer.from(proof.signature, "hex"))) {
     fail("Native commit receipt binding is invalid.");
   }
@@ -668,7 +667,7 @@ async function commitInspectedIndex(root, request) {
   return candidate;
 }
 
-export async function commitCandidate(request) {
+async function commitCandidateResult(request, requestHash) {
   if (request?.version !== 4 || !request.expected || !request.hooks || !request.execution || path.resolve(request.root) !== request.expected.identity?.root ||
       !/^[A-Za-z0-9-]{1,100}$/.test(request.sessionId ?? "") || !taskPaths(request.files).length) {
     fail("Invalid candidate commit request.");
@@ -682,8 +681,21 @@ export async function commitCandidate(request) {
     fail("Concurrent source, history or index changes detected before staging; nothing was committed.");
   }
   await requireHooks(root, request.hooks);
-  try { return await commitInspectedIndex(root, request); }
-  catch (error) { throw Object.assign(error, { candidateFailure: error.candidateFailure ?? "commit-failed" }); }
+  let key;
+  if (requestHash) {
+    try { key = await verificationReceiptKey(root); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  try {
+    let candidate;
+    try { candidate = await commitInspectedIndex(root, request); }
+    catch (error) { throw Object.assign(error, { candidateFailure: error.candidateFailure ?? "commit-failed" }); }
+    return { candidate, ...(key ? { verificationProof: candidateReceiptProof(key, requestHash, candidate) } : {}) };
+  } finally { key?.fill(0); }
+}
+
+export async function commitCandidate(request) {
+  return (await commitCandidateResult(request)).candidate;
 }
 
 export async function runCandidateRequest(file, hash) {
@@ -692,10 +704,7 @@ export async function runCandidateRequest(file, hash) {
   if (input.length > 1024 * 1024 || sha256(input) !== hash) fail("The candidate request changed before execution.");
   const receipt = await open(`${file}.result.json`, "wx", 0o600);
   try {
-    const candidate = await commitCandidate(JSON.parse(input));
-    let verificationProof;
-    try { verificationProof = await candidateReceiptProof(JSON.parse(input).root, hash, candidate); }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
+    const { candidate, verificationProof } = await commitCandidateResult(JSON.parse(input), hash);
     await receipt.writeFile(JSON.stringify({ status: "committed", candidate, ...(verificationProof ? { verificationProof } : {}) }) + "\n");
     await receipt.sync();
   } catch (error) {
