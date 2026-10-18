@@ -7,7 +7,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationImpact } from "../verification-policy.mjs";
-import { developmentReviewRequirements } from "../development-policy.mjs";
+import { developmentReviewRequirements, isVerificationPolicyPath } from "../development-policy.mjs";
 import { WORKFLOW_TEST_FILES } from "../test-workflow.mjs";
 
 const exec = promisify(execFile);
@@ -82,7 +82,8 @@ test("task-routing tooling selects only its complete regression suite, independe
       assert.deepEqual(result.report.requiredChecks, ["workflow-tests"]);
       assert.deepEqual(result.report.requiredGroups, ["tooling"]);
       assert.equal(Object.hasOwn(result.report, "requiresHumanReview"), false);
-      assert.equal(developmentReviewRequirements(result.report.changedFiles).requiresHumanReview, true);
+      assert.equal(developmentReviewRequirements(result.report.changedFiles).requiresHumanReview,
+        files.some((file) => file === "AGENTS.md" || file === "scripts/workflow-extension.mjs"));
       assert.equal(result.report.layouts, false);
       assert.deepEqual(result.report.changedFiles, [...files].sort());
       assert.deepEqual(result.report.selectionReasons.flatMap((reason) => reason.paths).sort(), [...files].sort());
@@ -112,9 +113,12 @@ test("development orchestration and named agent instructions remain protected wi
       assert.deepEqual(result.report.requiredGroups, ["tooling"]);
       assert.equal(result.report.layouts, false);
       assert.equal(Object.hasOwn(result.report, "requiresHumanReview"), false);
-      assert.deepEqual(developmentReviewRequirements(result.report.changedFiles), {
-        requiresHumanReview: true, protectedPaths: files.filter((file) => tooling.includes(file)).sort(),
-      });
+      const requirements = developmentReviewRequirements(result.report.changedFiles);
+      const protectedPaths = files.filter((file) => tooling.includes(file) &&
+        !file.startsWith("scripts/tests/") && file !== ".github/ISSUE_TEMPLATE/ai-task.yml").sort();
+      assert.equal(requirements.requiresHumanReview, protectedPaths.length > 0);
+      assert.deepEqual(requirements.protectedPaths, protectedPaths);
+      assert.deepEqual(requirements.reviewPaths, []);
       const publicPlan = JSON.parse(result.stdout.split(/\r?\n/).find((line) => line.startsWith("{")));
       assert.deepEqual(Object.keys(publicPlan).sort(),
         ["kind", "layouts", "requiredChecks", "requiredGroups", "selectionReasons"]);
@@ -191,7 +195,8 @@ test("documentation and an unchanged checkout select no checks or groups", async
       assert.deepEqual(report.requiredChecks, []);
       assert.deepEqual(report.requiredGroups, []);
       assert.equal(Object.hasOwn(report, "requiresHumanReview"), false);
-      assert.deepEqual(developmentReviewRequirements(report.changedFiles), { requiresHumanReview: false, protectedPaths: [] });
+      assert.deepEqual(developmentReviewRequirements(report.changedFiles),
+        { requiresHumanReview: false, protectedPaths: [], reviewPaths: [], reasons: [] });
       assert.equal(report.layouts, false);
       assert.deepEqual(report.selectionReasons.map((item) => item.rule), files.length ? ["documentation"] : []);
       const combined = await verify(root, ["--combine", ...CHECK_GROUPS.flatMap((group) => ["--upstream", `${group}:skipped`])]);
@@ -222,7 +227,8 @@ test("shared execution, cross-lane CI, shared dependencies and unknown paths ret
     assert.deepEqual(report.requiredChecks, CHECKS.map((check) => check.id));
     assert.deepEqual(report.requiredGroups, ["tooling", "backend", "android", "device"]);
     assert.equal(Object.hasOwn(report, "requiresHumanReview"), false);
-    assert.equal(developmentReviewRequirements(report.changedFiles).requiresHumanReview, true);
+    assert.equal(developmentReviewRequirements(report.changedFiles).requiresHumanReview,
+      !(rule === "unknown" && file.startsWith("scripts/")));
     assert.equal(report.layouts, true);
     assert.deepEqual(report.selectionReasons.map((item) => item.rule), [rule]);
     assert.deepEqual(report.selectionReasons[0].paths, [file]);
@@ -257,7 +263,7 @@ test("backend and native execution inputs select their actual side, including bu
     assert.deepEqual(report.requiredGroups, groups);
     assert.equal(report.layouts, layouts);
     assert.deepEqual(report.selectionReasons.map((item) => item.rule), [rule]);
-    assert.equal(developmentReviewRequirements(report.changedFiles).requiresHumanReview, true);
+    assert.equal(developmentReviewRequirements(report.changedFiles).requiresHumanReview, isVerificationPolicyPath(file));
   });
 });
 
@@ -269,7 +275,11 @@ test("the complete workflow suite and pure evidence modules are tooling, not app
     assert.deepEqual(impact.requiredChecks, ["workflow-tests"], file);
     assert.deepEqual(impact.requiredGroups, ["tooling"], file);
     assert.equal(impact.layouts, false, file);
-    assert.deepEqual(developmentReviewRequirements([file]), { requiresHumanReview: true, protectedPaths: [file] });
+    const requirements = developmentReviewRequirements([file]);
+    const protectedInput = !file.startsWith("scripts/tests/");
+    assert.equal(requirements.requiresHumanReview, protectedInput, file);
+    assert.deepEqual(requirements.protectedPaths, protectedInput ? [file] : [], file);
+    assert.deepEqual(requirements.reviewPaths, [], file);
   }
   assert.ok(CHECKS.every((check) => JSON.stringify(Object.keys(check).sort()) === '["group","id"]'),
     "The impact catalogue cannot carry executable commands or arguments.");
@@ -296,7 +306,8 @@ test("local Xcode setup and root ignore policy select tooling without weakening 
     assert.deepEqual(impact.requiredChecks, ["workflow-tests"]);
     assert.deepEqual(impact.requiredGroups, ["tooling"]);
     assert.equal(impact.layouts, false);
-    assert.equal(developmentReviewRequirements(files).requiresHumanReview, true);
+    // Tooling coverage is not an approval rule; the unclassified template still needs review.
+    assert.equal(developmentReviewRequirements(files).requiresHumanReview, files.includes("config/xcode-mcp.example.json"));
   }
   for (const file of ["package.json", "package-lock.json", "scripts/process.mjs", ".github/workflows/ci.yml",
     "scripts/setup-xcode-mcp-extra.mjs", "config/another-mcp.example.json",
