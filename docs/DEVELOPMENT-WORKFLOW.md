@@ -724,6 +724,12 @@ files; it does not accept licenses. Native preflight requires platform/build-too
 metadata before executing a build. This prevents the SDK's legacy loader from
 creating package records during a first build and invalidating that run's inputs.
 
+Hosted Ubuntu's JDK cache is an alias to an installed JDK whose trust store can
+live outside that directory. Native CI prepares a job-local JDK copy in
+`RUNNER_TEMP` and materializes its selected `lib/security/cacerts` there, without
+changing the original JDK, trust store or Java version. Other links stay subject
+to the unchanged bounded-tree preflight rules; they are not blindly dereferenced.
+
 Preflight failures identify a fixed prerequisite and safe diagnostic reason
 before any expensive selected check starts. A passing preflight is not
 acceptance: later downloads, fixtures, device execution, artifact validation and
@@ -1169,7 +1175,7 @@ Artifacts are explicit and separate:
   `device-test-diagnostics`, `owned-worker-diagnostics`: only their corresponding
   projected JSON. Android and worker projections require successful current
   creation; the readiness marker prevents publishing refused/pre-existing files.
-- `native-platform-diagnostics`: the protected fixed-suite report.
+- `native-platform-diagnostics-attempt-N`: the protected fixed-suite report, retained separately for each CI attempt.
 - The existing tested-APK artifact remains **success-only** and still contains
   exactly the app APK, instrumentation APK and qualifying device report.
 

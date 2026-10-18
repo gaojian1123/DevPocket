@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
@@ -37,6 +37,52 @@ async function alive(pid) {
   try { return parseLinuxProcess(await readFile(`/proc/${pid}/stat`, "utf8")).state !== "Z"; }
   catch (error) { if (error.code === "ENOENT") return false; throw error; }
 }
+
+test("hosted preparation snapshots the JDK cache alias and trust store without changing their sources", async (t) => {
+  const directory = await fixture(t), source = path.join(directory, "jdk"), alias = path.join(directory, "cache");
+  const temporary = path.join(directory, "temporary"), store = path.join(directory, "trust-store");
+  await mkdir(path.join(source, "bin"), { recursive: true });
+  await mkdir(path.join(source, "lib", "security"), { recursive: true });
+  await mkdir(temporary);
+  await mkdir(store);
+  await writeFile(path.join(source, "bin", "java"), "#!/bin/sh\nexit 0\n");
+  await chmod(path.join(source, "bin", "java"), 0o755);
+  await writeFile(path.join(source, "release"), 'JAVA_VERSION="21.0.12"\n');
+  await writeFile(path.join(source, "lib", "src.zip"), "fixture-source");
+  await symlink("lib/src.zip", path.join(source, "src.zip"));
+  const certificate = path.join(store, "cacerts");
+  await writeFile(certificate, "fixture-trust-store");
+  await symlink(certificate, path.join(source, "lib", "security", "cacerts"));
+  await symlink(source, alias);
+  const environmentFile = path.join(directory, "environment"), pathFile = path.join(directory, "path");
+  await writeFile(environmentFile, "");
+  await writeFile(pathFile, "");
+  const action = (await readFile(".github/actions/prepare-native/action.yml", "utf8")).replaceAll("\r\n", "\n");
+  const step = action.split("    - name: Snapshot the selected JDK for bounded verification\n")[1]?.split("\n    - ")[0];
+  assert.ok(step);
+  const body = step.split("      run: |\n")[1].split("\n").map((line) => line.startsWith("        ") ? line.slice(8) : line).join("\n");
+  const run = () => exec("bash", ["--noprofile", "--norc", "-c", body], {
+    cwd: directory, timeout: 20000,
+    env: { ...process.env, JAVA_HOME: alias, RUNNER_TEMP: temporary, GITHUB_ENV: environmentFile, GITHUB_PATH: pathFile },
+  });
+  await run();
+  const environment = await readFile(environmentFile, "utf8"), snapshot = /^JAVA_HOME=(.+)$/m.exec(environment)?.[1];
+  assert.ok(snapshot && path.dirname(snapshot) === temporary);
+  assert.equal((await lstat(snapshot)).isSymbolicLink(), false);
+  assert.equal((await lstat(path.join(snapshot, "lib", "security", "cacerts"))).isSymbolicLink(), false);
+  assert.equal((await lstat(path.join(snapshot, "src.zip"))).isSymbolicLink(), true);
+  assert.equal(await realpath(path.join(snapshot, "src.zip")), path.join(snapshot, "lib", "src.zip"));
+  assert.equal(await readFile(path.join(snapshot, "lib", "security", "cacerts"), "utf8"), "fixture-trust-store");
+  assert.equal(await readFile(certificate, "utf8"), "fixture-trust-store");
+  assert.equal(await realpath(alias), source);
+  assert.equal((await lstat(path.join(source, "lib", "security", "cacerts"))).isSymbolicLink(), true);
+  assert.equal(await readFile(pathFile, "utf8"), `${snapshot}/bin\n`);
+  await rm(path.join(source, "lib", "security"), { recursive: true });
+  await symlink(store, path.join(source, "lib", "security"));
+  await assert.rejects(run(), (error) => error.code === 1);
+  assert.equal(await readFile(certificate, "utf8"), "fixture-trust-store");
+  assert.equal(await readFile(environmentFile, "utf8"), environment);
+});
 
 test("short successful Linux commands keep their real exit status while the process table changes", async () => {
   for (let index = 0; index < 20; index++) {

@@ -2003,6 +2003,36 @@ test("missing SDK package metadata blocks before executing the native build", as
   await assert.rejects(readFile(path.join(root, ".data", "native-ran")), { code: "ENOENT" });
 });
 
+test("hosted JDK aliases need a self-contained prepared tree, not weaker preflight", async (t) => {
+  const { verificationPreflight } = await import("../verification-preflight.mjs");
+  const root = await repository(t, { native: true }), tools = toolchains.get(root);
+  await mkdir(path.join(root, "scripts"));
+  await writeFile(path.join(root, "scripts", "build-android.ps1"), "# never executed\n");
+  const alias = path.join(root, ".data", "jdk-cache"), store = path.join(root, ".data", "trust-store");
+  await mkdir(store);
+  await writeFile(path.join(store, "cacerts"), "fixture-trust-store");
+  await mkdir(path.join(tools.jdk, "lib"));
+  await symlink(store, path.join(tools.jdk, "lib", "security"), process.platform === "win32" ? "junction" : "dir");
+  await symlink(tools.jdk, alias, process.platform === "win32" ? "junction" : "dir");
+  const plan = await verificationPlan(root, "HEAD", true);
+  const preflight = (jdk) => verificationPreflight(root, plan, {
+    group: "android", jdk, sdk: tools.sdk, directory: path.join(root, ".data", "verification", "jdk-preflight"),
+  });
+  for (const jdk of [alias, tools.jdk]) {
+    const blocked = await preflight(jdk);
+    assert.equal(blocked.status, "blocked");
+    assert.ok(blocked.groups[0].issues.some((issue) => issue.prerequisite === "jdk" && issue.failure.reason === "preflight-path"));
+  }
+  const snapshot = path.join(root, ".data", "jdk-snapshot");
+  await cp(tools.jdk, snapshot, { recursive: true, dereference: true });
+  assert.equal((await preflight(snapshot)).status, "passed");
+  assert.equal(await readFile(path.join(store, "cacerts"), "utf8"), "fixture-trust-store");
+  const action = await readFile(".github/actions/prepare-native/action.yml", "utf8");
+  assert.match(action, /Snapshot the selected JDK for bounded verification/);
+  assert.ok(action.indexOf("Snapshot the selected JDK") < action.indexOf("Prepare hosted KVM"));
+  assert.match(action, /native-platform-diagnostics-attempt-\$\{\{ github\.run_attempt \}\}/);
+});
+
 test("tooling-only preflight never inspects unrelated Java, SDK, image or probe-Python settings", async (t) => {
   const { verificationPreflight } = await import("../verification-preflight.mjs");
   const { root, counts } = await recoveryFixture(t);

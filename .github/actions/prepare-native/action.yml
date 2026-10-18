@@ -11,6 +11,22 @@ runs:
       with:
         distribution: temurin
         java-version: '21'
+    - name: Snapshot the selected JDK for bounded verification
+      shell: bash
+      run: |
+        set -euo pipefail
+        source_jdk="$(realpath -- "$JAVA_HOME")"
+        test -x "$source_jdk/bin/java" && test -f "$source_jdk/release"
+        test -f "$source_jdk/lib/security/cacerts"
+        jdk="$(mktemp -d "$RUNNER_TEMP/devpocket-jdk.XXXXXX")"
+        cp -RP --preserve=mode,timestamps -- "$source_jdk/." "$jdk/"
+        test -d "$jdk/lib" && test ! -L "$jdk/lib"
+        test -d "$jdk/lib/security" && test ! -L "$jdk/lib/security"
+        certificates="$(realpath -- "$source_jdk/lib/security/cacerts")"
+        cp --remove-destination --preserve=mode,timestamps -- "$certificates" "$jdk/lib/security/cacerts"
+        test -x "$jdk/bin/java" && test -f "$jdk/release"
+        printf 'JAVA_HOME=%s\n' "$jdk" >> "$GITHUB_ENV"
+        printf '%s/bin\n' "$jdk" >> "$GITHUB_PATH"
     - shell: bash
       run: npm ci --no-audit --no-fund
     - name: Prepare hosted KVM and stable SDK packages without accepting new licenses
@@ -42,7 +58,7 @@ runs:
     - uses: actions/upload-artifact@v7
       if: always() && steps.platform_tests.outputs.report_ready == 'true'
       with:
-        name: native-platform-diagnostics
+        name: native-platform-diagnostics-attempt-${{ github.run_attempt }}
         path: .data/ci/preparation/platform-diagnostics.json
         if-no-files-found: error
     - name: Check the emulator loader and resolve only its approved missing runtime dependency
