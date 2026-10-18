@@ -15,7 +15,7 @@ const executionScripts = new Set([
   "emulator-resources", "linux-emulator", "linux-runtime", "manual-emulator", "native-startup",
   "start-test-emulator", "stop-test-emulator", "test-native-layouts", "save-debug-artifact",
 ]);
-const sensitiveBackend = new Set(["security", "runtime", "files", "protocol", "store", "relay", "bridge", "host-record"]);
+const sensitiveBackend = new Set(["security", "runtime", "files", "protocol", "store", "relay", "bridge", "host-record", "push"]);
 const packageMetadata = new Set(["name", "version", "description", "author", "contributors", "license", "keywords",
   "homepage", "bugs", "repository", "funding"]);
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -76,12 +76,14 @@ function packageExecution(text) {
   return Object.fromEntries(Object.entries(value).filter(([key]) => !packageMetadata.has(key)));
 }
 
-export function developmentReviewRequirements(files, packageChanges = {}) {
+export function developmentReviewRequirements(files, packageChanges = {}, policyPaths = []) {
+  const retained = new Set(changedPaths(policyPaths));
   const grouped = new Map();
-  for (const file of changedPaths(files)) {
+  for (const file of changedPaths([...new Set([...changedPaths(files), ...retained])])) {
     let code = classification(file);
     const change = Object.hasOwn(packageChanges, file) ? packageChanges[file] : null;
-    if (/(?:^|\/)package\.json$/i.test(file) && change?.before !== undefined && change?.after !== undefined) {
+    if (!retained.has(file) && /(?:^|\/)package\.json$/i.test(file) &&
+        change?.before !== undefined && change?.after !== undefined) {
       try {
         if (canonical(packageExecution(change.before)) === canonical(packageExecution(change.after))) code = null;
       } catch (error) {
@@ -104,8 +106,9 @@ export function developmentReviewRequirements(files, packageChanges = {}) {
   };
 }
 
-export async function inspectDevelopmentPolicy(root, base, files, git) {
-  files = changedPaths(files);
+export async function inspectDevelopmentPolicy(root, base, files, git, policyPaths = []) {
+  policyPaths = changedPaths(policyPaths);
+  files = changedPaths([...new Set([...changedPaths(files), ...policyPaths])]);
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(base)) throw new TypeError("An explicit task base is required.");
   const physicalRoot = await realpath(root), inputs = [];
   const contents = Object.create(null), beforeContents = Object.create(null), packageChanges = Object.create(null);
@@ -149,7 +152,7 @@ export async function inspectDevelopmentPolicy(root, base, files, git) {
       }
     }
   }
-  const requirements = developmentReviewRequirements(files, packageChanges);
+  const requirements = developmentReviewRequirements(files, packageChanges, policyPaths);
   const required = new Set([...requirements.protectedPaths, ...requirements.reviewPaths]);
   const project = (values) => Object.assign(Object.create(null),
     Object.fromEntries(Object.entries(values).filter(([file]) => required.has(file))));

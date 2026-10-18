@@ -156,7 +156,10 @@ Evaluate the local `inspectDevelopmentPolicy` / `developmentReviewRequirements`
 from the trusted `scripts\development-policy.mjs` against the actual base, changed
 paths and relevant inputs. Retain `requiresHumanReview`, protected/review paths,
 reasons, input identities and source identity as `policyReview`, alongside actual
-human decisions. The requirement describes what must be satisfied, not a permanent
+human decisions. Pass retained policy-subject paths through inspection and later
+repairs/readiness; a policy-bound manifest stays bound when its execution settings
+return to the task base. Metadata-only exemptions apply only to never-bound manifests.
+The requirement describes what must be satisfied, not a permanent
 stop after it is satisfied. CI reports do not supply these decisions; absent or
 stale evidence is not permission to publish. Execution consent and code review
 remain distinct; reuse one decision for both only if its stated scope covers both.

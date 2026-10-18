@@ -94,6 +94,9 @@ The controller retains task-affected policy paths through repairs, final review
 and readiness, including deleted/restored inputs. All these phases inspect the
 same subject rather than shrinking an approved combination into an unapproved
 subset. This policy history does not add paths to CI impact selection.
+Inspection receives that retained history, not just the current diff. A manifest
+that became an execution-policy subject remains one after restoration to the task
+base; only never-bound manifests qualify for the metadata-only exemption.
 
 Accepted decisions continue the pending phase in the same invocation, without
 dispatching implementation again. Repeated requests for the same scope replay the
@@ -107,6 +110,8 @@ answer and before continuing.
 The exact original/proposed details digest and byte length are part of the request.
 Details are checked before presentation, before recording an accepted decision,
 and before continuation; substituted, missing or linked details cannot supply consent.
+An existing invalid detail copy reaches this guard and records a blocked handoff
+instead of escaping as a file-creation error.
 Replacing and restoring a local copy cannot change the snapshot already sent in
 the native question. Filename dictionaries and missing-content rendering preserve
 own properties, including names such as `__proto__`.

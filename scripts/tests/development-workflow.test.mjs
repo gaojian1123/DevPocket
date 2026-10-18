@@ -686,7 +686,8 @@ test("local review requirements preserve trust boundaries independently of impac
     ["android/app/src/main/java/dev/devpocket/app/data/Vault.kt", true, false],
     ["android/app/src/main/AndroidManifest.xml", true, false],
     ["backend/tests/fixture.test.ts", false, false], ["backend/integration/fixture.ts", false, false],
-    ["backend/src/runtime.ts", true, false], ["backend/src/cli.ts", false, false], ["extension/entry.mjs", true, false],
+    ["backend/src/runtime.ts", true, false], ["backend/src/push.ts", true, false],
+    ["backend/src/cli.ts", false, false], ["extension/entry.mjs", true, false],
     ["deployment/setup.ps1", false, false], ["infra/main.bicep", false, false], ["azure.yaml", false, false],
     [".github/ISSUE_TEMPLATE/ai-task.yml", false, false], [".github/CODEOWNERS", true, true],
     ["protocol.schema.json", true, false], ["test-fixtures/fixture.json", false, false],
@@ -724,6 +725,12 @@ test("package metadata does not grant a dependency-policy exemption to executabl
     assert.equal(policy.requiresHumanReview, needsApproval);
     assert.equal(policy.inputs.length, needsApproval ? 1 : 0);
   }
+  await writeFile(path.join(root, file), JSON.stringify(original));
+  assert.equal((await inspectDevelopmentPolicy(root, base, [file], git)).requiresHumanReview, false);
+  const retained = await inspectDevelopmentPolicy(root, base, [], git, [file]);
+  assert.equal(retained.requiresHumanReview, true, "Restoring a bound manifest must not erase its policy subject.");
+  assert.deepEqual(retained.protectedPaths, [file]);
+  assert.equal(retained.inputs.length, 1);
   await writeFile(path.join(root, file), "{invalid");
   assert.equal((await inspectDevelopmentPolicy(root, base, [file], git)).requiresHumanReview, true);
   assert.equal(developmentReviewRequirements([file]).requiresHumanReview, true, "Missing originals cannot establish metadata-only change.");
@@ -935,6 +942,92 @@ test("native policy approval survives ordinary repair after the interactive UI b
   assert.equal((await checkDevelopmentReadiness(root, { ...result, authorization: { ...result.authorization, receipts: [] } })).status, "blocked");
   assert.equal(Object.hasOwn(result.policyReview, "contents"), false);
   assert.equal(Object.hasOwn(result.policyReview, "beforeContents"), false);
+});
+
+test("a policy-bound manifest requires a new decision when restored to its task base", isolatedCases, async (t) => {
+  await Promise.all(["approve", "reject"].map((restorationDecision) => t.test(restorationDecision, async (t) => {
+    const { root } = await workspace(t), session = nativeSession();
+    const file = "deployment/policy-fixture/package.json";
+    const original = JSON.stringify({ name: "fixture", scripts: { test: "node original.mjs" } }) + "\n";
+    await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+    await writeFile(path.join(root, file), original);
+    await git(root, ["add", "--", file]);
+    await git(root, ["commit", "--quiet", "-m", "Fixture original manifest"]);
+    let implementations = 0, questions = 0, verifications = 0, reviews = 0;
+    session.capabilities = { ui: { elicitation: true } };
+    session.ui = { elicitation: async (input) => {
+      questions++;
+      assert.ok(input.message.includes(file));
+      return { action: "accept", content: { decision: questions === 1 ? "approve" : restorationDecision } };
+    } };
+    const result = await runDevelopment(durable({
+      runId: "manifest-policy-restoration", session,
+      args: { goal: "Restore approved execution settings", acceptance: ["Preserve consent history"], maxRepairRounds: 1 },
+      agent: async (_prompt, options) => {
+        if (options.agent === "devpocket-reviewer") return ++reviews === 1 ? blockingReview : passingReview;
+        if (++implementations === 1) {
+          await writeFile(path.join(root, file), JSON.stringify({ name: "fixture", scripts: { test: "node changed.mjs" } }) + "\n");
+        } else {
+          await writeFile(path.join(root, file), original);
+          await writeFile(path.join(root, "README.md"), "Ordinary repair\n");
+        }
+        return implemented(root);
+      },
+    }), { root, verify: async (_root, plan) => {
+      verifications++;
+      if (verifications === 2) assert.deepEqual(plan.changedFiles, ["README.md"]);
+      return syntheticReport(plan);
+    } });
+    assert.equal(questions, 2);
+    assert.equal(implementations, 2);
+    assert.deepEqual(result.policyPaths, [file]);
+    assert.deepEqual(result.policyReview.protectedPaths, [file]);
+    assert.equal(result.status, restorationDecision === "approve" ? "ready" : "needs_human", result.reason);
+    assert.equal(verifications, restorationDecision === "approve" ? 2 : 1);
+    assert.equal(result.authorization.receipts.length, restorationDecision === "approve" ? 2 : 1);
+    if (restorationDecision === "approve") assert.equal((await checkDevelopmentReadiness(root, result)).status, "ready");
+  })));
+});
+
+test("an existing tampered detail copy records a blocked handoff instead of escaping as EEXIST", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  let implementations = 0, verifications = 0, questions = 0, detailPath;
+  session.capabilities = { ui: { elicitation: true } };
+  session.ui = { elicitation: async (input) => {
+    questions++;
+    detailPath = /Local detail copy \(not authoritative\): ([^\n]+)/.exec(input.message)[1];
+    return { action: "accept", content: { decision: "approve" } };
+  } };
+  const ctx = durable({
+    runId: "retained-tampered-details", session,
+    args: { goal: "Reject altered reference copies", acceptance: ["Persist the blocked result"], maxRepairRounds: 1 },
+    agent: async (_prompt, options) => {
+      if (options.agent === "devpocket-reviewer") return blockingReview;
+      if (++implementations === 1) {
+        await mkdir(path.join(root, "scripts"));
+        await writeFile(path.join(root, "scripts", "verify.mjs"), "// policy fixture\n");
+      } else {
+        await writeFile(path.join(root, "README.md"), "Ordinary repair\n");
+        await writeFile(detailPath, (await readFile(detailPath, "utf8")).replace("policy fixture", "benign fixture"));
+        session.capabilities.ui.elicitation = false;
+      }
+      return implemented(root);
+    },
+  });
+  const result = await runDevelopment(ctx, { root, verify: async (_root, plan) => {
+    verifications++;
+    return syntheticReport(plan);
+  } });
+  assert.equal(result.status, "blocked");
+  assert.match(result.reason, /details changed|unsupported file type/);
+  assert.equal(questions, 1);
+  assert.equal(verifications, 1);
+  for (const file of ["state.json", "handoff.json"]) {
+    const saved = JSON.parse(await readFile(path.join(root, ".data", "development", ctx.runId, file), "utf8"));
+    assert.equal((file === "state.json" ? saved.result : saved).status, "blocked");
+  }
+  ctx.agent = async () => { assert.fail("A recorded block must not replay implementation."); };
+  assert.equal((await runDevelopment(ctx, { root })).status, "blocked");
 });
 
 test("ordinary test edits do not require project approval or reduce the selected checks", async (t) => {

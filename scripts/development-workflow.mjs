@@ -154,8 +154,7 @@ export async function checkDevelopmentReadiness(root, result) {
         !sameSource(result.source, result.candidate.source)) throw new Error("The handoff workspace or source identity does not match.");
     await assertCandidate(root, current, result.candidate);
     const plan = await verificationPlan(root, result.base);
-    const requirements = await inspectDevelopmentPolicy(root, result.base,
-      [...new Set([...plan.changedFiles, ...result.policyPaths])], readOnlyGit);
+    const requirements = await inspectDevelopmentPolicy(root, result.base, plan.changedFiles, readOnlyGit, result.policyPaths);
     const { scope, receipts } = result.authorization;
     if (!scope || scope.runId !== result.runId || scope.base !== result.base ||
         JSON.stringify(scope.workspace) !== JSON.stringify(current.identity) ||
@@ -320,7 +319,7 @@ async function runAttempt(ctx, root, task, verify) {
       const patch = developmentApprovalDetails(base, policy, files);
       try { await writeFile(details, patch, { flag: "wx", mode: 0o600 }); }
       catch (error) {
-        if (error.code !== "EEXIST" || await readDevelopmentApprovalDetails(request, details) === null) throw error;
+        if (error.code !== "EEXIST") throw error;
       }
       const retained = receipts.find((receipt) => developmentApprovalSatisfied(request, [receipt]));
       if (await readDevelopmentApprovalDetails(request, details) === null) {
@@ -339,7 +338,7 @@ async function runAttempt(ctx, root, task, verify) {
       }
       await requireCandidateImplementation(loadedImplementation);
       const refreshed = await inspectDevelopmentPolicy(root, base,
-        [...new Set([...await changedPaths(root, base), ...files])], readOnlyGit);
+        [...new Set([...await changedPaths(root, base), ...files])], readOnlyGit, [...policyPaths]);
       if (developmentApprovalRequest(scope, refreshed, stage, approvedHooks)?.id !== request.id) {
         return blocked("Approval inputs changed while the decision was pending; no stale approval was consumed.");
       }
@@ -398,7 +397,7 @@ async function runAttempt(ctx, root, task, verify) {
       } catch (error) { return finish(blocked(error.message)); }
       const changedFiles = await changedPaths(root, base);
       const preCommitPolicy = await inspectDevelopmentPolicy(root, base,
-        [...new Set([...changedFiles, ...implemented.data.ownedFiles, ...policyPaths])], readOnlyGit);
+        [...new Set([...changedFiles, ...implemented.data.ownedFiles])], readOnlyGit, [...policyPaths]);
       for (const input of preCommitPolicy.inputs) policyPaths.add(input.path);
       const preCommitPolicyReview = immutable(policyEvidence(preCommitPolicy,
         structuredClone(prepared.request?.expected.source ?? prepared.candidate.source)));
@@ -418,8 +417,7 @@ async function runAttempt(ctx, root, task, verify) {
       }
       const plan = immutable(structuredClone(await verificationPlan(root, base)));
       if (!sameSource(plan.source, state.candidate.source)) return finish(blocked("Source changed after the candidate commit."));
-      const finalPolicy = await inspectDevelopmentPolicy(root, base,
-        [...new Set([...plan.changedFiles, ...policyPaths])], readOnlyGit);
+      const finalPolicy = await inspectDevelopmentPolicy(root, base, plan.changedFiles, readOnlyGit, [...policyPaths]);
       const policyReview = immutable(policyEvidence(finalPolicy, structuredClone(plan.source)));
       state.stage = "verifying";
       state.source = plan.source;
