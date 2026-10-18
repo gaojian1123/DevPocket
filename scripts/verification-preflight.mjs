@@ -172,15 +172,16 @@ async function nativeConfiguration(root, jdk, sdk, cache) {
 
 async function gradleArtifacts(root) {
   const directory = path.join(root, ".tools", "gradle-cache"), files = [];
+  let entries = 0;
   async function collect(current, relative) {
+    if (++entries > 100000) throw diagnosticError("output-limit");
     const info = await lstat(current);
     if (info.isSymbolicLink()) throw diagnosticError("preflight-path");
     if (info.isDirectory()) {
       for (const name of (await readdir(current)).sort()) await collect(path.join(current, name), path.join(relative, name));
-    } else if (/\.(?:jar|class|pom|module|gradle|kts|properties|bat|exe)$/.test(relative) &&
-        !/(?:^|[\\/])(?:gc|cache|file-system|last-build)\.properties$/.test(relative)) {
+    } else {
+      if (!info.isFile()) throw diagnosticError("preflight-path");
       files.push({ file: current, relative });
-      if (files.length > 100000) throw diagnosticError("output-limit");
     }
   }
   await collect(path.join(directory, "wrapper", "dists"), path.join("wrapper", "dists"));
@@ -502,10 +503,10 @@ export async function verificationPreflight(root, plan, options = {}) {
   const python = (file, requirements) => once(`python:${file}:${requirements ?? ""}`, async () => {
     const program = path.isAbsolute(file) ? file : await resolveVerificationExecutable(root, file);
     const script = "import sys,json,importlib.metadata as m,hashlib\n" +
-      "assert sys.version_info >= (3,12)\n" +
+      "if sys.version_info < (3,12): raise RuntimeError('Python 3.12 or newer is required')\n" +
       "result={'version':list(sys.version_info[:3]),'executable':sys.executable}\n" +
       (requirements ? "import cryptography.hazmat.primitives.asymmetric.rsa\n" +
-        `assert m.version('cryptography') == ${JSON.stringify(requirements)}\n` +
+        `if m.version('cryptography') != ${JSON.stringify(requirements)}: raise RuntimeError('cryptography version does not match the declared pin')\n` +
         "h=hashlib.sha256()\n" +
         "for name in ('cryptography','cffi','pycparser'):\n" +
         " try: d=m.distribution(name)\n" +

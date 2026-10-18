@@ -167,6 +167,12 @@ original client or host still need their explicitly authorized local evidence.
 CI releases local CPU/memory but can still queue, spend runner minutes, prepare
 dependencies or time out. Existing deadlines and required coverage are unchanged.
 
+Sealing and collecting CI evidence accepts fork PR heads for eligible checks,
+while retaining the base-repository identity and exact merge-parent checks.
+This lets documentation/tooling-only fork PRs reach their normal gate. It does
+not enable device jobs for forks or relax live qualification's same-repository
+restriction.
+
 After **Required verification** succeeds, qualify it from the clean local
 candidate, using its actual repository, PR and run identifiers:
 
@@ -697,6 +703,13 @@ is an explicit stop, not automatic PID-based takeover. Inspect its retained
 record never grants runtime permission or resolves a workspace's interrupted
 verification evidence.
 
+An ordinary waiter may rediscover the slot after an interrupted IPC reply only
+when the owner record is gone, or when a completed probe and the subsequent
+record read observe different owners. These handoff retries are bounded; the
+next live response must match its ownership record. Retained/corrupt records,
+malformed complete responses and unverifiable owners still block. An inherited
+ticket cannot transfer to a replacement owner or retry through a lost probe.
+
 Admission is cooperative: old loaded verifiers, direct focused commands and
 unrelated programs do not participate. No other workload is terminated or
 reconfigured. Hosted CI jobs already run on separate machines; this slot also
@@ -710,6 +723,8 @@ Node checks also inspect npm, declared installed dependencies and effective npm
 configuration. Tooling adds Git/SSH and standard-library Python prerequisites,
 not Java, an Android SDK, an emulator or operational Python packages. Backend
 operational entries additionally inspect their own npm/Python dependencies.
+Python version and pinned-package checks use explicit error paths, so
+`PYTHONOPTIMIZE` cannot remove them.
 Native entries inspect their selected JDK, platform/build tools, existing
 license, wrapper and writable output/cache paths; device entries add the
 installed image, ADB, emulator and acceleration. No dependency installation,
@@ -779,8 +794,12 @@ overrides or unsupported daemon-JVM criteria instead of inspecting the wrong
 toolchain. Environment-provided `ORG_GRADLE_PROJECT_*` values are hashed into
 native applicability without exposing their contents; changing them cannot reuse
 an APK built with different effective project properties. Successful native groups
-retain hashes of their available Gradle
-executable/dependency artifacts alongside the APKs. Cleaned, disposable hosted
+retain hashes of all regular files in their Gradle wrapper distributions and
+dependency caches alongside the APKs, including AAR archives, transformed
+resources and extensionless inputs. A filename or extension does not establish
+that an input is irrelevant: cache bookkeeping changes conservatively invalidate
+reuse too. Linked/special files and oversized inventories block binding rather
+than yielding a partial identity. Cleaned, disposable hosted
 device caches cannot seed native reuse. Small immutable-file reads are bounded
 in batches without omitting checks. Tooling, backend, native build and device
 commands retain their 30-minute deadlines. A late result is still a timeout,
@@ -820,7 +839,7 @@ npm run verify -- -Base BASE_COMMIT -Resume .data\verification\FIRST\run\run.jso
   -Report .data\verification\RETRY\report.json
 ```
 
-Run format **2** is separate from verification report version **4**. Each
+Run format **2** is separate from verification report version **5**. Each
 attempt writes new start, group and finish receipts; original reports, logs,
 execution HEAD/fingerprint/timestamps and failures remain unchanged. A successful
 group is recorded directly when its commands finish, not extracted by rewriting
@@ -847,6 +866,9 @@ An authenticated private run tip detects missing/truncated attempt history;
 only that control index advances atomically, never the original evidence.
 Paths must remain under the owning checkout's verification/CI/development
 storage, without linked parents; readers never execute paths from a record.
+Each storage root itself is a valid run directory, not just its descendants.
+CLI report destinations remain limited to verification/CI storage; development
+storage is an internal controller surface, not an additional CLI destination.
 A supported checkout-root alias resolves to the same physical storage owner;
 links inside evidence storage still fail closed, and native workspace identity
 continues to retain the caller's original checkout path.

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import fileSystem, { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import net from "node:net";
 import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
@@ -176,7 +178,99 @@ test("cancelled admission does not release another owner and unknown cleanup can
     { diagnosticCode: "admission-unconfirmed" });
 });
 
-async function ciFixture(t) {
+test("host admission retries an interrupted live probe only after confirmed release", { timeout: 15000 }, async (t) => {
+  const root = await fixture(t);
+  for (const mode of ["clean", "retained", "inherited"]) await t.test(mode, async (t) => {
+    const directory = path.join(root, mode), first = await acquireHostVerificationSlot(root, { directory });
+    let release, admitted, intercepted = false;
+    const connect = net.connect;
+    const interrupt = t.mock.method(net, "connect", (...args) => {
+      const socket = connect(...args);
+      if (!intercepted) {
+        intercepted = true;
+        socket.write = () => {
+          release = first.release(mode !== "retained");
+          return true;
+        };
+      }
+      return socket;
+    });
+    try {
+      const pending = acquireHostVerificationSlot(root, { directory,
+        inherited: mode === "inherited" ? first.environment[admissionVariable] : "" });
+      if (mode === "clean") {
+        admitted = await pending;
+        assert.equal(admitted.evidence.mode, "owned");
+      } else await assert.rejects(pending, { diagnosticCode: "admission-unconfirmed" });
+      assert.equal(intercepted, true);
+      await release;
+      if (mode === "retained") assert.ok(await readFile(path.join(directory, "owner.json")));
+    } finally {
+      interrupt.mock.restore();
+      await release;
+      await admitted?.release(true);
+      await first.release(true);
+    }
+  });
+});
+
+test("host admission rediscovers a replaced owner without transferring inherited authority", { timeout: 15000 }, async (t) => {
+  const root = await fixture(t);
+  for (const inherited of [false, true]) await t.test(String(inherited), async (t) => {
+    const directory = path.join(root, String(inherited)), first = await acquireHostVerificationSlot(root, { directory });
+    let replacement, admitted, replace = true, notify;
+    const queued = new Promise((resolve) => { notify = resolve; });
+    const stat = fileSystem.lstat;
+    const handoff = t.mock.method(fileSystem, "lstat", async (file, ...args) => {
+      if (file === path.join(directory, "owner.json") && replace) {
+        replace = false;
+        await first.release(true);
+        replacement = await acquireHostVerificationSlot(root, { directory, inherited: "" });
+      }
+      return stat(file, ...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      const pending = acquireHostVerificationSlot(root, { directory, onWait: notify,
+        inherited: inherited ? first.environment[admissionVariable] : "" });
+      if (inherited) await assert.rejects(pending, { diagnosticCode: "admission-unconfirmed" });
+      else {
+        const outcome = await Promise.race([queued, pending.then(() => "admitted", (error) => ({ error }))]);
+        assert.equal(outcome, undefined, "The next live owner must be queued behind, not treated as corrupt or bypassed.");
+        await replacement.release(true);
+        admitted = await pending;
+        assert.equal(admitted.evidence.mode, "owned");
+      }
+      assert.equal(replace, false);
+    } finally {
+      handoff.mock.restore();
+      syncBuiltinESMExports();
+      await admitted?.release(true);
+      await replacement?.release(true);
+      await first.release(true);
+    }
+  });
+  await t.test("unverifiable", async (t) => {
+    const directory = path.join(root, "unverifiable"), first = await acquireHostVerificationSlot(root, { directory });
+    const file = path.join(directory, "owner.json"), owner = JSON.parse(await readFile(file, "utf8"));
+    const altered = JSON.stringify({ ...owner, id: randomUUID() });
+    await writeFile(file, altered);
+    let probes = 0;
+    const connect = net.connect;
+    const observe = t.mock.method(net, "connect", (...args) => { probes++; return connect(...args); });
+    try {
+      await assert.rejects(acquireHostVerificationSlot(root, { directory, inherited: "" }),
+        { diagnosticCode: "admission-unconfirmed" });
+      assert.ok(probes > 0 && probes <= 4, "Conflicting ownership must not cause an unlimited retry loop.");
+      assert.equal(await readFile(file, "utf8"), altered);
+    } finally {
+      observe.mock.restore();
+      await first.release(false);
+    }
+  });
+});
+
+async function ciFixture(t, { documentation = false } = {}) {
   const root = await fixture(t);
   const git = async (...args) => (await exec("git", args, { cwd: root })).stdout.trim();
   await mkdir(path.join(root, ".data"));
@@ -190,7 +284,7 @@ async function ciFixture(t) {
   await git("commit", "--quiet", "-m", "CI base");
   const base = await git("rev-parse", "HEAD");
   await git("checkout", "--quiet", "-b", "candidate");
-  await writeFile(path.join(root, "scripts", "verification.mjs"), "// fixture input\n");
+  await writeFile(path.join(root, documentation ? "README.md" : "scripts/verification.mjs"), "// fixture input\n");
   await git("add", ".");
   await git("commit", "--quiet", "-m", "CI candidate");
   const candidate = await git("rev-parse", "HEAD");
@@ -208,8 +302,8 @@ async function ciFixture(t) {
     GITHUB_WORKFLOW_REF: `${repository}/.github/workflows/ci.yml@refs/pull/11/merge` };
   delete env.NODE_TEST_CONTEXT;
   const context = await githubVerificationContext(root, env), plan = await verificationPlan(root, base);
-  const report = { ...plan, group: "tooling", status: "passed", complete: true, fixtureEvidence: true,
-    checks: [{ id: "workflow-tests", status: "passed", exitCode: 0, execution: syntheticExecution(plan.source) }] };
+  const report = { ...plan, group: documentation ? "all" : "tooling", status: "passed", complete: true, fixtureEvidence: true,
+    checks: documentation ? [] : [{ id: "workflow-tests", status: "passed", exitCode: 0, execution: syntheticExecution(plan.source) }] };
   return { root, base, candidate, repository, pullRequest, env, context, plan, report };
 }
 
@@ -251,6 +345,45 @@ test("CI collection binds real merge ancestry while preserving earlier failed at
   await assert.rejects(githubVerificationContext(item.root, { ...item.env, GITHUB_SHA: item.candidate }));
 });
 
+test("fork CI seals and collects eligible evidence without relaxing base or merge ancestry", async (t) => {
+  for (const documentation of [false, true]) await t.test(documentation ? "documentation" : "tooling", async (t) => {
+    const item = await ciFixture(t, { documentation }), eventPath = item.env.GITHUB_EVENT_PATH;
+    const event = JSON.parse(await readFile(eventPath, "utf8"));
+    event.pull_request.head.repo = { full_name: "contributor/verification", id: 2 };
+    await writeFile(eventPath, JSON.stringify(event));
+    const context = await githubVerificationContext(item.root, item.env);
+    assert.equal(context.candidate, item.candidate);
+    assert.equal(context.pullRequestBase, item.base);
+    const input = path.join(item.root, ".data", "ci", "inputs"), directory = path.join(item.root, ".data", "ci", "gate");
+    await mkdir(input, { recursive: true });
+    if (!documentation) {
+      const report = path.join(input, "report.json");
+      await writeFile(report, JSON.stringify(item.report));
+      await exec(process.execPath, [path.resolve("scripts/verification-ci.mjs"), "--seal", "--unit", "tooling-all",
+        "--input", report, "--report", path.join(input, "ci-report.json")],
+      { cwd: item.root, env: item.env, timeout: 30000 });
+    }
+    const report = path.join(directory, "ci-report.json");
+    await exec(process.execPath, [path.resolve("scripts/verification-ci.mjs"), "--collect", "--base", item.base,
+      "--inputs", input, "--report", report, ...(!documentation ? ["--upstream", "tooling:success"] : [])],
+    { cwd: item.root, env: item.env, timeout: 30000 });
+    assert.equal(JSON.parse(await readFile(report, "utf8")).report.complete, true);
+    for (const change of [
+      (value) => { value.repository.full_name = "foreign/verification"; },
+      (value) => { value.pull_request.base.repo.full_name = "foreign/verification"; },
+      (value) => { value.pull_request.head.repo.full_name = "../verification"; },
+      (value) => { value.pull_request.head.sha = item.base; },
+    ]) {
+      const invalid = structuredClone(event); change(invalid);
+      await writeFile(eventPath, JSON.stringify(invalid));
+      await assert.rejects(githubVerificationContext(item.root, item.env), { diagnosticCode: "ci-evidence" });
+    }
+  });
+  const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
+  const device = workflow.slice(workflow.indexOf("  device:\n"), workflow.indexOf("  gate:\n"));
+  assert.ok(device.includes("github.event.pull_request.head.repo.full_name == github.repository"));
+});
+
 test("CI qualification rejects stale, foreign, incomplete and relabelled platform evidence", async (t) => {
   const item = await ciFixture(t);
   const leaf = ciReportEnvelope(item.report, item.context, "tooling-all");
@@ -267,6 +400,10 @@ test("CI qualification rejects stale, foreign, incomplete and relabelled platfor
   for (const mutate of [
     (value) => { value.pullRequest.head.sha = "f".repeat(40); },
     (value) => { value.pullRequest.base.sha = "f".repeat(40); },
+    (value) => {
+      value.pullRequest.head.repo = { full_name: "contributor/verification", id: 2 };
+      value.artifact.workflow_run.head_repository_id = 2;
+    },
     (value) => { value.run.run_attempt = 3; },
     (value) => { value.run.path = ".github/workflows/not-verification.yml"; },
     (value) => { value.run.conclusion = "cancelled"; },

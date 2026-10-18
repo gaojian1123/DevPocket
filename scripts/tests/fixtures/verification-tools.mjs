@@ -119,7 +119,7 @@ export async function windowsNodeLauncher(root, base) {
 }
 
 export async function verificationTools(root, {
-  native = false, operations = false, jdk, sdk, emulatorNoise = false, emulatorVersion = "35.0.1",
+  native = false, operations = false, capturePython = false, jdk, sdk, emulatorNoise = false, emulatorVersion = "35.0.1",
   emulatorAcceleration = process.platform === "win32" ? "WHPX is installed and usable" : "KVM is installed and usable",
 } = {}) {
   const directory = path.join(root, ".data", "synthetic-tools");
@@ -131,6 +131,7 @@ export async function verificationTools(root, {
       "using System; using System.Diagnostics; using System.IO;",
       "class Tool { static void Main(string[] args) {",
       "string name=Path.GetFileNameWithoutExtension(Process.GetCurrentProcess().MainModule.FileName);",
+      ...(capturePython ? ['if(name=="python" && args.Length==3 && args[0]=="-B" && args[1]=="-c") File.WriteAllText(".data/python-probe.py",args[2]);'] : []),
       'if(name=="emulator" && args.Length>0 && args[0]=="-accel-check" && File.Exists(".data/emulator-permission-lost")){Console.Error.WriteLine("PRIVATE_KVM_PERMISSION_CANARY");Environment.Exit(11);}',
       ...(emulatorNoise ? ['if(name=="emulator") Console.Error.WriteLine("INFO | Storing crashdata in: PRIVATE_PROBE_PATH, detection is enabled for process: "+Process.GetCurrentProcess().Id);'] : []),
       "if(name==\"java\") Console.Error.WriteLine(\"openjdk version \\\"21.0.1\\\"\");",
@@ -145,6 +146,7 @@ export async function verificationTools(root, {
   } else {
     await writeFile(binary, [
       "#!/bin/sh",
+      ...(capturePython ? ['if [ "$(basename "$0")" = python ] && [ "$1" = "-B" ] && [ "$2" = "-c" ]; then printf "%s" "$3" > .data/python-probe.py; fi'] : []),
       'if [ "$(basename "$0")" = emulator ] && [ "$1" = "-accel-check" ] && [ -f .data/emulator-permission-lost ]; then echo PRIVATE_KVM_PERMISSION_CANARY >&2; exit 11; fi',
       ...(emulatorNoise ? ['if [ "$(basename "$0")" = emulator ]; then echo "INFO | Storing crashdata in: PRIVATE_PROBE_PATH, detection is enabled for process: $$" >&2; fi'] : []),
       "case \"$(basename \"$0\")\" in",

@@ -45,7 +45,7 @@ export async function githubVerificationContext(root, environment = process.env)
   const tree = (await readOnlyGit(root, ["rev-parse", "HEAD^{tree}"])).trim();
   const pullRequest = environment.GITHUB_EVENT_NAME === "pull_request" ? event.pull_request : null;
   if (head !== environment.GITHUB_SHA || event.repository?.full_name !== environment.GITHUB_REPOSITORY ||
-      pullRequest && (pullRequest.head?.repo?.full_name !== environment.GITHUB_REPOSITORY ||
+      pullRequest && (!validRepository(pullRequest.head?.repo?.full_name) ||
         pullRequest.base?.repo?.full_name !== environment.GITHUB_REPOSITORY)) throw fail();
   const context = requireContext({
     repository: environment.GITHUB_REPOSITORY, runId: environment.GITHUB_RUN_ID,

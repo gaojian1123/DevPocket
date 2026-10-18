@@ -66,6 +66,7 @@ async function probe(socketPath, request, signal) {
       if (error) reject(error); else resolve(value);
     };
     const abort = () => finish(signal.reason);
+    const incomplete = () => finish(fail({ code: "ERR_STREAM_PREMATURE_CLOSE" }));
     signal?.addEventListener("abort", abort, { once: true });
     socket.setTimeout(5000, () => finish(fail()));
     socket.once("connect", () => socket.write(JSON.stringify(request) + "\n"));
@@ -78,11 +79,8 @@ async function probe(socketPath, request, signal) {
       }
     });
     socket.once("error", (error) => finish(fail(error)));
-    socket.once("close", () => { if (!settled) finish(fail()); });
-    socket.once("end", () => {
-      try { finish(null, JSON.parse(content)); }
-      catch (error) { finish(fail(error)); }
-    });
+    socket.once("close", incomplete);
+    socket.once("end", incomplete);
   });
 }
 
@@ -181,7 +179,9 @@ export async function acquireHostVerificationSlot(workspace, options = {}) {
     let response;
     try { response = await probe(address(root), ticket ?? {}, options.signal); }
     catch (error) {
-      if (!ticket && ["ENOENT", "ECONNREFUSED"].includes(error.cause?.code) && handoffs++ < 3) {
+      options.signal?.throwIfAborted();
+      if (!ticket && ["ENOENT", "ECONNREFUSED", "ECONNRESET", "EPIPE", "ERR_STREAM_PREMATURE_CLOSE"]
+        .includes(error.cause?.code) && handoffs++ < 3) {
         try { await readOwner(file); }
         catch (ownerError) {
           if (ownerError.code === "ENOENT") {
@@ -193,7 +193,6 @@ export async function acquireHostVerificationSlot(workspace, options = {}) {
       }
       throw error;
     }
-    handoffs = 0;
     if (response?.version !== 1 || !uuid.test(response.id ?? "") || typeof response.ready !== "boolean") throw fail();
     if (!response.ready) {
       initializingAt ??= performance.now();
@@ -209,7 +208,13 @@ export async function acquireHostVerificationSlot(workspace, options = {}) {
       if (error.code === "ENOENT" && !ticket) continue;
       throw fail(error);
     }
-    if (response.id !== observed.owner.id || ticket && ticket.id !== observed.owner.id) throw fail();
+    if (ticket && ticket.id !== observed.owner.id) throw fail();
+    if (response.id !== observed.owner.id) {
+      if (ticket || handoffs++ >= 3) throw fail();
+      await delay(25, undefined, { signal: options.signal });
+      continue;
+    }
+    handoffs = 0;
     if (ticket) {
       if (response.borrowed !== true) throw fail();
       return {

@@ -91,6 +91,35 @@ test("a documentation plan identifies the exact source without claiming checks r
   assert.match(result.report.source.fingerprint, /^[a-f0-9]{64}$/);
 });
 
+test("storage roots accept direct reports without admitting sibling or linked directories", async (t) => {
+  const root = await repository(t);
+  await writeFile(path.join(root, "README.md"), "Documentation-only storage fixture\n");
+  for (const name of ["verification", "ci"]) {
+    const file = path.join(root, ".data", name, "report.json");
+    await exec(process.execPath, [entry, "--repo", root, "--base", "HEAD", "--report", file], { timeout: 30000 });
+    const report = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(report.complete, true);
+    assert.deepEqual(report.checks, []);
+    assert.equal((await readVerificationRun(root, report.run.manifest)).manifest.id, report.run.id);
+  }
+  const plan = await verificationPlan(root, "HEAD"), policy = await verificationExecutionPolicy();
+  const development = await openVerificationRun(root, plan, { directory: path.join(root, ".data", "development") }, policy);
+  await development.finish({ ...plan, group: "all", status: "passed", complete: true, checks: [] }, true);
+  assert.equal((await readVerificationRun(root, development.reference.manifest)).manifest.id, development.reference.id);
+  await assert.rejects(exec(process.execPath, [entry, "--repo", root, "--base", "HEAD",
+    "--report", path.join(root, ".data", "development", "report.json")], { timeout: 30000 }),
+  (error) => error.code === 1 && /ownership-mismatch/.test(error.stderr));
+  for (const directory of [".data", ".data/ci-other", ".data/verification-other", ".data/development-other"]) {
+    await assert.rejects(openVerificationRun(root, plan, { directory: path.join(root, directory) }, policy),
+      { diagnosticCode: "ownership-mismatch" });
+  }
+  const real = path.join(root, ".data", "ci-real"), link = path.join(root, ".data", "ci");
+  await rename(link, real);
+  await symlink(real, link, process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(openVerificationRun(root, plan, { directory: link }, policy),
+    { diagnosticCode: "ownership-mismatch" });
+});
+
 test("task-routing tooling selects only its complete regression suite, independently of AGENTS", async (t) => {
   const original = ["AGENTS.md", "README.md", "docs/DEVELOPMENT-WORKFLOW.md",
     "scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs"];
@@ -2093,6 +2122,37 @@ test("tooling-only preflight never inspects unrelated Java, SDK, image or probe-
   }
 });
 
+test("optimized Python cannot bypass the actual prerequisite probe comparisons", async (t) => {
+  const { verificationPreflight } = await import("../verification-preflight.mjs");
+  const root = await repository(t, { operations: true, capturePython: true }), tools = toolchains.get(root);
+  const plan = { ...await verificationPlan(root, "HEAD"), requiredChecks: ["operations-tests"], requiredGroups: ["backend"] };
+  const originalPath = process.env.PATH;
+  process.env.PATH = tools.env.PATH;
+  try {
+    const result = await verificationPreflight(root, plan, {
+      group: "backend", directory: path.join(root, ".data", "verification", "python"),
+    });
+    assert.equal(result.status, "passed", JSON.stringify(result));
+  } finally { process.env.PATH = originalPath; }
+  const script = await readFile(path.join(root, ".data", "python-probe.py"), "utf8");
+  assert.ok(script.includes("cryptography"));
+  const invoke = (version, dependency) => exec("python", ["-B", "-c", [
+    "import sys,types,importlib.metadata as m",
+    `sys.version_info=(${version.join(",")})`,
+    "for name in ('cryptography','cryptography.hazmat','cryptography.hazmat.primitives','cryptography.hazmat.primitives.asymmetric','cryptography.hazmat.primitives.asymmetric.rsa'):",
+    " module=types.ModuleType(name);module.__path__=[];sys.modules[name]=module",
+    `m.version=lambda name:${JSON.stringify(dependency)}`,
+    "m.distribution=lambda name:types.SimpleNamespace(files=[])",
+    script,
+  ].join("\n")], { cwd: root, env: { ...process.env, PYTHONOPTIMIZE: "1" }, timeout: 30000 });
+  assert.deepEqual(JSON.parse((await invoke([3, 12, 0], "50.0.1")).stdout).version, [3, 12, 0]);
+  for (const [name, version, dependency, message] of [
+    ["version", [3, 11, 0], "50.0.1", /Python/],
+    ["dependency", [3, 12, 0], "0.0.0", /cryptography/],
+  ]) await t.test(name, () => assert.rejects(invoke(version, dependency),
+    (error) => error.code === 1 && message.test(error.stderr)));
+});
+
 test("emulator prerequisites bind capability and version rather than per-process probe logging", async (t) => {
   const { verificationPreflight } = await import("../verification-preflight.mjs");
   const root = await repository(t, { native: true, emulatorNoise: true }), tools = toolchains.get(root);
@@ -2289,24 +2349,55 @@ test("native applicability binds Gradle environment properties and PowerShell No
     });
 });
 
-test("native artifact identity detects changed Gradle code without treating lock churn as a new toolchain", async (t) => {
+test("native artifact identity binds Gradle archives and resources while APKs remain unchanged", async (t) => {
   const { verificationArtifacts } = await import("../verification-preflight.mjs");
-  const root = await repository(t), plan = { requiredChecks: ["android-build", "android-device"] };
+  const root = await repository(t);
+  const inputs = [
+    "wrapper/dists/gradle-fixture/lib/gradle-core.jar", "caches/modules-2/fixture.jar",
+    "caches/modules-2/files-2.1/widget/1/hash/widget.aar",
+    "caches/8.11.1/transforms/hash/transformed/widget/res/values/strings.xml",
+    "caches/8.11.1/transforms/hash/transformed/widget/assets/data",
+    "caches/8.11.1/transforms/hash/transformed/widget/assets/cache.properties",
+    "caches/8.11.1/transforms/hash/transformed/widget/jni/x86_64/libwidget.so",
+    "caches/gc.properties", "caches/fixture.lck",
+  ];
   for (const relative of ["android/app/build/outputs/apk/debug/app-debug.apk",
     "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
-    ".tools/gradle-cache/wrapper/dists/gradle-fixture/lib/gradle-core.jar",
-    ".tools/gradle-cache/caches/modules-2/fixture.jar"]) {
+    ...inputs.map((name) => `.tools/gradle-cache/${name}`)]) {
     const file = path.join(root, ...relative.split("/"));
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, "stable artifact");
   }
+  const plan = { ...await verificationPlan(root, "HEAD"), requiredChecks: ["android-build"], requiredGroups: ["android"] };
   const initial = await verificationArtifacts(root, plan, "android");
   assert.equal(initial.available, true);
-  await writeFile(path.join(root, ".tools", "gradle-cache", "caches", "gc.properties"), "mutable bookkeeping");
-  await writeFile(path.join(root, ".tools", "gradle-cache", "caches", "fixture.lck"), "lock");
-  assert.deepEqual(await verificationArtifacts(root, plan, "android"), initial);
-  await writeFile(path.join(root, ".tools", "gradle-cache", "caches", "modules-2", "fixture.jar"), "different dependency");
+  const policy = await verificationExecutionPolicy(), environment = "e".repeat(64);
+  const first = await openVerificationRun(root, plan, { directory: path.join(root, ".data", "verification", "first") }, policy);
+  const report = { ...plan, group: "android", status: "passed", complete: true, fixtureEvidence: true,
+    checks: [{ id: "android-build", status: "passed", exitCode: 0, execution: syntheticExecution(plan.source),
+      executionState: "exited", privateLog: { availability: "retained" },
+      commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0, cleanupFailure: null } }] };
+  await first.record(report, environment, initial, true);
+  await first.finish(report, true, ["android"]);
+  const next = await openVerificationRun(root, plan, {
+    directory: path.join(root, ".data", "verification", "next"), resume: first.reference.manifest,
+  }, policy);
+  const reusable = async () => next.reusable("android", environment, await verificationArtifacts(root, plan, "android"), true);
+  assert.equal((await reusable()).status, "reused");
+  for (const relative of inputs) await t.test(relative, async () => {
+    const file = path.join(root, ".tools", "gradle-cache", relative);
+    await writeFile(file, "edited artifact");
+    try { assert.deepEqual(await reusable(), { status: "invalidated", reason: "artifact-changed" }); }
+    finally { await writeFile(file, "stable artifact"); }
+  });
+  assert.equal((await reusable()).status, "reused");
+  await next.finish(report, true, ["android"]);
+  const payload = path.join(root, ".tools", "gradle-cache", inputs[2]);
+  await rm(payload);
   assert.notDeepEqual(await verificationArtifacts(root, plan, "android"), initial);
+  const link = path.join(root, ".tools", "gradle-cache", "caches", "linked-input");
+  await symlink(path.join(root, ".data"), link, process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(verificationArtifacts(root, plan, "android"), { diagnosticCode: "preflight-path" });
 });
 
 test("script and batch locators cannot inherit direct Node identity through a physical-target alias",

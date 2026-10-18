@@ -30,7 +30,10 @@ function binding(plan, group, policy, options) {
 
 async function safeDirectory(root, directory, create = false) {
   const relative = path.relative(root, directory);
-  if (!["verification", "ci", "development"].some((name) => relative.startsWith(path.join(".data", name) + path.sep))) {
+  if (!["verification", "ci", "development"].some((name) => {
+    const allowed = path.join(".data", name);
+    return relative === allowed || relative.startsWith(allowed + path.sep);
+  })) {
     throw diagnosticError("ownership-mismatch");
   }
   let current = root;
