@@ -54,9 +54,9 @@ export async function registerDevelopmentExtension({ defineWorkflow, joinSession
   const workflow = defineWorkflow({
     meta: {
       name: "devpocket-development",
-      description: "Optional controller-managed DevPocket development. Use only when the user explicitly selects this workflow, or to continue its recorded run; normal implementation uses the devpocket-development skill. Make a scoped local candidate commit through original native permissions, then verify and independently review that exact clean commit. Repair at most twice with new commits. No push, PR creation, merge or deployment.",
+      description: "Optional controller-managed DevPocket development. Use only when the user explicitly selects this workflow, or to continue its recorded run; normal implementation uses the devpocket-development skill. Make a scoped local candidate commit through original native permissions, then verify and independently review that exact clean commit. Continue same-scope repairs within native budgets and any explicit repair limit; diagnose stalled progress before stopping. No push, PR creation, merge or deployment.",
       argsSchema: taskSchema,
-      phases: [{ title: "Implement" }, { title: "Candidate" }, { title: "Verify" }, { title: "Review" }],
+      phases: [{ title: "Implement" }, { title: "Candidate" }, { title: "Verify" }, { title: "Review" }, { title: "Diagnose" }],
     },
     run: async (ctx) => {
       await requireReadonlyReviewer(ctx.session, root);
