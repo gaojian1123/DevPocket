@@ -139,11 +139,19 @@ async function save(file, value) {
 async function record(file, value, onCreated) {
   const text = JSON.stringify(value, null, 2) + "\n";
   const output = await open(file, "wx", 0o600);
+  const errors = [];
   try {
     onCreated?.();
     await output.writeFile(text);
+  } catch (error) {
+    errors.push(error);
+    throw error;
   } finally {
-    await output.close();
+    try { await output.close(); }
+    catch (error) {
+      if (errors.length) throw new AggregateError([...errors, error], "Record writing and handle cleanup failed.");
+      throw error;
+    }
   }
   return sha256(text);
 }
@@ -164,7 +172,7 @@ function implementationStop(error) {
 
 // Call only with the controller's durable result, never an editable handoff file.
 export async function checkDevelopmentReadiness(root, result) {
-  if (result?.version !== 6 || result.status !== "ready" || !result.candidate || !result.workspace ||
+  if (result?.version !== 7 || result.status !== "ready" || !result.candidate || !result.workspace ||
       !result.hooks || !result.execution || !result.authorization || !Array.isArray(result.policyPaths)) {
     return blocked("No committed, controller-journaled PR-ready result is available.");
   }
@@ -246,32 +254,45 @@ export async function runDevelopment(ctx, { root = process.cwd(), verify = execu
   root = path.resolve(root);
   const task = parseTask(ctx.args);
   try { await requireCandidateImplementation(loadedImplementation); }
-  catch (error) { return implementationStop(error); }
+  catch (error) { ctx.signal?.throwIfAborted(); return implementationStop(error); }
+  ctx.signal?.throwIfAborted();
   if (!/^[A-Za-z0-9-]{1,100}$/.test(ctx.runId)) throw new Error("Invalid workflow run identity.");
   if (typeof ctx.step !== "function") throw new Error("The runtime's durable workflow journal is required.");
-  const outcome = await ctx.step("devpocket-development-v6", async () => ({
-    root, task, result: await runAttempt(ctx, root, task, verify),
-  }));
-  ctx.signal?.throwIfAborted();
-  if (outcome.root !== root || JSON.stringify(outcome.task) !== JSON.stringify(task)) {
-    return { status: "blocked", reason: "A resumed run cannot change its workspace or task contract." };
-  }
-  if (outcome.result.status === "ready") {
-    const readiness = await checkDevelopmentReadiness(root, outcome.result);
+  let producedReady = false, cancelFinalization;
+  try {
+    const outcome = await ctx.step("devpocket-development-v7", async () => {
+      const result = await runAttempt(ctx, root, task, verify, (invalidate) => { cancelFinalization = invalidate; });
+      ctx.signal?.throwIfAborted();
+      producedReady = result.status === "ready";
+      return { root, task, result };
+    });
     ctx.signal?.throwIfAborted();
-    return readiness;
-  }
-  if (outcome.result.source) {
-    const current = await sourceSnapshot(root);
-    ctx.signal?.throwIfAborted();
-    if (!sameSource(current, outcome.result.source)) {
-      return { status: "blocked", reason: "Source changed after the journaled result. Revalidate rather than reuse stale evidence." };
+    if (outcome.root !== root || JSON.stringify(outcome.task) !== JSON.stringify(task)) {
+      return { status: "blocked", reason: "A resumed run cannot change its workspace or task contract." };
     }
+    if (outcome.result.status === "ready") {
+      if (!producedReady) {
+        return blocked("Cached ready proposals require inspected recovery. Read completed native runs with the read-only readiness tool.");
+      }
+      const readiness = await checkDevelopmentReadiness(root, outcome.result);
+      ctx.signal?.throwIfAborted();
+      return readiness;
+    }
+    if (outcome.result.source) {
+      const current = await sourceSnapshot(root);
+      ctx.signal?.throwIfAborted();
+      if (!sameSource(current, outcome.result.source)) {
+        return { status: "blocked", reason: "Source changed after the journaled result. Revalidate rather than reuse stale evidence." };
+      }
+    }
+    return outcome.result;
+  } catch (error) {
+    if (ctx.signal?.aborted && cancelFinalization) await cancelFinalization(error);
+    throw error;
   }
-  return outcome.result;
 }
 
-async function runAttempt(ctx, root, task, verify) {
+async function runAttempt(ctx, root, task, verify, onFinalization) {
   let workspace, approvedHooks;
   try {
     workspace = await inspectWorktree(root);
@@ -310,6 +331,7 @@ async function runAttempt(ctx, root, task, verify) {
   }
   await lock.writeFile(JSON.stringify({ runId: ctx.runId, pid: process.pid }));
   let state;
+  const errors = [];
   try {
     try { state = JSON.parse(await readFile(statePath, "utf8")); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
@@ -323,7 +345,7 @@ async function runAttempt(ctx, root, task, verify) {
     const base = workspace.source.head;
     const scope = immutable({ sessionId: ctx.session?.sessionId, runId: ctx.runId, base, workspace: workspace.identity, task });
     const receipts = [], policyPaths = new Set();
-    state = { version: 6, task, base, workspace: workspace.identity, hooks: { ...approvedHooks }, execution: loadedImplementation, runId: ctx.runId,
+    state = { version: 7, task, base, workspace: workspace.identity, hooks: { ...approvedHooks }, execution: loadedImplementation, runId: ctx.runId,
       round: 0, stage: "prepared", source: workspace.source, repairHistory: [] };
     await save(statePath, state);
     let feedback = null;
@@ -333,7 +355,7 @@ async function runAttempt(ctx, root, task, verify) {
       try { source = await sourceSnapshot(root); }
       catch { result = blocked(`${result.reason ?? result.status} Source inspection also failed; inspect the retained state.`); }
       state.source = source ?? null;
-      state.result = { ...result, version: 6, runId: ctx.runId, workspace: workspace.identity, hooks: { ...approvedHooks }, execution: loadedImplementation, base,
+      state.result = { ...result, version: 7, runId: ctx.runId, workspace: workspace.identity, hooks: { ...approvedHooks }, execution: loadedImplementation, base,
         authorization: { scope, receipts: structuredClone(receipts) }, policyPaths: [...policyPaths].sort(),
         repairHistory: structuredClone(state.repairHistory),
         ...(state.repairDiagnosis ? { repairDiagnosis: state.repairDiagnosis } : {}),
@@ -344,7 +366,23 @@ async function runAttempt(ctx, root, task, verify) {
       }
       ctx.signal?.throwIfAborted();
       const handoffPath = path.join(directory, "handoff.json");
-      let ownsHandoff = false;
+      let ownsHandoff = false, invalidated = false;
+      const invalidate = async (error) => {
+        if (invalidated) return;
+        invalidated = true;
+        state.stage = "cancelled";
+        state.result = { ...state.result, status: "cancelled",
+          reason: "Workflow cancelled before completion was acknowledged. Retain the candidate and evidence for inspected recovery." };
+        const invalidations = await Promise.allSettled([
+          save(statePath, state), ...(ownsHandoff ? [rm(handoffPath)] : []),
+        ]);
+        const failures = invalidations.filter((result) => result.status === "rejected");
+        if (failures.length) {
+          throw new AggregateError([error, ...failures.map((result) => result.reason)],
+            "Workflow cancelled, but recovery artifact invalidation failed.");
+        }
+      };
+      onFinalization(invalidate);
       try {
         state.stage = state.result.status;
         await save(statePath, state);
@@ -354,17 +392,7 @@ async function runAttempt(ctx, root, task, verify) {
         return state.result;
       } catch (error) {
         if (!ctx.signal?.aborted) throw error;
-        state.stage = "cancelled";
-        state.result = { ...state.result, status: "cancelled",
-          reason: "Workflow cancelled while persisting its final result. Retain the candidate and evidence for inspected recovery." };
-        const invalidations = await Promise.allSettled([
-          save(statePath, state), ...(ownsHandoff ? [rm(handoffPath)] : []),
-        ]);
-        const failures = invalidations.filter((result) => result.status === "rejected");
-        if (failures.length) {
-          throw new AggregateError([error, ...failures.map((result) => result.reason)],
-            "Workflow cancelled, but recovery artifact invalidation failed.");
-        }
+        await invalidate(error);
         throw error;
       }
     };
@@ -419,7 +447,7 @@ async function runAttempt(ctx, root, task, verify) {
         ...(review ? { review: path.relative(root, path.join(directory, `review-${state.round}.json`)) } : {}),
       });
       if (task.maxRepairRounds !== undefined && state.round >= task.maxRepairRounds) {
-        return finish({ status: "blocked", reason: "The user-selected repair limit is exhausted.", ...current, policyReview });
+        return await finish({ status: "blocked", reason: "The user-selected repair limit is exhausted.", ...current, policyReview });
       }
       if (state.round > 0) {
         ctx.signal?.throwIfAborted();
@@ -427,9 +455,9 @@ async function runAttempt(ctx, root, task, verify) {
         await save(statePath, state);
         ctx.phase("Diagnose");
         try { await assertCandidate(root, workspace, state.candidate); }
-        catch (error) { return finish(blocked(`Candidate changed before repair diagnosis: ${error.message}`)); }
+        catch (error) { return await finish(blocked(`Candidate changed before repair diagnosis: ${error.message}`)); }
         const beforeDiagnosisHooks = await checkHooks("before repair diagnosis");
-        if (beforeDiagnosisHooks) return finish({ ...beforeDiagnosisHooks, ...current, policyReview });
+        if (beforeDiagnosisHooks) return await finish({ ...beforeDiagnosisHooks, ...current, policyReview });
         const response = await ctx.agent([
           `Diagnose repair progress in ${root}, using read/search tools only. This is not a final acceptance review.`,
           `Inspect candidate ${state.candidate.commit} against original task base ${base}; keep this exact clean source unchanged.`,
@@ -449,21 +477,21 @@ async function runAttempt(ctx, root, task, verify) {
           schema: repairDiagnosisSchema });
         ctx.signal?.throwIfAborted();
         const diagnosed = safeResult(parseRepairDiagnosis, response);
-        if (!diagnosed.success) return finish({ ...blocked("Repair diagnosis failed or returned invalid evidence."), ...current, policyReview });
+        if (!diagnosed.success) return await finish({ ...blocked("Repair diagnosis failed or returned invalid evidence."), ...current, policyReview });
         const diagnosisHooks = await checkHooks("during repair diagnosis");
-        if (diagnosisHooks) return finish({ ...diagnosisHooks, ...current, policyReview });
+        if (diagnosisHooks) return await finish({ ...diagnosisHooks, ...current, policyReview });
         try { await requireCandidateImplementation(loadedImplementation); }
-        catch (error) { return finish({ ...implementationStop(error), ...current, policyReview }); }
+        catch (error) { return await finish({ ...implementationStop(error), ...current, policyReview }); }
         try { await assertCandidate(root, workspace, state.candidate); }
-        catch (error) { return finish(blocked(`Source changed during the read-only repair diagnosis: ${error.message}`)); }
+        catch (error) { return await finish(blocked(`Source changed during the read-only repair diagnosis: ${error.message}`)); }
         const stalledAgain = state.repairDiagnosis?.status === "stalled" && diagnosed.data.status === "stalled";
         state.repairDiagnosis = immutable({ ...diagnosed.data, source: state.source, reviewer: "devpocket-reviewer" });
         await record(path.join(directory, `diagnosis-${state.round}.json`), state.repairDiagnosis);
         if (diagnosed.data.status === "needs_human") {
-          return finish({ status: "needs_human", reason: diagnosed.data.evidence, ...current, policyReview });
+          return await finish({ status: "needs_human", reason: diagnosed.data.evidence, ...current, policyReview });
         }
         if (stalledAgain) {
-          return finish({ status: "blocked",
+          return await finish({ status: "blocked",
             reason: "Repair still has no demonstrated progress after diagnosis and a different approach. Retain the task and evidence for recovery.",
             ...current, policyReview });
         }
@@ -474,14 +502,17 @@ async function runAttempt(ctx, root, task, verify) {
     };
     for (let round = 0; ; round++) {
       ctx.signal?.throwIfAborted();
-      let before, hooks;
+      let before, hooks, hookChange;
       try {
         before = await inspectWorktree(root);
         hooks = await activeHookSnapshot(root);
-        if (!sameHooks(hooks, approvedHooks)) return finish(hookStop(hooks, "before repair"));
-        assertIdentity(before, workspace);
-        if (before.status || !sameSource(before.source, state.source)) throw new Error("Unexpected source/history/index changes before implementation.");
-      } catch (error) { return finish(blocked(error.message)); }
+        if (!sameHooks(hooks, approvedHooks)) hookChange = hookStop(hooks, "before repair");
+        else {
+          assertIdentity(before, workspace);
+          if (before.status || !sameSource(before.source, state.source)) throw new Error("Unexpected source/history/index changes before implementation.");
+        }
+      } catch (error) { return await finish(blocked(error.message)); }
+      if (hookChange) return await finish(hookChange);
       state.round = round;
       state.stage = "implementing";
       await save(statePath, state);
@@ -505,21 +536,21 @@ async function runAttempt(ctx, root, task, verify) {
       ].join("\n"), { agent: "general-purpose", label: `${ctx.runId}:implement:${round}`, schema: implementationSchema });
       ctx.signal?.throwIfAborted();
       const implemented = safeResult(parseImplementation, response);
-      if (!implemented.success) return finish(blocked("The implementation agent failed or returned an invalid result."));
-      if (implemented.data.status === "needs_input") return finish({ status: "needs_human", reason: implemented.data.summary });
+      if (!implemented.success) return await finish(blocked("The implementation agent failed or returned an invalid result."));
+      if (implemented.data.status === "needs_input") return await finish({ status: "needs_human", reason: implemented.data.summary });
       try { await requireCandidateImplementation(loadedImplementation); }
-      catch (error) { return finish(implementationStop(error)); }
+      catch (error) { return await finish(implementationStop(error)); }
       let currentHooks;
       try { currentHooks = await activeHookSnapshot(root); }
-      catch (error) { return finish(blocked(`Active Git hook inspection failed: ${error.message}`)); }
+      catch (error) { return await finish(blocked(`Active Git hook inspection failed: ${error.message}`)); }
       if (!sameHooks(hooks, currentHooks)) {
-        return finish(hookStop(currentHooks, "before staging or committing"));
+        return await finish(hookStop(currentHooks, "before staging or committing"));
       }
       let prepared;
       try {
         prepared = await prepareCandidate(root, before, implemented.data.source, implemented.data.ownedFiles,
           ctx.session?.sessionId, task.goal, hooks, loadedImplementation);
-      } catch (error) { return finish(blocked(error.message)); }
+      } catch (error) { return await finish(blocked(error.message)); }
       const changedFiles = await changedPaths(root, base);
       const preCommitPolicy = await inspectDevelopmentPolicy(root, base,
         [...new Set([...changedFiles, ...implemented.data.ownedFiles])], readOnlyGit, [...policyPaths]);
@@ -527,8 +558,8 @@ async function runAttempt(ctx, root, task, verify) {
       const preCommitPolicyReview = immutable(policyEvidence(preCommitPolicy,
         structuredClone(prepared.request?.expected.source ?? prepared.candidate.source)));
       const executionApproval = await approvePolicy(preCommitPolicy, "execution", implemented.data.summary);
-      if (executionApproval) return finish({ ...executionApproval, changedFiles, policyReview: preCommitPolicyReview });
-      if (round && prepared.candidate) return finish(blocked("Repair made no task changes. Retain the failed candidate and reports; an unchanged failing revision is not reverified automatically."));
+      if (executionApproval) return await finish({ ...executionApproval, changedFiles, policyReview: preCommitPolicyReview });
+      if (round && prepared.candidate) return await finish(blocked("Repair made no task changes. Retain the failed candidate and reports; an unchanged failing revision is not reverified automatically."));
       state.stage = "committing";
       await save(statePath, state);
       ctx.phase("Candidate");
@@ -538,10 +569,10 @@ async function runAttempt(ctx, root, task, verify) {
         await assertCandidate(root, workspace, state.candidate);
       } catch (error) {
         if (ctx.signal?.aborted || ["ResponseError", "ConnectionError"].includes(error.name)) throw error;
-        return finish(blocked(error.message));
+        return await finish(blocked(error.message));
       }
       const plan = immutable(structuredClone(await verificationPlan(root, base)));
-      if (!sameSource(plan.source, state.candidate.source)) return finish(blocked("Source changed after the candidate commit."));
+      if (!sameSource(plan.source, state.candidate.source)) return await finish(blocked("Source changed after the candidate commit."));
       const finalPolicy = await inspectDevelopmentPolicy(root, base, plan.changedFiles, readOnlyGit, [...policyPaths]);
       const policyReview = immutable(policyEvidence(finalPolicy, structuredClone(plan.source)));
       const patchFile = path.join(directory, `review-${round}.patch`);
@@ -552,9 +583,9 @@ async function runAttempt(ctx, root, task, verify) {
       await save(statePath, state);
       ctx.phase("Verify");
       try { await assertCandidate(root, workspace, state.candidate); }
-      catch (error) { return finish(blocked(`Candidate changed before verification: ${error.message}`)); }
+      catch (error) { return await finish(blocked(`Candidate changed before verification: ${error.message}`)); }
       const beforeVerificationHooks = await checkHooks("before verification");
-      if (beforeVerificationHooks) return finish(beforeVerificationHooks);
+      if (beforeVerificationHooks) return await finish(beforeVerificationHooks);
       const verification = immutable(structuredClone(await verify(root, immutable(structuredClone(plan)), {
         directory: path.join(directory, `round-${round}`), signal: ctx.signal,
         jdk: process.env.DEVPOCKET_JDK, sdk: process.env.DEVPOCKET_ANDROID_SDK, image: process.env.DEVPOCKET_ANDROID_IMAGE,
@@ -562,28 +593,28 @@ async function runAttempt(ctx, root, task, verify) {
       ctx.signal?.throwIfAborted();
       await record(path.join(directory, `verification-${round}.json`), verification);
       const verificationHooks = await checkHooks("during verification");
-      if (verificationHooks) return finish({ ...verificationHooks, verification });
+      if (verificationHooks) return await finish({ ...verificationHooks, verification });
       try { await requireCandidateImplementation(loadedImplementation); }
-      catch (error) { return finish({ ...implementationStop(error), verification }); }
+      catch (error) { return await finish({ ...implementationStop(error), verification }); }
       try { await assertCandidate(root, workspace, state.candidate); }
-      catch (error) { return finish(blocked(`Source changed during verification: ${error.message}`)); }
+      catch (error) { return await finish(blocked(`Source changed during verification: ${error.message}`)); }
       if (!verification.complete || verification.status !== "passed") {
         if (verification.checks?.some((check) => check.status === "blocked")) {
-          return finish({ status: "blocked", reason: "Required verification prerequisites are unavailable.", verification });
+          return await finish({ status: "blocked", reason: "Required verification prerequisites are unavailable.", verification });
         }
         const repairStop = await prepareRepair(verification, null, policyReview);
         if (repairStop) return repairStop;
         continue;
       }
       try { combineVerification(plan, [verification]); }
-      catch (error) { return finish(blocked(`Verification evidence rejected: ${error.message}`)); }
+      catch (error) { return await finish(blocked(`Verification evidence rejected: ${error.message}`)); }
       ctx.phase("Review");
       state.stage = "reviewing";
       await save(statePath, state);
       try { await assertCandidate(root, workspace, state.candidate); }
-      catch (error) { return finish(blocked(`Candidate changed before review: ${error.message}`)); }
+      catch (error) { return await finish(blocked(`Candidate changed before review: ${error.message}`)); }
       const beforeReviewHooks = await checkHooks("before review");
-      if (beforeReviewHooks) return finish(beforeReviewHooks);
+      if (beforeReviewHooks) return await finish(beforeReviewHooks);
       const reviewResponse = await ctx.agent([
         `Independently review the task in ${root}. You have read/search tools only.`,
         `Review committed candidate ${state.candidate.commit}, selected against explicit base ${base}; the controller requires the same clean index/worktree before and after review.`,
@@ -601,20 +632,20 @@ async function runAttempt(ctx, root, task, verify) {
         label: `${ctx.runId}:review:${round}:${state.candidate.commit}:${plan.source.fingerprint}`, schema: reviewSchema });
       ctx.signal?.throwIfAborted();
       const reviewed = safeResult(parseReview, reviewResponse);
-      if (!reviewed.success) return finish(blocked("Independent review failed or returned inconsistent evidence."));
+      if (!reviewed.success) return await finish(blocked("Independent review failed or returned inconsistent evidence."));
       const reviewHooks = await checkHooks("during review");
-      if (reviewHooks) return finish({ ...reviewHooks, verification });
+      if (reviewHooks) return await finish({ ...reviewHooks, verification });
       try { await requireCandidateImplementation(loadedImplementation); }
-      catch (error) { return finish({ ...implementationStop(error), verification }); }
+      catch (error) { return await finish({ ...implementationStop(error), verification }); }
       try { await assertCandidate(root, workspace, state.candidate); }
-      catch (error) { return finish(blocked(`Source changed during the read-only review: ${error.message}`)); }
+      catch (error) { return await finish(blocked(`Source changed during the read-only review: ${error.message}`)); }
       const review = { ...reviewed.data, source: plan.source, reviewer: "devpocket-reviewer" };
       await record(path.join(directory, `review-${round}.json`), review);
-      if (review.verdict === "needs_human") return finish({ status: "needs_human", verification, review, policyReview });
+      if (review.verdict === "needs_human") return await finish({ status: "needs_human", verification, review, policyReview });
       if (review.verdict === "pass") {
         const humanReview = await approvePolicy(finalPolicy, "review", implemented.data.summary);
-        if (humanReview) return finish({ ...humanReview, verification, review, changedFiles: plan.changedFiles, policyReview });
-        return finish({
+        if (humanReview) return await finish({ ...humanReview, verification, review, changedFiles: plan.changedFiles, policyReview });
+        return await finish({
           status: "ready",
           reason: "The exact clean candidate is verified, independently reviewed and satisfies its scoped human decisions. Publication still needs its own authorization.",
           verification, review, changedFiles: plan.changedFiles, policyReview,
@@ -623,8 +654,18 @@ async function runAttempt(ctx, root, task, verify) {
       const repairStop = await prepareRepair(verification, review, policyReview);
       if (repairStop) return repairStop;
     }
+  } catch (error) {
+    errors.push(error);
+    throw error;
   } finally {
-    await lock.close();
-    await rm(lockPath);
+    const priorErrors = errors.length;
+    for (const cleanup of [() => lock.close(), () => rm(lockPath)]) {
+      try { await cleanup(); }
+      catch (error) { errors.push(error); }
+    }
+    if (errors.length > priorErrors) {
+      if (errors.length === 1) throw errors[0];
+      throw new AggregateError(errors, "Workflow execution or lock cleanup failed.");
+    }
   }
 }

@@ -329,8 +329,9 @@ blocks execution rather than silently allowing it.
 Hooks may invoke programs outside that directory; these snapshots do not parse
 arbitrary hook dependencies or replace the original native permission policy.
 Candidate requests retain version 4 to bind hook, executable-input and prepared
-reference-transaction evidence. Controller journals/results use version 6 for
-progress-aware repair history and scoped native approval receipts. Older
+reference-transaction evidence. Controller journals/results use version 7 for
+cancellation-safe completion, progress-aware repair history and scoped native
+approval receipts. Older
 requests/results require inspected recovery; they are not replayed as approval
 for the new controller.
 An operation-private hook route uses Git's `reference-transaction` prepared phase,
@@ -1451,15 +1452,22 @@ Uncertain external side effects remain outside the automatic workflow.
 
 An interrupted implementation or candidate commit is not automatically replayed. Inspect
 `state.json`, the runtime's durable workflow record, and any retained lock. A
-completed journaled run may be read again only while its task/workspace/source
-still match and the candidate index/worktree remain clean. Inspect the recorded
+completed native run may be read through `devpocket_check_development_readiness`
+only while its task/workspace/source still match and the candidate index/worktree
+remain clean. Reentering the controller never promotes a cached `ready` proposal
+to native run completion; an interrupted run requires inspected recovery even
+when its source and approvals are unchanged. Inspect the recorded
 candidate request/receipt, current index and history after a commit interruption;
 preserve failed commits and reports rather than guessing whether to retry.
-Cancellation observed during final result persistence changes the recovery state
-to `cancelled` and removes only the handoff file created by that attempt. Candidate,
+Finalization is awaited before the workflow lock is released. Cancellation
+observed during final persistence, lock cleanup, journal completion or the final
+readiness check changes the recovery state to `cancelled` and removes only the
+handoff file created by that attempt. Candidate,
 verification and review evidence remain available, and the original cancellation
 still propagates. Invalidation failures are reported explicitly; recovery files
 never replace the runtime's durable outcome or establish readiness on their own.
+Handle and lock cleanup failures retain the original execution or invalidation
+error rather than replacing it, and owned cleanup is still attempted.
 The candidate index lock records its owner PID and token. Inspect that owner
 before recovering an interrupted commit; existing or replaced locks are never
 removed automatically.
