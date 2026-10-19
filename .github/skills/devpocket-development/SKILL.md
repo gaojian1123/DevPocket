@@ -14,7 +14,12 @@ The skill coordinates existing tools; it is not a durable workflow controller.
 
 State the goal, observable acceptance criteria and non-goals before implementation.
 Reuse the user's decisions; ask only about unresolved behavior, scope or authority.
-Keep that contract fixed while repairing the task.
+Once those are clear, proceed; stating the contract is not another plan-approval
+checkpoint. Keep that contract fixed while repairing the task.
+Retain any user-selected limits and the original client's time/credit controls.
+Do not add a project-default budget or repair cap, or require a budget question
+when the user has not requested one. See **Task-scoped autonomy** in
+`docs\DEVELOPMENT-WORKFLOW.md` for progress and stop decisions.
 
 Record the delivery target separately from the implementation goal:
 
@@ -190,13 +195,29 @@ replace it. The development workflow extension is not needed for this step.
 
 Investigate blocking findings in the same workspace under the same contract.
 Return to Step 3's approval gate before executing repaired policy or hooks.
-Allow at most two repair rounds unless the user chooses a different bound.
+Continue same-scope implementation, checks and review without renewed project
+approval. There is no implicit two-round limit: honor an explicit user-selected
+repair cap and the original client's budget/cancellation instead.
+
+Compare source-bound failures and attempted approaches across repairs. Resolved
+blockers, a narrowed cause or a newly supported hypothesis establish progress;
+source churn or rewritten findings do not. When a failure repeats or cycles,
+inspect the actual diagnostics and try a materially different supported approach
+within the existing scope. Use the read-only reviewer for repair diagnosis when
+the evidence needs an independent assessment; diagnosis is not acceptance review.
+If that changed approach still produces no demonstrated progress, retain the task
+and report `blocked` with the failed approaches, evidence and concrete obstacle,
+not a generic request to approve another round. A productive repair does not
+consume a project-defined default round allowance.
+
 For candidate-commit delivery, put a repair into a new authorized follow-up commit
 before final verification; amend only if the user explicitly requests it. Keep
 the original base and update the candidate SHA. Each source-changing repair needs
 fresh applicable verification and independent review of the new source. Reuse
 only still-applicable scoped human authorization, not old test/review evidence.
-Unresolved product decisions, permissions or exhausted repairs require human input.
+Only unresolved product decisions, missing authority or a requested budget/limit
+extension require human input. Preserve the same task, base and spent budget;
+starting another session or run does not authorize further work.
 
 After a passing review, revalidate the report against the current source without
 rerunning checks solely to compare identities:

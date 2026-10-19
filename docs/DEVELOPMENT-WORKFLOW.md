@@ -5,7 +5,7 @@
 `AGENTS.md` routes ordinary implementation requests to the **devpocket-development
 skill** at `.github\skills\devpocket-development\SKILL.md`. That file is the
 authoritative recipe for the task contract, workspace selection, implementation,
-verification, independent review, bounded repair and recovery. Invoke the skill
+verification, independent review, progress-aware repair and recovery. Invoke the skill
 when available; otherwise read the same file directly. A clean linked worktree
 stays in the current session. Follow-ups retain their task/workspace and evidence.
 
@@ -28,6 +28,33 @@ An in-conversation task contract is sufficient; the AI task issue template is
 optional. Issue text alone does not start work or authorize privileged operations.
 Discussion, planning, read-only review and documentation-only work do not start
 the implementation pipeline. Dispatched agents perform only their assigned phase.
+
+## Task-scoped autonomy
+
+A clear implementation request delegates the ordinary local implementation,
+verification, independent review and repair loop, not just its first phase.
+State the acceptance contract and proceed; ask only for an unresolved behavior,
+scope or authority decision. A failed check, review finding, phase transition
+or changed ordinary source requires new evidence, not renewed project consent.
+Execution-policy changes and new external effects still follow the scoped
+approval gate below. Native tool permissions remain independent.
+
+Reuse the user's explicit limits and the original client's time/credit controls.
+There is no additional project-default time, cost or repair-round ceiling.
+When the client has no limit, that dimension remains unbounded; do not claim a
+budget is enforced or invent one. An explicit user repair cap still applies.
+Budget exhaustion/cancellation preserves the same task and spent resources;
+an increased budget needs a user decision, not a fresh session or run to evade it.
+
+Judge progress from source-bound evidence across attempts: resolved blockers,
+a narrowed cause or a newly supported hypothesis, rather than changed hashes,
+line numbers or rewritten findings. Repeated or cyclic failure first calls for
+diagnosis and a materially different supported approach within the existing
+scope. If that attempt still shows no progress, retain the source, reports,
+attempted approaches and concrete obstacle as `blocked`. Product decisions and
+additional authority are `needs_human`; ordinary technical failures are not
+requests to approve another repair. All successful repairs still require fresh
+applicable verification and independent acceptance review.
 
 ## Scoped development approvals
 
@@ -187,8 +214,7 @@ Direct invocation of `run_dynamic_workflow` in an eligible current worktree:
   "args": {
     "goal": "Describe the user-visible change",
     "acceptance": ["An observable success case", "An observable failure case"],
-    "nonGoals": ["Behavior that must remain unchanged"],
-    "maxRepairRounds": 2
+    "nonGoals": ["Behavior that must remain unchanged"]
   }
 }
 ```
@@ -214,6 +240,12 @@ an opted-in run to skill-led work or implementer self-review is not a substitute
 The user can choose a different route explicitly. Honor the App's per-run
 approval and credit/time controls; opting in does not bypass them or authorize
 a replacement runtime.
+
+Omit `maxRepairRounds` for progress-aware continuation without a project round
+cap. Set it only when the user explicitly chooses a nonnegative integer cap;
+zero means no automatic repair. Existing explicit values, including 0, 1 and 2,
+retain that meaning. Time/credit limits belong to the native workflow invocation,
+not a guessed `meta.limits` or a second project budget.
 
 The controller follows **implement → local candidate commit → final verification
 → independent review**:
@@ -251,8 +283,26 @@ The controller follows **implement → local candidate commit → final verifica
    high-risk paths still require human review.
 
 Repairs create a new local commit on the failed candidate, then new selected
-verification and a fresh independent review. Prior commits/reports remain history
-within the chosen repair bound. A no-op initial task uses the existing clean HEAD
+verification and a fresh independent review. Prior commits/reports remain history.
+Each candidate's `review-<round>.patch` is persisted before verification and its
+path is included as `diff` in the failed-attempt history. Read-only diagnosis can
+therefore inspect earlier source changes even when verification never passed.
+After a repair still fails verification or acceptance review, the controller asks
+the same read/search-only reviewer profile for a separate **repair diagnosis**.
+It receives the fixed contract, current and previous failures, attempted approach,
+earlier report paths and actual scoped decisions. Its structured progress status,
+evidence and next approach are recorded against the unchanged candidate; this is
+not a passing acceptance review and cannot grant authority.
+
+A first `stalled` diagnosis feeds a different approach back to the implementer.
+If the following diagnosis still finds no progress, the controller returns
+`blocked` with that evidence. Demonstrated progress clears that stalled state,
+so productive tasks can continue beyond two repairs. An explicit repair cap is
+checked before spending another diagnosis/repair. Native budget failures and
+cancellation propagate without being recast as ordinary findings or retried
+under another run; the existing inspected recovery rules still apply.
+
+A no-op initial task uses the existing clean HEAD
 without an empty commit; a no-op repair stops instead of repeatedly checking the
 same failed revision. Commit/hook failures and concurrent source, history, branch,
 configuration or index changes stop explicitly. Nothing amends, resets, rewrites
@@ -279,8 +329,9 @@ blocks execution rather than silently allowing it.
 Hooks may invoke programs outside that directory; these snapshots do not parse
 arbitrary hook dependencies or replace the original native permission policy.
 Candidate requests retain version 4 to bind hook, executable-input and prepared
-reference-transaction evidence. Controller journals/results use version 5 for
-scoped native approval receipts and satisfied review requirements. Older
+reference-transaction evidence. Controller journals/results use version 7 for
+cancellation-safe completion, progress-aware repair history and scoped native
+approval receipts. Older
 requests/results require inspected recovery; they are not replayed as approval
 for the new controller.
 An operation-private hook route uses Git's `reference-transaction` prepared phase,
@@ -1394,15 +1445,31 @@ recorded runs of the optional workflow.
 The controller stops for missing prerequisites, agent failure, inconsistent
 review results, commit/hook errors or uncertain commit outcomes, concurrent
 source/index/history/branch/configuration changes, protected policy changes,
-high-risk final review, or exhaustion of the chosen repair count.
+high-risk final review, an explicit repair cap, or sustained lack of progress
+after diagnosis and a changed approach. Native budget/cancellation stops retain
+the original runtime's outcome and accounting.
 Uncertain external side effects remain outside the automatic workflow.
 
 An interrupted implementation or candidate commit is not automatically replayed. Inspect
 `state.json`, the runtime's durable workflow record, and any retained lock. A
-completed journaled run may be read again only while its task/workspace/source
-still match and the candidate index/worktree remain clean. Inspect the recorded
+completed native run may be read through `devpocket_check_development_readiness`
+only while its task/workspace/source still match and the candidate index/worktree
+remain clean. Reentering the controller never promotes a cached `ready` proposal
+to native run completion; an interrupted run requires inspected recovery even
+when its source and approvals are unchanged. Inspect the recorded
 candidate request/receipt, current index and history after a commit interruption;
 preserve failed commits and reports rather than guessing whether to retry.
+Finalization is awaited before the workflow lock is released. Cancellation
+observed during final persistence, lock cleanup, journal completion or the final
+readiness check changes the recovery state to `cancelled` and removes only the
+handoff file created by that attempt. Candidate,
+verification and review evidence remain available, and the original cancellation
+still propagates. Invalidation failures are reported explicitly; recovery files
+never replace the runtime's durable outcome or establish readiness on their own.
+Handle and lock cleanup failures retain the original execution or invalidation
+error rather than replacing it, and owned cleanup is still attempted.
+If cancellation first arrives with a rejecting cleanup, its signal reason is
+retained alongside that failure, without duplicating an existing nested cause.
 The candidate index lock records its owner PID and token. Inspect that owner
 before recovering an interrupted commit; existing or replaced locks are never
 removed automatically.

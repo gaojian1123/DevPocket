@@ -208,12 +208,18 @@ and review, retaining the original task base. Implementation alone does not
 authorize publication or turn working-tree evidence into final-commit evidence.
 
 The **registered devpocket-development workflow** remains an explicit opt-in for
-controller-managed execution and bounded repairs, not the default entry point.
+controller-managed execution and progress-aware repairs, not the default entry point.
 Its starter also reuses a freshly inspected clean linked worktree in the current
 session, isolates a clean primary checkout and blocks dirty or unknown checkouts.
 The controller makes a task-scoped local candidate commit through original native
 permissions before final source-bound verification and independent review.
 Repairs create new commits and evidence; earlier commits and reports remain.
+Neither route imposes a default two-round cap or a separate time/credit budget.
+Same-scope work continues under the original client's limits and any explicit
+user cap. Repeated failures get diagnosis and a different approach before a
+no-progress stop; normal repair rounds do not require renewed project approval.
+The controller records separate read-only progress diagnoses, not acceptance
+approvals. See **Task-scoped autonomy** in `docs\DEVELOPMENT-WORKFLOW.md`.
 Its read-only readiness check reuses durable evidence for an unchanged candidate
 without repeating local final verification. Source, HEAD, branch or index changes
 invalidate readiness. It does not push, create a PR, merge or deploy.
