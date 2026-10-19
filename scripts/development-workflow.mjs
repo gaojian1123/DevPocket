@@ -159,6 +159,21 @@ async function record(file, value, onCreated) {
 const blocked = (reason) => ({ status: "blocked", reason });
 const policyEvidence = ({ contents, beforeContents, ...policy }, source) => ({ ...policy, source });
 
+function containsError(error, expected) {
+  const pending = [error], seen = new Set();
+  while (pending.length) {
+    const current = pending.pop();
+    if (Object.is(current, expected)) return true;
+    if (!(current instanceof Error) || seen.has(current)) continue;
+    seen.add(current);
+    const children = current instanceof AggregateError ? Object.getOwnPropertyDescriptor(current, "errors")?.value : null;
+    if (Array.isArray(children)) for (const child of children) pending.push(child);
+    const cause = Object.getOwnPropertyDescriptor(current, "cause");
+    if (cause && Object.hasOwn(cause, "value")) pending.push(cause.value);
+  }
+  return false;
+}
+
 function implementationStop(error) {
   return { status: "needs_human", reason: error.message, approval: {
     action: "Inspect and explicitly reload the changed development controller in the original client",
@@ -287,7 +302,12 @@ export async function runDevelopment(ctx, { root = process.cwd(), verify = execu
     }
     return outcome.result;
   } catch (error) {
-    if (ctx.signal?.aborted && cancelFinalization) await cancelFinalization(error);
+    if (ctx.signal?.aborted) {
+      if (!containsError(error, ctx.signal.reason)) {
+        error = new AggregateError([ctx.signal.reason, error], "Workflow cancellation and execution or cleanup failed.");
+      }
+      if (cancelFinalization) await cancelFinalization(error);
+    }
     throw error;
   }
 }

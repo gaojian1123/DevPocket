@@ -1468,6 +1468,8 @@ still propagates. Invalidation failures are reported explicitly; recovery files
 never replace the runtime's durable outcome or establish readiness on their own.
 Handle and lock cleanup failures retain the original execution or invalidation
 error rather than replacing it, and owned cleanup is still attempted.
+If cancellation first arrives with a rejecting cleanup, its signal reason is
+retained alongside that failure, without duplicating an existing nested cause.
 The candidate index lock records its owner PID and token. Inspect that owner
 before recovering an interrupted commit; existing or replaced locks are never
 removed automatically.

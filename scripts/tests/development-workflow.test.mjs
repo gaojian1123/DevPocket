@@ -820,10 +820,12 @@ test("late cancellation invalidates completion and prevents ready journal replay
 });
 
 test("completion cleanup preserves cancellation and every cleanup failure", async (t) => {
-  const contains = (actual, expected) => actual === expected ||
-    actual instanceof AggregateError && actual.errors.some((error) => contains(error, expected));
-  for (const phase of ["lock-close", "lock-remove", "invalidation-and-remove", "handoff-close"]) await t.test(phase, async (t) => {
+  const count = (actual, expected) => actual === expected ? 1 :
+    actual instanceof AggregateError ? actual.errors.reduce((total, error) => total + count(error, expected), 0) : 0;
+  for (const phase of ["lock-close", "lock-remove", "invalidation-and-remove", "handoff-close",
+    "late-lock-close", "late-lock-remove", "late-invalidation-and-remove"]) await t.test(phase, async (t) => {
     const { root } = await workspace(t), controller = new AbortController(), session = nativeSession();
+    const late = phase.startsWith("late-"), invalidationFails = phase.endsWith("invalidation-and-remove");
     const cancellation = new Error("Fixture cancellation"), cleanupFailure = new Error(`Fixture ${phase} failed`);
     const invalidationFailure = new Error("Fixture cancellation checkpoint failed");
     const runId = `cleanup-errors-${phase}`, directory = path.join(root, ".data", "development", runId);
@@ -838,21 +840,25 @@ test("completion cleanup preserves cancellation and every cleanup failure", asyn
         const write = handle.writeFile.bind(handle);
         t.mock.method(handle, "writeFile", async (...values) => {
           const result = await write(...values);
-          controller.abort(cancellation);
+          if (!late) controller.abort(cancellation);
           if (phase === "handoff-close") throw cancellation;
           return result;
         });
       }
-      if (args[0] === lockPath && phase === "lock-close" || args[0] === handoffPath && phase === "handoff-close") {
+      if (args[0] === lockPath && phase.endsWith("lock-close") || args[0] === handoffPath && phase === "handoff-close") {
         const close = handle.close.bind(handle);
-        t.mock.method(handle, "close", async () => { await close(); throw cleanupFailure; });
+        t.mock.method(handle, "close", async () => {
+          await close();
+          if (late) controller.abort(cancellation);
+          throw cleanupFailure;
+        });
       }
       return handle;
     });
     t.mock.method(fs, "rename", async (...args) => {
       if (args[1] === statePath && JSON.parse(await readFile(args[0], "utf8")).stage === "cancelled") {
         invalidations++;
-        if (phase === "invalidation-and-remove") throw invalidationFailure;
+        if (invalidationFails) throw invalidationFailure;
       }
       return original.rename(...args);
     });
@@ -861,7 +867,10 @@ test("completion cleanup preserves cancellation and every cleanup failure", asyn
       if (args[0] === handoffPath) handoffRemovals++;
       if (args[0] === lockPath) {
         lockRemovals++;
-        if (["lock-remove", "invalidation-and-remove"].includes(phase)) throw cleanupFailure;
+        if (phase.endsWith("lock-remove") || invalidationFails) {
+          if (late) controller.abort(cancellation);
+          throw cleanupFailure;
+        }
       }
       return result;
     });
@@ -872,8 +881,8 @@ test("completion cleanup preserves cancellation and every cleanup failure", asyn
         args: { goal: "Preserve failure provenance", acceptance: ["Keep cancellation and cleanup errors"] },
         agent: async (_prompt, options) => options.agent === "devpocket-reviewer" ? passingReview : implemented(root),
       }), { root, verify: async (_root, plan) => syntheticReport(plan) }), (error) =>
-        contains(error, cancellation) && contains(error, cleanupFailure) &&
-        (phase !== "invalidation-and-remove" || contains(error, invalidationFailure)));
+        count(error, cancellation) === 1 && count(error, cleanupFailure) === 1 &&
+        (!invalidationFails || count(error, invalidationFailure) === 1));
     } finally {
       t.mock.restoreAll();
       syncBuiltinESMExports();
@@ -882,7 +891,7 @@ test("completion cleanup preserves cancellation and every cleanup failure", asyn
     assert.equal(lockRemovals, 1, "Removing the owned lock must still be attempted after a close failure.");
     assert.equal(handoffRemovals, 1);
     const state = JSON.parse(await readFile(statePath, "utf8"));
-    if (phase !== "invalidation-and-remove") assert.equal(state.stage, "cancelled");
+    if (!invalidationFails) assert.equal(state.stage, "cancelled");
     assert.equal((await sourceSnapshot(root)).head, state.candidate.commit);
     assert.equal(JSON.parse(await readFile(path.join(directory, "verification-0.json"), "utf8")).status, "passed");
     await assert.rejects(readFile(handoffPath), { code: "ENOENT" });
@@ -919,6 +928,27 @@ test("completed runs use native read-only readiness instead of reentering the co
   assert.equal(implementations, 1);
   assert.equal(verifications, 1);
   assert.equal(reviews, 1);
+});
+
+test("cancellation aggregation preserves existing causes and handles cycles", async (t) => {
+  for (const scenario of ["cause", "cycle", "cycle-with-cancellation", "primitive"]) await t.test(scenario, async (t) => {
+    const { root } = await workspace(t), controller = new AbortController(), session = nativeSession();
+    const cancellation = scenario === "primitive" ? "Fixture cancellation" : new Error("Fixture cancellation");
+    const failure = scenario.startsWith("cycle") ? new AggregateError([], "Fixture cyclic errors") :
+      scenario === "cause" ? new Error("Fixture wrapper", { cause: cancellation }) : new Error("Fixture failure");
+    if (scenario.startsWith("cycle")) failure.errors.push(failure);
+    if (scenario === "cycle-with-cancellation") failure.errors.unshift(cancellation);
+    session.rpc.tools.execute = async () => { assert.fail("Cancelled implementation must not commit."); };
+    await assert.rejects(runDevelopment(durable({
+      runId: `error-causes-${scenario}`, session, signal: controller.signal,
+      args: { goal: "Preserve cancellation provenance", acceptance: ["No lost or duplicate cancellation"] },
+      agent: async () => { controller.abort(cancellation); throw failure; },
+    }), { root }), (error) => {
+      if (["cause", "cycle-with-cancellation"].includes(scenario)) return error === failure;
+      return error instanceof AggregateError && error.errors.length === 2 &&
+        error.errors[0] === cancellation && error.errors[1] === failure;
+    });
+  });
 });
 
 test("failed verification exposes a readable candidate diff before diagnosis or acceptance review", async (t) => {
