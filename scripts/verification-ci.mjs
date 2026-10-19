@@ -7,7 +7,7 @@ import { parseArgs, promisify } from "node:util";
 import { diagnosticDirectory } from "./diagnostic-publication.mjs";
 import { diagnosticError, failureDetails } from "./diagnostic-errors.mjs";
 import { committedInputEntries, readOnlyGit } from "./git-state.mjs";
-import { combineVerification, verificationFailure, verificationPlan } from "./verification.mjs";
+import { combineVerification, requireVerificationOutputDirectory, verificationFailure, verificationPlan } from "./verification.mjs";
 import { CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "./verification-policy.mjs";
 import { readDiagnosticReport } from "./worker-diagnostics.mjs";
 
@@ -115,6 +115,7 @@ export function collectCIReports(plan, context, envelopes, upstream) {
 }
 
 async function readLatestInputs(root, directory, context) {
+  await requireVerificationOutputDirectory(root, directory);
   directory = await diagnosticDirectory(root, directory);
   const latest = new Map(), entries = await readdir(directory, { withFileTypes: true });
   if (entries.length > 1024) throw diagnosticError("output-limit");
@@ -212,6 +213,7 @@ export async function qualifyGitHubCI(root, options) {
   const { repository, pullRequest, runId, base, directory, api = githubJson } = options;
   if (!validRepository(repository) || !/^[1-9]\d*$/.test(String(pullRequest)) ||
       !/^[1-9]\d*$/.test(String(runId))) throw diagnosticError("configuration");
+  await requireVerificationOutputDirectory(root, directory);
   const { inspectWorktree } = await import("./candidate-commit.mjs");
   const { runCommand } = await import("./process.mjs");
   const before = await inspectWorktree(root);
@@ -285,15 +287,18 @@ async function main() {
   if ([values.seal, values.collect, values.qualify].filter(Boolean).length !== 1 || !values.report) {
     throw diagnosticError("configuration");
   }
-  const root = process.cwd();
+  const root = process.cwd(), report = path.resolve(values.report), name = path.basename(report);
+  if ((process.platform === "win32" ? name.toLowerCase() : name) === "run.json") throw diagnosticError("run-output-reused");
+  await requireVerificationOutputDirectory(root, path.dirname(report));
   let result;
   if (values.qualify) {
     result = await qualifyGitHubCI(root, { repository: values.repository, pullRequest: values.pr,
-      runId: values.run, base: values.base, directory: path.dirname(path.resolve(values.report)) });
+      runId: values.run, base: values.base, directory: `${report}.evidence` });
   } else {
     const context = await githubVerificationContext(root);
     if (values.seal) {
       if (!values.input) throw diagnosticError("configuration");
+      await requireVerificationOutputDirectory(root, path.dirname(path.resolve(values.input)));
       await diagnosticDirectory(root, path.dirname(path.resolve(values.input)));
       result = ciReportEnvelope(await readDiagnosticReport(values.input), context, values.unit);
     } else {

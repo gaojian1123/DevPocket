@@ -5,6 +5,7 @@ import fileSystem, { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "n
 import { syncBuiltinESMExports } from "node:module";
 import net from "node:net";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { acquireHostVerificationSlot, admissionVariable } from "../verification-admission.mjs";
@@ -13,7 +14,7 @@ import { combineVerification, verificationPlan } from "../verification.mjs";
 import { VERIFICATION_REPORT_VERSION } from "../verification-policy.mjs";
 import { sdkPreparationFixture, syntheticExecution } from "./fixtures/verification-tools.mjs";
 import { WORKFLOW_TEST_FILES, WORKFLOW_TEST_SHARDS } from "../test-workflow.mjs";
-import { ciReportEnvelope, collectCIReports, githubVerificationContext, validateLiveCIEnvelope } from "../verification-ci.mjs";
+import { ciReportEnvelope, collectCIReports, githubVerificationContext, qualifyGitHubCI, validateLiveCIEnvelope } from "../verification-ci.mjs";
 
 const exec = promisify(execFile);
 
@@ -427,6 +428,144 @@ test("CI qualification rejects stale, foreign, incomplete and relabelled platfor
   assert.throws(() => collectCIReports(item.plan, item.context, [leaf], new Map([["tooling", "cancelled"]])));
   const foreign = ciReportEnvelope(item.report, { ...item.context, runId: "5678" }, "tooling-all");
   assert.throws(() => collectCIReports(item.plan, item.context, [foreign], new Map([["tooling", "success"]])));
+});
+
+test("the qualification CLI keeps requested report names separate from authenticated evidence", async (t) => {
+  const item = await ciFixture(t), workspace = path.join(item.root, ".data", "qualification-worktree");
+  await exec("git", ["remote", "add", "origin", `https://github.com/${item.repository}.git`], { cwd: item.root });
+  await exec("git", ["worktree", "add", "--quiet", workspace, "candidate"], { cwd: item.root });
+  try {
+    const leaf = ciReportEnvelope(item.report, item.context, "tooling-all");
+    const envelope = collectCIReports(item.plan, item.context, [leaf], new Map([["tooling", "success"]]));
+    const directory = path.join(item.root, ".data", "qualification-fixture");
+    await mkdir(directory);
+    const body = path.join(directory, "ci-report.json"), gate = path.join(directory, "gate.json");
+    await writeFile(body, JSON.stringify(envelope));
+    await writeFile(gate, JSON.stringify(envelope.report));
+    const creator = path.join(directory, "archive.ps1"), archive = path.join(directory, "evidence.zip");
+    await writeFile(creator, [
+      "param($Archive,$Envelope,$Gate)",
+      "$ErrorActionPreference='Stop'",
+      "$zip=[IO.Compression.ZipFile]::Open($Archive,[IO.Compression.ZipArchiveMode]::Create)",
+      "try { foreach($item in @(@('ci-report.json',$Envelope),@('gate.json',$Gate))) {",
+      " $writer=[IO.StreamWriter]::new($zip.CreateEntry($item[0]).Open(),[Text.UTF8Encoding]::new($false))",
+      " try { $writer.Write([IO.File]::ReadAllText($item[1])) } finally { $writer.Dispose() }",
+      "} } finally { $zip.Dispose() }",
+    ].join("\n"));
+    await exec("pwsh", ["-NoProfile", "-NonInteractive", "-File", creator, "-Archive", archive,
+      "-Envelope", body, "-Gate", gate], { timeout: 30000 });
+    const bytes = await readFile(archive), digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    const commit = { sha: item.context.tested.head, tree: { sha: item.context.tested.tree },
+      parents: [{ sha: item.base }, { sha: item.candidate }] };
+    const rows = (await exec("git", ["ls-tree", "-r", "-z", item.context.tested.head], { cwd: item.root })).stdout
+      .split("\0").filter(Boolean).map((line) => {
+        const [, mode, type, sha, file] = /^(\d+) (\w+) ([a-f0-9]+)\t([\s\S]+)$/.exec(line);
+        return { mode, type, sha, path: file };
+      });
+    const run = { id: 1234, event: "pull_request", path: ".github/workflows/ci.yml", run_attempt: 2,
+      head_sha: item.candidate, status: "completed", conclusion: "success", pull_requests: [{ number: 11 }],
+      html_url: `https://github.com/${item.repository}/actions/runs/1234` };
+    const artifact = { id: 42, name: "verification-summary-attempt-2", expired: false, digest, size_in_bytes: bytes.length,
+      workflow_run: { id: 1234, head_sha: item.candidate, repository_id: 1, head_repository_id: 1 } };
+    const prefix = `repos/${item.repository}`;
+    const api = {
+      [`${prefix}/pulls/11`]: item.pullRequest,
+      [`${prefix}/actions/runs/1234`]: run,
+      [`${prefix}/actions/runs/1234/attempts/2/jobs?per_page=100`]: {
+        total_count: 1, jobs: [{ name: "Required verification", status: "completed", conclusion: "success" }],
+      },
+      [`${prefix}/actions/runs/1234/artifacts?per_page=100&page=1`]: { total_count: 1, artifacts: [artifact] },
+      [`${prefix}/git/commits/${commit.sha}`]: commit,
+      [`${prefix}/git/trees/${commit.tree.sha}?recursive=1`]: { truncated: false, tree: rows },
+    };
+    const fixtureData = path.join(directory, "api.json"), preload = path.join(directory, "github-fixture.mjs");
+    const calls = path.join(directory, "github-calls.jsonl");
+    await writeFile(fixtureData, JSON.stringify({ api, archive: bytes.toString("base64"), download: `${prefix}/actions/artifacts/42/zip` }));
+    await writeFile(preload, [
+      "import childProcess from 'node:child_process';import {readFileSync,appendFileSync} from 'node:fs';",
+      "import {promisify} from 'node:util';import {syncBuiltinESMExports} from 'node:module';",
+      `const fixture=JSON.parse(readFileSync(${JSON.stringify(fixtureData)},'utf8'));`,
+      "const original=childProcess.execFile, native=promisify(original);",
+      "const replacement=(file,...args)=>{if(file==='gh')throw new Error('Unexpected non-promisified GitHub call');return original(file,...args);};",
+      "replacement[promisify.custom]=(file,args,options)=>{",
+      " if(file!=='gh')return native(file,args,options);",
+      " if(args.length!==4||args[0]!=='api'||args[1]!=='--hostname'||args[2]!=='github.com')throw new Error('Unexpected GitHub invocation');",
+      ` appendFileSync(${JSON.stringify(calls)},JSON.stringify(args)+'\\n');`,
+      " const endpoint=args[3];let stdout;",
+      " if(endpoint===fixture.download)stdout=Buffer.from(fixture.archive,'base64');",
+      " else{if(!Object.hasOwn(fixture.api,endpoint))throw new Error('Unmapped GitHub endpoint');stdout=JSON.stringify(fixture.api[endpoint]);}",
+      " return Promise.resolve({stdout,stderr:''});",
+      "};childProcess.execFile=replacement;syncBuiltinESMExports();",
+    ].join("\n"));
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    for (const [index, name] of ["qualification.json", "ci-report.json", "ci-evidence.zip", "evidence"].entries()) {
+      await t.test(name, async () => {
+        const file = path.join(workspace, ".data", "verification", `output-${index}`, name);
+        const args = ["--import", pathToFileURL(preload).href, path.resolve("scripts/verification-ci.mjs"),
+          "--qualify", "--repository", item.repository, "--pr", "11", "--run", "1234",
+          "--base", item.base, "--report", file];
+        await exec(process.execPath, args, { cwd: workspace, env, timeout: 60000 });
+        const qualified = JSON.parse(await readFile(file, "utf8"));
+        assert.equal(qualified.kind, "ci-qualification");
+        assert.equal(qualified.status, "verified");
+        assert.equal(qualified.candidate.head, item.candidate);
+        assert.equal(qualified.tested.head, item.context.tested.head);
+        assert.deepEqual(JSON.parse(await readFile(path.resolve(workspace, qualified.evidence), "utf8")), envelope);
+        assert.notEqual(path.resolve(workspace, qualified.evidence), file);
+        assert.equal(path.dirname(path.resolve(workspace, qualified.evidence)), `${file}.evidence`);
+        assert.deepEqual(await readFile(path.join(path.dirname(path.resolve(workspace, qualified.evidence)), "ci-evidence.zip")), bytes);
+        if (index === 0) {
+          const retained = await readFile(file);
+          await assert.rejects(exec(process.execPath, args, { cwd: workspace, env, timeout: 60000 }));
+          assert.deepEqual(await readFile(file), retained);
+          assert.deepEqual(JSON.parse(await readFile(path.resolve(workspace, qualified.evidence), "utf8")), envelope);
+        }
+      });
+    }
+    const ledger = path.join(workspace, ".data", "verification", "retained", "run");
+    await mkdir(ledger, { recursive: true });
+    await writeFile(path.join(ledger, "run.json"), "Retained ledger marker\n");
+    const before = await readFile(calls);
+    await t.test("retained ledger", async () => {
+      const file = path.join(ledger, "qualification.json");
+      await assert.rejects(exec(process.execPath, ["--import", pathToFileURL(preload).href,
+        path.resolve("scripts/verification-ci.mjs"), "--qualify", "--repository", item.repository,
+        "--pr", "11", "--run", "1234", "--base", item.base, "--report", file],
+      { cwd: workspace, env, timeout: 60000 }), (error) => error.code === 1 && /run-output-reused/.test(error.stderr));
+      assert.deepEqual(await readFile(calls), before, "An invalid output must fail before GitHub access.");
+      await assert.rejects(readFile(file), { code: "ENOENT" });
+    });
+    await t.test("direct retained ledger", async () => {
+      await assert.rejects(qualifyGitHubCI(workspace, { repository: item.repository, pullRequest: 11, runId: 1234,
+        base: item.base, directory: ledger, api: () => assert.fail("Invalid direct output must not access GitHub.") }),
+      { diagnosticCode: "run-output-reused" });
+    });
+    await t.test("reserved ledger filename", async () => {
+      const file = path.join(workspace, ".data", "verification", "reserved", "run.json");
+      await assert.rejects(exec(process.execPath, ["--import", pathToFileURL(preload).href,
+        path.resolve("scripts/verification-ci.mjs"), "--qualify", "--repository", item.repository,
+        "--pr", "11", "--run", "1234", "--base", item.base, "--report", file],
+      { cwd: workspace, env, timeout: 60000 }), (error) => error.code === 1 && /run-output-reused/.test(error.stderr));
+      assert.deepEqual(await readFile(calls), before);
+      await assert.rejects(readFile(file), { code: "ENOENT" });
+    });
+    await t.test("collection cannot create input directories inside a ledger", async () => {
+      const retained = path.join(item.root, ".data", "verification", "retained", "run");
+      const input = path.join(retained, "nested"), output = path.join(item.root, ".data", "ci", "invalid-input", "ci-report.json");
+      await mkdir(retained, { recursive: true });
+      await writeFile(path.join(retained, "run.json"), "Retained ledger marker\n");
+      await assert.rejects(exec(process.execPath, [path.resolve("scripts/verification-ci.mjs"), "--collect",
+        "--inputs", input, "--report", output, "--base", item.base, "--upstream", "tooling:success"],
+      { cwd: item.root, env: item.env, timeout: 30000 }), { code: 1 });
+      const result = JSON.parse(await readFile(output, "utf8"));
+      assert.equal(result.report.failure.reason, "run-output-reused");
+      await assert.rejects(fileSystem.lstat(input), { code: "ENOENT" });
+      assert.equal(await readFile(path.join(retained, "run.json"), "utf8"), "Retained ledger marker\n");
+    });
+  } finally {
+    await exec("git", ["worktree", "remove", "--force", workspace], { cwd: item.root });
+  }
 });
 
 test("the CI artifact reader verifies authenticated bytes and never extracts unexpected paths", async (t) => {

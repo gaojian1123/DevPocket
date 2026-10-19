@@ -189,6 +189,16 @@ candidate HEAD, run/attempt, real successful gate job and unexpired artifact.
 The archive must match GitHub's authenticated SHA256 digest and contain only the
 expected bounded JSON entries; it is read without extracting paths.
 
+The requested `--report PATH` contains the qualification result. Its downloaded
+ZIP and authenticated envelope are retained separately in `PATH.evidence`;
+keep that sidecar with the result. Internal artifact names therefore cannot
+collide with a requested filename such as `ci-report.json` or `ci-evidence.zip`.
+CI output and collected-input directories use the same verification/CI/development
+storage boundaries as local verification. CLI and direct qualification reject
+retained-ledger destinations before writing or contacting GitHub; CI sealing and
+collection cannot create input directories inside those ledgers either.
+`run.json` remains reserved for ledger manifests, including in the CI CLI.
+
 The CI envelope retains the actual report, producer/run/attempt, candidate,
 PR base, tested merge commit/tree, workflow revision and selected input receipts.
 The tested commit must have the current PR base and candidate as its exact parents.
