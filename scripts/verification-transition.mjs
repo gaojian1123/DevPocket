@@ -28,7 +28,7 @@ export async function capturePromotionContext(root, plan) {
     workspace = await inspectWorktree(root);
     hooks = await activeHookSnapshot(root);
   } catch (error) {
-    if (error.candidateFailure !== "candidate-changed" && !["EACCES", "EPERM"].includes(error.code)) throw error;
+    if (error.candidateFailure !== "candidate-changed" && !["ENOENT", "EACCES", "EPERM"].includes(error.code)) throw error;
     return { eligible: false, reason: "candidate-inspection-unavailable", failure: failureDetails(error, "candidate-transition") };
   }
   const inputs = await sourceInputs(root);

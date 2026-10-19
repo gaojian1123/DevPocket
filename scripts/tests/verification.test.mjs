@@ -2751,6 +2751,41 @@ test("ordinary verification supports a detached linked worktree without granting
   assert.equal(resumed.report.status, "passed", JSON.stringify(resumed.report));
 });
 
+test("dangling hook links disable optional conversion without blocking ordinary verification", async (t) => {
+  const primary = await repository(t), root = `${primary}-hooks`;
+  await exec("git", ["worktree", "add", "--quiet", "-b", "hook-fixture", root, "HEAD"], { cwd: primary });
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, "README.md"), "documentation-only hook fixture\n");
+  const hooks = (await exec("git", ["rev-parse", "--git-path", "hooks"], { cwd: root })).stdout.trim();
+  const hook = path.join(path.resolve(root, hooks), "pre-commit");
+  await symlink(path.join(primary, ".data", "missing-hook-target"), hook, process.platform === "win32" ? "junction" : "dir");
+  assert.equal((await fileSystem.lstat(hook)).isSymbolicLink(), true);
+  await assert.rejects(fileSystem.realpath(hook), { code: "ENOENT" });
+  await t.test("ordinary verification and recovery", async () => {
+    const first = await verify(root, []);
+    assert.equal(first.exitCode, 0, JSON.stringify(first.report));
+    assert.equal(first.report.status, "passed");
+    assert.equal(first.report.complete, true);
+    assert.deepEqual(first.report.checks, []);
+    assert.equal(first.report.candidateConversion.status, "unavailable");
+    assert.equal(first.report.candidateConversion.reason, "candidate-inspection-unavailable");
+    assert.equal(first.report.candidateConversion.failure.osCode, "ENOENT");
+    const resumed = await verify(root, ["--resume", first.report.run.manifest]);
+    assert.equal(resumed.report.status, "passed", JSON.stringify(resumed.report));
+    assert.deepEqual(resumed.report.candidateConversion, first.report.candidateConversion);
+  });
+  await t.test("native candidate preparation remains strict", async () => {
+    const { inspectWorktree } = await import("../candidate-commit.mjs");
+    const before = await inspectWorktree(root);
+    await assert.rejects(commitFixtureCandidate(root), { code: "ENOENT" });
+    assert.deepEqual(await inspectWorktree(root), before);
+  });
+  await rm(hook);
+  const restored = await verify(root, []);
+  assert.equal(restored.report.status, "passed", JSON.stringify(restored.report));
+  assert.equal(restored.report.candidateConversion.status, "available");
+});
+
 test("a changed captured execution policy cannot resume an earlier successful run", async (t) => {
   const { root, base, counts } = await recoveryFixture(t);
   const first = await recordedVerification(root, base);
@@ -3195,19 +3230,21 @@ test("candidate conversion rejects forged receipts, changed hooks, index modes, 
   const receiptFile = `${request}.result.json`, receiptBytes = await readFile(receiptFile);
   const hooks = (await exec("git", ["rev-parse", "--git-path", "hooks"], { cwd: root })).stdout.trim();
   const hook = path.join(path.resolve(root, hooks), "pre-commit");
-  for (const change of ["receipt", "hooks", "history"]) await t.test(change, async () => {
+  for (const change of ["receipt", "hooks", "dangling-hook", "history"]) await t.test(change, async () => {
     if (change === "receipt") {
       const receipt = JSON.parse(receiptBytes);
       receipt.verificationProof.signature = "0".repeat(64);
       await writeFile(receiptFile, JSON.stringify(receipt));
     }
     if (change === "hooks") await writeFile(hook, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    if (change === "dangling-hook") await symlink(path.join(root, ".data", "missing-hook-target"), hook,
+      process.platform === "win32" ? "junction" : "dir");
     if (change === "history") await exec("git", ["commit", "--quiet", "--allow-empty", "-m", "Extra history"], { cwd: root });
     const before = await counts();
     try {
       await assert.rejects(prepareVerificationTransition(root, await verificationPlan(root, base), {
         promote: first.report.run.manifest, candidateRequest: request,
-      }));
+      }), change === "dangling-hook" ? { code: "ENOENT" } : undefined);
       if (change === "receipt") {
         const result = await verify(root, ["--base", base, "--promote", first.report.run.manifest, "--candidate-request", request]);
         assert.equal(result.report.status, "blocked", JSON.stringify(result.report));
@@ -3216,7 +3253,7 @@ test("candidate conversion rejects forged receipts, changed hooks, index modes, 
       assert.deepEqual(await counts(), before);
     } finally {
       if (change === "receipt") await writeFile(receiptFile, receiptBytes);
-      if (change === "hooks") await rm(hook);
+      if (["hooks", "dangling-hook"].includes(change)) await rm(hook);
     }
   });
 });

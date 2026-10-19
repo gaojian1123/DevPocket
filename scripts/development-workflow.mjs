@@ -619,7 +619,7 @@ async function runAttempt(ctx, root, task, verify, onFinalization) {
       try { await assertCandidate(root, workspace, state.candidate); }
       catch (error) { return await finish(blocked(`Source changed during verification: ${error.message}`)); }
       if (!verification.complete || verification.status !== "passed") {
-        if (verification.checks?.some((check) => check.status === "blocked")) {
+        if (verification.status === "blocked" || verification.checks?.some((check) => check.status === "blocked")) {
           return await finish({ status: "blocked", reason: "Required verification prerequisites are unavailable.", verification });
         }
         const repairStop = await prepareRepair(verification, null, policyReview);

@@ -58,6 +58,11 @@ additional authority are `needs_human`; ordinary technical failures are not
 requests to approve another repair. All successful repairs still require fresh
 applicable verification and independent acceptance review.
 
+Verification blocked at either report or check level stops the optional controller
+before code-repair dispatch. Admission or ownership failures with only `not_run`
+checks retain their diagnostic report; they do not authorize another implementation
+round, owner takeover or lock removal.
+
 ## Scoped development approvals
 
 Local authorization is separate from verification selection, independent review
@@ -1036,6 +1041,9 @@ Ordinary verification also supports primary and detached linked checkouts:
 their reports explicitly mark candidate conversion unavailable. Unsupported
 candidate-only hook/index inspection does not silently approve conversion or
 prevent otherwise valid ordinary verification.
+A dangling hook link likewise disables conversion eligibility and retains its
+`ENOENT` diagnostic without blocking otherwise valid ordinary verification.
+Native candidate preparation and promotion still reject unavailable hook snapshots.
 
 Only explicitly proven content-only command contracts can reuse execution.
 Initially this is `typecheck` under the recognized Windows/default-npm launcher:

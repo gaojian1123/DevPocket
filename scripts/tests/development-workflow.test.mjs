@@ -982,6 +982,53 @@ test("failed verification exposes a readable candidate diff before diagnosis or 
   assert.equal(patchDuringVerification, "", "An unchanged baseline has an empty, but still inspectable, diff.");
 });
 
+test("report-level admission blocks stop before dispatching a code repair", async (t) => {
+  const { root } = await workspace(t), calls = [], reports = [];
+  const profile = path.join(root, ".data", "fixture-profile");
+  const admission = path.join(profile, ...(process.platform === "win32" ? [] : [".cache"]),
+    "DevPocket", "verification", "admission");
+  await mkdir(admission, { recursive: true, mode: 0o700 });
+  const owner = path.join(admission, "owner.json"), retained = '{"fixture":"unconfirmed owner"}\n';
+  await writeFile(owner, retained, { flag: "wx", mode: 0o600 });
+  const env = { ...process.env, [process.platform === "win32" ? "LOCALAPPDATA" : "HOME"]: profile };
+  delete env.DEVPOCKET_VERIFIER_ADMISSION;
+  const runId = "blocked-admission";
+  const result = await runDevelopment(durable({
+    runId, args: { goal: "Preserve admission failures", acceptance: ["Do not dispatch code repair"], maxRepairRounds: 1 },
+    agent: async (_prompt, options) => {
+      calls.push(options.agent);
+      assert.equal(options.agent, "general-purpose");
+      if (calls.length === 1) {
+        const directory = path.join(root, "scripts", "tests");
+        await mkdir(directory, { recursive: true });
+        await writeFile(path.join(directory, "admission.test.mjs"), "// Admission must block before checks run.\n");
+      }
+      return implemented(root);
+    },
+  }), { root, verify: async (_root, plan, options) => {
+    const file = path.join(root, ".data", "verification", runId, path.basename(options.directory), "report.json");
+    await assert.rejects(exec(process.execPath, [path.resolve("scripts/verify.mjs"), "--repo", root,
+      "--base", plan.base, "--report", file], { cwd: root, env, timeout: 30000 }),
+    (error) => error.code === 1 && /Verification blocked:/.test(error.stdout));
+    const report = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(report.status, "blocked");
+    assert.equal(report.failure.reason, "admission-unconfirmed");
+    assert.ok(report.checks.length > 0);
+    assert.ok(report.checks.every((check) => check.status === "not_run"));
+    reports.push(report);
+    return report;
+  } });
+  assert.deepEqual(calls, ["general-purpose"], "An admission failure must not dispatch another implementation or review.");
+  assert.equal(result.status, "blocked");
+  assert.equal(result.round, 0);
+  assert.equal(reports.length, 1);
+  assert.deepEqual(result.verification, reports[0]);
+  assert.deepEqual(result.repairHistory, []);
+  assert.deepEqual(JSON.parse(await readFile(path.join(root, ".data", "development", runId, "verification-0.json"), "utf8")),
+    reports[0]);
+  assert.equal(await readFile(owner, "utf8"), retained);
+});
+
 test("starter reuses a clean linked worktree through exactly one native workflow dispatch", async (t) => {
   const { root } = await workspace(t);
   const task = {
