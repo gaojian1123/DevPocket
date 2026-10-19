@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, open } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { combineVerification, executeVerification, verificationPlan, verificationFailure, verificationFault, requirePlanCollection } from "./verification.mjs";
+import { executeVerification, validateVerificationEvidence, verificationPlan, verificationFailure, verificationFault,
+  requirePlanCollection, requireVerificationReportPath } from "./verification.mjs";
 import { readDiagnosticReport } from "./worker-diagnostics.mjs";
 import { CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "./verification-policy.mjs";
 
@@ -16,6 +17,11 @@ async function main() {
     plan: { type: "boolean", default: false },
     all: { type: "boolean", default: false },
     group: { type: "string", default: "all" },
+    "tooling-shard": { type: "string" },
+    resume: { type: "string" },
+    promote: { type: "string" },
+    "candidate-request": { type: "string" },
+    "candidate-evidence": { type: "boolean", default: false },
     jdk: { type: "string" },
     sdk: { type: "string" },
     image: { type: "string" },
@@ -31,6 +37,7 @@ async function main() {
   if (!["verification", "ci"].some((folder) => relative.startsWith(path.join(".data", folder) + path.sep))) {
     throw verificationFault("ownership-mismatch");
   }
+  await requireVerificationReportPath(root, reportPath, [values.resume, values.promote]);
   let parent = root;
   for (const part of path.relative(root, path.dirname(reportPath)).split(path.sep)) {
     parent = path.join(parent, part);
@@ -50,7 +57,15 @@ async function main() {
       plan = await verificationPlan(root, values.base, values.all);
       requirePlanCollection(plan);
       if (!["all", ...CHECK_GROUPS].includes(values.group)) throw verificationFault("configuration");
-      if (values.plan && values.combine) throw verificationFault("configuration");
+      if (values["tooling-shard"] && (values.group !== "tooling" || values.plan || values.combine || values.promote)) {
+        throw verificationFault("configuration");
+      }
+      if (values.plan && values.combine || values.resume && (values.plan || values.combine || values.input.length)) {
+        throw verificationFault("configuration");
+      }
+      if (values.promote && (values.plan || values.combine || values.resume || values.input.length || values.group !== "all") ||
+          Boolean(values.promote) !== Boolean(values["candidate-request"]) ||
+          values["candidate-evidence"] && !values.combine) throw verificationFault("configuration");
       if (values.combine) {
         phase = "aggregate";
         if (values.input.length > 32) throw verificationFault("report-invalid");
@@ -61,7 +76,8 @@ async function main() {
           if (value === null) throw verificationFault("report-missing", { inputIndex });
           return value;
         }));
-        report = combineVerification(plan, reports);
+        report = await validateVerificationEvidence(root, plan, reports, { ...values,
+          candidateEvidence: values["candidate-evidence"], backendDiagnostics: values["backend-diagnostics"] });
         const upstream = new Map();
         for (const result of values.upstream) {
           const [group, outcome, extra] = result.split(":");
@@ -78,6 +94,8 @@ async function main() {
         phase = values.plan ? "plan" : "command";
         report = values.plan ? { ...plan, status: "planned", complete: false, checks: [] }
           : await executeVerification(root, plan, { ...values, backendDiagnostics: values["backend-diagnostics"],
+            toolingShard: values["tooling-shard"],
+            candidateRequest: values["candidate-request"],
             directory: path.dirname(reportPath), signal: cancellation.signal });
       }
       if (["failed", "blocked"].includes(report.status)) process.exitCode = 1;
@@ -112,9 +130,13 @@ async function main() {
     process.off("SIGTERM", cancel);
   }
   console.log(`Verification ${report.status}: ${path.relative(root, reportPath).replaceAll("\\", "/")}`);
+  if (report.run) console.log(`Verification run: ${report.run.manifest.replaceAll("\\", "/")} (attempt ${report.run.attempt})`);
+  if (report.preflight?.status === "blocked") {
+    console.error(JSON.stringify({ kind: "verification-preflight", ...report.preflight }));
+  }
   if (report.status === "planned") console.log(JSON.stringify({
     kind: "verification-plan", requiredChecks: report.requiredChecks, requiredGroups: report.requiredGroups,
-    layouts: report.layouts, selectionReasons: report.selectionReasons,
+    layouts: report.layouts, selectionReasons: report.selectionReasons, toolingShards: report.toolingShards ?? null,
   }));
   if (report.failure) console.error(JSON.stringify({ kind: "verification-failure", ...report.failure }));
 }

@@ -8,39 +8,42 @@ const implementationFiles = [...new Set([...nativeFiles, "native-candidate.mjs",
   "development-policy.mjs", "verification.mjs", "verification-policy.mjs", "process.mjs", "device-run.mjs", "worker-diagnostics.mjs",
   "device-diagnostics.mjs", "diagnostic-errors.mjs", "bounded-worker-log.mjs", "diagnostic-publication.mjs",
   "native-lifecycle.mjs", "verification-executor.mjs", "verification-backend.mjs", "verification-android.mjs",
-  "backend-diagnostics.mjs"])].sort();
+  "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs", "verification-transition.mjs",
+  "verification-tooling.mjs", "verification-admission.mjs", "verification-ci.mjs", "verification-ci-artifact.ps1",
+  "verify.mjs", "verify.ps1", "test-workflow.mjs", "owned-command-windows.mjs", "owned-command.cs", "owned-command.ps1", "owned-command-linux.py"])].sort();
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const sameFile = (left, right) => ["dev", "ino", "mode", "size", "mtimeMs"].every((key) => left[key] === right[key]);
 
 export async function captureCandidateImplementation(directory = fileURLToPath(new URL(".", import.meta.url))) {
   directory = await realpath(directory);
   const files = await Promise.all(implementationFiles.map(async (name) => {
-    const file = path.join(directory, name);
-    let previous;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const info = await lstat(file);
-      if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024) throw new Error("Candidate implementation input is unavailable.");
-      const handle = await open(file, "r");
-      try {
-        // Opening a Windows file can update ctime without changing its contents.
-        const opened = await handle.stat();
-        if (!sameFile(info, opened)) throw new Error("Candidate implementation changed while being captured.");
-        const bytes = await handle.readFile(), after = await handle.stat(), current = await lstat(file);
-        const sha256 = digest(bytes);
-        if (bytes.length !== opened.size || !sameFile(opened, after) || !sameFile(after, current) ||
-            previous && (!sameFile(previous.info, opened) || previous.sha256 !== sha256)) {
+    const file = path.join(directory, name), info = await lstat(file);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024) throw new Error("Candidate implementation input is unavailable.");
+    const input = await open(file, "r");
+    try {
+      let first;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const current = await input.stat();
+        if (["dev", "ino", "mode", "size", "mtimeMs"].some((key) => current[key] !== info[key]) ||
+            current.size > 1024 * 1024) throw new Error("Candidate implementation changed while being captured.");
+        const bytes = Buffer.alloc(current.size);
+        let offset = 0;
+        while (offset < bytes.length) {
+          const result = await input.read(bytes, offset, bytes.length - offset, offset);
+          if (!result.bytesRead) throw new Error("Candidate implementation changed while being captured.");
+          offset += result.bytesRead;
+        }
+        const after = [await input.stat(), await lstat(file)];
+        if (after.some((value) => ["dev", "ino", "mode", "size", "mtimeMs"].some((key) => value[key] !== current[key])) ||
+            first && !bytes.equals(first)) {
           throw new Error("Candidate implementation changed while being captured.");
         }
-        if (opened.ctimeMs !== after.ctimeMs || after.ctimeMs !== current.ctimeMs) {
-          previous = { info: opened, sha256 };
-          continue;
-        }
-        return Object.freeze({ name, sha256 });
-      } finally {
-        await handle.close();
+        if (after.every((value) => value.ctimeMs === current.ctimeMs)) return Object.freeze({ name, sha256: digest(bytes) });
+        // A cold Windows close-time update gets one same-handle, byte-identical stability read.
+        if (process.platform !== "win32" || attempt) throw new Error("Candidate implementation changed while being captured.");
+        first = bytes;
       }
-    }
-    throw new Error("Candidate implementation changed while being captured.");
+      throw new Error("Candidate implementation changed while being captured.");
+    } finally { await input.close(); }
   }));
   return Object.freeze({ version: 2, directory, files: Object.freeze(files) });
 }

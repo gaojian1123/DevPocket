@@ -5,7 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
-import { WORKFLOW_TEST_FILES } from "../test-workflow.mjs";
+import { WORKFLOW_TEST_FILES, WORKFLOW_TEST_SHARDS } from "../test-workflow.mjs";
 
 const exec = promisify(execFile);
 
@@ -35,12 +35,13 @@ test("the dedicated workflow entry retains the complete explicit suite without d
   const manifest = JSON.parse(await readFile("package.json", "utf8"));
   assert.equal(manifest.scripts["test:workflow"], "node scripts/test-workflow.mjs");
   assert.deepEqual(WORKFLOW_TEST_FILES, [
-    "verification", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
+    "verification", "verification-execution", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
     "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
     "bounded-worker-log", "development-workflow", "process", "emulator-resources", "manual-emulator",
     "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner",
   ].map((name) => `scripts/tests/${name}.test.mjs`));
   assert.equal(new Set(WORKFLOW_TEST_FILES).size, WORKFLOW_TEST_FILES.length);
+  assert.deepEqual(WORKFLOW_TEST_SHARDS.flatMap((part) => part.files).sort(), [...WORKFLOW_TEST_FILES].sort());
   for (const file of WORKFLOW_TEST_FILES) await readFile(file);
   const development = await readFile("scripts/tests/development-workflow.test.mjs", "utf8");
   assert.doesNotMatch(development, /import\(["']\.\/xcode-mcp\.test\.mjs["']\)/);
@@ -53,11 +54,14 @@ test("the runner preserves Node file isolation, inherited environment, complete 
     await writeFile(path.join(item.root, file), [
       'import assert from "node:assert/strict";',
       'import { writeFile } from "node:fs/promises";',
+      'import { performance } from "node:perf_hooks";',
       'import { test } from "node:test";',
+      'import { isMainThread } from "node:worker_threads";',
       `test("workflow fixture ${index}", async () => {`,
       '  assert.equal(process.env.DEVPOCKET_WORKFLOW_ISOLATION, "parent");',
+      '  assert.equal(isMainThread, true);',
       `  process.env.DEVPOCKET_WORKFLOW_ISOLATION = ${JSON.stringify(file)};`,
-      `  await writeFile("records/${index}.json", JSON.stringify({ file: ${JSON.stringify(file)}, pid: process.pid }));`,
+      `  await writeFile("records/${index}.json", JSON.stringify({ file: ${JSON.stringify(file)}, pid: process.pid, startedAt: performance.timeOrigin }));`,
       `  if (process.env.DEVPOCKET_WORKFLOW_FAIL === ${JSON.stringify(file)}) assert.fail("fixture failure");`,
       '});',
     ].join("\n"));
@@ -77,7 +81,9 @@ test("the runner preserves Node file isolation, inherited environment, complete 
     const records = await Promise.all((await readdir(path.join(item.root, "records"))).map(async (file) =>
       JSON.parse(await readFile(path.join(item.root, "records", file), "utf8"))));
     assert.deepEqual(records.map((record) => record.file).sort(), [...WORKFLOW_TEST_FILES].sort());
-    assert.equal(new Set(records.map((record) => record.pid)).size, WORKFLOW_TEST_FILES.length);
+    assert.ok(records.every((record) => Number.isFinite(record.startedAt) && record.startedAt > 0));
+    // An exited child's PID can be recycled before later files start on a small runner.
+    assert.equal(new Set(records.map((record) => `${record.pid}:${record.startedAt}`)).size, WORKFLOW_TEST_FILES.length);
     for (const output of [direct.stdout, result.stdout]) {
       assert.match(output, new RegExp(`^# tests ${WORKFLOW_TEST_FILES.length}\\r?$`, "m"));
       assert.match(output, new RegExp(`^# fail ${failing ? 1 : 0}\\r?$`, "m"));
@@ -134,4 +140,12 @@ test("the launcher leaves concurrency and isolation at Node defaults and propaga
       if (mode === "error") assert.match(result.stderr, /Unable to start workflow tests: fixture launch failure/);
     }
   }
+  item.env.DEVPOCKET_WORKFLOW_MODE = "success";
+  const part = WORKFLOW_TEST_SHARDS[0];
+  const sharded = await run(item, ["--import", pathToFileURL(guard).href, item.entry, "--workflow-shard", part.id]);
+  assert.equal(sharded.code, 0);
+  assert.deepEqual(JSON.parse(await readFile(path.join(item.root, "spawn.json"), "utf8")),
+    { file: process.execPath, args: ["--test", ...part.files], options: { stdio: "inherit" } });
+  const invalid = await run(item, [item.entry, "--workflow-shard", part.id, "--test-name-pattern=not-a-full-shard"]);
+  assert.notEqual(invalid.code, 0);
 });

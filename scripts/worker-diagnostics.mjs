@@ -185,18 +185,19 @@ export function projectWorkerDiagnostics(value, expectedRunId) {
   };
 }
 
-export async function readDiagnosticReport(file) {
+export async function readDiagnosticReport(file, { maximum = 512 * 1024 } = {}) {
+  if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 1024 * 1024) throw diagnosticError("configuration");
   let info;
   try { info = await lstat(file); }
   catch (error) { if (error.code === "ENOENT") return null; throw error; }
   if (info.isSymbolicLink()) throw diagnosticError("ownership-mismatch");
   if (!info.isFile()) throw diagnosticError("report-invalid");
-  if (info.size > 512 * 1024) throw diagnosticError("output-limit");
+  if (info.size > maximum) throw diagnosticError("output-limit");
   const input = await open(file, "r");
   try {
     const current = await input.stat();
     if (current.ino !== info.ino || current.dev !== info.dev) throw diagnosticError("ownership-mismatch");
-    if (current.size > 512 * 1024) throw diagnosticError("output-limit");
+    if (current.size > maximum) throw diagnosticError("output-limit");
     const bytes = Buffer.alloc(current.size);
     let offset = 0;
     while (offset < bytes.length) {

@@ -7,6 +7,8 @@ const executionScripts = new Set([
   "development-policy", "development-workflow", "workflow-extension", "candidate-commit", "native-candidate",
   "git-state", "verification", "verification-policy", "verify", "verification-executor", "test-workflow",
   "verification-backend", "verification-android", "process", "owned-command", "owned-command-windows",
+  "verification-preflight", "verification-run", "verification-transition",
+  "verification-tooling", "verification-admission", "verification-ci", "verification-ci-artifact",
   "owned-command-linux", "device-run", "worker-diagnostics", "device-diagnostics", "diagnostic-errors",
   "bounded-worker-log", "diagnostic-publication", "native-lifecycle", "backend-diagnostics",
   "verification-diagnostics", "android-diagnostics", "platform-diagnostics",
@@ -174,6 +176,13 @@ export function developmentApprovalDetails(base, policy, files) {
 export function developmentApprovalRequest(scope, policy, stage, hooks) {
   if (!scope || !scope.sessionId || !scope.runId || !scope.base || !scope.workspace || !scope.task ||
       !["execution", "review"].includes(stage)) throw new TypeError("A task-scoped approval subject is required.");
+  if (scope.ci !== undefined && (!scope.ci || typeof scope.ci.repository !== "string" ||
+      !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(scope.ci.repository) ||
+      scope.ci.repository.split("/").some((part) => part === "." || part === "..") ||
+      scope.ci.ref !== scope.workspace.branch || !/^refs\/heads\/[^\x00-\x20]+$/.test(scope.ci.ref) ||
+      Object.keys(scope.ci).some((key) => !["repository", "ref"].includes(key)))) {
+    throw new TypeError("CI execution needs this task's exact repository and branch.");
+  }
   const selected = policy.reasons.filter((item) => item.stage === stage);
   const paths = selected.flatMap((item) => item.paths).sort();
   if (!paths.length) return null;
@@ -187,10 +196,12 @@ export function developmentApprovalRequest(scope, policy, stage, hooks) {
     hooks,
     effects: stage === "execution"
       ? ["Use these exact policy inputs for local checks and task-scoped candidate commits.",
+        ...(scope.ci ? [`Run the reviewed .github/workflows/ci.yml hosted-runner setup and checks for candidates on ${scope.ci.repository} ${scope.ci.ref}, including their pull-request merge ref.`] : []),
         "Record human review of these policy changes; still require source-bound verification and independent review."]
       : ["Satisfy the local human-review requirement for these exact changes after verification and independent review."],
     exclusions: ["No push, PR creation, merge, deployment, extension installation/reload or live runtime control.",
-      "No new tool installation, device enrollment, shared-machine configuration or bypass of native permissions."],
+      scope.ci ? "No local tool installation, new infrastructure, device enrollment, shared-machine configuration or bypass of native permissions."
+        : "No new tool installation, device enrollment, shared-machine configuration or bypass of native permissions."],
     validity: "Only this task, workspace and listed input versions. Ordinary source repairs do not expand this grant. Changed inputs or targets require a new decision.",
   };
   if (request.inputs.length !== paths.length) throw new Error("Approval inputs do not cover every requested path.");
@@ -208,6 +219,7 @@ export function formatDevelopmentApproval(request, details, summary, snapshot) {
     `Approval requested: ${request.action}`,
     `Why now: ${request.reasons.map((item) => item.why).join(" ")}`,
     `Target: ${request.scope.workspace.root} (${request.scope.workspace.branch}); task ${request.scope.runId}.`,
+    ...(request.scope.ci ? [`CI target: ${request.scope.ci.repository} at ${request.scope.ci.ref}; .github/workflows/ci.yml only.`] : []),
     `Task goal (context, not authority): ${JSON.stringify(request.scope.task.goal)}`,
     ...(summary ? [`Behavior change (implementation description; check against the actual details): ${JSON.stringify(summary)}`] : []),
     `Changes: ${request.inputs.map((input) => `${input.path} [${input.kind}]`).join(", ")}`,

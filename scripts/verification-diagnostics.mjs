@@ -10,7 +10,7 @@ import { diagnosticDirectory, publishDiagnostic } from "./diagnostic-publication
 import { deviceSourceCatalogue } from "./device-diagnostics.mjs";
 import { projectStartupReport } from "./native-startup.mjs";
 
-const phases = ["arguments", "plan", "preflight", "command", "device-validation", "artifact-validation",
+const phases = ["arguments", "plan", "admission", "preflight", "command", "device-validation", "artifact-validation",
   "source-validation", "log", "aggregate", "report"];
 const states = ["passed", "failed", "blocked", "not_run"];
 const issueOperations = ["private-log", "device-catalogue", "device-report", "backend-catalogue", "controller-cleanup"];
@@ -73,6 +73,11 @@ export function checkLogHints(text, root, sources, check = "unknown") {
     const frame = /^[ \t]*File "([^"]+)", line (\d{1,6})(?:,|$)/.exec(line);
     if (frame) {
       const source = location(frame[1], Number(frame[2]));
+      if (source) add({ kind: "source-frame", ...source });
+    }
+    const scriptFrame = /^\s*at (?:[^()\r\n]+ \()?(.+\.(?:mjs|js|ts)):(\d{1,6}):(\d{1,6})\)?$/.exec(line);
+    if (scriptFrame) {
+      const source = location(scriptFrame[1], Number(scriptFrame[2]), Number(scriptFrame[3]));
       if (source) add({ kind: "source-frame", ...source });
     }
     const test = check === "workflow-tests" ? /^test at (.+\.mjs):(\d{1,6}):(\d{1,6})$/.exec(line.trim()) : undefined;
@@ -157,6 +162,17 @@ export async function collectVerificationDiagnostics(root, directory, job, stepR
       privateLog: { availability: input.status === "not_run" ? "not-produced" : "not-sampled", truncated: false },
       hints: [],
     };
+    const execution = input.execution;
+    if (/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(execution?.source?.head ?? "") &&
+        /^[a-f0-9]{64}$/.test(execution?.source?.fingerprint ?? "") &&
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(execution?.startedAt ?? "") &&
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(execution?.completedAt ?? "")) {
+      check.executionEvidence = {
+        kind: input.candidateReuse ? "candidate-reuse-claim" : "executed",
+        source: { head: execution.source.head, fingerprint: execution.source.fingerprint },
+        startedAt: execution.startedAt, completedAt: execution.completedAt, approval: "not-established",
+      };
+    }
     if (["failed", "blocked"].includes(input.status)) {
       if (input.privateLog?.availability === "not-produced") check.privateLog.availability = "not-produced";
       else {

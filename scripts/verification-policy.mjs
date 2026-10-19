@@ -1,5 +1,5 @@
-export const VERIFICATION_REPORT_VERSION = 3;
-export const isDiagnosticVerificationVersion = (version) => [1, 2, VERIFICATION_REPORT_VERSION].includes(version);
+export const VERIFICATION_REPORT_VERSION = 5;
+export const isDiagnosticVerificationVersion = (version) => [1, 2, 3, 4, VERIFICATION_REPORT_VERSION].includes(version);
 
 export const CHECKS = [
   { id: "workflow-tests", group: "tooling" },
@@ -42,16 +42,16 @@ const rules = [
       ".github/skills/devpocket-development/SKILL.md", ".github/ISSUE_TEMPLATE/ai-task.yml"].includes(file), checks: tooling },
   { id: "verification-contract", description: "Source identity, planning, evidence validation and report projection use workflow contracts, not application builds.",
     matches: (file) => [".gitignore", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
-      "scripts/verify.mjs", "scripts/verify.ps1", "scripts/verification-diagnostics.mjs", "scripts/diagnostic-errors.mjs",
+      "scripts/verify.mjs", "scripts/verify.ps1", "scripts/verification-tooling.mjs", "scripts/verification-diagnostics.mjs", "scripts/diagnostic-errors.mjs",
       "scripts/diagnostic-publication.mjs", "scripts/android-diagnostics.mjs", "scripts/device-diagnostics.mjs",
       "scripts/worker-diagnostics.mjs", "scripts/native-lifecycle.mjs"].includes(file), checks: tooling },
   { id: "tooling-regression", description: "Named synthetic workflow regressions run the complete workflow suite without provisioning application toolchains.",
     matches: (file) => [
-      "verification", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
+      "verification", "verification-execution", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
       "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
       "bounded-worker-log", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner",
     ].some((name) => file === `scripts/tests/${name}.test.mjs`) ||
-      file === "scripts/tests/fixtures/emulator-lease-peer.mjs", checks: tooling },
+      ["scripts/tests/fixtures/emulator-lease-peer.mjs", "scripts/tests/fixtures/verification-tools.mjs"].includes(file), checks: tooling },
   { id: "backend-execution", description: "Backend command adaptation, builds and packaging require backend checks, not native execution.",
     matches: (file) => ["scripts/verification-backend.mjs", "scripts/bundle-extension.mjs", "scripts/package-extension.ps1",
       "scripts/launch-cli-proof.ps1", "scripts/tests/extension-package.test.mjs", "scripts/tests/fixtures/proof-cli-process.mjs",
@@ -68,7 +68,9 @@ const rules = [
       /^(?:android\/gradle\/|android\/gradlew(?:\.bat)?$)/.test(file) ||
       /^android\/.*(?:\.gradle(?:\.kts)?|gradle\.properties)$/.test(file), ...nativeExecution },
   { id: "shared-execution", description: "The shared executor, process ownership, bounded logs and shared backend/native preflight require all downstream checks.",
-    matches: (file) => ["scripts/verification-executor.mjs", "scripts/process.mjs", "scripts/owned-command.ps1",
+    matches: (file) => ["scripts/verification-executor.mjs", "scripts/verification-preflight.mjs", "scripts/verification-run.mjs",
+      "scripts/verification-transition.mjs", "scripts/verification-admission.mjs", "scripts/verification-ci.mjs",
+      "scripts/verification-ci-artifact.ps1", "scripts/process.mjs", "scripts/owned-command.ps1",
       "scripts/owned-command.cs", "scripts/owned-command-windows.mjs", "scripts/owned-command-linux.py",
       "scripts/bounded-worker-log.mjs", "scripts/backend-diagnostics.mjs"].includes(file), ...full },
   { id: "operations", description: "Deployment and infrastructure changes, including their dependencies, require backend and operational fixtures.",
@@ -132,7 +134,7 @@ export function projectVerificationSelection(report, sourcePaths) {
   if (!Array.isArray(report?.requiredChecks)) return null;
   const selected = CHECKS.filter((check) => report.requiredChecks.includes(check.id));
   const requiredChecks = selected.map((check) => check.id);
-  const reasons = report.version === VERIFICATION_REPORT_VERSION && Array.isArray(report.selectionReasons) ? report.selectionReasons : [];
+  const reasons = [3, VERIFICATION_REPORT_VERSION].includes(report.version) && Array.isArray(report.selectionReasons) ? report.selectionReasons : [];
   let remainingPaths = pathLimit;
   return {
     requiredChecks, requiredGroups: [...new Set(selected.map((check) => diagnosticCheckGroup(check, report.version)))],

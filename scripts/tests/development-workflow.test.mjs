@@ -7,15 +7,18 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { checkDevelopmentReadiness, parseRepairDiagnosis, parseTask, runDevelopment, taskSchema } from "../development-workflow.mjs";
-import { changedPaths, inspectWorktree, prepareCandidate, sha256 } from "../candidate-commit.mjs";
-import { executeVerification, git, sourceSnapshot } from "../verification.mjs";
+import { changedPaths, inspectWorktree, prepareCandidate, sha256, validateCandidateReceiptProof } from "../candidate-commit.mjs";
+import { executeVerification, git, sourceSnapshot, validateVerificationEvidence, verificationPlan } from "../verification.mjs";
 import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "../native-candidate.mjs";
+import { syntheticExecution } from "./fixtures/verification-tools.mjs";
 import { developmentApprovalDetails, developmentApprovalRequest, developmentApprovalSatisfied, developmentReviewRequirements,
-  formatDevelopmentApproval, inspectDevelopmentPolicy, obtainDevelopmentApproval } from "../development-policy.mjs";
+  formatDevelopmentApproval, inspectDevelopmentPolicy, isVerificationPolicyPath, obtainDevelopmentApproval } from "../development-policy.mjs";
 
 const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
-  "verification-android.mjs", "backend-diagnostics.mjs"];
+  "verification-android.mjs", "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs",
+  "verification-transition.mjs", "test-workflow.mjs", "verification-tooling.mjs",
+  "verification-admission.mjs", "verification-ci.mjs", "verification-ci-artifact.ps1"];
 // Top-level tests stay serial; only fresh-workspace cases without shared environment writes use this limit.
 const isolatedCases = { concurrency: 2 };
 
@@ -123,11 +126,14 @@ test("the skill freezes an authorized delivery candidate before final verificati
   assert.match(target, /once local commit\s+authorization is established/);
   assert.match(target, /clean tracked and non-ignored working tree/);
   assert.match(target, /Keep `BASE_COMMIT` at the original task baseline; never replace/);
-  assert.match(verification, /`source.head` to equal `CANDIDATE_COMMIT`/);
+  assert.match(verification, /For local candidate-commit evidence, require `source.head` to equal\s+`CANDIDATE_COMMIT`/);
+  assert.match(verification, /CI evidence uses the explicit qualification above instead/);
+  assert.match(target, /permission to publish pending work, not permission to claim verification, mark\s+ready or merge/);
   assert.match(repair, /new authorized follow-up commit/);
   assert.match(repair, /amend only if the user explicitly requests it/);
   assert.match(repair, /HEAD to remain `CANDIDATE_COMMIT` before publishing/);
-  assert.match(handoff, /Pending human policy review still blocks publication/);
+  assert.match(handoff, /Missing\s+execution consent blocks CI-triggering publication/);
+  assert.match(handoff, /unresolved final-review\s+requirements block ready delivery, not an otherwise authorized pending draft/);
   assert.match(handoff, /An unchanged push does not invalidate local source evidence/);
   assert.match(handoff, /Required remote CI and checks of a/);
 });
@@ -213,7 +219,7 @@ test("skill delivery verifies a committed candidate against the original task ba
   assert.deepEqual(plan.changedFiles, ["README.md"]);
   assert.deepEqual((await verificationPlan(root, "HEAD")).changedFiles, [],
     "Replacing the task base with the candidate would hide the task's changes.");
-  const report = await executeVerification(root, plan, { directory: path.join(root, ".data", "candidate") });
+  const report = await executeVerification(root, plan, { directory: path.join(root, ".data", "verification", "candidate") });
   assert.equal(report.status, "passed");
   assert.equal(report.complete, true);
   assert.equal(combineVerification(plan, [report]).status, "passed");
@@ -976,6 +982,53 @@ test("failed verification exposes a readable candidate diff before diagnosis or 
   assert.equal(patchDuringVerification, "", "An unchanged baseline has an empty, but still inspectable, diff.");
 });
 
+test("report-level admission blocks stop before dispatching a code repair", async (t) => {
+  const { root } = await workspace(t), calls = [], reports = [];
+  const profile = path.join(root, ".data", "fixture-profile");
+  const admission = path.join(profile, ...(process.platform === "win32" ? [] : [".cache"]),
+    "DevPocket", "verification", "admission");
+  await mkdir(admission, { recursive: true, mode: 0o700 });
+  const owner = path.join(admission, "owner.json"), retained = '{"fixture":"unconfirmed owner"}\n';
+  await writeFile(owner, retained, { flag: "wx", mode: 0o600 });
+  const env = { ...process.env, [process.platform === "win32" ? "LOCALAPPDATA" : "HOME"]: profile };
+  delete env.DEVPOCKET_VERIFIER_ADMISSION;
+  const runId = "blocked-admission";
+  const result = await runDevelopment(durable({
+    runId, args: { goal: "Preserve admission failures", acceptance: ["Do not dispatch code repair"], maxRepairRounds: 1 },
+    agent: async (_prompt, options) => {
+      calls.push(options.agent);
+      assert.equal(options.agent, "general-purpose");
+      if (calls.length === 1) {
+        const directory = path.join(root, "scripts", "tests");
+        await mkdir(directory, { recursive: true });
+        await writeFile(path.join(directory, "admission.test.mjs"), "// Admission must block before checks run.\n");
+      }
+      return implemented(root);
+    },
+  }), { root, verify: async (_root, plan, options) => {
+    const file = path.join(root, ".data", "verification", runId, path.basename(options.directory), "report.json");
+    await assert.rejects(exec(process.execPath, [path.resolve("scripts/verify.mjs"), "--repo", root,
+      "--base", plan.base, "--report", file], { cwd: root, env, timeout: 30000 }),
+    (error) => error.code === 1 && /Verification blocked:/.test(error.stdout));
+    const report = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(report.status, "blocked");
+    assert.equal(report.failure.reason, "admission-unconfirmed");
+    assert.ok(report.checks.length > 0);
+    assert.ok(report.checks.every((check) => check.status === "not_run"));
+    reports.push(report);
+    return report;
+  } });
+  assert.deepEqual(calls, ["general-purpose"], "An admission failure must not dispatch another implementation or review.");
+  assert.equal(result.status, "blocked");
+  assert.equal(result.round, 0);
+  assert.equal(reports.length, 1);
+  assert.deepEqual(result.verification, reports[0]);
+  assert.deepEqual(result.repairHistory, []);
+  assert.deepEqual(JSON.parse(await readFile(path.join(root, ".data", "development", runId, "verification-0.json"), "utf8")),
+    reports[0]);
+  assert.equal(await readFile(owner, "utf8"), retained);
+});
+
 test("starter reuses a clean linked worktree through exactly one native workflow dispatch", async (t) => {
   const { root } = await workspace(t);
   const task = {
@@ -1253,38 +1306,49 @@ test("gate changes and missing agent results stop rather than granting self-appr
 test("tooling-only impact retains the controller's protected-policy stop before any execution or review", isolatedCases, async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
   const { verificationPlan } = await import("../verification.mjs");
-  await Promise.all(["AGENTS.md", "scripts/workflow-extension.mjs",
+  const files = ["AGENTS.md", "scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs",
     "scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
     "scripts/native-candidate.mjs", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
-    "scripts/verify.mjs", "scripts/verify.ps1", "scripts/test-workflow.mjs",
-    ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"].map((file) =>
-    t.test(file, async (t) => {
-      const { root } = await workspace(t);
-      let calls = 0;
-      const result = await runDevelopment(durable({
-        runId: "tooling-protection", args: { goal: "Task", acceptance: ["Behavior"] }, phase() {}, log() {},
-        agent: async (_prompt, options) => {
-          calls++;
-          assert.equal(options.agent, "general-purpose");
-          await mkdir(path.dirname(path.join(root, file)), { recursive: true });
-          await writeFile(path.join(root, file), "// fixture\n");
-          return implemented(root, "Changed routing policy.");
-        },
-      }), { root, verify: async () => { assert.fail("Tooling-only impact cannot authorize modified policy."); } });
-      assert.equal(result.status, "needs_human");
-      assert.equal(calls, 1);
-      const plan = await verificationPlan(root, "HEAD");
-      assert.deepEqual(plan.requiredChecks, ["workflow-tests"]);
-      assert.deepEqual(plan.requiredGroups, ["tooling"]);
-      assert.equal(Object.hasOwn(plan, "requiresHumanReview"), false);
-      assert.equal(result.policyReview.requiresHumanReview, true);
-      assert.deepEqual(result.policyReview.protectedPaths, [file]);
-      assert.deepEqual(result.policyReview.source, plan.source);
-      assert.equal(result.approval.stage, "execution");
-      assert.ok(result.approval.message.includes(file));
-      assert.equal(result.verification, undefined);
-      assert.equal(result.review, undefined);
-    })));
+    "scripts/verify.mjs", "scripts/verify.ps1", "scripts/test-workflow.mjs", "scripts/tests/verification.test.mjs",
+    ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"];
+  const { root } = await workspace(t);
+  for (const file of files) {
+    await t.test(file, async () => {
+      const absolute = path.join(root, file);
+      await mkdir(path.dirname(absolute), { recursive: true });
+      await writeFile(absolute, "// fixture\n");
+      try {
+        const plan = await verificationPlan(root, "HEAD");
+        assert.deepEqual(plan.requiredChecks, ["workflow-tests"]);
+        assert.deepEqual(plan.requiredGroups, ["tooling"]);
+        assert.equal(Object.hasOwn(plan, "requiresHumanReview"), false);
+        const requirements = developmentReviewRequirements(plan.changedFiles);
+        assert.equal(requirements.requiresHumanReview, isVerificationPolicyPath(file));
+        assert.deepEqual(requirements.protectedPaths, isVerificationPolicyPath(file) ? [file] : []);
+        assert.deepEqual(requirements.reviewPaths, []);
+      } finally { await rm(absolute); }
+    });
+  }
+  let calls = 0;
+  const result = await runDevelopment(durable({
+    runId: "tooling-protection", args: { goal: "Task", acceptance: ["Behavior"] }, phase() {}, log() {},
+    agent: async (_prompt, options) => {
+      calls++;
+      assert.equal(options.agent, "general-purpose");
+      for (const file of files) await writeFile(path.join(root, file), "// fixture\n");
+      return implemented(root, "Changed routing policy.");
+    },
+  }), { root, verify: async () => { assert.fail("Tooling-only impact cannot authorize modified policy."); } });
+  const plan = await verificationPlan(root, "HEAD");
+  assert.equal(result.status, "needs_human");
+  assert.equal(calls, 1);
+  assert.equal(result.policyReview.requiresHumanReview, true);
+  assert.deepEqual(result.policyReview.protectedPaths, files.filter(isVerificationPolicyPath).sort());
+  assert.deepEqual(result.policyReview.source, plan.source);
+  assert.equal(result.approval.stage, "execution");
+  for (const file of result.policyReview.protectedPaths) assert.ok(result.approval.message.includes(file));
+  assert.equal(result.verification, undefined);
+  assert.equal(result.review, undefined);
 });
 
 test("local review requirements preserve trust boundaries independently of impact rules", async () => {
@@ -1305,6 +1369,10 @@ test("local review requirements preserve trust boundaries independently of impac
     [".github/instructions/nested/checks.instructions.md", true, true],
     [".github/README.md", false, false],
     ["scripts/verification.mjs", true, true], ["scripts/verification-policy.mjs", true, true],
+    ["scripts/verification-preflight.mjs", true, true], ["scripts/verification-run.mjs", true, true],
+    ["scripts/verification-transition.mjs", true, true],
+    ["scripts/verification-tooling.mjs", true, true], ["scripts/verification-admission.mjs", true, true],
+    ["scripts/verification-ci.mjs", true, true], ["scripts/verification-ci-artifact.ps1", true, true],
     ["scripts/verify.mjs", true, true], [".github/workflows/ci.yml", true, true],
     ["package-lock.json", true, true], [".NPMRC", true, true], ["backend/tsconfig.json", true, true],
     ["deployment/azure/probe/requirements-test.txt", true, true],
@@ -1441,6 +1509,25 @@ test("approval snapshots cannot escape their native-question code block", () => 
   const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
   const message = formatDevelopmentApproval(request, "reference-only.txt", undefined, snapshot);
   assert.ok(message.includes(`\n\`\`\`\`text\n${snapshot}\n\`\`\`\``));
+});
+
+test("CI execution consent binds the repository and branch without inheriting local-only consent", () => {
+  const { scope, policy, hooks } = approvalFixture();
+  const local = developmentApprovalRequest(scope, policy, "execution", hooks);
+  const target = { repository: "fixture/verification", ref: scope.workspace.branch };
+  const request = developmentApprovalRequest({ ...scope, ci: target }, policy, "execution", hooks);
+  assert.notEqual(request.id, local.id);
+  assert.equal(developmentApprovalSatisfied(request, [{ version: 1, requestId: local.id,
+    origin: "original-client", decision: "approved" }]), false);
+  const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
+  const message = formatDevelopmentApproval(request, "reference-only.txt", "CI-first task", snapshot);
+  assert.match(message, /CI target: fixture\/verification/);
+  assert.match(message, /No push, PR creation, merge/);
+  assert.ok(request.effects.some((effect) => effect.includes("hosted-runner setup")));
+  for (const ci of [
+    { ...target, ref: "refs/heads/other" }, { ...target, repository: "../verification" },
+    { ...target, workflow: "different.yml" },
+  ]) assert.throws(() => developmentApprovalRequest({ ...scope, ci }, policy, "execution", hooks), /exact repository and branch/);
 });
 
 test("only exact native decisions are journaled and rejection is not automatically re-prompted", async (t) => {
@@ -1848,7 +1935,7 @@ test("post-review controller handoff uses local requirements even when verificat
         assert.equal(Object.hasOwn(plan, "requiresHumanReview"), false);
         assert.deepEqual(plan.requiredGroups, ["tooling", "backend"]);
         return { ...plan, status: "passed", complete: true, group: "all", requiresHumanReview: !requiresHumanReview,
-          checks: plan.requiredChecks.map((id) => ({ id, status: "passed", exitCode: 0 })) };
+          checks: plan.requiredChecks.map((id) => ({ id, status: "passed", exitCode: 0, execution: syntheticExecution(plan.source) })) };
       } });
       assert.equal(executions, 1);
       assert.deepEqual(calls, ["general-purpose", "devpocket-reviewer"]);
@@ -1956,6 +2043,48 @@ test("a configured hook changed after candidate preparation cannot execute", asy
   const after = await inspectWorktree(root);
   assert.equal(after.source.head, before.source.head);
   assert.equal(after.index, before.index);
+});
+
+test("native receipt proof prerequisites are checked before candidate mutation", isolatedCases, async (t) => {
+  await Promise.all(["missing", "valid", "truncated", "hook-change"].map((scenario) =>
+    t.test(scenario, async (t) => {
+      const { root, main } = await workspace(t), directory = path.join(root, ".data", "verification", "local");
+      await mkdir(directory, { recursive: true });
+      const key = path.join(directory, "receipt.key");
+      if (scenario !== "missing") await writeFile(key, Buffer.alloc(scenario === "truncated" ? 31 : 32, 7), { mode: 0o600 });
+      if (scenario === "hook-change") await writeFile(path.join(main, ".git", "hooks", "pre-commit"),
+        "#!/bin/sh\nprintf changed > .data/verification/local/receipt.key\n", { mode: 0o755 });
+      const before = await inspectWorktree(root);
+      await writeFile(path.join(root, "README.md"), "Candidate proof fixture\n");
+      const { request } = await prepareCandidate(root, before, await sourceSnapshot(root),
+        ["README.md"], "fixture-session", "Keep commit outcome separate from proof availability",
+        undefined, await captureCandidateImplementation());
+      const file = path.join(root, ".data", "candidate-proof.json"), bytes = JSON.stringify(request) + "\n";
+      await writeFile(file, bytes);
+      let failure;
+      try {
+        await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", nativeCandidateCommand(file, sha256(bytes))],
+          { cwd: root, timeout: 60000 });
+      } catch (error) { failure = error; }
+      const receipt = JSON.parse(await readFile(`${file}.result.json`, "utf8")), after = await inspectWorktree(root);
+      if (scenario === "truncated") {
+        assert.equal(receipt.status, "blocked");
+        assert.equal(failure?.code, 1);
+        assert.equal(after.source.head, before.source.head, "Invalid proof storage must stop before advancing HEAD.");
+        assert.equal(after.index, before.index);
+      } else {
+        assert.equal(receipt.status, "committed", failure?.stderr);
+        assert.equal(failure, undefined);
+        assert.equal(receipt.candidate.commit, after.source.head);
+        assert.equal(receipt.candidate.parent, before.source.head);
+        if (scenario === "valid") await validateCandidateReceiptProof(root, sha256(bytes), receipt);
+        else if (scenario === "missing") assert.equal(receipt.verificationProof, undefined);
+        else {
+          assert.match(receipt.verificationProof.signature, /^[a-f0-9]{64}$/);
+          await assert.rejects(validateCandidateReceiptProof(root, sha256(bytes), receipt));
+        }
+      }
+    })));
 });
 
 test("verification cannot refresh changed external hooks into a repair baseline", async (t) => {
@@ -2096,20 +2225,27 @@ test("changed filesystem-monitor configuration is rejected before it can execute
 
 test("skill, compiler, Gradle launcher and nested dependency policy require review before execution", isolatedCases, async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
-  await Promise.all([".github/skills/devpocket-development/SKILL.md", ".npmrc", ".NPMRC", "backend/tsconfig.json", "android/gradlew.bat",
-    "android/gradle/wrapper/gradle-wrapper.properties", "deployment/azure/package.json"].map((file) =>
-    t.test(file, async (t) => {
-      const { root } = await workspace(t);
-      const result = await runDevelopment(durable({
-        runId: "policy-input", args: { goal: "Task", acceptance: ["Behavior"] }, phase() {}, log() {},
-        agent: async () => {
-          await mkdir(path.dirname(path.join(root, file)), { recursive: true });
-          await writeFile(path.join(root, file), "{}\n");
-          return implemented(root, "Changed a policy input.");
-        },
-      }), { root, verify: async () => { assert.fail("The replacement policy must not execute."); } });
-      assert.equal(result.status, "needs_human");
-    })));
+  const files = [".github/skills/devpocket-development/SKILL.md", ".npmrc", ".NPMRC", "backend/tsconfig.json", "android/gradlew.bat",
+    "android/gradle/wrapper/gradle-wrapper.properties", "deployment/azure/package.json"];
+  for (const file of files) {
+    await t.test(file, () => {
+      const requirements = developmentReviewRequirements([file]);
+      assert.equal(requirements.requiresHumanReview, true);
+      assert.deepEqual(requirements.protectedPaths, [file]);
+    });
+  }
+  const { root } = await workspace(t);
+  const result = await runDevelopment(durable({
+    runId: "policy-input", args: { goal: "Task", acceptance: ["Behavior"] }, phase() {}, log() {},
+    agent: async () => {
+      for (const file of files.filter((file) => file !== ".NPMRC")) {
+        await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+        await writeFile(path.join(root, file), "{}\n");
+      }
+      return implemented(root, "Changed policy inputs.");
+    },
+  }), { root, verify: async () => { assert.fail("The replacement policy must not execute."); } });
+  assert.equal(result.status, "needs_human");
 });
 
 function documentationTask(root, overrides = {}) {
@@ -2126,7 +2262,7 @@ function documentationTask(root, overrides = {}) {
 
 function syntheticReport(plan) {
   return { ...plan, group: "all", status: "passed", complete: true,
-    checks: plan.requiredChecks.map((id) => ({ id, status: "passed", exitCode: 0 })) };
+    checks: plan.requiredChecks.map((id) => ({ id, status: "passed", exitCode: 0, execution: syntheticExecution(plan.source) })) };
 }
 
 test("a no-op initial task verifies and reviews the existing clean HEAD without an empty commit", async (t) => {
@@ -2210,6 +2346,52 @@ test("candidate implementation capture includes every verification adapter and r
   await assert.rejects(requireCandidateImplementation(legacy), /captured controller\/helper implementation/);
 });
 
+test("cold capture only settles byte-identical Windows metadata, never a changed executable input", async (t) => {
+  for (const changedBytes of [false, true]) await t.test(changedBytes ? "changed bytes" : "metadata only", async (t) => {
+    const { root } = await workspace(t);
+    const { directory } = await copiedController(root);
+    const target = await fs.realpath(path.join(directory, "verification-backend.mjs"));
+    const expected = await readFile(target);
+    await fs.utimes(target, 1, 1);
+    const originalOpen = fs.open;
+    let injected = false;
+    const mocked = t.mock.method(fs, "open", async (file, ...args) => {
+      const handle = await originalOpen(file, ...args);
+      if (file !== target) return handle;
+      return new Proxy(handle, { get(value, key) {
+        if (key === "read") return async (...parameters) => {
+          const result = await value.read(...parameters);
+          if (!injected) {
+            injected = true;
+            if (changedBytes) {
+              const altered = Buffer.from(expected);
+              altered[0] ^= 1;
+              await writeFile(target, altered);
+            }
+            await fs.utimes(target, 2, 1);
+          }
+          return result;
+        };
+        const member = Reflect.get(value, key, value);
+        return typeof member === "function" ? member.bind(value) : member;
+      } });
+    });
+    syncBuiltinESMExports();
+    try {
+      if (changedBytes || process.platform !== "win32") {
+        await assert.rejects(captureCandidateImplementation(directory), /changed while being captured/);
+      } else {
+        const captured = await captureCandidateImplementation(directory);
+        assert.equal(captured.files.find((file) => file.name === "verification-backend.mjs").sha256, sha256(expected));
+      }
+      assert.equal(injected, true);
+    } finally {
+      mocked.mock.restore();
+      syncBuiltinESMExports();
+    }
+  });
+});
+
 test("native capture retries identical metadata churn but rejects content changes or persistent instability", async () => {
   const entry = new URL("../native-candidate.mjs", import.meta.url).href;
   const script = [
@@ -2225,29 +2407,29 @@ test("native capture retries identical metadata churn but rejects content change
     '    observed++;',
     '    if (mode === "open" && observed === 1) info.ctimeMs -= 1;',
     '    if (["transient", "content"].includes(mode) && observed === 2) info.ctimeMs += 1;',
-    '    if (mode === "during" && observed % 2 === 0) info.ctimeMs += 1;',
+    '    if (mode === "during" && observed > 1) info.ctimeMs += 1;',
     '  }',
     '  return info;',
     '};',
     'fs.open = async (file, ...args) => {',
     '  const handle = await originalOpen(file, ...args);',
     '  if (file === target && mode === "content") {',
-    '    const read = handle.readFile.bind(handle);',
-    '    handle.readFile = async (...options) => {',
-    '      const bytes = await read(...options);',
-    '      if (++reads === 2) bytes[0] ^= 1;',
-    '      return bytes;',
+    '    const read = handle.read.bind(handle);',
+    '    handle.read = async (...options) => {',
+    '      const result = await read(...options);',
+    '      if (++reads === 2) result.buffer[0] ^= 1;',
+    '      return result;',
     '    };',
     '  }',
     '  return handle;',
     '};',
     'syncBuiltinESMExports();',
     `const { captureCandidateImplementation } = await import(${JSON.stringify(entry)});`,
-    'if (["open", "transient"].includes(mode)) {',
+    'if (mode === "open" || mode === "transient" && process.platform === "win32") {',
     '  const result = await captureCandidateImplementation();',
     '  assert.ok(result.files.some(file => file.name === "native-candidate.mjs"));',
     '} else await assert.rejects(captureCandidateImplementation(), /changed while being captured/);',
-    'assert.equal(observed, mode === "open" ? 2 : 4);',
+    'assert.equal(observed, mode === "open" || process.platform !== "win32" ? 2 : 3);',
     'console.log("capture validated");',
   ].join("\n");
   for (const mode of ["open", "transient", "during", "content"]) {
@@ -3089,28 +3271,53 @@ test("a no-op repair retains the failed candidate instead of repeating acceptanc
   assert.equal((await git(root, ["rev-list", "--count", `${result.base}..HEAD`])).trim(), "1");
 });
 
-test("stale, partial, incomplete and missing-native verification cannot qualify a committed candidate", isolatedCases, async (t) => {
-  await Promise.all(["stale-head", "partial", "missing-check", "missing-native"].map((scenario) =>
-    t.test(scenario, async (t) => {
-      const { root } = await workspace(t);
-      const result = await runDevelopment(documentationTask(root, {
-        agent: async (_prompt, options) => {
-          assert.notEqual(options.agent, "devpocket-reviewer", "Invalid verification is never sent for approval.");
-          const directory = path.join(root, "backend", scenario === "missing-native" ? "src" : "tests");
-          await mkdir(directory, { recursive: true });
-          await writeFile(path.join(directory, "fixture.ts"), "// fixture\n");
-          return implemented(root);
-        },
-      }), { root, verify: async (_root, plan) => {
+test("stale, partial and incomplete verification cannot qualify an otherwise valid non-native candidate", async (t) => {
+  const { root } = await workspace(t);
+  const result = await runDevelopment(documentationTask(root, {
+    agent: async (_prompt, options) => {
+      assert.notEqual(options.agent, "devpocket-reviewer", "Invalid verification is never sent for approval.");
+      const directory = path.join(root, "backend", "tests");
+      await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, "fixture.test.ts"), "// fixture\n");
+      return implemented(root);
+    },
+  }), { root, verify: async (_root, plan) => {
+    assert.equal(plan.requiredChecks.includes("android-device"), false);
+    assert.equal((await validateVerificationEvidence(root, plan, [syntheticReport(plan)], {
+      candidateEvidence: true, requireComplete: true,
+    })).complete, true);
+    for (const [scenario, reason] of [
+      ["stale-head", "source-mismatch"], ["partial", "check-failed"], ["missing-check", "shard-missing"],
+    ]) {
+      await t.test(scenario, async () => {
         const value = syntheticReport(plan);
         if (scenario === "stale-head") value.source = { ...plan.source, head: plan.base };
-        if (scenario === "partial") { value.status = "partial"; value.complete = false; }
+        if (scenario === "partial") {
+          value.status = "partial"; value.complete = false;
+          assert.equal((await validateVerificationEvidence(root, plan, [value])).complete, true,
+            "Without the complete-report requirement, this otherwise valid partial input must aggregate.");
+        }
         if (scenario === "missing-check") value.checks = [];
-        return value;
-      } });
-      assert.equal(result.status, "blocked");
-      assert.notEqual(result.candidate.commit, result.base);
-    })));
+        await assert.rejects(validateVerificationEvidence(root, plan, [value], {
+          candidateEvidence: true, requireComplete: true,
+        }), { diagnosticCode: reason });
+      });
+    }
+    return { ...syntheticReport(plan), status: "partial", complete: false };
+  } });
+  assert.equal(result.status, "blocked");
+  assert.notEqual(result.candidate.commit, result.base);
+});
+
+test("native verification without device evidence cannot qualify separately from partial-report checks", async (t) => {
+  const { root } = await workspace(t), directory = path.join(root, "backend", "src");
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, "fixture.ts"), "// native-impact fixture\n");
+  const plan = await verificationPlan(root, "HEAD");
+  assert.ok(plan.requiredChecks.includes("android-device"));
+  await assert.rejects(validateVerificationEvidence(root, plan, [syntheticReport(plan)], {
+    candidateEvidence: true, requireComplete: true,
+  }), { diagnosticCode: "device-evidence" });
 });
 
 test("high-risk review and protected policy boundaries remain distinct from committed readiness", isolatedCases, async (t) => {

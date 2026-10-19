@@ -31,6 +31,7 @@ jobs:
     outputs:
       base: ${{ steps.plan.outputs.base }}
       tooling: ${{ steps.plan.outputs.tooling }}
+      tooling_shards: ${{ steps.plan.outputs.tooling_shards }}
       backend: ${{ steps.plan.outputs.backend }}
       android: ${{ steps.plan.outputs.android }}
       device: ${{ steps.plan.outputs.device }}
@@ -56,6 +57,11 @@ jobs:
           foreach ($group in @('tooling', 'backend', 'android', 'device')) {
             "$group=$($plan.requiredGroups -contains $group)".ToLowerInvariant() >> $env:GITHUB_OUTPUT
           }
+          if (($plan.requiredGroups -contains 'tooling') -and !$plan.toolingShards) {
+            throw 'CI requires the reviewed complete test-workflow.mjs entry without replacement scripts or lifecycle hooks.'
+          }
+          $shards = @(if ($plan.toolingShards) { $plan.toolingShards.parts.id } else { 'all' })
+          "tooling_shards=$(ConvertTo-Json -InputObject $shards -Compress)" >> $env:GITHUB_OUTPUT
       - name: Explain plan outcome
         id: diagnostics
         if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
@@ -68,13 +74,18 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always() && steps.diagnostics.outputs.report_ready == 'true'
         with:
-          name: check-diagnostics-plan
+          name: check-diagnostics-plan-attempt-${{ github.run_attempt }}
           path: .data/ci/verification-diagnostics.json
           if-no-files-found: error
 
   tooling:
     needs: plan
     if: needs.plan.outputs.tooling == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic)
+    name: Tooling (${{ matrix.part }})
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ${{ fromJSON(needs.plan.outputs.tooling_shards) }}
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -95,8 +106,19 @@ jobs:
         shell: pwsh
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
+          TOOLING_PART: ${{ matrix.part }}
         run: |
-          node scripts\verify.mjs --base $env:BASE_SHA --group tooling --report .data\ci\tooling\report.json
+          $arguments = @('scripts\verify.mjs', '--base', $env:BASE_SHA, '--group', 'tooling', '--report', '.data\ci\tooling\report.json')
+          if ($env:TOOLING_PART -ne 'all') { $arguments += @('--tooling-shard', $env:TOOLING_PART) }
+          node @arguments
+          exit $LASTEXITCODE
+      - name: Bind tooling evidence to this CI attempt
+        if: always() && hashFiles('scripts/verification-ci.mjs') != ''
+        shell: pwsh
+        env:
+          TOOLING_PART: ${{ matrix.part }}
+        run: |
+          node scripts\verification-ci.mjs --seal --unit "tooling-$env:TOOLING_PART" --input .data\ci\tooling\report.json --report .data\ci\tooling\ci-report.json
           exit $LASTEXITCODE
       - name: Explain tooling check outcome
         id: diagnostics
@@ -110,14 +132,16 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always() && steps.diagnostics.outputs.report_ready == 'true'
         with:
-          name: check-diagnostics-tooling
+          name: check-diagnostics-tooling-${{ matrix.part }}-attempt-${{ github.run_attempt }}
           path: .data/ci/tooling/verification-diagnostics.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: verification-tooling
-          path: .data\ci\tooling\report.json
+          name: verification-tooling-${{ matrix.part }}-attempt-${{ github.run_attempt }}
+          path: |
+            .data\ci\tooling\report.json
+            .data\ci\tooling\ci-report.json
           if-no-files-found: error
 
   backend:
@@ -149,6 +173,12 @@ jobs:
           $env:DEVPOCKET_PROBE_PYTHON = (Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
           node scripts\verify.mjs --base $env:BASE_SHA --group backend --backend-diagnostics --report .data\ci\backend\report.json
           exit $LASTEXITCODE
+      - name: Bind backend evidence to this CI attempt
+        if: always() && hashFiles('scripts/verification-ci.mjs') != ''
+        shell: pwsh
+        run: |
+          node scripts\verification-ci.mjs --seal --unit backend --input .data\ci\backend\report.json --report .data\ci\backend\ci-report.json
+          exit $LASTEXITCODE
       - name: Explain backend check outcomes
         id: diagnostics
         if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
@@ -161,7 +191,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always() && steps.diagnostics.outputs.report_ready == 'true'
         with:
-          name: check-diagnostics-backend
+          name: check-diagnostics-backend-attempt-${{ github.run_attempt }}
           path: .data/ci/backend/verification-diagnostics.json
           if-no-files-found: error
       - name: Export bounded backend test diagnostics
@@ -174,14 +204,15 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: verification-backend
+          name: verification-backend-attempt-${{ github.run_attempt }}
           path: |
             .data\ci\backend\report.json
+            .data\ci\backend\ci-report.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         if: always() && steps.backend_diagnostics.outputs.report_ready == 'true'
         with:
-          name: backend-test-diagnostics
+          name: backend-test-diagnostics-attempt-${{ github.run_attempt }}
           path: |
             .data\ci\backend\backend-diagnostics.json
           if-no-files-found: error
@@ -214,6 +245,12 @@ jobs:
         run: |
           node scripts\verify.mjs --base $env:BASE_SHA --group android --jdk $env:JAVA_HOME --sdk .tools\android-sdk --report .data\ci\android\report.json
           exit $LASTEXITCODE
+      - name: Bind Android evidence to this CI attempt
+        if: always() && hashFiles('scripts/verification-ci.mjs') != ''
+        shell: pwsh
+        run: |
+          node scripts\verification-ci.mjs --seal --unit android --input .data\ci\android\report.json --report .data\ci\android\ci-report.json
+          exit $LASTEXITCODE
       - name: Explain Android check outcome
         id: diagnostics
         if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
@@ -226,7 +263,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always() && steps.diagnostics.outputs.report_ready == 'true'
         with:
-          name: check-diagnostics-android
+          name: check-diagnostics-android-attempt-${{ github.run_attempt }}
           path: .data/ci/android/verification-diagnostics.json
           if-no-files-found: error
       - name: Export bounded Android failure diagnostics
@@ -239,14 +276,15 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: verification-android
+          name: verification-android-attempt-${{ github.run_attempt }}
           path: |
             .data\ci\android\report.json
+            .data\ci\android\ci-report.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         if: always() && steps.android_diagnostics.outputs.report_ready == 'true'
         with:
-          name: android-test-diagnostics
+          name: android-test-diagnostics-attempt-${{ github.run_attempt }}
           path: .data/ci/android/android-diagnostics.json
           if-no-files-found: error
 
@@ -273,6 +311,12 @@ jobs:
           ./scripts/verify.ps1 -Base $env:BASE_SHA -Group device -Jdk $env:JAVA_HOME -Sdk $env:ANDROID_HOME `
             -Image system-images/android-35/google_apis/x86_64 -Report .data/ci/device/report.json
           exit $LASTEXITCODE
+      - name: Bind device evidence to this CI attempt
+        if: always() && hashFiles('scripts/verification-ci.mjs') != ''
+        shell: pwsh
+        run: |
+          node scripts/verification-ci.mjs --seal --unit device --input .data/ci/device/report.json --report .data/ci/device/ci-report.json
+          exit $LASTEXITCODE
       - name: Explain device check outcome
         id: diagnostics
         if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
@@ -285,7 +329,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always() && steps.diagnostics.outputs.report_ready == 'true'
         with:
-          name: check-diagnostics-device
+          name: check-diagnostics-device-attempt-${{ github.run_attempt }}
           path: .data/ci/device/verification-diagnostics.json
           if-no-files-found: error
       - name: Export bounded owned-worker diagnostics
@@ -305,26 +349,27 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: verification-device
+          name: verification-device-attempt-${{ github.run_attempt }}
           path: |
             .data/ci/device/report.json
+            .data/ci/device/ci-report.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         if: always() && steps.worker_diagnostics.outputs.report_ready == 'true'
         with:
-          name: owned-worker-diagnostics
+          name: owned-worker-diagnostics-attempt-${{ github.run_attempt }}
           path: .data/ci/device/worker-diagnostics.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         if: always() && steps.device_diagnostics.outputs.report_ready == 'true'
         with:
-          name: device-test-diagnostics
+          name: device-test-diagnostics-attempt-${{ github.run_attempt }}
           path: .data/ci/device/device-diagnostics.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         if: success()
         with:
-          name: emulator-tested-debug-${{ github.sha }}
+          name: emulator-tested-debug-${{ github.sha }}-attempt-${{ github.run_attempt }}
           path: |
             android/app/build/outputs/apk/debug/app-debug.apk
             android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
@@ -365,16 +410,11 @@ jobs:
             node scripts\verify.mjs --base $env:BASE_SHA --plan --report .data\ci\gate.json
             throw 'A backend diagnostic cannot satisfy Required verification. Run full verification for acceptance.'
           }
-          $arguments = @('scripts\verify.mjs', '--base', $env:BASE_SHA, '--combine', '--report', '.data\ci\gate.json')
+          $arguments = @('scripts\verification-ci.mjs', '--base', $env:BASE_SHA, '--collect', '--inputs', '.data\ci\inputs', '--report', '.data\ci\ci-report.json')
           foreach ($group in @('tooling', 'backend', 'android', 'device')) {
             $result = [Environment]::GetEnvironmentVariable("$($group.ToUpperInvariant())_RESULT")
             if (-not $result) { $result = 'unknown' }
             $arguments += @('--upstream', "${group}:$result")
-          }
-          if (Test-Path -LiteralPath .data\ci\inputs) {
-            Get-ChildItem -LiteralPath .data\ci\inputs -Filter report.json -File -Recurse | ForEach-Object {
-              $arguments += @('--input', $_.FullName)
-            }
           }
           node @arguments
           if ($LASTEXITCODE -ne 0) { throw 'Required verification is incomplete. Missing or failed device evidence is a blocker, not a skipped success.' }
@@ -390,12 +430,14 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always() && steps.diagnostics.outputs.report_ready == 'true'
         with:
-          name: check-diagnostics-gate
+          name: check-diagnostics-gate-attempt-${{ github.run_attempt }}
           path: .data/ci/verification-diagnostics.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: verification-summary
-          path: .data\ci\gate.json
+          name: verification-summary-attempt-${{ github.run_attempt }}
+          path: |
+            .data\ci\gate.json
+            .data\ci\ci-report.json
           if-no-files-found: error

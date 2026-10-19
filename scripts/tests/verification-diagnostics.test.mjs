@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "../verification-policy.mjs";
 
 const exec = promisify(execFile);
@@ -16,13 +17,13 @@ test("an actual compiler check exposes its trusted source/code through the publi
   await writeFile(path.join(root, ".gitignore"), ".data/\n");
   await writeFile(path.join(root, "README.md"), "fixture\n");
   await exec("git", ["init", "--quiet"], { cwd: root });
-  await exec("git", ["add", "."], { cwd: root });
-  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Fixture"], { cwd: root });
   const compiler = path.resolve("node_modules/typescript/bin/tsc");
   await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: {
     "test:workflow": "node -e \"process.exit(0)\"",
     typecheck: `node "${compiler}" --noEmit --pretty false --skipLibCheck backend/src/failure.ts`,
   } }));
+  await exec("git", ["add", "."], { cwd: root });
+  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Fixture"], { cwd: root });
   await mkdir(path.join(root, "backend", "src"), { recursive: true });
   await writeFile(path.join(root, "backend", "src", "failure.ts"), 'const value: number = "PRIVATE_COMPILER_CANARY";\n');
   const directory = path.join(root, ".data", "ci", "backend"), report = path.join(directory, "report.json");
@@ -162,12 +163,12 @@ test("historical local review flags are diagnostic-only and cannot manufacture a
   const file = "scripts/development-workflow.mjs";
   await mkdir(path.join(root, "scripts"));
   await writeFile(path.join(root, file), "// fixture\n");
-  for (const version of [1, 2, VERIFICATION_REPORT_VERSION]) {
+  for (const version of [1, 2, 3, VERIFICATION_REPORT_VERSION]) {
     for (const [label, requirement] of [["true", true], ["false", false], ["absent", undefined], ["invalid", "PRIVATE_REVIEW_CANARY"]]) {
       await t.test(`${version}: ${label}`, async () => {
         const directory = path.join(root, ".data", "ci", `review-${version}-${label}`);
         await mkdir(directory, { recursive: true });
-        const current = version === VERIFICATION_REPORT_VERSION;
+        const current = [3, VERIFICATION_REPORT_VERSION].includes(version);
         const checks = current ? ["workflow-tests"] : CHECKS.map((check) => check.id);
         await writeFile(path.join(directory, "plan.json"), JSON.stringify({
           version, status: "planned", complete: false, checks: [], requiredChecks: checks,
@@ -205,18 +206,24 @@ test("historical local review flags are diagnostic-only and cannot manufacture a
 
 test("check log hints accept only source-indexed locations and fixed exception/code identifiers", async () => {
   const { checkLogHints } = await import("../verification-diagnostics.mjs");
-  const sources = new Set(["backend/src/known.ts", "deployment/azure/probe/test_receiver.py"]);
+  const sources = new Set(["backend/src/known.ts", "deployment/azure/probe/test_receiver.py", "scripts/tests/known.test.mjs"]);
+  const frame = pathToFileURL(path.join(process.cwd(), "scripts", "tests", "known.test.mjs")).href;
   const text = [
     "backend/src/known.ts(12,7): error TS2322: PRIVATE_ASSERTION_CANARY",
     "private/PRIVATE_PATH.ts(12,7): error TS2322: private",
     "ModuleNotFoundError: No module named 'PRIVATE_MODULE'",
     `  File "${path.join(process.cwd(), "deployment", "azure", "probe", "test_receiver.py")}", line 12, in PRIVATE_FUNCTION`,
+    `    at TestContext.PRIVATE_FUNCTION (${frame}:37:5)`,
+    `    at ${frame}:39:7`,
+    "    at PRIVATE_FUNCTION (file:///private/PRIVATE_PATH.mjs:12:7)",
     "private.secret.TokenError: PRIVATE_ERROR_VALUE",
   ].join("\n");
   const result = checkLogHints(text, process.cwd(), sources);
   assert.ok(result.some((item) => item.code === "TS2322" && item.file === "backend/src/known.ts"));
   assert.ok(result.some((item) => item.type === "ModuleNotFoundError"));
   assert.ok(result.some((item) => item.file === "deployment/azure/probe/test_receiver.py" && item.line === 12));
+  assert.ok(result.some((item) => item.kind === "source-frame" && item.file === "scripts/tests/known.test.mjs" && item.line === 37 && item.column === 5));
+  assert.ok(result.some((item) => item.kind === "source-frame" && item.file === "scripts/tests/known.test.mjs" && item.line === 39 && item.column === 7));
   assert.ok(!JSON.stringify(result).includes("PRIVATE_"));
 });
 
