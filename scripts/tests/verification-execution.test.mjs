@@ -346,6 +346,44 @@ test("CI collection binds real merge ancestry while preserving earlier failed at
   await assert.rejects(githubVerificationContext(item.root, { ...item.env, GITHUB_SHA: item.candidate }));
 });
 
+test("CI collection rejects raw gate report collisions before writing", async (t) => {
+  const item = await ciFixture(t), inputs = path.join(item.root, ".data", "ci", "inputs");
+  await mkdir(inputs, { recursive: true });
+  const input = path.join(inputs, "ci-report.json");
+  const bytes = JSON.stringify(ciReportEnvelope(item.report, item.context, "tooling-all"));
+  await writeFile(input, bytes);
+  const invoke = (report, directory = inputs) => exec(process.execPath,
+    [path.resolve("scripts/verification-ci.mjs"), "--collect", "--base", item.base,
+      "--inputs", directory, "--report", report, "--upstream", "tooling:success"],
+    { cwd: item.root, env: item.env, timeout: 30000 });
+  const names = process.platform === "win32" ? ["gate.json", "GATE.JSON", "Gate.Json"] : ["gate.json"];
+  for (const [index, name] of names.entries()) await t.test(name, async () => {
+    const directory = path.join(item.root, ".data", "ci", `collision-${index}`);
+    await assert.rejects(invoke(path.join(directory, name)), { code: 1 });
+    await assert.rejects(fileSystem.lstat(directory), { code: "ENOENT" },
+      "A rejected envelope filename must not leave a raw report or output directory.");
+    assert.equal(await readFile(input, "utf8"), bytes);
+  });
+  await t.test("missing input directory", async () => {
+    const directory = path.join(item.root, ".data", "ci", "missing-input");
+    const output = path.join(item.root, ".data", "ci", "invalid-output", "gate.json");
+    await assert.rejects(invoke(output, directory), (error) => error.code === 1 &&
+      JSON.parse(error.stderr).failure.reason === "configuration");
+    await assert.rejects(fileSystem.lstat(directory), { code: "ENOENT" });
+    await assert.rejects(fileSystem.lstat(path.dirname(output)), { code: "ENOENT" });
+  });
+  await t.test("distinct envelope and diagnostic reports", async () => {
+    const directory = path.join(item.root, ".data", "ci", "accepted"), report = path.join(directory, "ci-report.json");
+    await invoke(report);
+    const envelope = JSON.parse(await readFile(report, "utf8"));
+    assert.equal(envelope.kind, "ci-verification-report");
+    assert.equal(envelope.report.status, "passed");
+    assert.equal(envelope.report.complete, true);
+    assert.deepEqual(JSON.parse(await readFile(path.join(directory, "gate.json"), "utf8")), envelope.report);
+    assert.equal(await readFile(input, "utf8"), bytes);
+  });
+});
+
 test("fork CI seals and collects eligible evidence without relaxing base or merge ancestry", async (t) => {
   for (const documentation of [false, true]) await t.test(documentation ? "documentation" : "tooling", async (t) => {
     const item = await ciFixture(t, { documentation }), eventPath = item.env.GITHUB_EVENT_PATH;
@@ -513,7 +551,7 @@ test("the qualification CLI keeps requested report names separate from authentic
     ].join("\n"));
     const env = { ...process.env };
     delete env.NODE_TEST_CONTEXT;
-    for (const [index, name] of ["qualification.json", "ci-report.json", "ci-evidence.zip", "evidence"].entries()) {
+    for (const [index, name] of ["qualification.json", "ci-report.json", "ci-evidence.zip", "gate.json", "evidence"].entries()) {
       await t.test(name, async () => {
         const file = path.join(workspace, ".data", "verification", `output-${index}`, name);
         const args = ["--import", pathToFileURL(preload).href, path.resolve("scripts/verification-ci.mjs"),

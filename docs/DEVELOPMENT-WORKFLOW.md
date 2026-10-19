@@ -225,6 +225,9 @@ storage boundaries as local verification. CLI and direct qualification reject
 retained-ledger destinations before writing or contacting GitHub; CI sealing and
 collection cannot create input directories inside those ledgers either.
 `run.json` remains reserved for ledger manifests, including in the CI CLI.
+Collection also reserves the sibling `gate.json` for its raw aggregate; choose a
+different `--collect --report` filename for the CI envelope. Collisions, including
+Windows case aliases, are rejected before reading inputs or creating output.
 
 The CI envelope retains the actual report, producer/run/attempt, candidate,
 PR base, tested merge commit/tree, workflow revision and selected input receipts.

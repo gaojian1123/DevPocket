@@ -303,6 +303,10 @@ async function main() {
   }
   const root = process.cwd(), report = path.resolve(values.report);
   await requireVerificationReportPath(root, report);
+  const name = path.basename(report);
+  if (values.collect && (process.platform === "win32" ? name.toLowerCase() : name) === "gate.json") {
+    throw diagnosticError("configuration");
+  }
   let result;
   if (values.qualify) {
     result = await qualifyGitHubCI(root, { repository: values.repository, pullRequest: values.pr,
