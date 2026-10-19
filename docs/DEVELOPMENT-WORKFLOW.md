@@ -891,6 +891,13 @@ opening a report, including planning/aggregation; direct execution and run APIs
 apply the same guard before acquiring ownership or writing attempt records.
 `run.json` is reserved for ledger manifests, not a CLI report filename. Invalid
 destinations produce an explicit entry error without adding files to old evidence.
+The `.data\verification\local` control directory is reserved too, including its
+descendants and an attempt to use the directory path itself as a report filename.
+Only the internal key, lock and run-tip operations write there. Report/directory
+guards reject these targets before creating files, so a planned report cannot
+poison a future lock or signing key. Windows trailing-dot/space components and
+alternate-data-stream syntax are refused rather than resolving to a protected
+name; existing parent directories must retain their canonical identity.
 A supported checkout-root alias resolves to the same physical storage owner;
 links inside evidence storage still fail closed, and native workspace identity
 continues to retain the caller's original checkout path.

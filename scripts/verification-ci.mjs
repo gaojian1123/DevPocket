@@ -7,7 +7,8 @@ import { parseArgs, promisify } from "node:util";
 import { diagnosticDirectory } from "./diagnostic-publication.mjs";
 import { diagnosticError, failureDetails } from "./diagnostic-errors.mjs";
 import { committedInputEntries, readOnlyGit } from "./git-state.mjs";
-import { combineVerification, requireVerificationOutputDirectory, verificationFailure, verificationPlan } from "./verification.mjs";
+import { combineVerification, requireVerificationOutputDirectory, requireVerificationReportPath,
+  verificationFailure, verificationPlan } from "./verification.mjs";
 import { CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "./verification-policy.mjs";
 import { readDiagnosticReport } from "./worker-diagnostics.mjs";
 
@@ -287,9 +288,8 @@ async function main() {
   if ([values.seal, values.collect, values.qualify].filter(Boolean).length !== 1 || !values.report) {
     throw diagnosticError("configuration");
   }
-  const root = process.cwd(), report = path.resolve(values.report), name = path.basename(report);
-  if ((process.platform === "win32" ? name.toLowerCase() : name) === "run.json") throw diagnosticError("run-output-reused");
-  await requireVerificationOutputDirectory(root, path.dirname(report));
+  const root = process.cwd(), report = path.resolve(values.report);
+  await requireVerificationReportPath(root, report);
   let result;
   if (values.qualify) {
     result = await qualifyGitHubCI(root, { repository: values.repository, pullRequest: values.pr,

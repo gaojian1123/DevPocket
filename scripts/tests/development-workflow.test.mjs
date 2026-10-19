@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { test } from "node:test";
 import { checkDevelopmentReadiness, runDevelopment } from "../development-workflow.mjs";
 import { changedPaths, inspectWorktree, prepareCandidate, sha256, validateCandidateReceiptProof } from "../candidate-commit.mjs";
-import { executeVerification, git, sourceSnapshot, validateVerificationEvidence } from "../verification.mjs";
+import { executeVerification, git, sourceSnapshot, validateVerificationEvidence, verificationPlan } from "../verification.mjs";
 import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "../native-candidate.mjs";
 import { syntheticExecution } from "./fixtures/verification-tools.mjs";
 import { developmentApprovalDetails, developmentApprovalRequest, developmentApprovalSatisfied, developmentReviewRequirements,
@@ -2580,32 +2580,53 @@ test("a no-op repair retains the failed candidate instead of repeating acceptanc
   assert.equal((await git(root, ["rev-list", "--count", `${result.base}..HEAD`])).trim(), "1");
 });
 
-test("stale, partial, incomplete and missing-native verification cannot qualify a committed candidate", async (t) => {
+test("stale, partial and incomplete verification cannot qualify an otherwise valid non-native candidate", async (t) => {
   const { root } = await workspace(t);
   const result = await runDevelopment(documentationTask(root, {
     agent: async (_prompt, options) => {
       assert.notEqual(options.agent, "devpocket-reviewer", "Invalid verification is never sent for approval.");
-      const directory = path.join(root, "backend", "src");
+      const directory = path.join(root, "backend", "tests");
       await mkdir(directory, { recursive: true });
-      await writeFile(path.join(directory, "fixture.ts"), "// fixture\n");
+      await writeFile(path.join(directory, "fixture.test.ts"), "// fixture\n");
       return implemented(root);
     },
   }), { root, verify: async (_root, plan) => {
-    for (const scenario of ["stale-head", "partial", "missing-check", "missing-native"]) {
+    assert.equal(plan.requiredChecks.includes("android-device"), false);
+    assert.equal((await validateVerificationEvidence(root, plan, [syntheticReport(plan)], {
+      candidateEvidence: true, requireComplete: true,
+    })).complete, true);
+    for (const [scenario, reason] of [
+      ["stale-head", "source-mismatch"], ["partial", "check-failed"], ["missing-check", "shard-missing"],
+    ]) {
       await t.test(scenario, async () => {
         const value = syntheticReport(plan);
         if (scenario === "stale-head") value.source = { ...plan.source, head: plan.base };
-        if (scenario === "partial") { value.status = "partial"; value.complete = false; }
+        if (scenario === "partial") {
+          value.status = "partial"; value.complete = false;
+          assert.equal((await validateVerificationEvidence(root, plan, [value])).complete, true,
+            "Without the complete-report requirement, this otherwise valid partial input must aggregate.");
+        }
         if (scenario === "missing-check") value.checks = [];
         await assert.rejects(validateVerificationEvidence(root, plan, [value], {
           candidateEvidence: true, requireComplete: true,
-        }));
+        }), { diagnosticCode: reason });
       });
     }
-    return syntheticReport(plan);
+    return { ...syntheticReport(plan), status: "partial", complete: false };
   } });
   assert.equal(result.status, "blocked");
   assert.notEqual(result.candidate.commit, result.base);
+});
+
+test("native verification without device evidence cannot qualify separately from partial-report checks", async (t) => {
+  const { root } = await workspace(t), directory = path.join(root, "backend", "src");
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, "fixture.ts"), "// native-impact fixture\n");
+  const plan = await verificationPlan(root, "HEAD");
+  assert.ok(plan.requiredChecks.includes("android-device"));
+  await assert.rejects(validateVerificationEvidence(root, plan, [syntheticReport(plan)], {
+    candidateEvidence: true, requireComplete: true,
+  }), { diagnosticCode: "device-evidence" });
 });
 
 test("high-risk review and protected policy boundaries remain distinct from committed readiness", isolatedCases, async (t) => {

@@ -541,6 +541,24 @@ test("the qualification CLI keeps requested report names separate from authentic
         base: item.base, directory: ledger, api: () => assert.fail("Invalid direct output must not access GitHub.") }),
       { diagnosticCode: "run-output-reused" });
     });
+    await t.test("direct private control storage", async () => {
+      const directory = path.join(workspace, ".data", "verification", "local");
+      await assert.rejects(qualifyGitHubCI(workspace, { repository: item.repository, pullRequest: 11, runId: 1234,
+        base: item.base, directory, api: () => assert.fail("Private control storage must not access GitHub.") }),
+      { diagnosticCode: "run-output-reused" });
+      await assert.rejects(fileSystem.lstat(directory), { code: "ENOENT" });
+    });
+    await t.test("CLI private control storage", async () => {
+      const control = path.join(workspace, ".data", "verification", "local");
+      for (const file of [control, path.join(control, "execution.lock"), path.join(control, "receipt.key")]) {
+        await assert.rejects(exec(process.execPath, ["--import", pathToFileURL(preload).href,
+          path.resolve("scripts/verification-ci.mjs"), "--qualify", "--repository", item.repository,
+          "--pr", "11", "--run", "1234", "--base", item.base, "--report", file],
+        { cwd: workspace, env, timeout: 60000 }), (error) => error.code === 1 && /run-output-reused/.test(error.stderr));
+        assert.deepEqual(await readFile(calls), before);
+        await assert.rejects(fileSystem.lstat(control), { code: "ENOENT" });
+      }
+    });
     await t.test("reserved ledger filename", async () => {
       const file = path.join(workspace, ".data", "verification", "reserved", "run.json");
       await assert.rejects(exec(process.execPath, ["--import", pathToFileURL(preload).href,

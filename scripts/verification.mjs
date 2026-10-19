@@ -22,20 +22,33 @@ export async function verificationStorageLocation(root, value) {
     ? absolute : path.resolve(physical, relative) };
 }
 
-export async function requireVerificationOutputDirectory(root, directory, retainedRuns = []) {
-  const location = await verificationStorageLocation(root, directory);
-  const inside = (parent, value) => {
-    const relative = path.relative(parent, value);
-    return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-  };
+function insideDirectory(parent, value) {
+  const relative = path.relative(parent, value);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+async function verificationOutputLocation(root, value) {
+  const location = await verificationStorageLocation(root, value);
   const relative = path.relative(location.root, location.file);
   if (!["verification", "ci", "development"].some((name) => {
     const allowed = path.join(".data", name);
     return relative === allowed || relative.startsWith(allowed + path.sep);
   })) throw verificationFault("ownership-mismatch");
+  if (process.platform === "win32" && relative.split(path.sep).some((part) => /:|[. ]$/.test(part))) {
+    throw verificationFault("ownership-mismatch");
+  }
+  if (insideDirectory(path.join(location.root, ".data", "verification", "local"), location.file)) {
+    throw verificationFault("run-output-reused");
+  }
+  return location;
+}
+
+export async function requireVerificationOutputDirectory(root, directory, retainedRuns = []) {
+  const location = await verificationOutputLocation(root, directory);
+  const relative = path.relative(location.root, location.file);
   for (const file of retainedRuns.filter(Boolean)) {
     const retained = await verificationStorageLocation(root, file);
-    if (inside(path.dirname(retained.file), location.file)) throw verificationFault("run-output-reused");
+    if (insideDirectory(path.dirname(retained.file), location.file)) throw verificationFault("run-output-reused");
   }
   let current = location.root;
   for (const [index, part] of relative.split(path.sep).entries()) {
@@ -44,12 +57,22 @@ export async function requireVerificationOutputDirectory(root, directory, retain
     try { info = await lstat(current); }
     catch (error) { if (error.code === "ENOENT") return location; throw error; }
     if (!info.isDirectory() || info.isSymbolicLink()) throw verificationFault("ownership-mismatch");
+    const physical = await realpath(current);
+    if (process.platform === "win32" ? physical.toLowerCase() !== current.toLowerCase() : physical !== current) {
+      throw verificationFault("ownership-mismatch");
+    }
     if (index === 0) continue;
     try { await lstat(path.join(current, "run.json")); }
     catch (error) { if (error.code === "ENOENT") continue; throw error; }
     throw verificationFault("run-output-reused");
   }
   return location;
+}
+
+export async function requireVerificationReportPath(root, file, retainedRuns = []) {
+  const location = await verificationOutputLocation(root, file), name = path.basename(location.file);
+  if ((process.platform === "win32" ? name.toLowerCase() : name) === "run.json") throw verificationFault("run-output-reused");
+  await requireVerificationOutputDirectory(root, path.dirname(location.file), retainedRuns);
 }
 
 export function verificationFailure(error, phase = "command") {

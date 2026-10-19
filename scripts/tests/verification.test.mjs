@@ -120,6 +120,50 @@ test("storage roots accept direct reports without admitting sibling or linked di
     { diagnosticCode: "ownership-mismatch" });
 });
 
+test("report destinations cannot occupy private verification control storage", async (t) => {
+  const cases = [
+    ["local", "run-output-reused"], ["local/execution.lock", "run-output-reused"],
+    ["local/receipt.key", "run-output-reused"], ["local/nested/report.json", "run-output-reused"],
+    ...(process.platform === "win32" ? [
+      ["LOCAL/execution.lock", "run-output-reused"], ["local./execution.lock", "ownership-mismatch"],
+      ["local /receipt.key", "ownership-mismatch"], ["local:stream", "ownership-mismatch"],
+    ] : []),
+  ];
+  for (const [relative, reason] of cases) await t.test(relative, async (t) => {
+    const root = await repository(t), control = path.join(root, ".data", "verification", "local");
+    const report = path.join(root, ".data", "verification", relative);
+    await assert.rejects(exec(process.execPath, [entry, "--repo", root, "--base", "HEAD", "--plan", "--report", report],
+      { timeout: 30000 }), (error) => error.code === 1 && error.stderr.includes(reason));
+    await assert.rejects(fileSystem.lstat(control), { code: "ENOENT" });
+  });
+});
+
+test("private control directories reject direct outputs while internal bookkeeping and sibling reports remain valid", async (t) => {
+  const { executeVerification, requireVerificationOutputDirectory } = await import("../verification.mjs");
+  const root = await repository(t), plan = await verificationPlan(root, "HEAD"), policy = await verificationExecutionPolicy();
+  const control = path.join(root, ".data", "verification", "local");
+  for (const directory of [control, path.join(control, "nested")]) {
+    await assert.rejects(requireVerificationOutputDirectory(root, directory), { diagnosticCode: "run-output-reused" });
+    await assert.rejects(openVerificationRun(root, plan, { directory }, policy), { diagnosticCode: "run-output-reused" });
+    await assert.rejects(executeVerification(root, plan, { directory }), { diagnosticCode: "run-output-reused" });
+  }
+  await assert.rejects(fileSystem.lstat(control), { code: "ENOENT" });
+  const directory = path.join(root, ".data", "verification", "local-next");
+  const completed = await executeVerification(root, plan, { directory });
+  assert.equal(completed.status, "passed");
+  const names = await readdir(control);
+  const hashes = () => Promise.all(names.map(async (name) =>
+    createHash("sha256").update(await readFile(path.join(control, name))).digest("hex")));
+  const before = await hashes();
+  assert.ok(names.includes("receipt.key"));
+  assert.equal(names.includes("execution.lock"), false);
+  await assert.rejects(exec(process.execPath, [entry, "--repo", root, "--base", "HEAD", "--plan",
+    "--report", path.join(control, "diagnostic.json")], { timeout: 30000 }),
+  (error) => error.code === 1 && /run-output-reused/.test(error.stderr));
+  assert.deepEqual(await readdir(control), names);
+  assert.deepEqual(await hashes(), before);
+});
+
 test("task-routing tooling selects only its complete regression suite, independently of AGENTS", async (t) => {
   const original = ["AGENTS.md", "README.md", "docs/DEVELOPMENT-WORKFLOW.md",
     "scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs"];
