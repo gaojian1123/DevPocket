@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import fileSystem from "node:fs/promises";
+import fs, { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
-import { checkDevelopmentReadiness, runDevelopment } from "../development-workflow.mjs";
+import { checkDevelopmentReadiness, parseRepairDiagnosis, parseTask, runDevelopment, taskSchema } from "../development-workflow.mjs";
 import { changedPaths, inspectWorktree, prepareCandidate, sha256, validateCandidateReceiptProof } from "../candidate-commit.mjs";
 import { executeVerification, git, sourceSnapshot, validateVerificationEvidence, verificationPlan } from "../verification.mjs";
 import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "../native-candidate.mjs";
@@ -102,6 +101,13 @@ test("repository routing discovers the development skill without requiring workf
   assert.equal(invocation?.name, "devpocket-development");
   assert.ok(invocation.args.goal);
   assert.ok(invocation.args.acceptance.length);
+  assert.equal(Object.hasOwn(invocation.args, "maxRepairRounds"), false);
+  assert.match(skill, /stating the contract is not another plan-approval/);
+  assert.match(skill, /no implicit two-round limit/);
+  assert.doesNotMatch(skill, /Allow at most two repair rounds/);
+  assert.match(guide, /There is no additional project-default time, cost or repair-round ceiling/);
+  assert.match(reviewer, /For \*\*repair diagnosis\*\*/);
+  assert.match(reviewer, /Diagnosis never establishes acceptance, approval or publication readiness/);
 });
 
 test("the skill freezes an authorized delivery candidate before final verification and review", async () => {
@@ -135,7 +141,7 @@ test("the skill freezes an authorized delivery candidate before final verificati
 function durable(ctx) {
   const journal = new Map();
   return { session: nativeSession(), phase() {}, log() {}, ...ctx, step: async (key, producer) => {
-    assert.match(key, /^(?:devpocket-development-v5|devpocket-approval-v1:[a-f0-9]{64})$/,
+    assert.match(key, /^(?:devpocket-development-v7|devpocket-approval-v1:[a-f0-9]{64})$/,
       "Older journals must not be replayed as current execution-policy evidence.");
     if (!journal.has(key)) journal.set(key, JSON.parse(JSON.stringify(await producer())));
     return journal.get(key);
@@ -284,8 +290,9 @@ test("candidate commits precede final verification/review, and unchanged publica
   const firstReport = await readFile(firstReportPath, "utf8");
   assert.equal(JSON.parse(firstReport).source.head, verified[0].head);
   const again = await runDevelopment(ctx, { root, verify });
-  assert.equal(again.status, "ready");
-  assert.equal(calls.length, 4, "An unchanged completed run is not executed twice.");
+  assert.equal(again.status, "blocked");
+  assert.match(again.reason, /Cached ready proposals/);
+  assert.equal(calls.length, 4, "Controller reentry must not execute a completed task twice.");
   const { checkRecordedReadiness } = await import("../workflow-extension.mjs");
   const session = { workflow: {
     getRunDetail: async () => ({ status: "completed", workflowName: "devpocket-development", runId: ctx.runId }),
@@ -299,7 +306,7 @@ test("candidate commits precede final verification/review, and unchanged publica
   assert.equal(verificationCalls, 2, "Publication freshness must not repeat final verification.");
   assert.equal(await readFile(firstReportPath, "utf8"), firstReport);
   await writeFile(path.join(root, "README.md"), "Changed after review\n");
-  const stale = await runDevelopment(ctx, { root, verify });
+  const stale = await checkRecordedReadiness(session, root, { runId: ctx.runId });
   assert.equal(stale.status, "blocked");
   assert.match(stale.reason, /source/i);
 });
@@ -354,6 +361,625 @@ test("review blockers exhaust a bounded repair budget and are never relabelled a
   assert.equal(result.status, "blocked");
   assert.match(result.reason, /exhausted/);
   assert.equal(calls, 2);
+});
+
+test("repair contracts have no implicit cap and retain explicit user limits beyond two rounds", () => {
+  const input = { goal: "Task", acceptance: ["Behavior"] };
+  assert.deepEqual(parseTask(input), { ...input, nonGoals: [] });
+  assert.deepEqual(taskSchema.properties.maxRepairRounds, { type: "integer" });
+  for (const maxRepairRounds of [0, 1, 2, 5, 20, Number.MAX_SAFE_INTEGER]) {
+    assert.equal(parseTask({ ...input, maxRepairRounds }).maxRepairRounds, maxRepairRounds);
+  }
+  for (const maxRepairRounds of [-1, 1.5, null, "5", NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => parseTask({ ...input, maxRepairRounds }), /nonnegative safe integer/);
+  }
+  assert.throws(() => parseTask({ ...input, timeoutSeconds: 600 }), /Unexpected workflow fields/);
+});
+
+test("repair diagnosis requires concrete evidence and a next approach without granting acceptance", () => {
+  for (const status of ["progressing", "stalled", "needs_human"]) {
+    assert.deepEqual(parseRepairDiagnosis({
+      status, evidence: " Observed failure evidence ", nextApproach: " Inspect the next cause ",
+    }), { status, evidence: "Observed failure evidence", nextApproach: "Inspect the next cause" });
+  }
+  for (const value of [
+    null, {}, { status: "pass", evidence: "Passed", nextApproach: "Publish" },
+    { status: "progressing", evidence: "", nextApproach: "Retry" },
+    { status: "progressing", evidence: " \n ", nextApproach: "Retry" },
+    { status: "stalled", evidence: "Same failure", nextApproach: "" },
+    { status: "progressing", evidence: "x".repeat(8001), nextApproach: "Retry" },
+    { status: "progressing", evidence: "Observed", nextApproach: "x".repeat(4001) },
+    { status: "progressing", evidence: "Observed", nextApproach: "Retry", approved: true },
+  ]) assert.throws(() => parseRepairDiagnosis(value), TypeError);
+});
+
+test("failed checks keep repairing beyond two rounds while source-bound diagnosis shows progress", async (t) => {
+  const { root } = await workspace(t);
+  let implementations = 0, verifications = 0, reviews = 0, diagnoses = 0;
+  const verified = [];
+  const result = await runDevelopment(durable({
+    runId: "progressing-checks", args: { goal: "Fix independent failures", acceptance: ["All checks pass"] },
+    agent: async (prompt, options) => {
+      if (options.label.includes(":diagnose:")) {
+        diagnoses++;
+        assert.equal(options.agent, "devpocket-reviewer");
+        assert.match(prompt, /This is not a final acceptance review/);
+        assert.ok(prompt.includes(verified.at(-1).head));
+        const state = JSON.parse(await readFile(path.join(root, ".data", "development", "progressing-checks", "state.json"), "utf8"));
+        for (const attempt of state.repairHistory) {
+          assert.equal(typeof attempt.diff, "string");
+          assert.ok(prompt.includes(JSON.stringify(attempt.diff)));
+          const patch = await readFile(path.join(root, attempt.diff), "utf8");
+          assert.ok(patch.includes(`+// fixture repair ${attempt.round + 1}`));
+        }
+        return { status: "progressing", evidence: `Fixture failure ${verifications - 1} was resolved; a different case now fails.`,
+          nextApproach: "Inspect and fix the next independently reproduced case." };
+      }
+      if (options.agent === "devpocket-reviewer") { reviews++; return passingReview; }
+      await mkdir(path.join(root, "backend", "tests"), { recursive: true });
+      await writeFile(path.join(root, "backend", "tests", "task.test.ts"), `// fixture repair ${++implementations}\n`);
+      return implemented(root);
+    },
+  }), { root, verify: async (_root, plan) => {
+    verified.push(plan.source);
+    if (++verifications < 5) return { ...plan, group: "all", status: "failed", complete: false,
+      checks: plan.requiredChecks.map((id, index) => ({ id, status: index ? "not_run" : "failed",
+        exitCode: index ? null : 1, reason: `Fixture case ${verifications} failed` })) };
+    return syntheticReport(plan);
+  } });
+  assert.equal(result.status, "ready", result.reason);
+  assert.equal(result.round, 4);
+  assert.equal(implementations, 5);
+  assert.equal(verifications, 5);
+  assert.equal(reviews, 1);
+  assert.equal(diagnoses, 3);
+  assert.equal(result.repairHistory.length, 4);
+  assert.deepEqual(result.review.source, verified.at(-1));
+  assert.equal(new Set(verified.map((source) => source.head)).size, 5);
+  for (let round = 1; round < 4; round++) {
+    const diagnosis = JSON.parse(await readFile(path.join(root, ".data", "development",
+      result.runId, `diagnosis-${round}.json`), "utf8"));
+    assert.deepEqual(diagnosis.source, verified[round]);
+    assert.equal(diagnosis.reviewer, "devpocket-reviewer");
+  }
+});
+
+test("sustained or cyclic failures try diagnosis and a different approach before stopping", isolatedCases, async (t) => {
+  await Promise.all(["checks", "review", "cycle"].map((scenario) => t.test(scenario, async (t) => {
+    const { root } = await workspace(t);
+    let implementations = 0, diagnoses = 0, verifications = 0;
+    const heads = [];
+    const result = await runDevelopment(durable({
+      runId: `stalled-${scenario}`, args: { goal: "Fix a stubborn failure", acceptance: ["Reproduce and resolve it"] },
+      agent: async (prompt, options) => {
+        if (options.label.includes(":diagnose:")) {
+          diagnoses++;
+          assert.match(prompt, /earlier attempts|earlier|Earlier/);
+          return { status: "stalled", evidence: "The same reproduced failure remains; source churn did not resolve or narrow it.",
+            nextApproach: "Trace the state transition instead of changing another output assertion." };
+        }
+        if (options.agent === "devpocket-reviewer") return blockingReview;
+        implementations++;
+        if (implementations === 3) {
+          assert.match(prompt, /Trace the state transition/);
+          assert.match(prompt, /materially different supported approach/);
+        }
+        const revision = scenario === "cycle" ? implementations % 2 : implementations;
+        await writeFile(path.join(root, "README.md"), `Incomplete fixture revision ${revision}\n`);
+        return implemented(root);
+      },
+    }), { root, verify: async (_root, plan) => {
+      verifications++;
+      heads.push(plan.source.head);
+      return scenario === "checks" ? { ...plan, group: "all", status: "failed", complete: false,
+        checks: [{ id: "fixture-check", status: "failed", exitCode: 1 }] } : syntheticReport(plan);
+    } });
+    assert.equal(result.status, "blocked");
+    assert.match(result.reason, /no demonstrated progress/);
+    assert.equal(implementations, 3);
+    assert.equal(verifications, 3);
+    assert.equal(diagnoses, 2);
+    assert.equal(result.round, 2);
+    assert.equal(result.repairHistory.length, 3);
+    assert.deepEqual(result.repairDiagnosis.source, result.source);
+    assert.equal(result.repairDiagnosis.status, "stalled");
+    assert.equal(new Set(heads).size, 3, "Different commits alone cannot count as progress.");
+    if (scenario === "cycle") {
+      assert.equal(result.repairHistory[0].source.fingerprint, result.repairHistory[2].source.fingerprint);
+    }
+  })));
+});
+
+test("demonstrated progress clears a stalled diagnosis rather than imposing a lifetime stall quota", async (t) => {
+  const { root } = await workspace(t);
+  const statuses = ["stalled", "progressing", "stalled"];
+  let implementations = 0, reviews = 0, diagnoses = 0;
+  const result = await runDevelopment(durable({
+    runId: "progress-reset", args: { goal: "Resolve failures", acceptance: ["Complete the task"] },
+    agent: async (_prompt, options) => {
+      if (options.label.includes(":diagnose:")) return { status: statuses[diagnoses++],
+        evidence: "The fixture records the observed change in failure evidence.", nextApproach: "Inspect the next causal path." };
+      if (options.agent === "devpocket-reviewer") return ++reviews < 5 ? blockingReview : passingReview;
+      await writeFile(path.join(root, "README.md"), `Fixture revision ${++implementations}\n`);
+      return implemented(root);
+    },
+  }), { root, verify: async (_root, plan) => syntheticReport(plan) });
+  assert.equal(result.status, "ready", result.reason);
+  assert.equal(result.round, 4);
+  assert.equal(diagnoses, 3);
+});
+
+test("an explicit larger repair cap stops before spending another diagnosis or asking for approval", async (t) => {
+  const { root } = await workspace(t);
+  let implementations = 0, diagnoses = 0;
+  const result = await runDevelopment(durable({
+    runId: "explicit-cap", args: { goal: "Task", acceptance: ["Behavior"], maxRepairRounds: 3 },
+    agent: async (_prompt, options) => {
+      if (options.label.includes(":diagnose:")) {
+        diagnoses++;
+        return { status: "progressing", evidence: "A fixture blocker was resolved.", nextApproach: "Address the next fixture blocker." };
+      }
+      if (options.agent === "devpocket-reviewer") return blockingReview;
+      await writeFile(path.join(root, "README.md"), `Fixture revision ${++implementations}\n`);
+      return implemented(root);
+    },
+  }), { root, verify: async (_root, plan) => syntheticReport(plan) });
+  assert.equal(result.status, "blocked");
+  assert.match(result.reason, /user-selected repair limit is exhausted/);
+  assert.equal(result.round, 3);
+  assert.equal(implementations, 4);
+  assert.equal(diagnoses, 2);
+  assert.deepEqual(result.authorization.receipts, []);
+});
+
+test("repair diagnosis cannot weaken malformed-result, source, hook or human-decision stops", isolatedCases, async (t) => {
+  await Promise.all(["invalid", "source", "hooks", "human"].map((scenario) => t.test(scenario, async (t) => {
+    const { root } = await workspace(t);
+    let implementations = 0, diagnoses = 0;
+    const result = await runDevelopment(durable({
+      runId: `diagnosis-${scenario}`, args: { goal: "Task", acceptance: ["Behavior"] },
+      agent: async (_prompt, options) => {
+        if (options.label.includes(":diagnose:")) {
+          diagnoses++;
+          if (scenario === "invalid") return { status: "progressing", evidence: "", nextApproach: "Retry" };
+          if (scenario === "source") await writeFile(path.join(root, "README.md"), "Unexpected diagnosis edit\n");
+          if (scenario === "hooks") await git(root, ["config", "core.hooksPath", ".data/changed-hooks"]);
+          return { status: scenario === "human" ? "needs_human" : "progressing",
+            evidence: scenario === "human" ? "The product behavior needs a user choice." : "Observed fixture evidence.",
+            nextApproach: "Resolve only the specific remaining decision." };
+        }
+        if (options.agent === "devpocket-reviewer") return blockingReview;
+        await writeFile(path.join(root, "README.md"), `Fixture revision ${++implementations}\n`);
+        return implemented(root);
+      },
+    }), { root, verify: async (_root, plan) => syntheticReport(plan) });
+    assert.equal(result.status, ["hooks", "human"].includes(scenario) ? "needs_human" : "blocked");
+    assert.equal(implementations, 2);
+    assert.equal(diagnoses, 1);
+    if (scenario === "invalid") assert.match(result.reason, /diagnosis.*invalid/);
+    if (scenario === "source") assert.match(result.reason, /Source changed during/);
+    if (scenario === "hooks") assert.match(result.reason, /hook policy changed/);
+    if (scenario === "human") assert.match(result.reason, /product behavior/);
+  })));
+});
+
+test("native cancellation and budget errors during diagnosis propagate without a repair retry", isolatedCases, async (t) => {
+  await Promise.all(["cancelled", "budget"].map((scenario) => t.test(scenario, async (t) => {
+    const { root } = await workspace(t), controller = new AbortController();
+    const error = Object.assign(new Error(`Native ${scenario}`), { name: scenario === "budget" ? "ResponseError" : "AbortError" });
+    let implementations = 0, diagnoses = 0;
+    const ctx = durable({
+      runId: `native-${scenario}`, args: { goal: "Task", acceptance: ["Behavior"] }, signal: controller.signal,
+      agent: async (_prompt, options) => {
+        if (options.label.includes(":diagnose:")) {
+          diagnoses++;
+          if (scenario === "budget") throw error;
+          controller.abort(error);
+          return { status: "progressing", evidence: "This result must not override cancellation.", nextApproach: "Retry" };
+        }
+        if (options.agent === "devpocket-reviewer") return blockingReview;
+        await writeFile(path.join(root, "README.md"), `Fixture revision ${++implementations}\n`);
+        return implemented(root);
+      },
+    });
+    await assert.rejects(runDevelopment(ctx, { root, verify: async (_root, plan) => syntheticReport(plan) }),
+      (actual) => actual === error);
+    assert.equal(implementations, 2);
+    assert.equal(diagnoses, 1);
+    const directory = path.join(root, ".data", "development", ctx.runId);
+    const state = JSON.parse(await readFile(path.join(directory, "state.json"), "utf8"));
+    assert.equal(state.stage, "diagnosing");
+    assert.equal(state.repairHistory.length, 2);
+    await assert.rejects(readFile(path.join(directory, "handoff.json")), { code: "ENOENT" });
+    await assert.rejects(readFile(path.join(root, ".data", "development.lock")), { code: "ENOENT" });
+  })));
+});
+
+test("a pre-cancelled workflow never starts its journal or inspects a workspace", async () => {
+  const controller = new AbortController(), error = new Error("Already cancelled");
+  controller.abort(error);
+  await assert.rejects(runDevelopment({
+    signal: controller.signal,
+    args: { goal: "Task", acceptance: ["Behavior"] },
+    step: async () => { assert.fail("Cancellation precedes journal entry."); },
+  }, { root: "an-unavailable-worktree" }), (actual) => actual === error);
+});
+
+test("cancellation after implementation preserves edits without starting a candidate commit", async (t) => {
+  const { root } = await workspace(t), controller = new AbortController(), session = nativeSession();
+  const error = new Error("Cancelled during implementation");
+  const before = await sourceSnapshot(root);
+  session.rpc.tools.execute = async () => { assert.fail("Cancelled implementation must not commit."); };
+  await assert.rejects(runDevelopment(durable({
+    runId: "cancelled-implementation", session, signal: controller.signal,
+    args: { goal: "Task", acceptance: ["Behavior"] },
+    agent: async () => {
+      await writeFile(path.join(root, "README.md"), "Retained incomplete task\n");
+      const result = await implemented(root);
+      controller.abort(error);
+      return result;
+    },
+  }), { root, verify: async () => { assert.fail("Cancelled implementation must not verify."); } }),
+  (actual) => actual === error);
+  assert.equal((await sourceSnapshot(root)).head, before.head);
+  assert.equal(await readFile(path.join(root, "README.md"), "utf8"), "Retained incomplete task\n");
+});
+
+test("cancellation after native phase results cannot become blocked verification or a ready handoff", isolatedCases, async (t) => {
+  await Promise.all(["candidate", "verification", "review", "policy"].map((phase) => t.test(phase, async (t) => {
+    const { root } = await workspace(t), controller = new AbortController(), session = nativeSession();
+    const error = new Error(`Cancelled during ${phase}`);
+    const before = await sourceSnapshot(root);
+    let implementations = 0, commits = 0, verifications = 0, reviews = 0;
+    const execute = session.rpc.tools.execute;
+    session.rpc.tools.execute = async (request) => {
+      const response = await execute(request);
+      assert.equal(response.resultType, "success", response.textResultForLlm);
+      commits++;
+      if (phase === "candidate") controller.abort(error);
+      return response;
+    };
+    session.capabilities = { ui: { elicitation: true } };
+    session.ui = { elicitation: async () => {
+      assert.equal(phase, "policy");
+      controller.abort(error);
+      return { action: "accept", content: { decision: "approve" } };
+    } };
+    const ctx = durable({
+      runId: `cancelled-${phase}`, session, signal: controller.signal,
+      args: { goal: "Task", acceptance: ["Behavior"] },
+      agent: async (_prompt, options) => {
+        if (options.agent === "devpocket-reviewer") {
+          reviews++;
+          if (phase === "review") controller.abort(error);
+          return passingReview;
+        }
+        implementations++;
+        const file = phase === "policy" ? "extension/entry.mjs" : "README.md";
+        await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+        await writeFile(path.join(root, file), "// fixture task change\n");
+        return implemented(root);
+      },
+    });
+    await assert.rejects(runDevelopment(ctx, { root, verify: async (_root, plan) => {
+      verifications++;
+      if (phase === "verification") {
+        controller.abort(error);
+        return { ...plan, group: "all", status: "blocked", complete: false,
+          checks: [{ id: "fixture-check", status: "blocked", commandOutcome: { reason: "cancelled" } }] };
+      }
+      return syntheticReport(plan);
+    } }), (actual) => actual === error);
+    assert.equal(implementations, 1);
+    assert.equal(commits, 1, "An already completed native commit is retained, not repeated or reverted.");
+    assert.notEqual((await sourceSnapshot(root)).head, before.head);
+    assert.equal(verifications, phase === "candidate" ? 0 : 1);
+    assert.equal(reviews, ["review", "policy"].includes(phase) ? 1 : 0);
+    await assert.rejects(readFile(path.join(root, ".data", "development", ctx.runId, "handoff.json")), { code: "ENOENT" });
+  })));
+});
+
+test("cancellation during final persistence invalidates ready recovery files", async (t) => {
+  for (const phase of ["state", "handoff", "handoff-interrupted", "handoff-cleanup-failure"]) await t.test(phase, async (t) => {
+    const { root } = await workspace(t), controller = new AbortController(), session = nativeSession();
+    const error = new Error(`Cancelled while persisting ${phase}`);
+    const cleanupError = new Error("Fixture cancellation checkpoint failed");
+    const runId = `cancel-final-${phase}`;
+    const directory = path.join(root, ".data", "development", runId);
+    const statePath = path.join(directory, "state.json"), handoffPath = path.join(directory, "handoff.json");
+    const original = { rename: fs.rename, writeFile: fs.writeFile, open: fs.open };
+    let triggered = false;
+    const afterWrite = (file, text) => {
+      if (!triggered && phase.startsWith("handoff") && file === handoffPath && JSON.parse(text).status === "ready") {
+        triggered = true;
+        controller.abort(error);
+        if (phase === "handoff-interrupted") throw error;
+      }
+    };
+    session.rpc.tools.execute = async () => { assert.fail("The no-op fixture needs no candidate mutation."); };
+    t.mock.method(fs, "rename", async (...args) => {
+      if (phase === "handoff-cleanup-failure" && args[1] === statePath &&
+          JSON.parse(await readFile(args[0], "utf8")).stage === "cancelled") throw cleanupError;
+      const result = await original.rename(...args);
+      if (!triggered && phase === "state" && args[1] === statePath &&
+          JSON.parse(await readFile(statePath, "utf8")).stage === "ready") {
+        triggered = true;
+        controller.abort(error);
+      }
+      return result;
+    });
+    t.mock.method(fs, "writeFile", async (...args) => {
+      const result = await original.writeFile(...args);
+      afterWrite(args[0], args[1]);
+      return result;
+    });
+    t.mock.method(fs, "open", async (...args) => {
+      const handle = await original.open(...args);
+      if (args[0] === handoffPath && args[1] === "wx") {
+        const write = handle.writeFile.bind(handle);
+        t.mock.method(handle, "writeFile", async (...values) => {
+          const result = await write(...values);
+          afterWrite(handoffPath, values[0]);
+          return result;
+        });
+      }
+      return handle;
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(runDevelopment(durable({
+        runId, session, signal: controller.signal,
+        args: { goal: "Keep completed evidence on cancellation", acceptance: ["Never persist a cancelled task as ready"] },
+        agent: async (_prompt, options) => options.agent === "devpocket-reviewer" ? passingReview : implemented(root),
+      }), { root, verify: async (_root, plan) => syntheticReport(plan) }), (actual) => {
+        if (phase !== "handoff-cleanup-failure") return actual === error;
+        return actual instanceof AggregateError && actual.errors.includes(error) && actual.errors.includes(cleanupError) &&
+          /recovery artifact invalidation failed/.test(actual.message);
+      });
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+    assert.equal(triggered, true, "Cancel after the actual ready-state write, not before finalization.");
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    if (phase !== "handoff-cleanup-failure") {
+      assert.equal(state.stage, "cancelled");
+      assert.equal(state.result.status, "cancelled");
+      assert.equal((await checkDevelopmentReadiness(root, state.result)).status, "blocked");
+    }
+    assert.equal(state.result.verification.status, "passed");
+    assert.equal(state.result.review.verdict, "pass");
+    assert.equal(state.result.candidate.commit, state.candidate.commit);
+    assert.equal((await sourceSnapshot(root)).head, state.candidate.commit);
+    assert.equal(JSON.parse(await readFile(path.join(directory, "verification-0.json"), "utf8")).status, "passed");
+    await assert.rejects(readFile(handoffPath), { code: "ENOENT" });
+  });
+});
+
+test("late cancellation invalidates completion and prevents ready journal replay", async (t) => {
+  for (const phase of ["lock-cleanup", "journal", "readiness"]) await t.test(phase, async (t) => {
+    const { root } = await workspace(t), controller = new AbortController(), session = nativeSession();
+    const error = new Error(`Cancelled during ${phase}`);
+    const runId = `late-cancel-${phase}`, directory = path.join(root, ".data", "development", runId);
+    const originalSource = await sourceSnapshot(root), original = { rm: fs.rm, readFile: fs.readFile };
+    let triggered = false, journalReturned = false, implementations = 0, reviews = 0, proposal;
+    const cancel = () => { triggered = true; controller.abort(error); };
+    session.rpc.tools.execute = async () => { assert.fail("The no-op fixture needs no native mutation."); };
+    const ctx = durable({
+      runId, session, signal: controller.signal,
+      args: { goal: "Preserve cancellation across completion", acceptance: ["No ready replay after cancellation"] },
+      agent: async (_prompt, options) => {
+        if (options.agent === "devpocket-reviewer") { reviews++; return passingReview; }
+        implementations++;
+        return implemented(root);
+      },
+    });
+    const step = ctx.step;
+    ctx.step = async (key, producer) => {
+      const result = await step(key, producer);
+      if (key.startsWith("devpocket-development-v")) {
+        journalReturned = true;
+        if (result.result.status === "ready") proposal = result.result;
+        if (!triggered && phase === "journal") cancel();
+      }
+      return result;
+    };
+    t.mock.method(fs, "rm", async (...args) => {
+      const result = await original.rm(...args);
+      if (!triggered && phase === "lock-cleanup" && args[0] === path.join(root, ".data", "development.lock")) cancel();
+      return result;
+    });
+    t.mock.method(fs, "readFile", async (...args) => {
+      const result = await original.readFile(...args);
+      if (!triggered && phase === "readiness" && journalReturned) cancel();
+      return result;
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(runDevelopment(ctx, { root, verify: async (_root, plan) => syntheticReport(plan) }),
+        (actual) => actual === error);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+    assert.equal(triggered, true, "Exercise cancellation after finish, not an earlier phase result.");
+    const state = JSON.parse(await readFile(path.join(directory, "state.json"), "utf8"));
+    assert.equal(state.stage, "cancelled");
+    assert.equal(state.result.status, "cancelled");
+    await assert.rejects(readFile(path.join(directory, "handoff.json")), { code: "ENOENT" });
+    if (proposal) {
+      await writeFile(path.join(directory, "state.json"), JSON.stringify({ ...state, stage: "ready", result: proposal }));
+      await writeFile(path.join(directory, "handoff.json"), JSON.stringify(proposal));
+    }
+    const replay = await runDevelopment({ ...ctx, signal: new AbortController().signal },
+      { root, verify: async () => { assert.fail("Replay requires inspected recovery, not new verification."); } });
+    assert.notEqual(replay.status, "ready", "A fresh signal must not promote a cancelled attempt's cached ready result.");
+    assert.match(replay.reason, /inspect|recover/i);
+    assert.equal(state.result.candidate.commit, originalSource.head);
+    assert.equal(state.result.verification.status, "passed");
+    assert.equal(state.result.review.verdict, "pass");
+    assert.equal(implementations, 1);
+    assert.equal(reviews, 1);
+    assert.deepEqual(await sourceSnapshot(root), originalSource);
+    assert.equal(JSON.parse(await readFile(path.join(directory, "verification-0.json"), "utf8")).status, "passed");
+  });
+});
+
+test("completion cleanup preserves cancellation and every cleanup failure", async (t) => {
+  const count = (actual, expected) => actual === expected ? 1 :
+    actual instanceof AggregateError ? actual.errors.reduce((total, error) => total + count(error, expected), 0) : 0;
+  for (const phase of ["lock-close", "lock-remove", "invalidation-and-remove", "handoff-close",
+    "late-lock-close", "late-lock-remove", "late-invalidation-and-remove"]) await t.test(phase, async (t) => {
+    const { root } = await workspace(t), controller = new AbortController(), session = nativeSession();
+    const late = phase.startsWith("late-"), invalidationFails = phase.endsWith("invalidation-and-remove");
+    const cancellation = new Error("Fixture cancellation"), cleanupFailure = new Error(`Fixture ${phase} failed`);
+    const invalidationFailure = new Error("Fixture cancellation checkpoint failed");
+    const runId = `cleanup-errors-${phase}`, directory = path.join(root, ".data", "development", runId);
+    const lockPath = path.join(root, ".data", "development.lock");
+    const handoffPath = path.join(directory, "handoff.json"), statePath = path.join(directory, "state.json");
+    const original = { open: fs.open, rm: fs.rm, rename: fs.rename };
+    let invalidations = 0, lockRemovals = 0, handoffRemovals = 0;
+    session.rpc.tools.execute = async () => { assert.fail("The no-op fixture needs no native mutation."); };
+    t.mock.method(fs, "open", async (...args) => {
+      const handle = await original.open(...args);
+      if (args[0] === handoffPath) {
+        const write = handle.writeFile.bind(handle);
+        t.mock.method(handle, "writeFile", async (...values) => {
+          const result = await write(...values);
+          if (!late) controller.abort(cancellation);
+          if (phase === "handoff-close") throw cancellation;
+          return result;
+        });
+      }
+      if (args[0] === lockPath && phase.endsWith("lock-close") || args[0] === handoffPath && phase === "handoff-close") {
+        const close = handle.close.bind(handle);
+        t.mock.method(handle, "close", async () => {
+          await close();
+          if (late) controller.abort(cancellation);
+          throw cleanupFailure;
+        });
+      }
+      return handle;
+    });
+    t.mock.method(fs, "rename", async (...args) => {
+      if (args[1] === statePath && JSON.parse(await readFile(args[0], "utf8")).stage === "cancelled") {
+        invalidations++;
+        if (invalidationFails) throw invalidationFailure;
+      }
+      return original.rename(...args);
+    });
+    t.mock.method(fs, "rm", async (...args) => {
+      const result = await original.rm(...args);
+      if (args[0] === handoffPath) handoffRemovals++;
+      if (args[0] === lockPath) {
+        lockRemovals++;
+        if (phase.endsWith("lock-remove") || invalidationFails) {
+          if (late) controller.abort(cancellation);
+          throw cleanupFailure;
+        }
+      }
+      return result;
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(runDevelopment(durable({
+        runId, session, signal: controller.signal,
+        args: { goal: "Preserve failure provenance", acceptance: ["Keep cancellation and cleanup errors"] },
+        agent: async (_prompt, options) => options.agent === "devpocket-reviewer" ? passingReview : implemented(root),
+      }), { root, verify: async (_root, plan) => syntheticReport(plan) }), (error) =>
+        count(error, cancellation) === 1 && count(error, cleanupFailure) === 1 &&
+        (!invalidationFails || count(error, invalidationFailure) === 1));
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+    assert.equal(invalidations, 1, "The outer handler must not repeat a completed or failed invalidation.");
+    assert.equal(lockRemovals, 1, "Removing the owned lock must still be attempted after a close failure.");
+    assert.equal(handoffRemovals, 1);
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    if (!invalidationFails) assert.equal(state.stage, "cancelled");
+    assert.equal((await sourceSnapshot(root)).head, state.candidate.commit);
+    assert.equal(JSON.parse(await readFile(path.join(directory, "verification-0.json"), "utf8")).status, "passed");
+    await assert.rejects(readFile(handoffPath), { code: "ENOENT" });
+    await assert.rejects(readFile(lockPath), { code: "ENOENT" });
+  });
+});
+
+test("completed runs use native read-only readiness instead of reentering the controller", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  let implementations = 0, verifications = 0, reviews = 0;
+  session.rpc.tools.execute = async () => { assert.fail("The no-op fixture needs no native mutation."); };
+  const ctx = durable({
+    runId: "completed-readiness", session, args: { goal: "Read completed evidence", acceptance: ["No repeated work"] },
+    agent: async (_prompt, options) => {
+      if (options.agent === "devpocket-reviewer") { reviews++; return passingReview; }
+      implementations++;
+      return implemented(root);
+    },
+  });
+  const verify = async (_root, plan) => { verifications++; return syntheticReport(plan); };
+  const result = await runDevelopment(ctx, { root, verify });
+  assert.equal(result.status, "ready");
+  const replay = await runDevelopment(ctx, { root, verify });
+  assert.equal(replay.status, "blocked", "Reentry cannot tell native completion from an interrupted journal write.");
+  const { checkRecordedReadiness } = await import("../workflow-extension.mjs");
+  let status = "completed";
+  const runtime = { workflow: {
+    getRunDetail: async () => ({ status, workflowName: "devpocket-development", runId: ctx.runId }),
+    getRun: async () => ({ status, runId: ctx.runId, result }),
+  } };
+  assert.equal((await checkRecordedReadiness(runtime, root, { runId: ctx.runId })).status, "ready");
+  status = "cancelled";
+  assert.equal((await checkRecordedReadiness(runtime, root, { runId: ctx.runId })).status, "blocked");
+  assert.equal(implementations, 1);
+  assert.equal(verifications, 1);
+  assert.equal(reviews, 1);
+});
+
+test("cancellation aggregation preserves existing causes and handles cycles", async (t) => {
+  for (const scenario of ["cause", "cycle", "cycle-with-cancellation", "primitive"]) await t.test(scenario, async (t) => {
+    const { root } = await workspace(t), controller = new AbortController(), session = nativeSession();
+    const cancellation = scenario === "primitive" ? "Fixture cancellation" : new Error("Fixture cancellation");
+    const failure = scenario.startsWith("cycle") ? new AggregateError([], "Fixture cyclic errors") :
+      scenario === "cause" ? new Error("Fixture wrapper", { cause: cancellation }) : new Error("Fixture failure");
+    if (scenario.startsWith("cycle")) failure.errors.push(failure);
+    if (scenario === "cycle-with-cancellation") failure.errors.unshift(cancellation);
+    session.rpc.tools.execute = async () => { assert.fail("Cancelled implementation must not commit."); };
+    await assert.rejects(runDevelopment(durable({
+      runId: `error-causes-${scenario}`, session, signal: controller.signal,
+      args: { goal: "Preserve cancellation provenance", acceptance: ["No lost or duplicate cancellation"] },
+      agent: async () => { controller.abort(cancellation); throw failure; },
+    }), { root }), (error) => {
+      if (["cause", "cycle-with-cancellation"].includes(scenario)) return error === failure;
+      return error instanceof AggregateError && error.errors.length === 2 &&
+        error.errors[0] === cancellation && error.errors[1] === failure;
+    });
+  });
+});
+
+test("failed verification exposes a readable candidate diff before diagnosis or acceptance review", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  const runId = "failed-candidate-diff";
+  const expectedPatch = path.join(root, ".data", "development", runId, "review-0.patch");
+  let patchDuringVerification;
+  session.rpc.tools.execute = async () => { assert.fail("The no-op baseline needs no candidate mutation."); };
+  const result = await runDevelopment(durable({
+    runId, session, args: { goal: "Inspect failed candidates", acceptance: ["Retain readable source evidence"], maxRepairRounds: 0 },
+    agent: async (_prompt, options) => {
+      assert.equal(options.agent, "general-purpose", "Failed verification must not run an acceptance review.");
+      return implemented(root);
+    },
+  }), { root, verify: async (_root, plan) => {
+    try { patchDuringVerification = await readFile(expectedPatch, "utf8"); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    return { ...plan, group: "all", status: "failed", complete: false, checks: [] };
+  } });
+  assert.equal(result.status, "blocked");
+  assert.equal(typeof patchDuringVerification, "string", "Persist the diff before invoking verification.");
+  assert.equal(result.repairHistory.length, 1);
+  assert.equal(path.resolve(root, result.repairHistory[0].diff), expectedPatch);
+  assert.equal(await readFile(expectedPatch, "utf8"), patchDuringVerification);
+  assert.equal(patchDuringVerification, "", "An unchanged baseline has an empty, but still inspectable, diff.");
 });
 
 test("starter reuses a clean linked worktree through exactly one native workflow dispatch", async (t) => {
@@ -416,7 +1042,7 @@ test("starter allows ignored artifacts and inspects Git without refreshing the i
   assert.equal(result.resultType, "success", result.textResultForLlm);
   assert.deepEqual(starter.calls, [{
     name: "run_dynamic_workflow",
-    arguments: { name: "devpocket-development", args: { goal: "Task", acceptance: ["Behavior"], nonGoals: [], maxRepairRounds: 2 } },
+    arguments: { name: "devpocket-development", args: { goal: "Task", acceptance: ["Behavior"], nonGoals: [] } },
   }]);
   assert.deepEqual(await readFile(index), before);
   assert.equal(await readFile(path.join(root, ".data", "artifact.txt"), "utf8"), "Ignored local artifact\n");
@@ -553,7 +1179,7 @@ test("extension registration is inert and the starter isolates a clean primary c
   }, root);
   assert.equal(dispatched, undefined);
   assert.equal(registration.workflows[0].meta.name, "devpocket-development");
-  assert.deepEqual(registration.workflows[0].meta.phases.map((phase) => phase.title), ["Implement", "Candidate", "Verify", "Review"]);
+  assert.deepEqual(registration.workflows[0].meta.phases.map((phase) => phase.title), ["Implement", "Candidate", "Verify", "Review", "Diagnose"]);
   assert.match(registration.workflows[0].meta.description, /local candidate commit.*permission/);
   assert.match(registration.workflows[0].meta.description, /only when the user explicitly selects this workflow/);
   assert.equal(registration.workflows[0].meta.limits, undefined, "AI credit limits are chosen at invocation, not guessed.");
@@ -948,9 +1574,9 @@ test("substitution and restoration cannot alter contents presented by the native
     "The decision applies to the original immutable contents shown in the native question, not the substituted copy.");
 });
 
-test("native policy approval survives ordinary repair after the interactive UI becomes unavailable", async (t) => {
+test("native policy approval survives productive repairs beyond two rounds after the UI becomes unavailable", async (t) => {
   const { root } = await workspace(t), session = nativeSession();
-  let questions = 0, implementations = 0, verifications = 0, reviews = 0;
+  let questions = 0, implementations = 0, verifications = 0, reviews = 0, diagnoses = 0;
   session.capabilities = { ui: { elicitation: true } };
   session.ui = { elicitation: async (input) => {
     questions++;
@@ -962,25 +1588,37 @@ test("native policy approval survives ordinary repair after the interactive UI b
     return { action: "accept", content: { decision: "approve" } };
   } };
   const result = await runDevelopment(durable({
-    runId: "approved-policy-repair", session, args: { goal: "Improve checks", acceptance: ["Keep coverage"], maxRepairRounds: 1 },
+    runId: "approved-policy-repair", session, args: { goal: "Improve checks", acceptance: ["Keep coverage"] },
     agent: async (_prompt, options) => {
-      if (options.agent === "devpocket-reviewer") return ++reviews === 1 ? blockingReview : passingReview;
+      if (options.label.includes(":diagnose:")) {
+        diagnoses++;
+        return { status: "progressing", evidence: "A distinct fixture blocker was resolved.",
+          nextApproach: "Address the next independently reproduced fixture blocker." };
+      }
+      if (options.agent === "devpocket-reviewer") return ++reviews < 4 ? blockingReview : passingReview;
       implementations++;
       if (implementations === 1) {
         await mkdir(path.join(root, "scripts"));
         await writeFile(path.join(root, "scripts", "verify.mjs"), "// policy fixture\n");
-      } else await writeFile(path.join(root, "README.md"), "Ordinary repair\n");
+      } else await writeFile(path.join(root, "README.md"), `Ordinary repair ${implementations}\n`);
       return implemented(root);
     },
   }), { root, verify: async (_root, plan) => { verifications++; return syntheticReport(plan); } });
   assert.equal(result.status, "ready", result.reason);
   assert.equal(questions, 1);
-  assert.equal(implementations, 2);
-  assert.equal(verifications, 2);
-  assert.equal(reviews, 2);
+  assert.equal(implementations, 4);
+  assert.equal(verifications, 4);
+  assert.equal(reviews, 4);
+  assert.equal(diagnoses, 2);
+  assert.equal(result.round, 3);
+  assert.equal(result.version, 7);
   assert.equal(result.authorization.receipts.length, 1);
   assert.equal(result.policyReview.requiresHumanReview, true, "A satisfied requirement is not a permanent blocker.");
   assert.equal((await checkDevelopmentReadiness(root, result)).status, "ready");
+  for (const version of [5, 6]) {
+    assert.equal((await checkDevelopmentReadiness(root, { ...result, version })).status, "blocked",
+      "Old controller results cannot silently acquire the new completion semantics.");
+  }
   assert.equal((await checkDevelopmentReadiness(root, { ...result, authorization: { ...result.authorization, receipts: [] } })).status, "blocked");
   assert.equal(Object.hasOwn(result.policyReview, "contents"), false);
   assert.equal(Object.hasOwn(result.policyReview, "beforeContents"), false);
@@ -1143,7 +1781,7 @@ test("ignored approval detail substitution stops before native candidate executi
 test("approved protected-path reversion retains the pending path set and continues the repair", isolatedCases, async (t) => {
   await Promise.all([false, true].map((keepAnotherPolicy) => t.test(`remaining policy: ${keepAnotherPolicy}`, async (t) => {
     const { root } = await workspace(t), session = nativeSession(), requests = [];
-    let implementations = 0, reviews = 0, verifications = 0;
+    let implementations = 0, reviews = 0, verifications = 0, diagnoses = 0;
     const rounds = keepAnotherPolicy ? 3 : 2;
     session.capabilities = { ui: { elicitation: true } };
     session.ui = { elicitation: async (input) => {
@@ -1154,6 +1792,11 @@ test("approved protected-path reversion retains the pending path set and continu
       runId: "approved-policy-reversion", session,
       args: { goal: "Repair the local gate", acceptance: ["Keep coverage"], maxRepairRounds: rounds - 1 },
       agent: async (_prompt, options) => {
+        if (options.label.includes(":diagnose:")) {
+          diagnoses++;
+          return { status: "progressing", evidence: "The fixture removed one obsolete execution policy and preserved the remaining one.",
+            nextApproach: "Finish the remaining ordinary repair without changing the retained policy inputs." };
+        }
         if (options.agent === "devpocket-reviewer") return ++reviews < rounds ? blockingReview : passingReview;
         if (++implementations === 1) {
           await mkdir(path.join(root, "scripts"));
@@ -1174,6 +1817,7 @@ test("approved protected-path reversion retains the pending path set and continu
     assert.equal(implementations, rounds);
     assert.equal(verifications, rounds);
     assert.equal(reviews, rounds);
+    assert.equal(diagnoses, keepAnotherPolicy ? 1 : 0);
     assert.equal(requests.length, 2);
     assert.match(requests[1], /scripts\/verify\.mjs \[deleted\]/);
     assert.equal(result.authorization.receipts.length, 2);
@@ -1659,12 +2303,12 @@ test("cold capture only settles byte-identical Windows metadata, never a changed
   for (const changedBytes of [false, true]) await t.test(changedBytes ? "changed bytes" : "metadata only", async (t) => {
     const { root } = await workspace(t);
     const { directory } = await copiedController(root);
-    const target = await fileSystem.realpath(path.join(directory, "verification-backend.mjs"));
+    const target = await fs.realpath(path.join(directory, "verification-backend.mjs"));
     const expected = await readFile(target);
-    await fileSystem.utimes(target, 1, 1);
-    const originalOpen = fileSystem.open;
+    await fs.utimes(target, 1, 1);
+    const originalOpen = fs.open;
     let injected = false;
-    const mocked = t.mock.method(fileSystem, "open", async (file, ...args) => {
+    const mocked = t.mock.method(fs, "open", async (file, ...args) => {
       const handle = await originalOpen(file, ...args);
       if (file !== target) return handle;
       return new Proxy(handle, { get(value, key) {
@@ -1677,7 +2321,7 @@ test("cold capture only settles byte-identical Windows metadata, never a changed
               altered[0] ^= 1;
               await writeFile(target, altered);
             }
-            await fileSystem.utimes(target, 2, 1);
+            await fs.utimes(target, 2, 1);
           }
           return result;
         };

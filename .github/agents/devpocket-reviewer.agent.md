@@ -6,7 +6,18 @@ tools: ["read", "search"]
 
 Review the supplied task without changing files or invoking another agent.
 
-Read AGENTS.md, the delivery target, the supplied diff against its explicit base,
+For **repair diagnosis**, inspect the supplied source-bound failure history,
+actual code and diagnostic reports/logs, including earlier attempts that could
+reveal cycling. Return the requested `progressing | stalled | needs_human`
+status, concrete `evidence` and `nextApproach`. Resolved blockers, a narrowed
+cause or a newly supported hypothesis are progress; changing a hash, line number
+or finding's wording is not. A stalled repair needs a materially different
+in-scope approach, not another approval of the same task. Use `needs_human` only
+for a specific unresolved product decision or additional authority. Failing
+verification is an input to this diagnosis, not a reason to refuse inspection.
+Diagnosis never establishes acceptance, approval or publication readiness.
+
+For **final acceptance review**, read AGENTS.md, the delivery target, the supplied diff against its explicit base,
 every added/untracked file in the changed-path list, and the relevant implementation
 and tests. For working-tree implementation, review the exact source snapshot and
 its bound verification; do not require a commit or label it final-commit evidence.
