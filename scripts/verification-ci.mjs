@@ -164,7 +164,13 @@ async function artifactsFor(repository, run, api) {
   throw diagnosticError("output-limit");
 }
 
-export function validateLiveCIEnvelope(envelope, { repository, pullRequest, run, jobs, artifact, commit, candidate }) {
+function requireLiveBaseReference(reference, branch, expected) {
+  if (reference?.ref !== `refs/heads/${branch}` || reference.object?.type !== "commit" ||
+      !sha.test(reference.object?.sha ?? "")) throw fail();
+  if (reference.object.sha !== expected) throw diagnosticError("ci-base-changed");
+}
+
+export function validateLiveCIEnvelope(envelope, { repository, pullRequest, baseReference, run, jobs, artifact, commit, candidate }) {
   const value = requireEnvelope(envelope), context = value.context;
   const gateJobs = jobs.jobs?.filter((job) => job.name === "Required verification") ?? [];
   if (value.unit !== "gate" || context.repository !== repository || context.event !== "pull_request" ||
@@ -172,7 +178,7 @@ export function validateLiveCIEnvelope(envelope, { repository, pullRequest, run,
       pullRequest.base?.repo?.full_name !== repository || pullRequest.head?.sha !== candidate ||
       typeof pullRequest.base.ref !== "string" || !pullRequest.base.ref.length ||
       context.pullRequest !== pullRequest.number || context.candidate !== candidate ||
-      context.pullRequestBase !== pullRequest.base.sha ||
+      !sha.test(pullRequest.base.sha ?? "") ||
       run.event !== "pull_request" || run.path !== ".github/workflows/ci.yml" ||
       run.status !== "completed" || run.conclusion !== "success" || run.head_sha !== candidate ||
       String(run.id) !== context.runId || run.run_attempt !== context.attempt ||
@@ -188,6 +194,7 @@ export function validateLiveCIEnvelope(envelope, { repository, pullRequest, run,
       !equal(commit.parents?.map((parent) => parent.sha), [context.pullRequestBase, candidate]) ||
       value.report.source?.head !== context.tested.head || value.report.base !== context.pullRequestBase ||
       value.report.status !== "passed" || value.report.complete !== true) throw fail();
+  requireLiveBaseReference(baseReference, pullRequest.base.ref, context.pullRequestBase);
   combineVerification(value.report, [value.report]);
   const expected = unitsFor(value.report), units = value.inputs.map((input) => input.unit);
   if (units.length !== expected.length || new Set(units).size !== units.length ||
@@ -229,10 +236,14 @@ export async function qualifyGitHubCI(root, options) {
     api(`repos/${repository}/pulls/${pullRequest}`), api(`repos/${repository}/actions/runs/${runId}`),
   ]);
   if (pr.head?.sha !== candidate || run.head_sha !== candidate ||
-      run.status !== "completed" || run.conclusion !== "success" || !Number.isSafeInteger(run.run_attempt)) throw fail();
-  const [jobs, artifacts] = await Promise.all([
+      run.status !== "completed" || run.conclusion !== "success" || !Number.isSafeInteger(run.run_attempt) ||
+      pr.base?.repo?.full_name !== repository || typeof pr.base?.ref !== "string" ||
+      !pr.base.ref.length || pr.base.ref.length > 1024 || /[\x00-\x1f]/.test(pr.base.ref)) throw fail();
+  const baseEndpoint = `repos/${repository}/git/ref/heads/${encodeURIComponent(pr.base.ref)}`;
+  const [jobs, artifacts, baseReference] = await Promise.all([
     api(`repos/${repository}/actions/runs/${runId}/attempts/${run.run_attempt}/jobs?per_page=100`),
     artifactsFor(repository, runId, api),
+    api(baseEndpoint),
   ]);
   if (jobs.total_count > 100) throw fail();
   const matches = artifacts.filter((artifact) => artifact.name === `verification-summary-attempt-${run.run_attempt}`);
@@ -253,7 +264,7 @@ export async function qualifyGitHubCI(root, options) {
     "-Archive", archive, "-Sha256", artifact.digest.slice(7)], { cwd: root, timeoutMs: 30000, graceMs: 5000 });
   const envelope = requireEnvelope(JSON.parse(result.stdout));
   const commit = await api(`repos/${repository}/git/commits/${envelope.context.tested.head}`);
-  validateLiveCIEnvelope(envelope, { repository, pullRequest: pr, run, jobs, artifact, commit, candidate });
+  validateLiveCIEnvelope(envelope, { repository, pullRequest: pr, baseReference, run, jobs, artifact, commit, candidate });
   if (plan.requiredChecks.some((check) => !envelope.report.requiredChecks.includes(check)) ||
       plan.layouts && !envelope.report.layouts ||
       (plan.trustedDeviceClasses ?? []).some((name) => !envelope.report.trustedDeviceClasses?.includes(name))) throw fail();
@@ -262,17 +273,19 @@ export async function qualifyGitHubCI(root, options) {
     if (object.sha !== policyCommit || !sha.test(object.tree?.sha ?? "")) throw fail();
     await requirePolicyIdentity(root, candidate, repository, object.tree.sha, api);
   }
-  const [afterPR, afterRun, after] = await Promise.all([
-    api(`repos/${repository}/pulls/${pullRequest}`), api(`repos/${repository}/actions/runs/${runId}`), inspectWorktree(root),
+  const [afterPR, afterRun, afterBase, after] = await Promise.all([
+    api(`repos/${repository}/pulls/${pullRequest}`), api(`repos/${repository}/actions/runs/${runId}`),
+    api(baseEndpoint), inspectWorktree(root),
   ]);
-  if (afterPR.state !== "open" || afterPR.head?.sha !== candidate || afterPR.base?.sha !== pr.base.sha ||
+  requireLiveBaseReference(afterBase, pr.base.ref, envelope.context.pullRequestBase);
+  if (afterPR.state !== "open" || afterPR.head?.sha !== candidate ||
       afterPR.base?.ref !== pr.base.ref ||
       afterRun.run_attempt !== run.run_attempt || afterRun.status !== "completed" || afterRun.conclusion !== "success" ||
       after.status || !equal(before.source, after.source) || !equal(before.identity, after.identity) ||
       before.index !== after.index || before.configuration !== after.configuration) throw fail();
   const evidence = await writeEvidence(root, path.join(destination, "ci-report.json"), envelope);
   return { version: 1, kind: "ci-qualification", status: "verified", base: plan.base, candidate: before.source,
-    tested: envelope.context.tested, pullRequest: { repository, number: pr.number, base: pr.base.sha, baseRef: pr.base.ref },
+    tested: envelope.context.tested, pullRequest: { repository, number: pr.number, base: baseReference.object.sha, baseRef: pr.base.ref },
     workflow: { runId: String(run.id), attempt: run.run_attempt, url: run.html_url },
     artifact: { id: artifact.id, digest: artifact.digest }, evidence: path.relative(root, evidence),
     reportDigest: envelope.reportDigest, qualification: "CI checks only; independent review and delivery authorization remain separate." };

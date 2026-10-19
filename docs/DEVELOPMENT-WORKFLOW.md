@@ -229,6 +229,10 @@ collection cannot create input directories inside those ledgers either.
 The CI envelope retains the actual report, producer/run/attempt, candidate,
 PR base, tested merge commit/tree, workflow revision and selected input receipts.
 The tested commit must have the current PR base and candidate as its exact parents.
+The qualifier reads the authenticated live base-branch ref before and after
+validation: the PR API's `base.sha` snapshot can lag the branch tip. A changed
+live base blocks qualification even when that snapshot still matches old CI;
+the original CI envelope is never relabelled to the newer base.
 Protected execution inputs must agree between the candidate, tested tree and
 workflow revision. A changed base policy requires review/reconciliation rather
 than silently trusting different executable inputs. The CI report must cover all

@@ -390,6 +390,7 @@ test("CI qualification rejects stale, foreign, incomplete and relabelled platfor
   const leaf = ciReportEnvelope(item.report, item.context, "tooling-all");
   const gate = collectCIReports(item.plan, item.context, [leaf], new Map([["tooling", "success"]]));
   const live = { repository: item.repository, pullRequest: item.pullRequest, candidate: item.candidate,
+    baseReference: { ref: "refs/heads/main", object: { type: "commit", sha: item.base } },
     run: { id: 1234, event: "pull_request", path: ".github/workflows/ci.yml", run_attempt: 2,
       head_sha: item.candidate, status: "completed", conclusion: "success", pull_requests: [{ number: 11 }] },
     jobs: { jobs: [{ name: "Required verification", status: "completed", conclusion: "success" }] },
@@ -400,7 +401,10 @@ test("CI qualification rejects stale, foreign, incomplete and relabelled platfor
   assert.equal(validateLiveCIEnvelope(gate, live), gate);
   for (const mutate of [
     (value) => { value.pullRequest.head.sha = "f".repeat(40); },
-    (value) => { value.pullRequest.base.sha = "f".repeat(40); },
+    (value) => { value.baseReference.object.sha = "f".repeat(40); },
+    (value) => { delete value.baseReference; },
+    (value) => { value.baseReference.ref = "refs/heads/other"; },
+    (value) => { value.baseReference.object.type = "tag"; },
     (value) => {
       value.pullRequest.head.repo = { full_name: "contributor/verification", id: 2 };
       value.artifact.workflow_run.head_repository_id = 2;
@@ -417,6 +421,11 @@ test("CI qualification rejects stale, foreign, incomplete and relabelled platfor
     const invalid = structuredClone(live); mutate(invalid);
     assert.throws(() => validateLiveCIEnvelope(gate, invalid));
   }
+  const laggedSnapshot = structuredClone(live);
+  laggedSnapshot.pullRequest.base.sha = "f".repeat(40);
+  assert.equal(validateLiveCIEnvelope(gate, laggedSnapshot), gate,
+    "The authenticated live branch, not a lagged PR snapshot, identifies the current base.");
+  assert.equal(laggedSnapshot.pullRequest.base.sha, "f".repeat(40), "Retain the original PR response unchanged.");
   const withoutOrigins = structuredClone(gate);
   delete withoutOrigins.report.checks[0].execution;
   withoutOrigins.reportDigest = createHash("sha256").update(JSON.stringify(withoutOrigins.report)).digest("hex");
@@ -468,8 +477,11 @@ test("the qualification CLI keeps requested report names separate from authentic
     const artifact = { id: 42, name: "verification-summary-attempt-2", expired: false, digest, size_in_bytes: bytes.length,
       workflow_run: { id: 1234, head_sha: item.candidate, repository_id: 1, head_repository_id: 1 } };
     const prefix = `repos/${item.repository}`;
+    const baseEndpoint = `${prefix}/git/ref/heads/main`;
+    const baseReference = { ref: "refs/heads/main", object: { type: "commit", sha: item.base } };
     const api = {
       [`${prefix}/pulls/11`]: item.pullRequest,
+      [baseEndpoint]: baseReference,
       [`${prefix}/actions/runs/1234`]: run,
       [`${prefix}/actions/runs/1234/attempts/2/jobs?per_page=100`]: {
         total_count: 1, jobs: [{ name: "Required verification", status: "completed", conclusion: "success" }],
@@ -480,7 +492,8 @@ test("the qualification CLI keeps requested report names separate from authentic
     };
     const fixtureData = path.join(directory, "api.json"), preload = path.join(directory, "github-fixture.mjs");
     const calls = path.join(directory, "github-calls.jsonl");
-    await writeFile(fixtureData, JSON.stringify({ api, archive: bytes.toString("base64"), download: `${prefix}/actions/artifacts/42/zip` }));
+    const responses = { api, archive: bytes.toString("base64"), download: `${prefix}/actions/artifacts/42/zip` };
+    await writeFile(fixtureData, JSON.stringify(responses));
     await writeFile(preload, [
       "import childProcess from 'node:child_process';import {readFileSync,appendFileSync} from 'node:fs';",
       "import {promisify} from 'node:util';import {syncBuiltinESMExports} from 'node:module';",
@@ -493,7 +506,8 @@ test("the qualification CLI keeps requested report names separate from authentic
       ` appendFileSync(${JSON.stringify(calls)},JSON.stringify(args)+'\\n');`,
       " const endpoint=args[3];let stdout;",
       " if(endpoint===fixture.download)stdout=Buffer.from(fixture.archive,'base64');",
-      " else{if(!Object.hasOwn(fixture.api,endpoint))throw new Error('Unmapped GitHub endpoint');stdout=JSON.stringify(fixture.api[endpoint]);}",
+      " else{if(!Object.hasOwn(fixture.api,endpoint))throw new Error('Unmapped GitHub endpoint');",
+      "  const value=fixture.api[endpoint];stdout=JSON.stringify(Array.isArray(value)?(value.length>1?value.shift():value[0]):value);}",
       " return Promise.resolve({stdout,stderr:''});",
       "};childProcess.execFile=replacement;syncBuiltinESMExports();",
     ].join("\n"));
@@ -523,6 +537,34 @@ test("the qualification CLI keeps requested report names separate from authentic
         }
       });
     }
+    for (const when of ["initial", "final", "snapshot-only"]) await t.test(`live base ${when}`, async () => {
+      const changed = structuredClone(responses);
+      if (when === "snapshot-only") {
+        const old = structuredClone(item.pullRequest);
+        old.base.sha = "f".repeat(40);
+        changed.api[`${prefix}/pulls/11`] = [old, item.pullRequest];
+      } else {
+        const advanced = { ...baseReference, object: { type: "commit", sha: "f".repeat(40) } };
+        changed.api[baseEndpoint] = when === "initial" ? advanced : [baseReference, advanced];
+      }
+      await writeFile(fixtureData, JSON.stringify(changed));
+      const file = path.join(workspace, ".data", "verification", `base-${when}`, "qualification.json");
+      const invoke = () => exec(process.execPath, ["--import", pathToFileURL(preload).href,
+        path.resolve("scripts/verification-ci.mjs"), "--qualify", "--repository", item.repository,
+        "--pr", "11", "--run", "1234", "--base", item.base, "--report", file],
+      { cwd: workspace, env, timeout: 60000 });
+      try {
+        if (when === "snapshot-only") {
+          await invoke();
+          const qualified = JSON.parse(await readFile(file, "utf8"));
+          assert.equal(qualified.status, "verified");
+          assert.equal(qualified.pullRequest.base, item.base);
+        } else {
+          await assert.rejects(invoke(), (error) => error.code === 1 && /ci-base-changed/.test(error.stderr));
+          await assert.rejects(readFile(file), { code: "ENOENT" });
+        }
+      } finally { await writeFile(fixtureData, JSON.stringify(responses)); }
+    });
     const ledger = path.join(workspace, ".data", "verification", "retained", "run");
     await mkdir(ledger, { recursive: true });
     await writeFile(path.join(ledger, "run.json"), "Retained ledger marker\n");
