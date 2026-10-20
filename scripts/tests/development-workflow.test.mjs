@@ -660,7 +660,7 @@ test("cancellation after native phase results cannot become blocked verification
           return passingReview;
         }
         implementations++;
-        const file = phase === "policy" ? "extension/entry.mjs" : "README.md";
+        const file = phase === "policy" ? "scripts/verify.mjs" : "README.md";
         await mkdir(path.dirname(path.join(root, file)), { recursive: true });
         await writeFile(path.join(root, file), "// fixture task change\n");
         return implemented(root);
@@ -676,10 +676,11 @@ test("cancellation after native phase results cannot become blocked verification
       return syntheticReport(plan);
     } }), (actual) => actual === error);
     assert.equal(implementations, 1);
-    assert.equal(commits, 1, "An already completed native commit is retained, not repeated or reverted.");
-    assert.notEqual((await sourceSnapshot(root)).head, before.head);
-    assert.equal(verifications, phase === "candidate" ? 0 : 1);
-    assert.equal(reviews, ["review", "policy"].includes(phase) ? 1 : 0);
+    assert.equal(commits, phase === "policy" ? 0 : 1, "Pre-execution cancellation cannot commit; already completed commits are retained.");
+    if (phase === "policy") assert.equal((await sourceSnapshot(root)).head, before.head);
+    else assert.notEqual((await sourceSnapshot(root)).head, before.head);
+    assert.equal(verifications, ["candidate", "policy"].includes(phase) ? 0 : 1);
+    assert.equal(reviews, phase === "review" ? 1 : 0);
     await assert.rejects(readFile(path.join(root, ".data", "development", ctx.runId, "handoff.json")), { code: "ENOENT" });
   })));
 });

@@ -502,8 +502,10 @@ async function runAttempt(ctx, root, task, verify, onFinalization, authorization
     };
     const approvePolicy = async (policy, stage, summary) => {
       ctx.signal?.throwIfAborted();
-      if (stage === "execution" &&
-          developmentExecutionAuthorization(scope, policy, approvedHooks, loadedImplementation, receipts).status === "allowed") return null;
+      if (stage === "execution") {
+        const decision = developmentExecutionAuthorization(scope, policy, approvedHooks, loadedImplementation, receipts);
+        if (decision.status === "allowed" && decision.route === "github-hosted") return null;
+      }
       const request = developmentApprovalRequest(scope, policy, stage, approvedHooks);
       if (!request) return null;
       const expected = await sourceSnapshot(root);
