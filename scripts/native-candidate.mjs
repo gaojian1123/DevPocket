@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 
 const nativeFiles = ["candidate-commit.mjs", "git-state.mjs"];
 const implementationFiles = [...new Set([...nativeFiles, "native-candidate.mjs", "development-workflow.mjs", "workflow-extension.mjs",
-  "development-policy.mjs", "verification.mjs", "verification-policy.mjs", "process.mjs", "device-run.mjs", "worker-diagnostics.mjs",
+  "development-policy.mjs", "development-controller.mjs", "isolated-verification.mjs",
+  "verification.mjs", "verification-policy.mjs", "process.mjs", "device-run.mjs", "worker-diagnostics.mjs",
   "device-diagnostics.mjs", "diagnostic-errors.mjs", "bounded-worker-log.mjs", "diagnostic-publication.mjs",
   "native-lifecycle.mjs", "verification-executor.mjs", "verification-backend.mjs", "verification-android.mjs",
   "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs", "verification-transition.mjs",
@@ -95,7 +96,8 @@ async function runFrozenCandidate(specification) {
       if (content.length !== info.size || hash(content) !== input.sha256) throw new Error("Candidate executable inputs changed after approval.");
       if (specification.native.includes(input.name)) contents.set(input.name, content);
     }
-    const directory = path.join(tmpdir(), `devpocket-approved-candidate-${randomUUID()}`);
+    const directory = specification.isolated ? implementation.directory
+      : path.join(tmpdir(), `devpocket-approved-candidate-${randomUUID()}`);
     const sources = new Map([...contents].map(([name, content]) =>
       [pathToFileURL(path.join(directory, name)).href, content.toString("utf8")]));
     loader = registerHooks({
@@ -111,9 +113,11 @@ async function runFrozenCandidate(specification) {
         return { format: "module", source: sources.get(url), shortCircuit: true };
       },
     });
-    const helper = await import(pathToFileURL(path.join(directory, "candidate-commit.mjs")).href);
+    const helper = await import(pathToFileURL(path.join(directory,
+      specification.isolated ? "isolated-verification.mjs" : "candidate-commit.mjs")).href);
     entered = true;
-    await helper.runCandidateRequest(file, expectedHash);
+    if (specification.isolated) await helper.runIsolatedRequest(file, expectedHash);
+    else await helper.runCandidateRequest(file, expectedHash);
   } catch (error) {
     failure = error;
     if (!entered && typeof file === "string") {
@@ -136,10 +140,12 @@ async function runFrozenCandidate(specification) {
   }
 }
 
-export function nativeCandidateCommand(file, requestHash) {
+export function nativeCandidateCommand(file, requestHash, isolated = false) {
   if (!/^[a-f0-9]{64}$/.test(requestHash)) throw new Error("A bound candidate request hash is required.");
   const quote = (text) => `'${text.replaceAll("'", "''")}'`;
-  const source = `await (${runFrozenCandidate.toString()})(${JSON.stringify({ inputs: implementationFiles, native: nativeFiles })});`;
+  const source = `await (${runFrozenCandidate.toString()})(${JSON.stringify({
+    inputs: implementationFiles, native: isolated ? implementationFiles.filter((name) => name.endsWith(".mjs")) : nativeFiles, isolated,
+  })});`;
   const startup = [
     "if (-not [string]::IsNullOrEmpty($env:NODE_OPTIONS)) {",
     "  $startupReceipt = $null",
@@ -159,3 +165,5 @@ export function nativeCandidateCommand(file, requestHash) {
   ].join("\n");
   return `${startup}\n& ${quote(process.execPath)} --input-type=module --eval ${quote(source)} -- --request ${quote(file)} --sha256 ${quote(requestHash)}; exit $LASTEXITCODE`;
 }
+
+export const nativeIsolatedCommand = (file, requestHash) => nativeCandidateCommand(file, requestHash, true);

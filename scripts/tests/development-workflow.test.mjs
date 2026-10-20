@@ -9,10 +9,14 @@ import { test } from "node:test";
 import { checkDevelopmentReadiness, parseRepairDiagnosis, parseTask, runDevelopment, taskSchema } from "../development-workflow.mjs";
 import { changedPaths, inspectWorktree, prepareCandidate, sha256, validateCandidateReceiptProof } from "../candidate-commit.mjs";
 import { executeVerification, git, sourceSnapshot, validateVerificationEvidence, verificationPlan } from "../verification.mjs";
-import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "../native-candidate.mjs";
+import { captureCandidateImplementation, nativeCandidateCommand, nativeIsolatedCommand, requireCandidateImplementation } from "../native-candidate.mjs";
 import { syntheticExecution } from "./fixtures/verification-tools.mjs";
 import { developmentApprovalDetails, developmentApprovalRequest, developmentApprovalSatisfied, developmentReviewRequirements,
   formatDevelopmentApproval, inspectDevelopmentPolicy, isVerificationPolicyPath, obtainDevelopmentApproval } from "../development-policy.mjs";
+import { developmentTaskApprovalRequest, developmentTaskActionAllowed, developmentExecutionAuthorization,
+  parseDevelopmentExecution } from "../development-policy.mjs";
+import { collectIsolatedReports, isolatedMatrix, isolatedRequest, validateIsolatedEnvelope,
+  requireIsolatedPublication, qualifyIsolatedVerification } from "../isolated-verification.mjs";
 
 const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
@@ -141,7 +145,7 @@ test("the skill freezes an authorized delivery candidate before final verificati
 function durable(ctx) {
   const journal = new Map();
   return { session: nativeSession(), phase() {}, log() {}, ...ctx, step: async (key, producer) => {
-    assert.match(key, /^(?:devpocket-development-v7|devpocket-approval-v1:[a-f0-9]{64})$/,
+    assert.match(key, /^(?:devpocket-development-v8|devpocket-approval-v1:[a-f0-9]{64}|devpocket-task-scope-v1|devpocket-task-grant-v1:[a-f0-9]{64})$/,
       "Older journals must not be replayed as current execution-policy evidence.");
     if (!journal.has(key)) journal.set(key, JSON.parse(JSON.stringify(await producer())));
     return journal.get(key);
@@ -1353,7 +1357,7 @@ test("tooling-only impact retains the controller's protected-policy stop before 
 
 test("local review requirements preserve trust boundaries independently of impact rules", async () => {
   const { developmentReviewRequirements } = await import("../development-policy.mjs");
-  for (const [file, requiresHumanReview, protectedPath] of [
+  for (const [file, requiresReview, protectedPath] of [
     ["README.md", false, false], ["VALIDATION.md", false, false], ["docs/policy.md", false, false],
     ["AGENTS.md", true, true], ["scripts/development-workflow.mjs", true, true],
     ["scripts/development-policy.mjs", true, true], ["scripts/candidate-commit.mjs", true, true],
@@ -1390,9 +1394,9 @@ test("local review requirements preserve trust boundaries independently of impac
     ["unclassified.txt", true, false],
   ]) {
     const result = developmentReviewRequirements([file]);
-    assert.equal(result.requiresHumanReview, requiresHumanReview, file);
+    assert.equal(result.requiresHumanReview, protectedPath, file);
     assert.deepEqual(result.protectedPaths, protectedPath ? [file] : [], file);
-    assert.deepEqual(result.reviewPaths, requiresHumanReview && !protectedPath ? [file] : [], file);
+    assert.deepEqual(result.reviewPaths, requiresReview && !protectedPath ? [file] : [], file);
     assert.ok(result.reasons.every((reason) => reason.title && reason.why && reason.paths.includes(file)));
   }
   assert.deepEqual(developmentReviewRequirements([]), { requiresHumanReview: false, protectedPaths: [], reviewPaths: [], reasons: [] });
@@ -1658,7 +1662,7 @@ test("native policy approval survives productive repairs beyond two rounds after
   assert.equal(reviews, 4);
   assert.equal(diagnoses, 2);
   assert.equal(result.round, 3);
-  assert.equal(result.version, 7);
+  assert.equal(result.version, 8);
   assert.equal(result.authorization.receipts.length, 1);
   assert.equal(result.policyReview.requiresHumanReview, true, "A satisfied requirement is not a permanent blocker.");
   assert.equal((await checkDevelopmentReadiness(root, result)).status, "ready");
@@ -1893,23 +1897,20 @@ test("changed source during a policy question cannot consume a stale approval", 
   assert.equal((await sourceSnapshot(root)).head, parent);
 });
 
-test("sensitive review accepts only a native decision after verification and independent review", isolatedCases, async (t) => {
+test("sensitive paths require verification and independent review without a human approval dialog", isolatedCases, async (t) => {
   await Promise.all(["approve", "reject"].map((decision) => t.test(decision, async (t) => {
     const { root } = await workspace(t), session = nativeSession(), order = [];
     session.capabilities = { ui: { elicitation: true } };
-    session.ui = { elicitation: async (input) => {
-      order.push("human");
-      assert.match(input.message, /Accept the listed sensitive code changes/);
-      return { action: "accept", content: { decision } };
-    } };
+    session.ui = { elicitation: async () => { assert.fail("A sensitive filename alone must not ask for human approval."); } };
     const result = await runDevelopment(documentationTask(root, { session, agent: async (_prompt, options) => {
       if (options.agent === "devpocket-reviewer") { order.push("independent"); return passingReview; }
       await mkdir(path.join(root, "extension"), { recursive: true });
       await writeFile(path.join(root, "extension", "entry.mjs"), "// sensitive fixture\n");
       return implemented(root);
     } }), { root, verify: async (_root, plan) => { order.push("verify"); return syntheticReport(plan); } });
-    assert.deepEqual(order, ["verify", "independent", "human"]);
-    assert.equal(result.status, decision === "approve" ? "ready" : "needs_human", result.reason);
+    assert.deepEqual(order, ["verify", "independent"]);
+    assert.equal(result.status, "ready", result.reason);
+    assert.deepEqual(result.policyReview.reviewPaths, ["extension/entry.mjs"]);
     assert.equal(result.verification.complete, true);
     assert.equal(result.review.verdict, "pass");
   })));
@@ -1917,7 +1918,7 @@ test("sensitive review accepts only a native decision after verification and ind
 
 test("post-review controller handoff uses local requirements even when verification carries a contrary review flag", isolatedCases, async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
-  await Promise.all([["backend/tests/fixture.test.ts", false], ["extension/entry.mjs", true]].map(([file, requiresHumanReview]) =>
+  await Promise.all([["backend/tests/fixture.test.ts", false], ["extension/entry.mjs", false]].map(([file, requiresHumanReview]) =>
     t.test(file, async (t) => {
       const { root } = await workspace(t), calls = [];
       let executions = 0;
@@ -3339,19 +3340,19 @@ test("high-risk review and protected policy boundaries remain distinct from comm
         assert.equal(policy, false, "Modified protected policy never executes before authorization.");
         return syntheticReport(plan);
       } });
-      assert.equal(result.status, "needs_human");
-      assert.equal(result.policyReview.requiresHumanReview, true);
+      assert.equal(result.status, policy ? "needs_human" : "ready");
+      assert.equal(result.policyReview.requiresHumanReview, policy);
       assert.deepEqual(result.policyReview.protectedPaths, policy ? [file] : []);
       assert.deepEqual(result.policyReview.source, result.source);
       if (policy) assert.equal((await sourceSnapshot(root)).head, original);
       else {
         assert.notEqual(result.candidate.commit, original);
         assert.equal(result.review.verdict, "pass");
-        assert.equal(result.approval.stage, "review");
-        assert.match(result.reason, /interactive approval UI is unavailable/);
+        assert.equal(result.approval, undefined);
+        assert.deepEqual(result.policyReview.reviewPaths, [file]);
         assert.equal(Object.hasOwn(result.verification, "requiresHumanReview"), false);
       }
-      assert.equal((await checkDevelopmentReadiness(root, result)).status, "blocked");
+      assert.equal((await checkDevelopmentReadiness(root, result)).status, policy ? "blocked" : "ready");
     })));
 });
 
@@ -3438,4 +3439,308 @@ test("existing workflow reports remain immutable and cannot become a new ready h
   const state = JSON.parse(await readFile(path.join(root, ".data", "development", ctx.runId, "state.json"), "utf8"));
   assert.equal(state.stage, "verifying");
   assert.equal(state.result, undefined);
+});
+
+test("task grants bind delivery and hosted authority without approving local execution or policy adoption", () => {
+  const { scope, policy, hooks } = approvalFixture();
+  scope.task = { ...scope.task, mode: "autopilot", prepare: true, delivery: "pull-request", execution: {
+    kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: "4".repeat(40),
+  } };
+  const implementation = { version: 2, directory: "trusted-controller", files: [{ name: "development-policy.mjs", sha256: "5".repeat(64) }] };
+  const { request, snapshot } = developmentTaskApprovalRequest(scope, hooks, implementation);
+  const receipt = { version: 1, requestId: request.id, origin: "original-client", decision: "approved" };
+  assert.match(snapshot, /Public network access is permitted/);
+  assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [], "push"), false);
+  assert.equal(developmentExecutionAuthorization(scope, developmentReviewRequirements([]), hooks, implementation, []).status, "needs_human");
+  for (const action of ["commit", "push", "create-draft-pr", "mark-pr-ready", "isolated-execution"]) {
+    assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [receipt], action), true);
+  }
+  for (const action of ["merge", "deploy", "local-install", "adopt-policy", "reload"]) {
+    assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [receipt], action), false);
+  }
+  const allowed = developmentExecutionAuthorization(scope, policy, hooks, implementation, [receipt]);
+  assert.equal(allowed.route, "github-hosted");
+  assert.equal(allowed.adoption, "not-authorized");
+  const repaired = { ...policy, inputs: policy.inputs.map((input) => ({ ...input, sha256: "6".repeat(64) })) };
+  assert.equal(developmentExecutionAuthorization(scope, repaired, hooks, implementation, [receipt]).status, "allowed");
+  for (const mutate of [
+    (value) => { value.base = "7".repeat(40); },
+    (value) => { value.runId = "another-task"; },
+    (value) => { value.workspace.branch = "refs/heads/another"; },
+    (value) => { value.task.execution.repository = "owner/another"; },
+    (value) => { value.task.execution.trustedSha = "8".repeat(40); },
+  ]) {
+    const changed = structuredClone(scope);
+    mutate(changed);
+    assert.equal(developmentTaskActionAllowed(changed, hooks, implementation, [receipt], "isolated-execution"), false);
+  }
+  const local = structuredClone(scope);
+  delete local.task.execution;
+  const localRequest = developmentTaskApprovalRequest(local, hooks, implementation).request;
+  const localReceipt = { ...receipt, requestId: localRequest.id };
+  assert.equal(developmentExecutionAuthorization(local, policy, hooks, implementation, [localReceipt]).status, "needs_human");
+  local.task.delivery = "working-tree";
+  assert.deepEqual(developmentTaskApprovalRequest(local, hooks, implementation).request.actions,
+    ["edit", "check", "independent-review", "repair"]);
+});
+
+test("autopilot with missing authority returns a retained decision instead of opening a question", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  session.capabilities = { ui: { elicitation: true } };
+  session.ui = { elicitation: async () => { assert.fail("Unattended execution must not ask for missing authority."); } };
+  const ctx = durable({ runId: "unprepared", session,
+    args: { goal: "Task", acceptance: ["Behavior"], mode: "autopilot" },
+    agent: async () => { assert.fail("Missing scope must stop before implementation."); } });
+  const result = await runDevelopment(ctx, { root });
+  assert.equal(result.status, "needs_human");
+  assert.match(result.reason, /No question/);
+  const { scope, policy, hooks } = approvalFixture(), request = developmentApprovalRequest(scope, policy, "execution", hooks);
+  const details = path.join(root, ".data", "approval.txt");
+  await mkdir(path.dirname(details), { recursive: true });
+  await writeFile(details, developmentApprovalDetails(scope.base, policy, request.inputs.map((item) => item.path)));
+  const missing = await obtainDevelopmentApproval(ctx, request, details, "Candidate execution change");
+  assert.equal(missing.status, "needs_human");
+  assert.match(missing.reason, /no question/);
+});
+
+test("native preparation grants one scope then resumes the same task unattended across repairs and UI loss", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  let questions = 0, paused = false, implementations = 0, reviews = 0;
+  session.capabilities = { ui: { elicitation: true } };
+  session.ui = { elicitation: async (input) => {
+    questions++;
+    assert.match(input.message, /Authorize this task's unattended development and delivery scope/);
+    assert.match(input.message, /No merge, deployment/);
+    return { action: "accept", content: { decision: "approve" } };
+  } };
+  const ctx = durable({
+    runId: "prepared-unattended", session,
+    args: { goal: "Explain behavior", acceptance: ["Complete explanation"], mode: "autopilot", prepare: true },
+    pause: async (key) => {
+      assert.equal(key, "devpocket-authorized-task-v1");
+      if (!paused) { paused = true; throw Object.assign(new Error("Prepared and paused"), { name: "AbortError" }); }
+    },
+    agent: async (prompt, options) => {
+      if (options.agent === "devpocket-reviewer") return ++reviews === 1 ? blockingReview : passingReview;
+      assert.match(prompt, /Do not ask questions or approve permissions/);
+      await writeFile(path.join(root, "README.md"), `Complete explanation ${++implementations}\n`);
+      return implemented(root);
+    },
+  });
+  await assert.rejects(runDevelopment(ctx, { root }), { name: "AbortError" });
+  assert.equal(implementations, 0);
+  assert.equal(questions, 1);
+  session.capabilities.ui.elicitation = false;
+  delete session.ui;
+  const result = await runDevelopment(ctx, { root });
+  assert.equal(result.status, "ready", result.reason);
+  assert.equal(questions, 1);
+  assert.equal(implementations, 2);
+  assert.equal(reviews, 2);
+  assert.deepEqual(result.authorizedDeliveryActions, []);
+  assert.equal((await checkDevelopmentReadiness(root, result)).status, "ready");
+});
+
+test("changed baseline after preparation cannot consume a stale task grant", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  let paused = false, questions = 0;
+  session.capabilities = { ui: { elicitation: true } };
+  session.ui = { elicitation: async () => {
+    questions++;
+    return { action: "accept", content: { decision: "approve" } };
+  } };
+  const ctx = durable({ runId: "changed-preparation", session,
+    args: { goal: "Task", acceptance: ["Behavior"], mode: "autopilot", prepare: true },
+    pause: async () => { if (!paused) { paused = true; throw new Error("Prepared pause"); } },
+    agent: async () => { assert.fail("A changed preparation baseline is not authorized."); },
+  });
+  await assert.rejects(runDevelopment(ctx, { root }), /Prepared pause/);
+  await writeFile(path.join(root, "README.md"), "Concurrent work\n");
+  const result = await runDevelopment(ctx, { root });
+  assert.equal(result.status, "blocked");
+  assert.equal(questions, 1);
+  assert.match(result.reason, /baseline changed/);
+});
+
+test("starter propagates explicit autopilot selection without inventing publication authority", async (t) => {
+  const { main } = await workspace(t), fixture = await registeredStarter(main);
+  const args = { goal: "Task", acceptance: ["Behavior"], mode: "autopilot", prepare: true, delivery: "pull-request" };
+  await fixture.start(args);
+  const kickoff = fixture.calls[0].arguments.kickoff;
+  assert.equal(kickoff.mode, "autopilot");
+  assert.match(kickoff.prompt, /autopilot does not grant missing authority/);
+  assert.match(kickoff.prompt, /"prepare":true/);
+});
+
+test("frozen controller continues to use approved code while candidate tools change", async (t) => {
+  const { root } = await workspace(t);
+  const original = await captureCandidateImplementation();
+  await mkdir(path.join(root, "scripts"));
+  for (const file of original.files) {
+    await writeFile(path.join(root, "scripts", file.name), await readFile(path.join(original.directory, file.name)));
+  }
+  const { freezeDevelopmentController } = await import("../development-controller.mjs");
+  const frozen = await freezeDevelopmentController(root);
+  await writeFile(path.join(root, "scripts", "development-policy.mjs"), "throw new Error('Candidate policy must not be adopted');\n");
+  await requireCandidateImplementation(frozen.implementation);
+  const control = await import(pathToFileURL(path.join(frozen.directory, "development-policy.mjs")).href);
+  assert.equal(control.developmentReviewRequirements(["backend/src/runtime.ts"]).requiresHumanReview, false);
+  const protectedFile = path.join(frozen.directory, "development-policy.mjs");
+  await fs.chmod(protectedFile, 0o600);
+  await writeFile(protectedFile, "// altered trusted snapshot\n");
+  await assert.rejects(requireCandidateImplementation(frozen.implementation), /changed/);
+});
+
+function hostedFixture(plan) {
+  const request = isolatedRequest({ base: plan.base, candidate: plan.source.head, branch: "refs/heads/task", requestId: "request-1",
+    execution: { kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: "4".repeat(40) } });
+  const context = { request, runId: "123", attempt: 1, source: plan.source };
+  const run = { id: 123, run_attempt: 1, event: "workflow_dispatch", path: ".github/workflows/isolated-verification.yml",
+    head_sha: request.execution.trustedSha, display_title: "DevPocket isolated verification request-1",
+    status: "completed", conclusion: "success", repository: { id: 42 } };
+  const observed = { run, repository: { id: 42, full_name: "owner/repo" },
+    jobs: { jobs: [{ name: "Isolated Required verification", status: "completed", conclusion: "success" }] },
+    artifact: { id: 10, expired: false, name: "isolated-summary-attempt-1", digest: `sha256:${"a".repeat(64)}`,
+      workflow_run: { id: 123, head_sha: request.execution.trustedSha, repository_id: 42 } },
+    trustedRef: { ref: "refs/heads/main", object: { type: "commit", sha: request.execution.trustedSha } },
+    candidateRef: { ref: "refs/heads/task", object: { type: "commit", sha: request.candidate } } };
+  return { request, context, observed };
+}
+
+test("isolated aggregation keeps trusted acceptance independent of candidate reports and actual job failure", async (t) => {
+  const { root } = await workspace(t);
+  await mkdir(path.join(root, "scripts", "tests"), { recursive: true });
+  await writeFile(path.join(root, "scripts", "tests", "development-workflow.test.mjs"), "// fixture\n");
+  const plan = await verificationPlan(root, "HEAD"), fixture = hostedFixture(plan);
+  assert.deepEqual(isolatedMatrix(plan), [{ group: "tooling", os: "windows-latest" }]);
+  const report = { ...syntheticReport(plan), group: "tooling" };
+  const envelope = collectIsolatedReports(plan, fixture.context, [report], "success");
+  assert.equal(validateIsolatedEnvelope(envelope, fixture.request, fixture.observed).report.complete, true);
+  assert.throws(() => collectIsolatedReports(plan, fixture.context, [], "success"), /missing/);
+  assert.throws(() => collectIsolatedReports(plan, fixture.context, [report], "failure"), /worker failed/);
+  assert.throws(() => collectIsolatedReports(plan, fixture.context, [report, report], "success"), /duplicated/);
+  assert.throws(() => collectIsolatedReports(plan, fixture.context, [{ ...report, checks: [] }], "success"), { diagnosticCode: "shard-missing" });
+  assert.throws(() => collectIsolatedReports(plan, fixture.context, [{ ...report, requiredChecks: [] }], "success"), /policy|Policy/);
+  for (const mutate of [
+    (value) => { value.run.path = ".github/workflows/ci.yml"; },
+    (value) => { value.run.head_sha = fixture.request.candidate; },
+    (value) => { value.run.run_attempt++; },
+    (value) => { value.run.conclusion = "failure"; },
+    (value) => { value.trustedRef.object.sha = "5".repeat(40); },
+    (value) => { value.candidateRef.object.sha = "6".repeat(40); },
+    (value) => { value.artifact.expired = true; },
+    (value) => { value.jobs.jobs[0].conclusion = "skipped"; },
+    (value) => { value.jobs.jobs.push(value.jobs.jobs[0]); },
+  ]) {
+    const changed = structuredClone(fixture.observed);
+    mutate(changed);
+    assert.throws(() => validateIsolatedEnvelope(envelope, fixture.request, changed), /identity changed/);
+  }
+});
+
+test("unattended publication refuses candidate workflow activation and a moved trusted revision", async (t) => {
+  const { root } = await workspace(t);
+  await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
+  const original = await sourceSnapshot(root);
+  const request = isolatedRequest({ base: original.head, candidate: original.head, branch: "refs/heads/task", requestId: "publication",
+    execution: { kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: original.head } });
+  const api = async () => ({ ref: "refs/heads/main", object: { type: "commit", sha: original.head } });
+  await requireIsolatedPublication(root, request, api);
+  await assert.rejects(requireIsolatedPublication(root, request, async () =>
+    ({ ref: "refs/heads/main", object: { type: "commit", sha: "9".repeat(40) } })), /trusted execution branch changed/);
+  await mkdir(path.join(root, ".github", "workflows"), { recursive: true });
+  await writeFile(path.join(root, ".github", "workflows", "candidate.yml"), "permissions: write-all\n");
+  await git(root, ["add", "--", ".github/workflows/candidate.yml"]);
+  await git(root, ["commit", "--quiet", "-m", "Candidate workflow fixture"]);
+  await assert.rejects(requireIsolatedPublication(root, { ...request, candidate: (await sourceSnapshot(root)).head }, api),
+    /workflow\/action changes cannot be activated/);
+});
+
+test("hosted workflow has fixed control, disposable workers and a non-executing clean gate", async () => {
+  const workflow = await readFile(new URL("../../.github/workflows/isolated-verification.yml", import.meta.url), "utf8");
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.doesNotMatch(workflow, /pull_request_target:|workflow_run:|self-hosted|secrets\.|secrets: inherit|id-token: write|contents: write/);
+  assert.equal((workflow.match(/ref: \$\{\{ github\.workflow_sha \}\}/g) ?? []).length, 3);
+  assert.equal((workflow.match(/persist-credentials: false/g) ?? []).length, 6);
+  assert.match(workflow, /cache: 'false'/);
+  assert.doesNotMatch(workflow, /actions\/cache|cache: npm/);
+  const gate = workflow.slice(workflow.indexOf("\n  gate:"));
+  assert.doesNotMatch(gate, /npm ci|pip install|--run|uses: \.\/candidate/);
+  assert.match(gate, /control\/scripts\/isolated-verification\.mjs --collect/);
+  assert.match(gate, /path: control\/\.data\/ci\/isolated\/inputs/);
+  assert.doesNotMatch(gate, /path: candidate\/\.data/);
+  assert.match(workflow, /CONTROL|control\/scripts\/isolated-verification\.mjs --plan/);
+  assert.throws(() => parseDevelopmentExecution({ kind: "github-hosted", repository: "owner/repo",
+    trustedRef: "refs/heads/main\nrun", trustedSha: "a".repeat(40) }), /exact GitHub/);
+  assert.throws(() => isolatedRequest({ execution: { kind: "github-hosted", repository: "owner/repo",
+    trustedRef: "refs/heads/main", trustedSha: "a".repeat(40) }, base: "HEAD", candidate: "main",
+    branch: "refs/heads/task", requestId: "fixture" }), /complete, scoped/);
+});
+
+test("isolated qualification authenticates the archive and rechecks live bindings without rewriting source evidence", async (t) => {
+  const { root } = await workspace(t);
+  await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
+  const plan = await verificationPlan(root, "HEAD"), { request, context, observed } = hostedFixture(plan);
+  const envelope = collectIsolatedReports(plan, context, [], "skipped");
+  const archiveDirectory = path.join(root, ".data", "fixture-archive");
+  await mkdir(archiveDirectory, { recursive: true });
+  await writeFile(path.join(archiveDirectory, "gate.json"), JSON.stringify(envelope.report));
+  await writeFile(path.join(archiveDirectory, "ci-report.json"), JSON.stringify(envelope));
+  const archive = path.join(root, ".data", "evidence.zip");
+  const quote = (value) => `'${value.replaceAll("'", "''")}'`;
+  await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
+    `Compress-Archive -LiteralPath ${quote(path.join(archiveDirectory, "gate.json"))},${quote(path.join(archiveDirectory, "ci-report.json"))} -DestinationPath ${quote(archive)}`]);
+  const bytes = await readFile(archive);
+  observed.artifact.digest = `sha256:${sha256(bytes)}`;
+  observed.artifact.size_in_bytes = bytes.length;
+  let lookups = 0;
+  const api = async (endpoint) => {
+    lookups++;
+    if (endpoint === "repos/owner/repo") return structuredClone(observed.repository);
+    if (endpoint === "repos/owner/repo/git/ref/heads/main") return structuredClone(observed.trustedRef);
+    if (endpoint === "repos/owner/repo/git/ref/heads/task") return structuredClone(observed.candidateRef);
+    if (endpoint === "repos/owner/repo/actions/runs/123") return structuredClone(observed.run);
+    if (endpoint.includes("/jobs?")) return { ...structuredClone(observed.jobs), total_count: 1 };
+    if (endpoint.includes("/artifacts?")) return { total_count: 1, artifacts: [structuredClone(observed.artifact)] };
+    assert.fail(`Unexpected remote operation: ${endpoint}`);
+  };
+  const result = await qualifyIsolatedVerification(root, request, "123", path.join(root, ".data", "verification", "qualified"),
+    { api, download: async () => bytes });
+  assert.equal(result.status, "verified");
+  assert.equal(result.kind, "isolated-qualification");
+  assert.deepEqual(result.report, envelope.report);
+  assert.deepEqual(result.tested, envelope.report.source);
+  assert.deepEqual(result.candidate, plan.source);
+  assert.equal(lookups, 12, "Both ends of qualification must query the current run, refs and artifact.");
+  await assert.rejects(qualifyIsolatedVerification(root, request, "123", path.join(root, ".data", "verification", "tampered"),
+    { api, download: async () => Buffer.from("Not the authenticated artifact") }));
+  let currentReads = 0;
+  await assert.rejects(qualifyIsolatedVerification(root, request, "123", path.join(root, ".data", "verification", "moved"),
+    { api: async (endpoint) => {
+      const value = await api(endpoint);
+      if (endpoint === "repos/owner/repo/git/ref/heads/main" && ++currentReads > 1) value.object.sha = "8".repeat(40);
+      return value;
+    }, download: async () => bytes }), /identity changed/);
+});
+
+test("native isolated dispatch loads only captured modules and refuses changed code before mutation", async (t) => {
+  const { root } = await workspace(t);
+  const { directory } = await copiedController(root, async (directory) => {
+    await writeFile(path.join(directory, "isolated-verification.mjs"), [
+      "import { writeFile } from 'node:fs/promises';",
+      "export async function runIsolatedRequest(file) { await writeFile(file + '.completed', 'captured input', { flag: 'wx' }); }",
+      "export const executeIsolatedVerification = () => { throw new Error('Not a hosted execution fixture'); };",
+      "export const qualifyIsolatedVerification = () => { throw new Error('Not acceptance evidence'); };",
+    ].join("\n"));
+  });
+  const implementation = await captureCandidateImplementation(directory);
+  const file = path.join(root, ".data", "native-isolated.json"), bytes = JSON.stringify({ execution: implementation });
+  await writeFile(file, bytes);
+  const command = nativeIsolatedCommand(file, sha256(bytes));
+  await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", command], { timeout: 60000 });
+  assert.equal(await readFile(`${file}.completed`, "utf8"), "captured input");
+  await writeFile(path.join(directory, "isolated-verification.mjs"), "throw new Error('Unapproved code ran');\n");
+  await assert.rejects(exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", command], { timeout: 60000 }),
+    (error) => /inputs changed/.test(error.stderr) && !/Unapproved code ran/.test(error.stderr));
+  assert.equal(JSON.parse(await readFile(`${file}.result.json`, "utf8")).failure, "execution-inputs-changed");
 });

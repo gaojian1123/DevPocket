@@ -20,7 +20,8 @@ function binding(plan, group, policy, options) {
   return { base: plan.base, source: plan.source, version: plan.version,
     requiredChecks: plan.requiredChecks, requiredGroups: plan.requiredGroups, layouts: plan.layouts,
     trustedDeviceClasses: plan.trustedDeviceClasses ?? [], group, policy,
-    backendDiagnostics: Boolean(options.backendDiagnostics), toolingShard: options.toolingShard ?? null };
+    backendDiagnostics: Boolean(options.backendDiagnostics), toolingShard: options.toolingShard ?? null,
+    trustedTooling: Boolean(options.trustedToolingRunner) };
 }
 
 async function safeDirectory(root, directory, create = false) {

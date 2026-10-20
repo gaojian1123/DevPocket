@@ -9,6 +9,7 @@ const executionScripts = new Set([
   "verification-backend", "verification-android", "process", "owned-command", "owned-command-windows",
   "verification-preflight", "verification-run", "verification-transition",
   "verification-tooling", "verification-admission", "verification-ci", "verification-ci-artifact",
+  "isolated-verification", "development-controller",
   "owned-command-linux", "device-run", "worker-diagnostics", "device-diagnostics", "diagnostic-errors",
   "bounded-worker-log", "diagnostic-publication", "native-lifecycle", "backend-diagnostics",
   "verification-diagnostics", "android-diagnostics", "platform-diagnostics",
@@ -32,10 +33,10 @@ const reasons = {
     why: "Adopting these instructions changes how this task is executed or reviewed." },
   dependency: { stage: "execution", title: "Dependency or build configuration",
     why: "These changes can select executable dependencies, package sources, lifecycle hooks or build commands." },
-  sensitive: { stage: "review", title: "Sensitive product changes",
-    why: "Review the authorization, data exposure, persistence or compatibility consequences of these changes." },
-  unknown: { stage: "review", title: "Unclassified changes",
-    why: "The local policy cannot establish the role of these paths; inspect their actual effects before delivery." },
+  sensitive: { stage: "independent", title: "Sensitive product changes",
+    why: "Independent review must inspect authorization, data exposure, persistence and compatibility; a path alone does not require human approval." },
+  unknown: { stage: "independent", title: "Unclassified changes",
+    why: "Independent review must classify actual effects. Unresolved execution scope remains blocked, not implicitly authorized." },
 };
 
 function changedPaths(value) {
@@ -101,9 +102,9 @@ export function developmentReviewRequirements(files, packageChanges = {}, policy
   const decisions = Object.entries(reasons).filter(([code]) => grouped.has(code))
     .map(([code, detail]) => ({ code, ...detail, paths: grouped.get(code) }));
   return {
-    requiresHumanReview: decisions.length > 0,
+    requiresHumanReview: decisions.some((item) => item.stage === "execution"),
     protectedPaths: decisions.filter((item) => item.stage === "execution").flatMap((item) => item.paths).sort(),
-    reviewPaths: decisions.filter((item) => item.stage === "review").flatMap((item) => item.paths).sort(),
+    reviewPaths: decisions.filter((item) => item.stage === "independent").flatMap((item) => item.paths).sort(),
     reasons: decisions,
   };
 }
@@ -208,6 +209,79 @@ export function developmentApprovalRequest(scope, policy, stage, hooks) {
   return { ...request, id: identity(request) };
 }
 
+export function parseDevelopmentExecution(value) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.keys(value).some((key) => !["kind", "repository", "trustedRef", "trustedSha"].includes(key)) ||
+      value.kind !== "github-hosted" || typeof value.repository !== "string" ||
+      !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(value.repository) ||
+      value.repository.split("/").some((part) => [".", ".."].includes(part)) ||
+      typeof value.trustedRef !== "string" || !/^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value.trustedRef) ||
+      /(?:\.\.|\/\/|\/\.|\.lock(?:\/|$)|\/$|\.$)/.test(value.trustedRef) ||
+      !/^[a-f0-9]{40}$/.test(value.trustedSha ?? "")) {
+    throw new TypeError("Isolated execution requires the exact GitHub repository, trusted branch and approved workflow commit.");
+  }
+  return { kind: value.kind, repository: value.repository, trustedRef: value.trustedRef, trustedSha: value.trustedSha };
+}
+
+export function developmentTaskApprovalRequest(scope, hooks, implementation) {
+  if (!scope?.sessionId || !scope.runId || !scope.workspace?.root || !scope.workspace.branch ||
+      !scope.task?.goal || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(scope.base ?? "") ||
+      !hooks?.fingerprint || !implementation?.files?.length) {
+    throw new TypeError("Task authorization requires the original session, task, workspace, hooks and trusted implementation.");
+  }
+  const execution = parseDevelopmentExecution(scope.task.execution);
+  const delivery = scope.task.delivery ?? "local-commit";
+  if (!["working-tree", "local-commit", "pull-request"].includes(delivery)) throw new TypeError("Unknown delivery target.");
+  if (execution && delivery === "working-tree") throw new TypeError("Hosted execution requires an authorized published candidate.");
+  const actions = ["edit", "check", "independent-review", "repair",
+    ...(delivery !== "working-tree" ? ["commit"] : []),
+    ...(delivery === "pull-request" || execution ? ["push"] : []),
+    ...(delivery === "pull-request" ? ["create-draft-pr", "mark-pr-ready"] : []),
+    ...(execution ? ["isolated-execution"] : [])];
+  const effects = [
+    `Allow ${actions.join(", ")} for this task and ${scope.workspace.branch}; reuse this scope across ordinary source repairs.`,
+    execution
+      ? `Run candidate dependencies, install scripts and tools only on disposable GitHub-hosted workers in ${execution.repository}, using ${execution.trustedRef} at ${execution.trustedSha}. Public network access is permitted.`
+      : "Use existing local checks only. Changed executable inputs still need their exact local execution approval.",
+    "Keep the approved controller, review instructions and acceptance rules fixed. Candidate instructions and tools are test subjects, not replacement authority.",
+  ];
+  const exclusions = [
+    "No merge, deployment, release, production secrets, cloud administration, device enrollment, live runtime control, local installation, extension reload or Git hook changes.",
+    "No adoption of candidate workflow/permission policy, cache promotion, native permission bypass, new targets or increased user-selected limits.",
+    ...(delivery === "working-tree" ? ["No commit, push or PR creation."] : []),
+  ];
+  const snapshot = canonical({ scope, hooks, implementation, actions, effects, exclusions });
+  const request = {
+    version: 1, scope, stage: "task", action: "Authorize this task's unattended development and delivery scope",
+    reasons: [{ code: "task", title: "Task-scoped authority",
+      why: "Establish the actual actions and execution target once, before implementation, rather than asking at each phase.", paths: [] }],
+    inputs: [], hooks, implementation, actions, effects, exclusions,
+    detailsSha256: hash(snapshot), detailsBytes: Buffer.byteLength(snapshot),
+    validity: "Only this original session/run, task, workspace, baseline, hooks and trusted implementation. Ordinary candidate edits do not change the grant. A different target, authority or trusted version requires a new decision.",
+  };
+  return { request: { ...request, id: identity(request) }, snapshot };
+}
+
+export function developmentTaskActionAllowed(scope, hooks, implementation, receipts, action) {
+  const { request } = developmentTaskApprovalRequest(scope, hooks, implementation);
+  return request.actions.includes(action) && developmentApprovalSatisfied(request, receipts);
+}
+
+export function developmentExecutionAuthorization(scope, policy, hooks, implementation, receipts) {
+  if (scope.task.execution) {
+    return developmentTaskActionAllowed(scope, hooks, implementation, receipts, "isolated-execution")
+      ? { status: "allowed", route: "github-hosted", subjectPaths: [...policy.protectedPaths], adoption: "not-authorized" }
+      : { status: "needs_human", route: "github-hosted",
+        request: developmentTaskApprovalRequest(scope, hooks, implementation).request };
+  }
+  if (!policy.protectedPaths.length) return { status: "allowed", route: "local" };
+  const request = developmentApprovalRequest(scope, policy, "execution", hooks);
+  return developmentApprovalSatisfied(request, receipts)
+    ? { status: "allowed", route: "local" }
+    : { status: "needs_human", route: "local", request };
+}
+
 export function formatDevelopmentApproval(request, details, summary, snapshot) {
   if (typeof snapshot !== "string" || Buffer.byteLength(snapshot) !== request.detailsBytes ||
       hash(snapshot) !== request.detailsSha256) throw new TypeError("An exact immutable approval snapshot is required.");
@@ -222,7 +296,8 @@ export function formatDevelopmentApproval(request, details, summary, snapshot) {
     ...(request.scope.ci ? [`CI target: ${request.scope.ci.repository} at ${request.scope.ci.ref}; .github/workflows/ci.yml only.`] : []),
     `Task goal (context, not authority): ${JSON.stringify(request.scope.task.goal)}`,
     ...(summary ? [`Behavior change (implementation description; check against the actual details): ${JSON.stringify(summary)}`] : []),
-    `Changes: ${request.inputs.map((input) => `${input.path} [${input.kind}]`).join(", ")}`,
+    request.stage === "task" ? `Requested actions: ${request.actions.join(", ")}`
+      : `Changes: ${request.inputs.map((input) => `${input.path} [${input.kind}]`).join(", ")}`,
     `After approval: ${request.effects.join(" ")}`,
     `Not included: ${request.exclusions.join(" ")}`,
     `Valid for: ${request.validity}`,
@@ -254,6 +329,10 @@ export async function obtainDevelopmentApproval(ctx, request, details, summary) 
     approval: request });
   if (snapshot === null) return changedDetails();
   const message = formatDevelopmentApproval(request, details, summary, snapshot);
+  if (ctx.args?.mode === "autopilot" && !(request.stage === "task" && ctx.args.prepare === true)) {
+    return { status: "needs_human", reason: "Unattended execution has no matching authorization. Progress is retained; no question or automatic approval was issued.",
+      approval: { ...request, message } };
+  }
   if (ctx.session?.capabilities?.ui?.elicitation !== true || typeof ctx.session.ui?.elicitation !== "function") {
     return { status: "needs_human", reason: "The original client's interactive approval UI is unavailable. Review this request there; no approval or execution was assumed.",
       approval: { ...request, message } };
@@ -264,7 +343,8 @@ export async function obtainDevelopmentApproval(ctx, request, details, summary) 
       message,
       requestedSchema: { type: "object", properties: { decision: { type: "string",
         title: request.action, enum: ["approve", "reject"],
-        enumNames: [request.stage === "execution" ? "Approve this policy for local checks" : "Accept this sensitive change review",
+        enumNames: [request.stage === "task" ? "Authorize this task scope" :
+          request.stage === "execution" ? "Approve this policy for local checks" : "Accept this sensitive change review",
           "Reject this request"] } },
       required: ["decision"] },
     });

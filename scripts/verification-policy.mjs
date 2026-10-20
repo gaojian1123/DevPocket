@@ -34,7 +34,7 @@ const rules = [
     matches: (file) => ["scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs",
       ".github/extensions/devpocket-development/extension.mjs"].includes(file), checks: tooling },
   { id: "development-tooling", description: "Development orchestration, local tool setup, trust policy and candidate preparation use the complete workflow suite.",
-    matches: (file) => ["scripts/development-workflow.mjs", "scripts/development-policy.mjs",
+    matches: (file) => ["scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/development-controller.mjs",
       "scripts/candidate-commit.mjs", "scripts/native-candidate.mjs",
       "scripts/setup-xcode-mcp.mjs", "config/xcode-mcp.example.json", "scripts/test-workflow.mjs"].includes(file), checks: tooling },
   { id: "agent-instructions", description: "DevPocket development instructions use workflow regressions, not application checks.",
@@ -69,7 +69,7 @@ const rules = [
       /^android\/.*(?:\.gradle(?:\.kts)?|gradle\.properties)$/.test(file), ...nativeExecution },
   { id: "shared-execution", description: "The shared executor, process ownership, bounded logs and shared backend/native preflight require all downstream checks.",
     matches: (file) => ["scripts/verification-executor.mjs", "scripts/verification-preflight.mjs", "scripts/verification-run.mjs",
-      "scripts/verification-transition.mjs", "scripts/verification-admission.mjs", "scripts/verification-ci.mjs",
+      "scripts/verification-transition.mjs", "scripts/verification-admission.mjs", "scripts/verification-ci.mjs", "scripts/isolated-verification.mjs",
       "scripts/verification-ci-artifact.ps1", "scripts/process.mjs", "scripts/owned-command.ps1",
       "scripts/owned-command.cs", "scripts/owned-command-windows.mjs", "scripts/owned-command-linux.py",
       "scripts/bounded-worker-log.mjs", "scripts/backend-diagnostics.mjs"].includes(file), ...full },
@@ -77,7 +77,7 @@ const rules = [
     matches: (file) => file.startsWith("deployment/") || file.startsWith("infra/") || file === "azure.yaml",
     checks: [...backend, "setup", "azure-tests", "operations-tests"] },
   { id: "verification-infrastructure", description: "Cross-lane CI and shared or unclassified dependency inputs require all downstream checks.",
-    matches: (file) => [".github/workflows/ci.yml", ".github/CODEOWNERS"].includes(file) ||
+    matches: (file) => [".github/workflows/ci.yml", ".github/workflows/isolated-verification.yml", ".github/CODEOWNERS"].includes(file) ||
       /(?:^|\/)(?:\.npmrc|package(?:-lock)?\.json|npm-shrinkwrap\.json|tsconfig(?:\.[^/]+)?\.json|requirements[^/]*\.txt)$/i.test(file), ...full },
   { id: "android", description: "Android changes require native build and device evidence.",
     matches: (file) => file.startsWith("android/"), checks: android,

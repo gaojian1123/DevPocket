@@ -1,12 +1,20 @@
 name: Prepare native verification
 description: Shared hosted Ubuntu SDK, KVM and owned-process prerequisites
+inputs:
+  working-directory:
+    description: Candidate checkout; setup code stays in the trusted action checkout
+    default: .
+  cache:
+    description: Reuse npm cache only for the ordinary CI route
+    default: 'true'
 runs:
   using: composite
   steps:
     - uses: actions/setup-node@v7
       with:
         node-version: 24
-        cache: npm
+        cache: ${{ inputs.cache == 'true' && 'npm' || '' }}
+        cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
     - uses: actions/setup-java@v6
       with:
         distribution: temurin
@@ -28,6 +36,7 @@ runs:
         printf 'JAVA_HOME=%s\n' "$jdk" >> "$GITHUB_ENV"
         printf '%s/bin\n' "$jdk" >> "$GITHUB_PATH"
     - shell: bash
+      working-directory: ${{ inputs.working-directory }}
       run: npm ci --no-audit --no-fund
     - name: Prepare hosted KVM and stable SDK packages without accepting new licenses
       shell: bash
@@ -65,15 +74,17 @@ runs:
     - name: Verify Linux process, ownership and build entry points
       id: platform_tests
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       run: node scripts/platform-diagnostics.mjs --github
     - uses: actions/upload-artifact@v7
       if: always() && steps.platform_tests.outputs.report_ready == 'true'
       with:
         name: native-platform-diagnostics-attempt-${{ github.run_attempt }}
-        path: .data/ci/preparation/platform-diagnostics.json
+        path: ${{ inputs.working-directory }}/.data/ci/preparation/platform-diagnostics.json
         if-no-files-found: error
     - name: Check the emulator loader and resolve only its approved missing runtime dependency
       shell: pwsh
+      working-directory: ${{ inputs.working-directory }}
       run: |
         node scripts/linux-runtime.mjs
         exit $LASTEXITCODE

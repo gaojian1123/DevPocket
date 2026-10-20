@@ -226,10 +226,24 @@ The controller records separate read-only progress diagnoses, not acceptance
 approvals. See **Task-scoped autonomy** in `docs\DEVELOPMENT-WORKFLOW.md`.
 Its read-only readiness check reuses durable evidence for an unchanged candidate
 without repeating local final verification. Source, HEAD, branch or index changes
-invalidate readiness. It does not push, create a PR, merge or deploy.
+invalidate readiness. Its unprepared local route does not publish. An explicitly
+prepared hosted route may push the scoped candidate and dispatch isolated checks;
+native PR tools finish only the recorded delivery scope. Neither route merges or deploys.
 Extension activation and App run approvals remain explicit. Both routes
 retain the same verification requirements and scoped authorization; a skill is
 guidance, not a replacement for programmatic evidence checks or protected CI.
+
+**Unattended development** reuses one explicit task-scoped grant rather than
+requesting approval at every phase. Sensitive/unclassified filenames focus
+independent review, not mandatory human sign-off. Autopilot never supplies
+missing authority: it retains a concrete blocker without opening a question.
+Candidate dependencies, installation scripts and modified tools can execute on
+authorized disposable GitHub-hosted workers while trusted control and acceptance
+remain fixed. Public internet is allowed; this protects the developer machine,
+not source confidentiality against malicious packages. No production secrets,
+repository write token or persistent caches are supplied to those workers.
+See **Unattended execution** in `docs\DEVELOPMENT-WORKFLOW.md` for one-time
+task preparation, frozen control, native dispatch and live qualification.
 
 Verification classifies changed paths centrally and derives CI lanes from the
 selected check definitions, independently of local Agent trust requirements.
@@ -282,13 +296,15 @@ Local execution trust and human-review requirements belong to
 `scripts\development-policy.mjs`, shared by skill-led development and the optional
 controller. Ordinary code/test changes and same-scope repairs reuse the task's
 local-development authorization; entire script/backend directories are not
-automatic human-review gates. Execution-core, dependency, instruction and
-sensitive product changes retain concrete decisions, independently of CI impact.
+automatic human-review gates. Protected local execution/adoption retains exact
+approval; an actual hosted task grant permits candidate execution only in its
+named isolated workers. Sensitive/unclassified product changes retain independent
+inspection, independently of CI impact.
 Requests describe the action, reason, target, effects, exclusions and validity,
 with actual changes available as details. The optional controller consumes only
-native interactive decisions journaled for the same task and input versions;
-approval continues the pending phase without another implementation dispatch.
-Passing tests and independent AI review do not supply human approval. See
+native decisions journaled for the same task and trusted input versions;
+ordinary candidate repairs reuse that authority while refreshing evidence.
+Passing tests and independent AI review do not create authority. See
 **Scoped development approvals** in `docs\DEVELOPMENT-WORKFLOW.md`.
 GitHub merge review is enforced separately by repository rulesets/required
 reviews/CODEOWNERS when configured; this tooling does not configure them.

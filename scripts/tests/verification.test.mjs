@@ -316,8 +316,7 @@ test("shared execution, cross-lane CI, shared dependencies and unknown paths ret
     assert.deepEqual(impact.requiredChecks, CHECKS.map((check) => check.id));
     assert.deepEqual(impact.requiredGroups, ["tooling", "backend", "android", "device"]);
     assert.equal(Object.hasOwn(impact, "requiresHumanReview"), false);
-    assert.equal(developmentReviewRequirements([file]).requiresHumanReview,
-      !(rule === "unknown" && file.startsWith("scripts/")));
+    assert.equal(developmentReviewRequirements([file]).requiresHumanReview, isVerificationPolicyPath(file));
     assert.equal(impact.layouts, true);
     assert.deepEqual(impact.selectionReasons.map((item) => item.rule), [rule]);
     assert.deepEqual(impact.selectionReasons[0].paths, [file]);
@@ -394,7 +393,9 @@ test("local Xcode setup and root ignore policy select tooling without weakening 
     assert.deepEqual(impact.requiredGroups, ["tooling"]);
     assert.equal(impact.layouts, false);
     // Tooling coverage is not an approval rule; the unclassified template still needs review.
-    assert.equal(developmentReviewRequirements(files).requiresHumanReview, files.includes("config/xcode-mcp.example.json"));
+    assert.equal(developmentReviewRequirements(files).requiresHumanReview, false);
+    assert.deepEqual(developmentReviewRequirements(files).reviewPaths,
+      files.includes("config/xcode-mcp.example.json") ? ["config/xcode-mcp.example.json"] : []);
   }
   for (const file of ["package.json", "package-lock.json", "scripts/process.mjs", ".github/workflows/ci.yml",
     "scripts/setup-xcode-mcp-extra.mjs", "config/another-mcp.example.json",
@@ -745,7 +746,7 @@ test("app, wire, unrelated skills and unknown changes cannot omit device checks"
       assert.ok(result.report.requiredChecks.includes("android-device"));
       assert.ok(result.report.requiredChecks.includes("android-build"));
       assert.equal(Object.hasOwn(result.report, "requiresHumanReview"), false);
-      if (!file.startsWith("android/")) assert.equal(developmentReviewRequirements(result.report.changedFiles).requiresHumanReview, true);
+      assert.equal(developmentReviewRequirements(result.report.changedFiles).requiresHumanReview, isVerificationPolicyPath(file));
       if (file.startsWith(".github/skills/")) {
         assert.deepEqual(result.report.requiredChecks, CHECKS.map((check) => check.id));
         assert.deepEqual(result.report.requiredGroups, CHECK_GROUPS);

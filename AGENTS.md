@@ -22,6 +22,14 @@ Advice, explanations, planning, read-only reviews and documentation-only edits
 do not start an implementation pipeline. Both routes retain required verification,
 independent review and scoped authorization; self-review is not independent review.
 
+For unattended development, follow **Unattended execution** in
+`docs\DEVELOPMENT-WORKFLOW.md`: reuse explicit task-scoped authority, keep trusted
+control separate from candidate execution, and retain a specific blocker instead
+of opening a question when authority is missing. Autopilot is an interaction mode,
+not permission. Sensitive filenames require independent review, not blanket human
+approval. Candidate dependencies/tools may run in the authorized hosted environment;
+adopting new control policy, active hooks or wider effects remains separate.
+
 ## Terminology
 
 Use **GitHub Copilot** for shared product/session behavior. The **original client**

@@ -1,5 +1,6 @@
 import { open } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { runCommand } from "./process.mjs";
 import { sourceSnapshot } from "./git-state.mjs";
 import { diagnosticError, failureDetails, commandDetails, contextualFailure } from "./diagnostic-errors.mjs";
@@ -252,8 +253,13 @@ export async function executeVerification(root, plan, options = {}) {
 
 async function executeCheck(root, plan, check, options, backend) {
   const definition = CHECKS.find((item) => item.id === check.id);
+  const quote = (value) => `'${value.replaceAll("'", "''")}'`;
+  if (options.trustedToolingRunner && path.resolve(options.trustedToolingRunner) !==
+      fileURLToPath(new URL("./test-workflow.mjs", import.meta.url))) throw verificationFault("configuration");
   const adapter = definition.group === "tooling" ? {
-    args: ["-NoProfile", "-NonInteractive", "-Command", check.toolingShard
+    args: ["-NoProfile", "-NonInteractive", "-Command", options.trustedToolingRunner
+      ? `& ${quote(process.execPath)} ${quote(options.trustedToolingRunner)}${check.toolingShard ? ` --workflow-shard ${check.toolingShard.id}` : ""}; exit $LASTEXITCODE`
+      : check.toolingShard
       ? `& npm run test:workflow -- --workflow-shard ${check.toolingShard.id}; exit $LASTEXITCODE`
       : "& npm run test:workflow; exit $LASTEXITCODE"],
     timeoutMs: 30 * 60_000, graceMs: 5000,

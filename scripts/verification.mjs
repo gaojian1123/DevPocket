@@ -98,7 +98,7 @@ export function verificationFailure(error, phase = "command") {
   };
 }
 
-export async function verificationPlan(root, base, all = false) {
+export async function verificationPlan(root, base, all = false, { trustedTooling = false } = {}) {
   if (!base || base.startsWith("-")) throw verificationFault("base-invalid");
   let baseSha;
   try { baseSha = (await readOnlyGit(root, ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`])).trim(); }
@@ -124,7 +124,7 @@ export async function verificationPlan(root, base, all = false) {
   }
   return {
     version: VERIFICATION_REPORT_VERSION, base: baseSha, source, changedFiles, ...impact,
-    ...(impact.requiredChecks.includes("workflow-tests") ? { toolingShards: await toolingCatalogue(root) } : {}),
+    ...(impact.requiredChecks.includes("workflow-tests") ? { toolingShards: await toolingCatalogue(root, { trusted: trustedTooling }) } : {}),
     ...(device ? { trustedDeviceClasses, deviceClassCatalogueAvailable,
       deviceClassCatalogueFailure: deviceClassCatalogueFailure ?? null } : {}),
   };
