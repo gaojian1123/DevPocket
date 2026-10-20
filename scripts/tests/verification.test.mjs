@@ -120,6 +120,24 @@ test("storage roots accept direct reports without admitting sibling or linked di
     { diagnosticCode: "ownership-mismatch" });
 });
 
+test("trusted tooling manifests round-trip and resume without becoming ordinary local execution", async (t) => {
+  const root = await repository(t), plan = await verificationPlan(root, "HEAD"), policy = await verificationExecutionPolicy();
+  const options = { trustedToolingRunner: path.resolve("scripts", "test-workflow.mjs"),
+    directory: path.join(root, ".data", "verification", "trusted") };
+  const run = await openVerificationRun(root, plan, options, policy);
+  const report = { ...plan, group: "all", status: "passed", complete: true, checks: [] };
+  await run.finish(report, true);
+  const read = await readVerificationRun(root, run.reference.manifest);
+  assert.equal(read.manifest.binding.trustedTooling, true);
+  const resumed = await openVerificationRun(root, plan, { ...options,
+    directory: path.join(root, ".data", "verification", "resumed"), resume: run.reference.manifest }, policy);
+  await resumed.finish(report, true);
+  assert.equal((await readVerificationRun(root, run.reference.manifest)).count, 2);
+  await assert.rejects(openVerificationRun(root, plan, {
+    directory: path.join(root, ".data", "verification", "wrong-mode"), resume: run.reference.manifest,
+  }, policy));
+});
+
 test("report destinations cannot occupy private verification control storage", async (t) => {
   const cases = [
     ["local", "run-output-reused"], ["local/execution.lock", "run-output-reused"],

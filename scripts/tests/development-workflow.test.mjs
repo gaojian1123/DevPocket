@@ -16,7 +16,8 @@ import { developmentApprovalDetails, developmentApprovalRequest, developmentAppr
 import { developmentTaskApprovalRequest, developmentTaskActionAllowed, developmentExecutionAuthorization,
   parseDevelopmentExecution } from "../development-policy.mjs";
 import { collectIsolatedReports, isolatedMatrix, isolatedRequest, validateIsolatedEnvelope,
-  requireIsolatedPublication, qualifyIsolatedVerification } from "../isolated-verification.mjs";
+  requireIsolatedPublication, qualifyIsolatedVerification, readIsolatedReports,
+  requireIsolatedWorkflowRevision, requireIsolatedPushTarget, isolatedPushArguments } from "../isolated-verification.mjs";
 
 const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
@@ -1230,9 +1231,9 @@ test("extension registration is inert and the starter isolates a clean primary c
   }, root);
   assert.equal(dispatched, undefined);
   assert.equal(registration.workflows[0].meta.name, "devpocket-development");
-  assert.deepEqual(registration.workflows[0].meta.phases.map((phase) => phase.title), ["Implement", "Candidate", "Verify", "Review", "Diagnose"]);
-  assert.match(registration.workflows[0].meta.description, /local candidate commit.*permission/);
-  assert.match(registration.workflows[0].meta.description, /only when the user explicitly selects this workflow/);
+  assert.deepEqual(registration.workflows[0].meta.phases.map((phase) => phase.title), ["Authorize", "Implement", "Candidate", "Verify", "Review", "Diagnose"]);
+  assert.match(registration.workflows[0].meta.description, /recorded hosted grant allows native candidate push/);
+  assert.match(registration.workflows[0].meta.description, /only when explicitly selected/);
   assert.equal(registration.workflows[0].meta.limits, undefined, "AI credit limits are chosen at invocation, not guessed.");
   assert.match(registration.tools[0].description, /only when the user explicitly selects the workflow/);
   assert.match(registration.tools[0].description, /clean linked worktree in the current session/);
@@ -1243,7 +1244,8 @@ test("extension registration is inert and the starter isolates a clean primary c
   assert.equal(dispatched.arguments.base_branch, undefined);
   assert.match(dispatched.arguments.kickoff.prompt, /run_dynamic_workflow/);
   assert.match(dispatched.arguments.kickoff.prompt, /Only the controller's candidate step/);
-  assert.match(dispatched.arguments.kickoff.prompt, /Do not independently commit, push, create a PR/);
+  assert.match(dispatched.arguments.kickoff.prompt, /unprepared workflow has no publication authority/);
+  assert.match(dispatched.arguments.kickoff.prompt, /Never merge.*without separate target authorization/);
   assert.equal(registration.tools[1].name, "devpocket_check_development_readiness");
   session.workflow = {
     getRunDetail: async () => ({ status: "completed", workflowName: "other", runId: "wrong-run" }),
@@ -3523,6 +3525,8 @@ test("native preparation grants one scope then resumes the same task unattended 
     agent: async (prompt, options) => {
       if (options.agent === "devpocket-reviewer") return ++reviews === 1 ? blockingReview : passingReview;
       assert.match(prompt, /Do not ask questions or approve permissions/);
+      assert.ok(prompt.includes(JSON.stringify(path.join((await captureCandidateImplementation()).directory, "git-state.mjs"))));
+      assert.doesNotMatch(prompt, /sourceSnapshot\(root\) exported by scripts\/verification\.mjs/);
       await writeFile(path.join(root, "README.md"), `Complete explanation ${++implementations}\n`);
       return implemented(root);
     },
@@ -3670,6 +3674,10 @@ test("hosted workflow has fixed control, disposable workers and a non-executing 
   assert.match(gate, /path: control\/\.data\/ci\/isolated\/inputs/);
   assert.doesNotMatch(gate, /path: candidate\/\.data/);
   assert.match(workflow, /CONTROL|control\/scripts\/isolated-verification\.mjs --plan/);
+  assert.equal((workflow.match(/^    if:.*github\.workflow_sha == inputs\.trusted_sha/gm) ?? []).length, 3);
+  assert.match(gate, /if: always\(\) && github\.workflow_sha == inputs\.trusted_sha/);
+  assert.match(workflow, /Resolve-Path \.\.\/control\/\.tools\/android-sdk/);
+  assert.match(workflow, /"ANDROID_HOME=\$sdk" >> \$env:GITHUB_ENV/);
   assert.throws(() => parseDevelopmentExecution({ kind: "github-hosted", repository: "owner/repo",
     trustedRef: "refs/heads/main\nrun", trustedSha: "a".repeat(40) }), /exact GitHub/);
   assert.throws(() => isolatedRequest({ execution: { kind: "github-hosted", repository: "owner/repo",
@@ -3743,4 +3751,81 @@ test("native isolated dispatch loads only captured modules and refuses changed c
   await assert.rejects(exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", command], { timeout: 60000 }),
     (error) => /inputs changed/.test(error.stderr) && !/Unapproved code ran/.test(error.stderr));
   assert.equal(JSON.parse(await readFile(`${file}.result.json`, "utf8")).failure, "execution-inputs-changed");
+});
+
+test("isolated artifact collection accepts flat single downloads and rejects mixed or linked layouts", async (t) => {
+  const { root } = await workspace(t), directory = path.join(root, ".data", "ci", "inputs");
+  await mkdir(directory, { recursive: true });
+  const report = { group: "tooling" }, plan = { requiredGroups: ["tooling"] }, context = { attempt: 1 };
+  await writeFile(path.join(directory, "report.json"), JSON.stringify(report));
+  assert.deepEqual(await readIsolatedReports(root, directory, plan, context), [report]);
+  await assert.rejects(readIsolatedReports(root, directory, { requiredGroups: ["tooling", "backend"] }, context), /exactly one/);
+  const nested = path.join(directory, "isolated-verification-tooling-attempt-1");
+  await mkdir(nested);
+  await assert.rejects(readIsolatedReports(root, directory, plan, context), /unexpected worker artifacts/);
+  await fs.rename(path.join(directory, "report.json"), path.join(nested, "report.json"));
+  assert.deepEqual(await readIsolatedReports(root, directory, plan, context), [report]);
+  await writeFile(path.join(nested, "extra.json"), "{}");
+  await assert.rejects(readIsolatedReports(root, directory, plan, context), /unexpected content/);
+  await rm(path.join(nested, "extra.json"));
+  await rm(path.join(nested, "report.json"));
+  await rm(nested, { recursive: true });
+  const target = path.join(root, ".data", "ci", "outside");
+  await mkdir(target);
+  await writeFile(path.join(target, "report.json"), JSON.stringify(report));
+  await symlink(target, path.join(directory, "report.json"), process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(readIsolatedReports(root, directory, plan, context), /regular report/);
+});
+
+test("expected workflow revision is independent of the observed branch tip", () => {
+  const approved = "a".repeat(40), moved = "b".repeat(40);
+  assert.equal(requireIsolatedWorkflowRevision({ GITHUB_WORKFLOW_SHA: approved, GITHUB_SHA: approved },
+    { trusted_sha: approved }), approved);
+  for (const inputs of [{}, { trusted_sha: "main" }, { trusted_sha: moved }]) {
+    assert.throws(() => requireIsolatedWorkflowRevision({ GITHUB_WORKFLOW_SHA: approved, GITHUB_SHA: approved }, inputs), /execution is forbidden/);
+  }
+  assert.throws(() => requireIsolatedWorkflowRevision({ GITHUB_WORKFLOW_SHA: moved, GITHUB_SHA: moved },
+    { trusted_sha: approved }), /execution is forbidden/);
+});
+
+test("isolated publication binds effective push URLs and the pre-permission configuration", async (t) => {
+  const { root } = await workspace(t);
+  await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
+  const source = await sourceSnapshot(root), request = isolatedRequest({
+    base: source.head, candidate: source.head, branch: "refs/heads/task", requestId: "push-scope",
+    execution: { kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: source.head },
+  });
+  assert.equal(await requireIsolatedPushTarget(root, "owner/repo"), "https://github.com/owner/repo.git");
+  await git(root, ["config", "remote.origin.pushurl", "https://github.com/another/repo.git"]);
+  await assert.rejects(requireIsolatedPushTarget(root, "owner/repo"), /push destination/);
+  await git(root, ["config", "--unset-all", "remote.origin.pushurl"]);
+  await git(root, ["config", "url.https://github.com/another/.pushInsteadOf", "https://github.com/owner/"]);
+  await assert.rejects(requireIsolatedPushTarget(root, "owner/repo"), /push destination/);
+  await git(root, ["config", "--unset-all", "url.https://github.com/another/.pushInsteadOf"]);
+  await git(root, ["config", "--add", "remote.origin.pushurl", "https://github.com/owner/repo.git"]);
+  await git(root, ["config", "--add", "remote.origin.pushurl", "git@github.com:owner/repo.git"]);
+  await assert.rejects(requireIsolatedPushTarget(root, "owner/repo"), /single authorized/);
+  await git(root, ["config", "--unset-all", "remote.origin.pushurl"]);
+  const expected = await inspectWorktree(root);
+  await git(root, ["config", "core.sshCommand", "fixture-not-authorized"]);
+  await assert.rejects(requireIsolatedPublication(root, request,
+    async () => { assert.fail("A changed configuration must fail before remote work."); }, expected), /permission boundary/);
+});
+
+test("isolated push publishes only the granted branch despite follow-tags and mirror configuration", async (t) => {
+  const { root, main } = await workspace(t), remote = path.join(main, ".data", "remote.git");
+  await mkdir(path.dirname(remote), { recursive: true });
+  await exec("git", ["init", "--quiet", "--bare", remote]);
+  await git(root, ["remote", "add", "origin", remote]);
+  await git(root, ["config", "push.followTags", "true"]);
+  await git(root, ["config", "remote.origin.mirror", "true"]);
+  await git(root, ["tag", "-a", "extension-vfixture", "-m", "Never publish this fixture tag"]);
+  const source = await sourceSnapshot(root);
+  const request = isolatedRequest({ base: source.head, candidate: source.head, branch: "refs/heads/task", requestId: "exact-refs",
+    execution: { kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: source.head } });
+  await exec("git", isolatedPushArguments(request), { cwd: root });
+  const refs = (await exec("git", ["--git-dir", remote, "for-each-ref", "--format=%(refname)"])).stdout.trim();
+  assert.equal(refs, "refs/heads/task");
+  assert.equal((await git(root, ["config", "--get", "push.followTags"])).trim(), "true");
+  assert.equal((await git(root, ["config", "--get", "remote.origin.mirror"])).trim(), "true");
 });

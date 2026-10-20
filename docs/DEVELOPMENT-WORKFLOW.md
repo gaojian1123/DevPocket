@@ -108,6 +108,14 @@ install scripts/tools in those workers. Public internet access is intentionally
 permitted: this isolates the developer's machine, not source confidentiality
 against a malicious dependency. No local runtime/credential directories are sent.
 
+The hash-bound dispatch transmits `trusted_sha` independently of the observed
+branch tip. Every job checks it against the workflow revision before execution;
+context validation also checks `GITHUB_SHA` and the control checkout. A moved
+branch therefore cannot install or execute the candidate through a dispatcher
+that retains these guards, and an all-skipped run cannot qualify. Protect adoption
+and rollback of the dispatcher itself: guards cannot defend against an administrator
+replacing the policy that enforces them.
+
 The plan, workers and final gate have separate fresh VMs and checkouts. Plan and
 gate load only the trusted `control` checkout, inspect candidate source as data,
 and store/download evidence under the control checkout rather than a candidate
@@ -118,6 +126,9 @@ for independent review; isolated execution is not proof of arbitrary code's
 honesty. Required checks, device evidence and per-check origins remain mandatory.
 The clean gate rejects missing/duplicate/failed worker reports and actual failed
 jobs, even if candidate output claims success.
+The collector accepts both per-artifact directories and the downloader's flat
+single-artifact layout. A flat input is valid only for one required group and
+one regular report; mixed layouts and extra files remain invalid.
 
 The trusted workflow must already be installed at the approved revision.
 Publication preparation checks the actual origin, clean candidate, branch,
@@ -132,8 +143,12 @@ this separation; that is not automatically created by these tools.
 
 Local native mutation receives a hash-bound request through the original
 PowerShell permission pipeline. Its builtins-only bootstrap binds all loaded
-controller inputs, then pushes the exact candidate without force and dispatches
-the fixed workflow once. A dispatch intent is written before either effect.
+controller inputs and the pre-permission Git configuration/index/source snapshot.
+It validates the single effective push URL, including push-specific URL rewriting,
+then pushes only the exact candidate branch: follow-tags, mirror, force, automatic
+upstream changes and submodule pushes are excluded for this command without
+rewriting persistent configuration or disabling hooks. It dispatches the fixed
+workflow once. A dispatch intent is written before either effect.
 Denied, interrupted or uncertain operations are inspected through their retained
 intent/run, never blindly resubmitted. The automatic waiter reads the same run;
 failed-run logs are diagnostic input for same-task repair, never acceptance.
@@ -153,7 +168,9 @@ evidence; required GitHub PR checks still apply.
 For skill-led work, freeze the approved controller before editing with
 `freezeDevelopmentController(root)` from `scripts\development-controller.mjs`.
 Keep its returned implementation, original scope and hooks with the real user
-decision. Use the frozen script, not the modified candidate, to prepare a native
+decision. Capture candidate source identity with the approved snapshot's
+`git-state.mjs`, not by importing a candidate verifier. Use the frozen script,
+not the modified candidate, to prepare a native
 request from that retained `{ scope, hooks, implementation }` reference:
 
 ```powershell

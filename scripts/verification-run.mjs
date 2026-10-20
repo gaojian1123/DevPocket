@@ -16,12 +16,12 @@ const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const tipPath = (root, id) => path.join(root, ".data", "verification", "local", `${id}.json`);
 const pathKey = (value) => process.platform === "win32" ? value.toLowerCase() : value;
 
-function binding(plan, group, policy, options) {
+function binding(plan, group, policy, options, trustedTooling = Boolean(options.trustedToolingRunner)) {
   return { base: plan.base, source: plan.source, version: plan.version,
     requiredChecks: plan.requiredChecks, requiredGroups: plan.requiredGroups, layouts: plan.layouts,
     trustedDeviceClasses: plan.trustedDeviceClasses ?? [], group, policy,
     backendDiagnostics: Boolean(options.backendDiagnostics), toolingShard: options.toolingShard ?? null,
-    trustedTooling: Boolean(options.trustedToolingRunner) };
+    trustedTooling };
 }
 
 async function safeDirectory(root, directory, create = false) {
@@ -216,7 +216,11 @@ export async function readVerificationRun(root, file) {
   if (manifest.version !== version || manifest.kind !== "verification-run" || !uuid.test(manifest.id ?? "") ||
       !samePath(manifest.root ?? "", await realpath(root)) || !manifest.plan) throw diagnosticError("run-invalid");
   requireCheckPolicy(manifest.plan);
-  if (!equal(manifest.binding, binding(manifest.plan, manifest.binding?.group, manifest.binding?.policy, manifest.binding)) ||
+  const persistedTooling = manifest.binding?.trustedTooling;
+  if (persistedTooling !== undefined && typeof persistedTooling !== "boolean") throw diagnosticError("run-invalid");
+  const expected = binding(manifest.plan, manifest.binding?.group, manifest.binding?.policy, manifest.binding, persistedTooling ?? false);
+  if (!Object.hasOwn(manifest.binding, "trustedTooling")) delete expected.trustedTooling;
+  if (!equal(manifest.binding, expected) ||
       !["all", ...CHECK_GROUPS].includes(manifest.binding.group) ||
       !/^[a-f0-9]{64}$/.test(manifest.binding.policy ?? "")) throw diagnosticError("run-invalid");
   return { manifest, directory, ...await history(root, directory, manifest, signing) };

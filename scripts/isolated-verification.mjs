@@ -36,15 +36,24 @@ export function isolatedMatrix(plan) {
   });
 }
 
+export function requireIsolatedWorkflowRevision(environment, inputs) {
+  const approved = inputs?.trusted_sha;
+  if (!sha.test(approved ?? "") || environment.GITHUB_WORKFLOW_SHA !== approved || environment.GITHUB_SHA !== approved) {
+    fail("workflow revision differs from the independently approved commit; candidate execution is forbidden.");
+  }
+  return approved;
+}
+
 export async function isolatedContext(root, environment = process.env) {
   if (environment.GITHUB_ACTIONS !== "true" || environment.RUNNER_ENVIRONMENT !== "github-hosted" ||
       environment.GITHUB_EVENT_NAME !== "workflow_dispatch" || !environment.GITHUB_EVENT_PATH) {
     fail("only a GitHub-hosted dispatch of the fixed workflow may execute candidate inputs.");
   }
   const event = await readDiagnosticReport(environment.GITHUB_EVENT_PATH, { maximum: 1024 * 1024 });
+  const trustedSha = requireIsolatedWorkflowRevision(environment, event?.inputs);
   const request = isolatedRequest({ execution: {
     kind: "github-hosted", repository: environment.GITHUB_REPOSITORY, trustedRef: environment.GITHUB_REF,
-    trustedSha: environment.GITHUB_WORKFLOW_SHA,
+    trustedSha,
   }, base: event?.inputs?.base, candidate: event?.inputs?.candidate,
   branch: event?.inputs?.branch, requestId: event?.inputs?.request_id });
   if (event.repository?.full_name !== request.execution.repository ||
@@ -59,6 +68,27 @@ export async function isolatedContext(root, environment = process.env) {
   if ((await readOnlyGit(control, ["rev-parse", "HEAD"])).trim() !== request.execution.trustedSha ||
       control === path.resolve(root)) fail("trusted control and candidate checkouts must be separate.");
   return { request, runId: environment.GITHUB_RUN_ID, attempt: Number(environment.GITHUB_RUN_ATTEMPT), source };
+}
+
+export async function readIsolatedReports(root, directory, plan, context) {
+  await diagnosticDirectory(root, directory);
+  const entries = await readdir(directory, { withFileTypes: true });
+  if (entries.length === 1 && entries[0].name === "report.json") {
+    if (plan.requiredGroups.length !== 1 || !entries[0].isFile() || entries[0].isSymbolicLink()) {
+      fail("a flat artifact must contain one regular report for exactly one required group.");
+    }
+    return [await readDiagnosticReport(path.join(directory, "report.json"))];
+  }
+  if (entries.length !== plan.requiredGroups.length) fail("unexpected worker artifacts.");
+  const reports = [];
+  for (const group of plan.requiredGroups) {
+    const name = `isolated-verification-${group}-attempt-${context.attempt}`;
+    if (!entries.some((entry) => entry.name === name && entry.isDirectory() && !entry.isSymbolicLink())) fail("worker artifact is missing.");
+    const files = await readdir(path.join(directory, name));
+    if (!same(files, ["report.json"])) fail("worker artifact contains unexpected content.");
+    reports.push(await readDiagnosticReport(path.join(directory, name, "report.json")));
+  }
+  return reports;
 }
 
 export function collectIsolatedReports(plan, context, reports, workerOutcome) {
@@ -96,8 +126,27 @@ async function github(endpoint, method, body) {
 }
 
 async function originRepository(root) {
-  return (await readOnlyGit(root, ["remote", "get-url", "origin"])).trim()
-    .replace(/^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)/, "").replace(/\.git$/, "");
+  return githubRepositoryUrl((await readOnlyGit(root, ["remote", "get-url", "origin"])).trim());
+}
+
+function githubRepositoryUrl(url) {
+  const match = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(url);
+  if (!match) fail("the effective Git URL is not an authenticated GitHub.com repository URL.");
+  return match[1];
+}
+
+export async function requireIsolatedPushTarget(root, repository) {
+  const urls = (await readOnlyGit(root, ["remote", "get-url", "--push", "--all", "origin"])).trim().split(/\r?\n/);
+  if (urls.length !== 1 || githubRepositoryUrl(urls[0]) !== repository) {
+    fail("every effective push destination must be the single authorized GitHub repository.");
+  }
+  return urls[0];
+}
+
+export function isolatedPushArguments(request) {
+  request = isolatedRequest(request);
+  return ["--no-pager", "-c", "push.autoSetupRemote=false", "-c", "remote.origin.mirror=false", "push", "--no-follow-tags", "--no-mirror",
+    "--no-force", "--recurse-submodules=no", "origin", `${request.candidate}:${request.branch}`];
 }
 
 export function validateIsolatedEnvelope(value, request, { run, jobs, artifact, repository, trustedRef, candidateRef }) {
@@ -186,12 +235,14 @@ export async function qualifyIsolatedVerification(root, request, runId, director
   return result;
 }
 
-export async function requireIsolatedPublication(root, request, api = github) {
+export async function requireIsolatedPublication(root, request, api = github, expected) {
   request = isolatedRequest(request);
   const state = await inspectWorktree(root);
+  if (expected && !same(state, expected)) fail("workspace or Git configuration changed across the native permission boundary.");
   const origin = await originRepository(root);
   if (origin !== request.execution.repository || state.status || state.source.head !== request.candidate ||
       state.identity.branch !== request.branch || request.branch === request.execution.trustedRef) fail("publication target does not match the authorized candidate branch.");
+  await requireIsolatedPushTarget(root, origin);
   const trusted = await api(`repos/${origin}/git/ref/${request.execution.trustedRef.slice(5)}`);
   if (trusted?.ref !== request.execution.trustedRef || trusted.object?.sha !== request.execution.trustedSha ||
       trusted.object?.type !== "commit") fail("trusted execution branch changed; approval does not transfer to a new version.");
@@ -202,19 +253,21 @@ export async function requireIsolatedPublication(root, request, api = github) {
   return state;
 }
 
-async function publishAndSubmit(root, request, directory, hooks) {
-  const before = await requireIsolatedPublication(root, request);
+async function publishAndSubmit(root, request, directory, hooks, expected) {
+  if (!expected) fail("the pre-permission workspace/configuration snapshot is required.");
+  const before = await requireIsolatedPublication(root, request, github, expected);
   if (!sameHooks(await activeHookSnapshot(root), hooks)) fail("active hooks changed before publication.");
   await diagnosticDirectory(root, directory);
   const intent = path.join(directory, "dispatch-intent.json");
   await writeReport(root, intent, { request, status: "dispatching" });
   // The durable intent is created before either side effect. Recovery inspects it; it never redispatches.
-  await exec("git", ["--no-pager", "push", "origin", `${request.candidate}:${request.branch}`],
+  await exec("git", isolatedPushArguments(request),
     { cwd: root, encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 120000 });
   if (!same(before, await inspectWorktree(root)) || !sameHooks(await activeHookSnapshot(root), hooks)) fail("candidate or hooks changed during push.");
   await github(`repos/${request.execution.repository}/actions/workflows/${encodeURIComponent(ISOLATED_WORKFLOW.split("/").at(-1))}/dispatches`,
     "POST", { ref: request.execution.trustedRef, inputs: {
       candidate: request.candidate, base: request.base, branch: request.branch, request_id: request.requestId,
+      trusted_sha: request.execution.trustedSha,
     } });
   await writeReport(root, path.join(directory, "dispatch.json"), { request, status: "submitted" });
 }
@@ -241,8 +294,9 @@ export async function prepareIsolatedExecution(root, scope, candidate, hooks, im
   }
   const request = isolatedRequest({ execution: scope.task.execution, branch: scope.workspace.branch,
     base: scope.base, candidate: candidate.head, requestId: randomUUID() });
+  await requireIsolatedPushTarget(root, request.execution.repository);
   const file = path.join(directory, "native-isolated-request.json");
-  const body = JSON.stringify({ root, request, directory, hooks, execution: implementation });
+  const body = JSON.stringify({ root, request, directory, hooks, expected: current, execution: implementation });
   await requireVerificationReportPath(root, file);
   await diagnosticDirectory(root, directory);
   const output = await open(file, "wx", 0o600);
@@ -306,7 +360,7 @@ export async function runIsolatedRequest(file, expectedHash) {
   const input = JSON.parse(bytes);
   const { requireCandidateImplementation } = await import("./native-candidate.mjs");
   await requireCandidateImplementation(input.execution);
-  await publishAndSubmit(input.root, isolatedRequest(input.request), input.directory, input.hooks);
+  await publishAndSubmit(input.root, isolatedRequest(input.request), input.directory, input.hooks, input.expected);
   await requireCandidateImplementation(input.execution);
 }
 
@@ -320,6 +374,9 @@ async function main() {
     "run-id": { type: "string" },
   } });
   const root = path.resolve(values.repo);
+  if ([values.prepare, values.plan, values.run, values.collect, values.qualify].filter(Boolean).length !== 1) {
+    fail("select exactly one execution phase.");
+  }
   if (values.prepare) {
     if (!values.request || !values.report || path.basename(values.report) !== "native-isolated-request.json") {
       fail("preparation needs the recorded scope and a fresh native-isolated-request.json destination.");
@@ -341,7 +398,7 @@ async function main() {
       values["run-id"] ?? record?.runId, path.dirname(path.resolve(values.report)));
     return;
   }
-  if ([values.plan, values.run, values.collect].filter(Boolean).length !== 1 || !values.report) fail("select one execution phase and an output.");
+  if (!values.report) fail("select an output for this execution phase.");
   const context = await isolatedContext(root);
   const outputRoot = values.run ? root : path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const plan = await verificationPlan(root, context.request.base, false, { trustedTooling: true });
@@ -368,17 +425,7 @@ async function main() {
     }
   } else {
     const directory = path.resolve(values.inputs ?? "");
-    await diagnosticDirectory(outputRoot, directory);
-    const names = await readdir(directory, { withFileTypes: true });
-    if (names.length !== plan.requiredGroups.length) fail("unexpected worker artifacts.");
-    const reports = [];
-    for (const group of plan.requiredGroups) {
-      const name = `isolated-verification-${group}-attempt-${context.attempt}`;
-      if (!names.some((entry) => entry.name === name && entry.isDirectory() && !entry.isSymbolicLink())) fail("worker artifact is missing.");
-      const files = await readdir(path.join(directory, name));
-      if (!same(files, ["report.json"])) fail("worker artifact contains unexpected content.");
-      reports.push(await readDiagnosticReport(path.join(directory, name, "report.json")));
-    }
+    const reports = await readIsolatedReports(outputRoot, directory, plan, context);
     result = collectIsolatedReports(plan, context, reports, values.outcome);
     await writeReport(outputRoot, path.join(path.dirname(path.resolve(values.report)), "gate.json"), result.report);
   }

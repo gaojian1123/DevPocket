@@ -20,6 +20,10 @@ on:
         description: Unique dispatch identity; do not reuse after an uncertain dispatch
         required: true
         type: string
+      trusted_sha:
+        description: Independently approved control commit; reject a moved dispatch ref before any job runs
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -31,6 +35,7 @@ env:
 
 jobs:
   plan:
+    if: github.workflow_sha == inputs.trusted_sha
     runs-on: windows-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -64,7 +69,7 @@ jobs:
 
   workers:
     needs: plan
-    if: needs.plan.outputs.required == 'true'
+    if: github.workflow_sha == inputs.trusted_sha && needs.plan.outputs.required == 'true'
     name: Isolated ${{ matrix.group }}
     strategy:
       fail-fast: false
@@ -117,7 +122,10 @@ jobs:
         if: matrix.group == 'android'
         run: |
           ../control/scripts/prepare-android.ps1 -ExistingSdk $env:ANDROID_HOME
-          exit $LASTEXITCODE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $sdk = (Resolve-Path ../control/.tools/android-sdk -ErrorAction Stop).Path
+          "ANDROID_HOME=$sdk" >> $env:GITHUB_ENV
+          "ANDROID_SDK_ROOT=$sdk" >> $env:GITHUB_ENV
       - uses: ./control/.github/actions/prepare-native
         if: matrix.group == 'device'
         with:
@@ -147,7 +155,7 @@ jobs:
   gate:
     name: Isolated Required verification
     needs: [plan, workers]
-    if: always()
+    if: always() && github.workflow_sha == inputs.trusted_sha
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
