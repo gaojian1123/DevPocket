@@ -545,6 +545,34 @@ SDK/JDK or emulator. Operational fixture checks additionally need the pinned
 `deployment\azure\probe\requirements-test.txt` dependencies; use an isolated
 environment rather than changing the machine's Python packages.
 
+On macOS, the native command owner uses Python and Darwin responsibility scopes
+instead of the Windows compiler. Each live scope remains responsible for its
+detached descendants until cleanup; nested scopes register with their parent
+before executing a target and must acknowledge cleanup. Signals use the kernel's
+PID-version check. The supervisor preserves the inherited ownership link
+separately from command-level environment overrides. Unstable process snapshots
+are retried and cannot qualify an empty-tree cleanup acknowledgement.
+The in-process emulator recovery dependency is included in both the captured
+controller implementation and the verifier execution-policy fingerprint.
+Unsupported native APIs, unbound parents or missing nested
+cleanup remain failures, not plain process-group fallbacks. Control receipts
+are per-command and are not supplied to the target process.
+
+The complete local gate also supports macOS Android builds and native tests.
+Apple Silicon selects the ARM64 API-35 image; Intel Macs select x86_64. Device
+evidence retains macOS, host architecture and usable HVF acceleration, alongside
+the existing source/APK identities, instrumentation cases and cleanup evidence.
+The account-local emulator pool keeps its default single slot. After a native
+controller crash, the surviving verifier can recover exactly that run's lease
+using the in-memory, command-bound cleanup outcome from its native supervisor.
+Recovery also requires a dead lease heartbeat and free ports. Serialized or
+forged outcomes, another command/run and unconfirmed cleanup cannot recover a
+lease. If the verifier itself is lost, missing process/port observations alone
+still leave the lease blocked. Windows reclamation and the separate hosted
+Linux/KVM path are unchanged. See
+[macOS setup](../README.md#complete-local-verification-on-macos) for prerequisites.
+Local macOS acceptance does not replace Windows/Linux-specific CI coverage.
+
 Before executing changed verification or dependency policy, obtain explicit human
 approval through the pre-execution gate in Step 3 of
 `.github\skills\devpocket-development\SKILL.md`. It covers focused checks,

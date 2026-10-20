@@ -25,6 +25,25 @@ async function fixture(t) {
   return root;
 }
 
+test("macOS host admission retries Unix socket creation contention",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    const root = await fixture(t), directory = path.join(root, "admission"), listen = net.Server.prototype.listen;
+    let collided = false;
+    t.mock.method(net.Server.prototype, "listen", function (options, ...args) {
+      if (!collided && typeof options?.path === "string") {
+        collided = true;
+        queueMicrotask(() => this.emit("error", Object.assign(new Error("Concurrent socket creation."), { code: "EEXIST" })));
+        return this;
+      }
+      return listen.call(this, options, ...args);
+    });
+    const first = await acquireHostVerificationSlot(root, { directory });
+    await first.release(true);
+    assert.equal(collided, true);
+    const next = await acquireHostVerificationSlot(root, { directory });
+    await next.release(true);
+  });
+
 test("SDK preparation initializes matching package metadata without accepting licenses or rewriting existing metadata", async (t) => {
   const root = await fixture(t), entry = await sdkPreparationFixture(root);
   const run = () => exec("pwsh", ["-NoProfile", "-NonInteractive", "-File", entry], { timeout: 30000 });

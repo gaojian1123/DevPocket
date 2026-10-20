@@ -12,6 +12,7 @@ import { PendingRequest, type WireEvent } from "../src/protocol.js";
 import { authenticatedProofFetch, ProofKey } from "../src/local-proof.js";
 import { startRelay } from "../src/relay.js";
 import { provisionHost } from "../src/store.js";
+import { localPipe } from "../../scripts/local-ipc.mjs";
 
 const absolute = z.string().refine((value) => path.isAbsolute(value));
 const Metadata = z.object({
@@ -26,7 +27,8 @@ const Metadata = z.object({
 }).strict();
 export type CliProof = z.infer<typeof Metadata>;
 const endpoint = (runId: string) => process.platform === "win32"
-  ? `\\\\.\\pipe\\devpocket-cli-proof-${runId}` : path.join(os.tmpdir(), `devpocket-proof-${runId}.sock`);
+  ? `\\\\.\\pipe\\devpocket-cli-proof-${runId}` : process.platform === "darwin"
+    ? localPipe(`devpocket-cli-proof-${runId}`) : path.join(os.tmpdir(), `devpocket-proof-${runId}.sock`);
 const normalized = (value: string) => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const binding = (proof: CliProof) => digest(JSON.stringify(proof));

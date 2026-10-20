@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { test } from "node:test";
 import { fork } from "node:child_process";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { stopOwnedProcess } from "../process.mjs";
+import { pathToFileURL } from "node:url";
+import { runCommand, stopOwnedProcess } from "../process.mjs";
 
 const exec = promisify(execFile);
 async function poolFixture(t) {
@@ -40,6 +41,61 @@ async function unavailable(port) {
     if (server.listening) await new Promise((resolve) => server.close(resolve));
   }
 }
+
+test("macOS automatically recovers only the failed native run with an authentic command cleanup outcome",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    const { acquireEmulatorLease, emulatorLeaseStatus, recoverEmulatorLease } = await import("../emulator-resources.mjs");
+    const pool = await poolFixture(t), runId = randomUUID(), directory = path.join(pool.first, ".data", "device");
+    const scripts = path.join(pool.first, "scripts"), program = path.join(pool.first, "lease-fixture.mjs");
+    await mkdir(scripts);
+    const entry = path.join(scripts, "test-android.ps1"), pidFile = path.join(pool.first, "worker.pid");
+    await writeFile(program, [
+      `import {acquireEmulatorLease} from ${JSON.stringify(pathToFileURL(path.resolve("scripts/emulator-resources.mjs")).href)};`,
+      `import {spawnOwnedCommand} from ${JSON.stringify(pathToFileURL(path.resolve("scripts/process.mjs")).href)};`,
+      "import {writeFileSync} from 'node:fs';",
+      `const lease=await acquireEmulatorLease({workspace:process.cwd(),runId:process.argv[2],registryDirectory:${JSON.stringify(pool.registryDirectory)}});`,
+      "await lease.handoff();",
+      "const child=spawnOwnedCommand(process.execPath,['-e','console.log(process.pid);setInterval(()=>{},1000)'],{timeoutMs:30000,graceMs:100});",
+      "child.stderr.resume();",
+      `child.stdout.once('data',bytes=>{writeFileSync(${JSON.stringify(pidFile)},bytes);process.exit(37)});`,
+    ].join("\n"));
+    await writeFile(entry, `param([string]$RunDirectory,[string]$Owner)\n& node '${program.replaceAll("'", "''")}' $Owner\nexit $LASTEXITCODE\n`);
+    const args = ["-NoProfile", "-NonInteractive", "-File", entry, "-RunDirectory", directory, "-Owner", runId];
+    let outcome;
+    await assert.rejects(runCommand("pwsh", args, { cwd: pool.first, timeoutMs: 30000, graceMs: 100 }),
+      (error) => { outcome = error; return error.code === 37 && error.processTreeStopped === true; });
+    const prior = await emulatorLeaseStatus(pool);
+    assert.equal(prior.leases.length, 1, "A missing controller alone must retain its lease.");
+    const recovery = { ...pool, workspace: pool.first, runId, directory };
+    for (const [candidate, command] of [[{ ...outcome }, args], [outcome, [...args, "-Layouts"]],
+      [outcome, args.map((value) => value === runId ? randomUUID() : value)]]) {
+      await assert.rejects(recoverEmulatorLease(recovery, candidate, command), /confirmed cleanup/);
+      assert.equal((await emulatorLeaseStatus(pool)).leases[0].id, prior.leases[0].id);
+    }
+    const result = await recoverEmulatorLease(recovery, outcome, args);
+    assert.deepEqual(result, { status: "released", id: prior.leases[0].id });
+    const pid = Number((await readFile(pidFile, "utf8")).trim());
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    const next = await acquireEmulatorLease({ ...pool, workspace: pool.second, runId: randomUUID() });
+    await next.release();
+  });
+
+test("macOS socket creation contention waits instead of failing the emulator pool",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    const { configureEmulatorLimit } = await import("../emulator-resources.mjs");
+    const pool = await poolFixture(t), listen = net.Server.prototype.listen;
+    let collided = false;
+    t.mock.method(net.Server.prototype, "listen", function (options, ...args) {
+      if (!collided && typeof options?.path === "string") {
+        collided = true;
+        queueMicrotask(() => this.emit("error", Object.assign(new Error("Concurrent socket creation."), { code: "EEXIST" })));
+        return this;
+      }
+      return listen.call(this, options, ...args);
+    });
+    assert.deepEqual(await configureEmulatorLimit(2, pool), { limit: 2, active: 0, waiting: 0 });
+    assert.equal(collided, true);
+  });
 
 test("one shared default slot queues another worktree and reserves ports until explicit handoff", async (t) => {
   const { acquireEmulatorLease } = await import("../emulator-resources.mjs");
@@ -178,6 +234,13 @@ test("a crashed owner is reclaimed only after all its leased ports are unoccupie
   assert.equal(stale.leases[0].ownerAlive, false);
   assert.equal(occupied.listening, true);
   await new Promise((resolve) => occupied.close(resolve));
+  if (process.platform === "darwin") {
+    await assert.rejects(acquireEmulatorLease({
+      ...pool, workspace: pool.second, runId: randomUUID(), timeoutMs: 250,
+    }), { code: "EMULATOR_SLOT_TIMEOUT" });
+    assert.equal((await emulatorLeaseStatus(pool)).leases[0].id, original.id);
+    return;
+  }
   const next = await acquireEmulatorLease({ ...pool, workspace: pool.second, runId: randomUUID() });
   await next.release();
 });
@@ -233,6 +296,12 @@ test("an IPv6-only listener prevents reclaiming a dead owner's port lease", asyn
   assert.equal(status.leases.length, 1);
   assert.equal(status.leases[0].id, original.id);
   await new Promise((resolve) => ipv6.close(resolve));
+  if (process.platform === "darwin") {
+    await assert.rejects(acquireEmulatorLease({
+      ...pool, workspace: pool.second, runId: randomUUID(), timeoutMs: 250,
+    }), { code: "EMULATOR_SLOT_TIMEOUT" });
+    return;
+  }
   const next = await acquireEmulatorLease({ ...pool, workspace: pool.second, runId: randomUUID() });
   await next.release();
 });
@@ -249,6 +318,12 @@ test("killing only a lease controller cannot admit another worktree while its pr
       `if (Get-Process -Id ${worker.pid} -ErrorAction SilentlyContinue) { Stop-Process -Id ${worker.pid} -Force }`]);
   });
   await exec("pwsh", ["-NoProfile", "-Command", `Stop-Process -Id ${holder.child.pid} -Force`]);
+  if (process.platform === "darwin") {
+    await assert.rejects(acquireEmulatorLease({
+      ...pool, workspace: pool.first, runId: randomUUID(), timeoutMs: 250,
+    }), { code: "EMULATOR_SLOT_TIMEOUT" });
+    return;
+  }
   const next = await acquireEmulatorLease({ ...pool, workspace: pool.first, runId: randomUUID(), timeoutMs: 15_000 });
   pool.cleanup(() => next.release());
   const running = await exec("pwsh", ["-NoProfile", "-Command",

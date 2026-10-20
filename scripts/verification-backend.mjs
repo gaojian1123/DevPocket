@@ -9,7 +9,7 @@ const commands = new Map([
   ["schema", "run schema"],
   ["extension-package", "run test:extension-package"],
   ["setup", "run test:setup"],
-  ["azure-tests", "--prefix deployment\\azure test"],
+  ["azure-tests", "--prefix deployment/azure test"],
   ["operations-tests", "run test:operations"],
 ]);
 

@@ -4,11 +4,23 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import net from "node:net";
+import os from "node:os";
 import { once } from "node:events";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { cliProofRequest, cliProofSummary, readCliProof, startCliProof, stopCliProof } from "../integration/cli-proof.js";
 import { HostConfig, startBridge } from "../src/bridge.js";
+
+test("macOS proof control remains authenticated when the system temporary path exceeds the Unix socket limit",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    t.mock.method(os, "tmpdir", () => `/private/tmp/${"long-directory-".repeat(12)}`);
+    const root = path.resolve(".data", "cli-proofs", `test-${randomUUID()}`);
+    const run = await startCliProof(root);
+    t.after(async () => { await run.close(); await rm(root, { recursive: true, force: true }); });
+    assert.equal((await readCliProof(root)).runId, run.proof.runId);
+    await stopCliProof(root);
+    await assert.rejects(readCliProof(root), /closed|unavailable/);
+  });
 
 test("real-CLI proof relays use independent run directories and atomically bound loopback ports", async (t) => {
   const firstRoot = path.resolve(".data", "cli-proofs", `test-${randomUUID()}`);

@@ -1,20 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { ownerProcessFamilyAlive } from "./process.mjs";
+import { commandCleanupConfirmed, ownerProcessFamilyAlive } from "./process.mjs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { homedir } from "node:os";
+import { localPipe } from "./local-ipc.mjs";
 
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const exec = promisify(execFile);
 const portNames = ["console", "device", "adb", "grpc"];
+const pathKey = (value) => process.platform === "win32" ? value.toLowerCase() : value;
 const waitError = () => Object.assign(new Error("Timed out waiting for the shared emulator resource pool."), { code: "EMULATOR_SLOT_TIMEOUT" });
 
 export function defaultEmulatorRegistry() {
+  if (process.platform === "darwin") return path.join(homedir(), ".cache", "DevPocket", "verification", "emulator-pool");
   if (process.platform !== "win32" || !process.env.LOCALAPPDATA) {
     throw new Error("The shared emulator pool requires the Windows account's LOCALAPPDATA directory.");
   }
@@ -23,15 +27,19 @@ export function defaultEmulatorRegistry() {
 
 async function registryRoot(directory) {
   const root = path.resolve(directory ?? defaultEmulatorRegistry());
-  await mkdir(root, { recursive: true });
+  await mkdir(root, { recursive: true, mode: 0o700 });
   const canonical = await realpath(root);
-  if (canonical.toLowerCase() !== root.toLowerCase()) throw new Error("Linked emulator registries are not supported.");
+  if (pathKey(canonical) !== pathKey(root)) throw new Error("Linked emulator registries are not supported.");
+  if (process.platform === "darwin") {
+    const info = await lstat(root);
+    if (info.uid !== process.getuid() || (info.mode & 0o077)) throw new Error("The macOS emulator registry must be private to this user.");
+  }
   return canonical;
 }
 
 function pipeName(root, suffix) {
-  const id = createHash("sha256").update(root.toLowerCase()).digest("hex").slice(0, 32);
-  return `\\\\.\\pipe\\devpocket-emulator-${id}-${suffix}`;
+  const id = createHash("sha256").update(pathKey(root)).digest("hex").slice(0, 32);
+  return localPipe(`devpocket-emulator-${id}-${suffix}`);
 }
 
 async function bindListener(address, response = "") {
@@ -91,7 +99,8 @@ async function withRegistryLock(root, operation, signal, deadline = Date.now() +
     let lock;
     try { lock = await listener(pipeName(root, "registry"), "busy\n"); }
     catch (error) {
-      if (!["EADDRINUSE", "EACCES"].includes(error.code)) throw error;
+      if (!["EADDRINUSE", "EACCES"].includes(error.code) &&
+          !(process.platform === "darwin" && error.code === "EEXIST")) throw error;
       await delay(50, undefined, { signal });
       continue;
     }
@@ -239,11 +248,54 @@ export async function emulatorLeaseStatus({ registryDirectory } = {}) {
   });
 }
 
+export async function recoverEmulatorLease({ workspace, runId, directory, registryDirectory }, outcome, args) {
+  const checkout = await realpath(workspace);
+  const expected = ["-NoProfile", "-NonInteractive", "-File", path.join(checkout, "scripts", "test-android.ps1")];
+  const values = new Map();
+  if (process.platform !== "darwin" || !uuid.test(runId) || !Array.isArray(args) ||
+      expected.some((value, index) => args[index] !== value) ||
+      !commandCleanupConfirmed(outcome, { file: "pwsh", args, cwd: checkout })) {
+    throw new Error("Automatic lease recovery requires the exact native command's confirmed cleanup.");
+  }
+  for (let index = expected.length; index < args.length; index++) {
+    const name = args[index];
+    if (name === "-Layouts" && !values.has(name)) { values.set(name, true); continue; }
+    if (!["-Jdk", "-Sdk", "-Image", "-Owner", "-RunDirectory"].includes(name) || values.has(name) ||
+        typeof args[index + 1] !== "string") throw new Error("Unrecognized native command scope for lease recovery.");
+    values.set(name, args[++index]);
+  }
+  if (values.get("-Owner") !== runId || values.get("-RunDirectory") !== directory ||
+      !path.relative(checkout, directory).startsWith(`.data${path.sep}`) ||
+      path.relative(checkout, directory).split(path.sep).includes("..")) {
+    throw new Error("Native command cleanup does not belong to this device run.");
+  }
+  const root = await registryRoot(registryDirectory);
+  return withRegistryLock(root, async () => {
+    const state = await loadState(root);
+    const selected = state.leases.filter((entry) => entry.workspace === checkout && entry.runId === runId);
+    if (!selected.length) return { status: "not-held" };
+    if (selected.length !== 1) throw new Error("Ambiguous emulator lease ownership; recovery was refused.");
+    const entry = selected[0];
+    if (await alive(root, entry.id) !== false || !await portsFree(entry.ports)) {
+      throw new Error("The confirmed command still has a live lease or occupied ports; recovery was refused.");
+    }
+    const socket = pipeName(root, entry.id);
+    try {
+      const info = await lstat(socket);
+      if (!info.isSocket() || info.uid !== process.getuid()) throw new Error("Recovered lease socket ownership changed.");
+      await unlink(socket);
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+    state.leases = state.leases.filter((lease) => lease.id !== entry.id);
+    await saveState(root, state);
+    return { status: "released", id: entry.id };
+  });
+}
+
 export async function acquireEmulatorLease({
   workspace, runId, registryDirectory, signal, timeoutMs = 15 * 60_000, onWaiting,
   portRange = [5554, 5680],
 }) {
-  if (process.platform !== "win32") throw new Error("Emulator leases currently require Windows named pipes.");
+  if (!["win32", "darwin"].includes(process.platform)) throw new Error("Shared emulator leases require Windows or macOS.");
   if (!uuid.test(runId) || !Number.isFinite(timeoutMs) || timeoutMs <= 0 ||
       !Array.isArray(portRange) || portRange.length !== 2 ||
       portRange.some((port) => !Number.isInteger(port) || port < 1024 || port > 65534) ||
@@ -263,7 +315,7 @@ export async function acquireEmulatorLease({
         if (!state.waiters.some((item) => item.id === owner.id)) state.waiters.push(owner);
         const position = state.waiters.findIndex((item) => item.id === owner.id);
         if (position === 0 && state.leases.length < state.limit &&
-            !state.leases.some((item) => item.workspace.toLowerCase() === owner.workspace.toLowerCase())) {
+            !state.leases.some((item) => pathKey(item.workspace) === pathKey(owner.workspace))) {
           reservation = await reservePorts(state, portRange);
           if (reservation) {
             state.waiters.shift();

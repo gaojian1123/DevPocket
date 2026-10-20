@@ -139,11 +139,12 @@ export function publicDeviceEvidence(value, workerDiagnostics, deviceDiagnostics
     cases: value.cases.map((item) => ({ name: item.name, class: item.class, tests: item.tests, status: item.status })),
     discoveredClasses: [...value.discoveredClasses],
     apkSha256: value.apkSha256, testApkSha256: value.testApkSha256,
-    ...(value.platform === "linux" || value.platform === "win32" ? { platform: value.platform } : {}),
-    ...(value.acceleration?.provider === "KVM" && value.acceleration.usable === true
-      ? { acceleration: { provider: "KVM", usable: true } } : {}),
+    ...(["linux", "win32", "darwin"].includes(value.platform) ? { platform: value.platform } : {}),
+    ...(value.platform === "darwin" && ["arm64", "x64"].includes(value.architecture) ? { architecture: value.architecture } : {}),
+    ...(["KVM", "HVF"].includes(value.acceleration?.provider) && value.acceleration.usable === true
+      ? { acceleration: { provider: value.acceleration.provider, usable: true } } : {}),
     image: typeof value.image === "string" &&
-      /^system-images[\\/]android-\d+(?:\.\d+)?[\\/](?:google_apis(?:_playstore)?|default)[\\/]x86_64$/.test(value.image) ? value.image : "unknown",
+      /^system-images[\\/]android-\d+(?:\.\d+)?[\\/](?:google_apis(?:_playstore)?|default)[\\/](?:x86_64|arm64-v8a)$/.test(value.image) ? value.image : "unknown",
     toolchain: Object.fromEntries(["java", "adb", "emulator", "imageRevision"].map((name) => [name, version(value.toolchain?.[name])])),
     workerDiagnostics, deviceDiagnostics,
   };
@@ -361,6 +362,13 @@ export function validateDeviceEvidence(evidence, plan, platform) {
   if ((platform === "linux" && evidence.platform !== "linux") ||
       (evidence.platform === "linux" &&
         (evidence.acceleration?.provider !== "KVM" || evidence.acceleration.usable !== true))) {
+    throw verificationFault("acceleration-evidence", context);
+  }
+  if (platform === "darwin" && evidence.platform !== "darwin" || evidence.platform === "darwin" &&
+      (evidence.acceleration?.provider !== "HVF" || evidence.acceleration.usable !== true ||
+        !["arm64", "x64"].includes(evidence.architecture) || typeof evidence.image !== "string" ||
+        !/^system-images\/android-\d+(?:\.\d+)?\/(?:google_apis(?:_playstore)?|default)\/(?:x86_64|arm64-v8a)$/.test(evidence.image) ||
+        !evidence.image.endsWith(evidence.architecture === "arm64" ? "/arm64-v8a" : "/x86_64"))) {
     throw verificationFault("acceleration-evidence", context);
   }
   const baseline = baselineDeviceClasses;

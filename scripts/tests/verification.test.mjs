@@ -16,10 +16,31 @@ import { emulatorInputDifference, resolveVerificationExecutable, verificationExe
 import { capturePromotionContext, prepareVerificationTransition } from "../verification-transition.mjs";
 import { WORKFLOW_TEST_FILES } from "../test-workflow.mjs";
 import { committedInputsMatch, committedSourceInputs, commitSourceProjection, sourceInputs } from "../git-state.mjs";
+import { androidImageArchitecture } from "../android-platform.mjs";
 
 const exec = promisify(execFile);
 const entry = path.resolve("scripts/verify.mjs");
 const toolchains = new Map();
+
+test("POSIX Python lookup preserves the virtual environment used by the shell",
+  { skip: process.platform === "win32" }, async (t) => {
+    const root = await repository(t), environment = path.join(root, ".data", "python-env");
+    await exec("python", ["-m", "venv", "--without-pip", environment], { timeout: 30000 });
+    const program = path.join(environment, "bin", "python");
+    const packages = (await exec(program, ["-c", "import sysconfig;print(sysconfig.get_path('purelib'))"])).stdout.trim();
+    await writeFile(path.join(packages, "devpocket_lookup_fixture.py"), "marker = 'venv-only'\n");
+    const previous = process.env.PATH;
+    process.env.PATH = `${path.dirname(program)}${path.delimiter}${previous ?? ""}`;
+    try {
+      const resolved = await resolveVerificationExecutable(root, "python", { shell: true });
+      assert.equal(resolved, program);
+      const result = await exec(resolved, ["-B", "-c", "import devpocket_lookup_fixture as f;print(f.marker)"]);
+      assert.equal(result.stdout.trim(), "venv-only");
+    } finally {
+      if (previous === undefined) delete process.env.PATH;
+      else process.env.PATH = previous;
+    }
+  });
 
 async function repository(t, tools) {
   await mkdir(".data/tests", { recursive: true });
@@ -833,7 +854,7 @@ test("the native adapter preserves literal parameters, mandatory instrumentation
     assert.equal(build.status, "partial");
     assert.equal(build.checks.find((check) => check.id === "android-build").status, "passed");
     assert.equal(build.checks.find((check) => check.id === "android-device").status, "not_run");
-    const image = "system-images/android-35/google_apis/x86_64";
+    const image = `system-images/android-35/google_apis/${androidImageArchitecture()}`;
     const device = await verify(root, ["--group", "device", "--jdk", jdk, "--sdk", sdk, "--image", image]);
     assert.equal(device.exitCode, 1);
     const check = device.report.checks.find((item) => item.id === "android-device");
@@ -1073,7 +1094,9 @@ test("a planning catalogue exception cannot qualify an otherwise valid current a
     { name: "fixture", class: "dev.devpocket.app.FixtureFlowTest", status: "passed", tests: 1 },
   ];
   const evidence = { version: 1, runId: randomUUID(), source: plan.source, status: "passed", cleanup: "completed",
-    evidence: "emulator-test-sdk-adapter", platform: process.platform, acceleration: { provider: "KVM", usable: true },
+    evidence: "emulator-test-sdk-adapter", platform: process.platform, architecture: process.arch,
+    acceleration: { provider: process.platform === "darwin" ? "HVF" : "KVM", usable: true },
+    image: `system-images/android-35/google_apis/${androidImageArchitecture()}`,
     apkSha256: "a".repeat(64), testApkSha256: "b".repeat(64), tests: 4, cases,
     discoveredClasses: cases.map((item) => item.class) };
   const input = path.join(root, ".data", "current.json");
@@ -1474,6 +1497,10 @@ test("a device shard accepts current complete case and APK evidence without fabr
     "const sha=createHash('sha256').update('synthetic APK').digest('hex');",
     "await writeFile(path.join(directory,'device-report.json'),JSON.stringify({version:1,runId,status:'passed',cleanup:'completed',",
     "source:await sourceSnapshot(process.cwd()),evidence:'emulator-test-sdk-adapter',apkSha256:sha,testApkSha256:sha,",
+    `...${JSON.stringify({ platform: process.platform, architecture: process.arch,
+      image: `system-images/android-35/google_apis/${androidImageArchitecture()}`,
+      ...(process.platform === "darwin" ? { acceleration: { provider: "HVF", usable: true } } :
+        process.platform === "linux" ? { acceleration: { provider: "KVM", usable: true } } : {}) })},`,
     "tests:8,cases,discoveredClasses:['dev.devpocket.app.AdaptiveLayoutTest','dev.devpocket.app.FixtureFlowTest','dev.devpocket.app.NativeFlowTest'],",
     "workerDiagnostics:{runId,cleanup:'completed',workers:[{role:'emulator',observation:'exit',context:'during-cleanup',exitCode:0,signal:'none',argv:['private-worker-argv']}]}}));",
   ].join("\n"));
@@ -1767,7 +1794,7 @@ test("unconfirmed process cleanup retains host capacity even before a check star
   const spawn = childProcess.spawn;
   let intercepted = 0;
   const replacement = t.mock.method(childProcess, "spawn", (file, args, options) => {
-    if (args.some((arg) => /owned-command-(?:windows\.mjs|linux\.py)$/.test(arg))) {
+    if (args.some((arg) => /owned-command-(?:windows\.mjs|linux\.py|darwin\.py)$/.test(arg))) {
       intercepted++;
       return spawn(process.execPath, ["-e", "process.exit(0)"], options);
     }
@@ -2382,7 +2409,7 @@ test("native preflight binds tool bytes rather than incidental file timestamps",
   const files = [
     ["jdk", path.join(tools.jdk, "release")],
     ["build-tools", path.join(tools.sdk, "build-tools", "35.0.0", process.platform === "win32" ? "aapt2.exe" : "aapt2")],
-    ["image", path.join(tools.sdk, "system-images", "android-35", "google_apis", "x86_64", "system.img")],
+    ["image", path.join(tools.sdk, "system-images", "android-35", "google_apis", androidImageArchitecture(), "system.img")],
     ["emulator", path.join(tools.sdk, "emulator", process.platform === "win32" ? "emulator.exe" : "emulator")],
   ];
   for (const [, file] of files) await fileSystem.utimes(file, 1, 1);
@@ -2583,7 +2610,7 @@ test("script and batch locators cannot inherit direct Node identity through a ph
         });
         const observe = t.mock.method(childProcess, "spawn", (program, args, options) => {
           const child = originalSpawn(program, args, options);
-          if (options?.cwd === root && args.some((arg) => /owned-command-(?:windows\.mjs|linux\.py)$/.test(arg))) {
+          if (options?.cwd === root && args.some((arg) => /owned-command-(?:windows\.mjs|linux\.py|darwin\.py)$/.test(arg))) {
             const write = child.stdin.write;
             let first = true;
             child.stdin.write = function (chunk, ...rest) {
@@ -2795,9 +2822,10 @@ test("a changed captured execution policy cannot resume an earlier successful ru
     if (/\.(?:mjs|ps1|py|cs)$/.test(name)) await copyFile(path.resolve("scripts", name), path.join(copied, name));
   }
   const copiedPolicy = await import(pathToFileURL(path.join(copied, "verification-preflight.mjs")).href);
+  await import(pathToFileURL(path.join(copied, "verification-android.mjs")).href);
   assert.equal(await copiedPolicy.verificationExecutionPolicy(), first.policy, "The copied policy must match before mutation.");
   for (const name of ["test-workflow.mjs", "verification-tooling.mjs", "verification-admission.mjs",
-    "verification-ci.mjs", "verification-ci-artifact.ps1", "development-policy.mjs"]) await t.test(name, async () => {
+    "verification-ci.mjs", "verification-ci-artifact.ps1", "development-policy.mjs", "emulator-resources.mjs"]) await t.test(name, async () => {
     const file = path.join(copied, name), original = await readFile(file);
     try {
       await writeFile(file, Buffer.concat([original, Buffer.from("\n")]));
@@ -2856,7 +2884,7 @@ test("a native candidate transition reuses content-only execution across Git nor
   const spawn = childProcess.spawn;
   const observation = t.mock.method(childProcess, "spawn", (file, args, options) => {
     const child = spawn(file, args, options);
-    if (options?.cwd === root && args.some((arg) => /owned-command-(?:windows\.mjs|linux\.py)$/.test(arg))) {
+    if (options?.cwd === root && args.some((arg) => /owned-command-(?:windows\.mjs|linux\.py|darwin\.py)$/.test(arg))) {
       const write = child.stdin.write;
       let initial = true;
       child.stdin.write = function (chunk, ...rest) {
@@ -3217,7 +3245,10 @@ test("candidate conversion rejects forged receipts, changed hooks, index modes, 
     const { root, base, counts } = await recoveryFixture(t, { candidate: true });
     const first = await recordedVerification(root, base, { promotion: true });
     if (change === "source") await writeFile(path.join(root, "backend", "tests", "change.test.ts"), "// different tested bytes\n");
-    if (change === "mode") await exec("git", ["update-index", "--chmod=+x", "fixture.mjs"], { cwd: root });
+    if (change === "mode") {
+      if (process.platform !== "win32") await chmod(path.join(root, "fixture.mjs"), 0o755);
+      await exec("git", ["update-index", "--chmod=+x", "fixture.mjs"], { cwd: root });
+    }
     const request = await commitFixtureCandidate(root);
     const before = await counts();
     await assert.rejects(prepareVerificationTransition(root, await verificationPlan(root, base), {

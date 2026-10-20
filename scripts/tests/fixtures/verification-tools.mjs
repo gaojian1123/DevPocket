@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { chmod, copyFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { androidImageArchitecture } from "../../android-platform.mjs";
 
 const exec = promisify(execFile);
 
@@ -120,7 +121,8 @@ export async function windowsNodeLauncher(root, base) {
 
 export async function verificationTools(root, {
   native = false, operations = false, capturePython = false, jdk, sdk, emulatorNoise = false, emulatorVersion = "35.0.1",
-  emulatorAcceleration = process.platform === "win32" ? "WHPX is installed and usable" : "KVM is installed and usable",
+  emulatorAcceleration = process.platform === "darwin" ? "accel:\n0\nHypervisor.Framework OS X Version 15.0\naccel"
+    : process.platform === "win32" ? "WHPX is installed and usable" : "KVM is installed and usable",
 } = {}) {
   const directory = path.join(root, ".data", "synthetic-tools");
   await mkdir(directory, { recursive: true });
@@ -184,7 +186,8 @@ export async function verificationTools(root, {
     await putTool(path.join(sdk, "emulator", executable("emulator")));
     for (const relative of ["platforms/android-35/android.jar", "platforms/android-35/package.xml",
       "build-tools/35.0.0/package.xml", "licenses/android-sdk-license",
-      "system-images/android-35/google_apis/x86_64/system.img", "system-images/android-35/google_apis/x86_64/source.properties"]) {
+      `system-images/android-35/google_apis/${androidImageArchitecture()}/system.img`,
+      `system-images/android-35/google_apis/${androidImageArchitecture()}/source.properties`]) {
       const file = path.join(sdk, ...relative.split("/"));
       await mkdir(path.dirname(file), { recursive: true });
       await writeFile(file, "synthetic SDK input\n");

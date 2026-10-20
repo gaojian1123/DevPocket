@@ -709,10 +709,55 @@ even when `GRADLE_USER_HOME` was inherited. The caller's environment and working
 directory are restored after success or failure; no machine/user environment or
 other SDK installation is changed. Add `-Instrumentation` to assemble the test
 APK as well; assembly is not device acceptance.
-On Linux, PowerShell 7 invokes the same pinned wrapper JAR through the selected
+On Linux and macOS, PowerShell 7 invokes the same pinned wrapper JAR through the selected
 `bin/java`; Windows keeps `gradlew.bat`. The Linux CI job uses its existing SDK
 and stable packages with already accepted runner licenses, not the Windows
 preparation script or automatic license acceptance.
+
+### Complete local verification on macOS
+
+Use Node 24, PowerShell 7, Python 3.12 or newer, Git with SSH signing support,
+JDK 21 and an Android SDK with platform 35, build-tools 35.0.0, platform-tools
+and the emulator. Accept the SDK and system-image licenses yourself. Use Android
+Studio or Google's SDK manager on Mac; `prepare-android.ps1` is the Windows
+bootstrap, not a macOS installer. No Xcode simulator is involved.
+
+Apple Silicon uses `system-images;android-35;google_apis;arm64-v8a`; Intel Macs
+use `system-images;android-35;google_apis;x86_64`. The device gate requires a
+successful `emulator -accel-check` with Hypervisor.Framework. It creates a
+disposable AVD, private ADB server and loopback fixture, runs instrumentation and
+the selected layouts, and confirms owned-process cleanup before releasing them.
+It does not select an existing emulator, phone, GitHub Copilot session or cloud relay.
+
+After restoring the root and `deployment/azure` lockfiles, use a private Python
+environment with `deployment/azure/probe/requirements-test.txt`. Put that
+environment's `bin` directory on the current shell's `PATH` so both `python` and
+`python3` resolve to it. Point `DEVPOCKET_PROBE_PYTHON` at its `python` executable.
+PowerShell and Node must also be on `PATH`; no global configuration is required.
+With JDK and SDK stored under the ignored `.tools` defaults:
+
+```sh
+npm run verify -- -Base BASE_COMMIT -All
+```
+
+Pass `-Jdk /absolute/jdk/home` and `-Sdk /absolute/android/sdk` for other locations.
+The same entry runs tooling, backend, Android build/unit/lint and actual device
+checks. Platform-specific Windows/Linux tests retain their native hosts; a Mac
+run is not evidence that those OS implementations were exercised.
+
+The macOS command owner uses kernel responsibility scopes and PID-version-bound
+signals, including nested command ownership; missing native APIs fail closed.
+Command-level environment overrides cannot discard the inherited supervision
+link. Unstable process observations are retried; if they cannot be established,
+cleanup remains unconfirmed rather than being treated as an empty process tree.
+If the native test controller crashes while its supervising verifier is alive,
+the verifier automatically releases that run's lease only after the exact
+command's process-tree cleanup is confirmed, its heartbeat is gone and its
+ports are free. Copied reports or another command's successful cleanup cannot
+supply that proof. If the supervising verifier also crashes or cleanup is
+unconfirmed, the lease stays blocked for inspection; a dead PID and free ports
+alone are insufficient. Do not delete the shared registry or claim a blocked
+run passed.
 
 Android CI retains the machine report and a bounded, allowlisted diagnostic
 projection on failure, not the raw build/JVM/lint log. See

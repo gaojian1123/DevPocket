@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { access, mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { ownedProcessCleanupConfirmed, runCommand, spawnOwnedCommand, stopOwnedProcess } from "./process.mjs";
 import { cleanDeviceRun } from "./device-run.mjs";
 import { acquireEmulatorLease } from "./emulator-resources.mjs";
@@ -10,6 +11,7 @@ import { createNativeLifecycleCapture } from "./native-lifecycle.mjs";
 import { createBoundedWorkerLog, writeBoundedWorkerLog } from "./bounded-worker-log.mjs";
 import { diagnosticError, contextualFailure, failureDetails } from "./diagnostic-errors.mjs";
 import { waitForAndroidHome } from "./android-home.mjs";
+import { androidImageArchitecture, androidImagePattern, macOSAcceleration } from "./android-platform.mjs";
 
 export function createLiveDeviceGuard(workers, inspect, signal) {
   const controller = new AbortController();
@@ -51,7 +53,7 @@ export function trackManagedCommand(child, output, platform = process.platform, 
   const observation = ["adb", "emulator"].includes(role) ? createWorkerObservation(role, signal, native) : undefined;
   const state = { child, settled: false, error: undefined, done: undefined,
     role: ["adb", "emulator", "fixture"].includes(role) ? role : "unknown",
-    requiresCleanupConfirmation: ["win32", "linux"].includes(platform), cleanupConfirmed: false, workerObservation: observation,
+    requiresCleanupConfirmation: ["win32", "linux", "darwin"].includes(platform), cleanupConfirmed: false, workerObservation: observation,
     logInfo: () => output.logInfo?.(), logError: undefined, nativeCaptureError: undefined };
   output.on("error", (error) => {
     state.logError = error;
@@ -78,7 +80,7 @@ export function trackManagedCommand(child, output, platform = process.platform, 
   child.stdin.on("error", (error) => { if (error.code !== "EPIPE") state.error = error; });
   state.done = new Promise((resolve) => child.once("close", () => {
     state.settled = true;
-    state.cleanupConfirmed = platform === "win32" ? ownedProcessCleanupConfirmed(child)
+    state.cleanupConfirmed = ["win32", "darwin"].includes(platform) ? ownedProcessCleanupConfirmed(child)
       : tail.trimEnd().split(/\r?\n/).at(-1) === "DEVPOCKET_OWNED_TREE_STOPPED";
     if (output.destroyed) resolve();
     else {
@@ -127,6 +129,13 @@ export async function waitForAndroid(check, label, timeoutMs, processState, sign
 }
 
 async function ownsListener(port, rootPid, signal) {
+  if (process.platform === "darwin") {
+    const result = await runCommand("python3", ["-B",
+      fileURLToPath(new URL("./owned-command-darwin.py", import.meta.url)),
+      "--listener", String(port), String(rootPid)], { timeoutMs: 20_000, signal });
+    if (!["owned", "not-owned"].includes(result.stdout.trim())) throw new Error("Invalid macOS listener ownership evidence.");
+    return result.stdout.trim() === "owned";
+  }
   if (process.platform === "linux") {
     signal?.throwIfAborted();
     return ownsLinuxListener(port, rootPid);
@@ -155,8 +164,9 @@ async function createRunDirectory(root, directory) {
 }
 
 export async function withAndroidEmulator(options, operation) {
-  if (!["win32", "linux"].includes(process.platform)) throw new Error("Android emulator coordination requires Windows or Linux.");
+  if (!["win32", "linux", "darwin"].includes(process.platform)) throw new Error("Android emulator coordination requires Windows, Linux or macOS.");
   const linux = process.platform === "linux";
+  const windows = process.platform === "win32";
   const root = path.resolve(options.repo ?? process.cwd());
   const directory = path.resolve(root, options.directory ?? path.join(".data", "android-runs", randomUUID()));
   const runId = options.owner ?? randomUUID();
@@ -169,8 +179,9 @@ export async function withAndroidEmulator(options, operation) {
   const sdk = path.resolve(options.sdk ?? process.env.DEVPOCKET_ANDROID_SDK ?? path.join(root, ".tools", "android-sdk"));
   const emulatorSdk = path.resolve(options.emulatorSdk ?? process.env.DEVPOCKET_EMULATOR_SDK ?? sdk);
   const jdk = path.resolve(options.jdk ?? process.env.DEVPOCKET_JDK ?? path.join(root, ".tools", "jdk-21"));
+  const architecture = androidImageArchitecture();
   const image = (options.image ?? process.env.DEVPOCKET_ANDROID_IMAGE ??
-    path.join("system-images", "android-35", "google_apis", "x86_64")).replaceAll("\\", path.sep);
+    path.join("system-images", "android-35", "google_apis", architecture)).replaceAll("\\", path.sep);
   const identity = { root, directory, runId, sdk, emulatorSdk, jdk, image };
   const manage = (file, args, env, name) => {
     if (closing) throw new Error("The emulator run is closing.");
@@ -184,13 +195,13 @@ export async function withAndroidEmulator(options, operation) {
   try {
     signal?.throwIfAborted();
     diagnostics?.stage("resources", "image");
-    if (!/^system-images[\\/]android-\d+(?:\.\d+)?[\\/](?:google_apis(?:_playstore)?|default)[\\/]x86_64$/.test(image)) {
-      throw Object.assign(new Error("Image must name an installed x86_64 SDK system-image directory."), { diagnosticCode: "resource-unavailable" });
+    if (androidImagePattern.exec(image)?.[1] !== architecture) {
+      throw Object.assign(new Error(`Image must name an installed ${architecture} SDK system-image directory.`), { diagnosticCode: "resource-unavailable" });
     }
     const imageDir = path.resolve(emulatorSdk, image);
-    const executable = path.join(emulatorSdk, "emulator", linux ? "emulator" : "emulator.exe");
-    const adb = path.join(emulatorSdk, "platform-tools", linux ? "adb" : "adb.exe");
-    const javaPath = path.join(jdk, "bin", linux ? "java" : "java.exe");
+    const executable = path.join(emulatorSdk, "emulator", windows ? "emulator.exe" : "emulator");
+    const adb = path.join(emulatorSdk, "platform-tools", windows ? "adb.exe" : "adb");
+    const javaPath = path.join(jdk, "bin", windows ? "java.exe" : "java");
     Object.assign(identity, { imageDir, executable, adbPath: adb, javaPath });
     for (const [file, operation] of [[executable, "emulator"], [adb, "adb"], [path.join(imageDir, "system.img"), "image"]]) {
       diagnostics?.operation(operation);
@@ -219,9 +230,10 @@ export async function withAndroidEmulator(options, operation) {
     await mkdir(avd);
     const api = /android-(\d+)/.exec(image)[1];
     await writeFile(path.join(avdHome, `${identity.avdName}.ini`), `avd.ini.encoding=UTF-8\npath=${avd}\ntarget=android-${api}\n`);
-    const gpu = linux ? "swiftshader" : "swiftshader_indirect";
+    const gpu = windows ? "swiftshader_indirect" : "swiftshader";
     await writeFile(path.join(avd, "config.ini"), [
-      `AvdId=${identity.avdName}`, `avd.ini.displayname=${identity.avdName}`, "abi.type=x86_64", "hw.cpu.arch=x86_64",
+      `AvdId=${identity.avdName}`, `avd.ini.displayname=${identity.avdName}`, `abi.type=${architecture}`,
+      `hw.cpu.arch=${architecture === "arm64-v8a" ? "arm64" : "x86_64"}`,
       "hw.cpu.ncore=4", "hw.ramSize=4096", "hw.lcd.width=1080", "hw.lcd.height=2400", "hw.lcd.density=420",
       "hw.keyboard=yes", "hw.mainKeys=no", "hw.gpu.enabled=yes", `hw.gpu.mode=${gpu}`,
       "disk.dataPartition.size=2G", `image.sysdir.1=${imageDir}${path.sep}`, "tag.id=google_apis",
@@ -248,6 +260,7 @@ export async function withAndroidEmulator(options, operation) {
     diagnostics?.stage("acceleration", "verify");
     const acceleration = await runCommand(executable, ["-accel-check"], { env, timeoutMs: 30_000, signal });
     if (linux) identity.acceleration = linuxAcceleration(acceleration.stdout + acceleration.stderr);
+    if (process.platform === "darwin") identity.acceleration = macOSAcceleration(acceleration.stdout + acceleration.stderr);
     await lease.handoff();
     diagnostics?.stage("adb", "start");
     const adbServer = manage(adb, ["-L", `tcp:${lease.ports.adb}`, "nodaemon", "server"], env, "adb");
@@ -255,9 +268,9 @@ export async function withAndroidEmulator(options, operation) {
       "Owned ADB listener", 30_000, adbServer, signal);
     diagnostics?.stage("boot", "start");
     const emulator = manage(executable, ["-avd", identity.avdName, "-port", String(lease.ports.console),
-      "-grpc", String(lease.ports.grpc), linux ? "-grpc-use-token" : "-grpc-use-jwt", "-no-window", "-no-audio",
+      "-grpc", String(lease.ports.grpc), windows ? "-grpc-use-jwt" : "-grpc-use-token", "-no-window", "-no-audio",
       "-no-boot-anim", "-no-snapshot", "-no-metrics", "-show-kernel", "-gpu", gpu,
-      ...(linux ? ["-accel", "on"] : [])], env, "emulator");
+      ...(!windows ? ["-accel", "on"] : [])], env, "emulator");
     const bootDeadline = Date.now() + 600_000;
     guard = createLiveDeviceGuard([adbServer, emulator], async () => {
       if (!await ownsListener(lease.ports.adb, adbServer.child.pid, guard.signal)) {
