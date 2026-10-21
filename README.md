@@ -750,6 +750,10 @@ signals, including nested command ownership; missing native APIs fail closed.
 Command-level environment overrides cannot discard the inherited supervision
 link. Unstable process observations are retried; if they cannot be established,
 cleanup remains unconfirmed rather than being treated as an empty process tree.
+Kernel inspection refusals get bounded retries, not an assumed process exit.
+Empty-tree confirmation requires consecutive stable scans, including after a
+parent disappears or becomes a zombie. A failed nested supervisor still triggers
+cleanup of other verifiably owned processes, but never a successful receipt.
 If the native test controller crashes while its supervising verifier is alive,
 the verifier automatically releases that run's lease only after the exact
 command's process-tree cleanup is confirmed, its heartbeat is gone and its
@@ -758,6 +762,13 @@ supply that proof. If the supervising verifier also crashes or cleanup is
 unconfirmed, the lease stays blocked for inspection; a dead PID and free ports
 alone are insufficient. Do not delete the shared registry or claim a blocked
 run passed.
+
+Registry mutations use a private file lock released by the kernel when its
+controller exits; this does not itself release any emulator lease. The macOS
+registry format is version 2. An idle version-1 registry upgrades under both
+locks, preserving its configured limit. Existing leases/waiters or an abandoned
+legacy migration socket block the upgrade for inspection; unknown locks and
+retained records are never deleted automatically. Windows keeps version 1.
 
 Android CI retains the machine report and a bounded, allowlisted diagnostic
 projection on failure, not the raw build/JVM/lint log. See

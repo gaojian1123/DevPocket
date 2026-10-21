@@ -552,6 +552,9 @@ before executing a target and must acknowledge cleanup. Signals use the kernel's
 PID-version check. The supervisor preserves the inherited ownership link
 separately from command-level environment overrides. Unstable process snapshots
 are retried and cannot qualify an empty-tree cleanup acknowledgement.
+Fork/exit and zombie transitions require a new observation; two stable empty
+scans confirm completion. Nested cleanup failures are retained while the
+supervisor attempts to stop all other verifiably owned processes.
 The in-process emulator recovery dependency is included in both the captured
 controller implementation and the verifier execution-policy fingerprint.
 Unsupported native APIs, unbound parents or missing nested
@@ -568,7 +571,15 @@ using the in-memory, command-bound cleanup outcome from its native supervisor.
 Recovery also requires a dead lease heartbeat and free ports. Serialized or
 forged outcomes, another command/run and unconfirmed cleanup cannot recover a
 lease. If the verifier itself is lost, missing process/port observations alone
-still leave the lease blocked. Windows reclamation and the separate hosted
+still leave the lease blocked. macOS registry mutation uses a kernel-released
+file lock whose open description stays with the controller, not a persistent
+helper process. The version-2 registry prevents older socket-only writers from
+mutating it. Migration holds both locks and requires an empty version-1 registry;
+it preserves the configured limit and refuses retained leases/waiters or an
+unknown legacy lock rather than removing them. A crash before migration commits
+may therefore require inspection, while version-2 controller crashes release
+the registry lock without discarding lease records.
+Windows reclamation and the separate hosted
 Linux/KVM path are unchanged. See
 [macOS setup](../README.md#complete-local-verification-on-macos) for prerequisites.
 Local macOS acceptance does not replace Windows/Linux-specific CI coverage.

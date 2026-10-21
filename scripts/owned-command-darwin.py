@@ -7,6 +7,7 @@ import re
 import select
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -47,13 +48,19 @@ class Darwin:
         self.lib.responsibility_get_pid_responsible_for_pid.argtypes = [ctypes.c_int]
 
     def identity(self, pid):
-        value = ProcessInfo()
-        size = self.lib.proc_pidinfo(pid, 18, 0, ctypes.byref(value), ctypes.sizeof(value))
-        if size == 0 and ctypes.get_errno() in (errno.ESRCH, errno.ENOENT):
-            return None
-        if size != ctypes.sizeof(value) or value.bsd.pid != pid or not value.identity.unique:
-            raise RuntimeError("macOS process identity is incomplete.")
-        return value
+        for attempt in range(8):
+            value = ProcessInfo()
+            size = self.lib.proc_pidinfo(pid, 18, 0, ctypes.byref(value), ctypes.sizeof(value))
+            code = ctypes.get_errno()
+            if size == 0 and code in (errno.ESRCH, errno.ENOENT):
+                return None
+            # PID creation/reaping can briefly refuse inspection; a refusal is never proof of exit.
+            if size == 0 and code in (errno.EPERM, errno.EINTR, errno.EAGAIN) and attempt < 7:
+                time.sleep(0.001)
+                continue
+            if size != ctypes.sizeof(value) or value.bsd.pid != pid or not value.identity.unique:
+                raise RuntimeError(f"macOS process identity is incomplete (result {size}, OS error {code}).")
+            return value
 
     def processes(self):
         for count in (4096, 16384, 65536):
@@ -81,26 +88,59 @@ class Darwin:
         return current is not None and current.identity.unique == info.identity.unique and current.bsd.status != 5
 
     def owned(self):
-        for _ in range(3):
+        zombies = set()
+        empty = 0
+        for _ in range(8):
             result = []
             stable = True
+            observed_zombies = set()
             for pid in self.processes():
                 if pid == os.getpid():
                     continue
                 info = self.identity(pid)
-                if info is None or info.bsd.status == 5 or self.responsible(pid) != os.getpid():
+                if info is None:
+                    stable = False
                     continue
+                identity = (pid, info.identity.unique, info.identity.version)
+                if info.bsd.status == 5:
+                    observed_zombies.add(identity)
+                    stable = stable and identity in zombies
+                    continue
+                responsible = self.responsible(pid)
                 current = self.identity(pid)
                 if current is None or current.bsd.status == 5:
+                    stable = False
+                    if current is not None:
+                        observed_zombies.add((pid, current.identity.unique, current.identity.version))
                     continue
                 if (current.identity.unique != info.identity.unique or
-                        current.identity.version != info.identity.version):
+                        current.identity.version != info.identity.version or responsible <= 0):
                     stable = False
-                    break
-                result.append(info)
-            if stable:
+                    continue
+                if responsible == os.getpid():
+                    result.append(info)
+            zombies = observed_zombies
+            if result:
                 return result
+            # A disappearing parent can fork after enumeration; confirm emptiness with another full scan.
+            empty = empty + 1 if stable else 0
+            if empty >= 2:
+                return []
         raise RuntimeError("macOS process ownership did not stabilize; cleanup is unconfirmed.")
+
+
+def registry_lock():
+    import fcntl
+
+    info = os.fstat(3)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+            info.st_mode & 0o077 or info.st_nlink != 1 or info.st_size != 0):
+        raise ValueError("The macOS registry lock must be a private regular file.")
+    try:
+        fcntl.flock(3, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return 75
+    return 0
 
 
 def bootstrap(native):
@@ -253,29 +293,47 @@ class Scope:
     def cleanup(self, child):
         deadline = time.monotonic() + 15
         signalled = set()
+        failure = None
         while True:
-            self.poll()
+            try:
+                if child is not None:
+                    child.poll()
+                self.poll()
+            except (OSError, ValueError, RuntimeError) as error:
+                failure = failure or error
             protected = set()
             pending = False
             for pid, entry in self.nested.items():
-                if self.native.live(entry["identity"]):
-                    protected.add(entry["identity"].bsd.parent)
+                try:
+                    if self.native.live(entry["identity"]):
+                        protected.add(entry["identity"].bsd.parent)
+                        pending = True
+                        if pid not in signalled:
+                            self.native.send(entry["identity"], signal.SIGTERM)
+                            signalled.add(pid)
+                    elif not entry["clean"]:
+                        failure = failure or RuntimeError("A nested macOS owner exited without confirming cleanup.")
+                except (OSError, ValueError, RuntimeError) as error:
+                    failure = failure or error
                     pending = True
-                    if pid not in signalled:
-                        self.native.send(entry["identity"], signal.SIGTERM)
-                        signalled.add(pid)
-                elif not entry["clean"]:
-                    raise RuntimeError("A nested macOS owner exited without confirming cleanup.")
-            owned = self.native.owned()
-            for info in owned:
+                    protected.add(entry["identity"].bsd.parent)
+            owned = None
+            try:
+                owned = self.native.owned()
+            except (OSError, ValueError, RuntimeError) as error:
+                failure = failure or error
+            for info in owned or []:
                 if info.bsd.pid not in protected:
-                    self.native.send(info, signal.SIGKILL)
-            if child is not None:
-                child.poll()
-            if not owned and not pending:
+                    try:
+                        self.native.send(info, signal.SIGKILL)
+                    except (OSError, ValueError, RuntimeError) as error:
+                        failure = failure or error
+            if owned == [] and not pending:
+                if failure is not None:
+                    raise failure
                 return
             if time.monotonic() >= deadline:
-                raise RuntimeError("Owned macOS processes did not confirm exit.")
+                raise RuntimeError("Owned macOS processes did not confirm exit.") from failure
             time.sleep(0.02)
 
     def close(self, clean):
@@ -391,6 +449,8 @@ def supervise(native, bootstrap_pid):
 
 def main():
     native = Darwin()
+    if sys.argv[1:] == ["--registry-lock"]:
+        return registry_lock()
     if sys.argv[1:] == ["--probe"]:
         identity = native.identity(os.getpid())
         if identity is None:

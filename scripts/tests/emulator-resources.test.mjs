@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { test } from "node:test";
-import { fork } from "node:child_process";
+import { fork, spawn } from "node:child_process";
+import { once } from "node:events";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { runCommand, stopOwnedProcess } from "../process.mjs";
+import { localPipe } from "../local-ipc.mjs";
 
 const exec = promisify(execFile);
 async function poolFixture(t) {
@@ -95,6 +97,93 @@ test("macOS socket creation contention waits instead of failing the emulator poo
     });
     assert.deepEqual(await configureEmulatorLimit(2, pool), { limit: 2, active: 0, waiting: 0 });
     assert.equal(collided, true);
+  });
+
+test("macOS registry locking recovers a killed lock holder without losing live leases",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    const { acquireEmulatorLease, configureEmulatorLimit, emulatorLeaseStatus } = await import("../emulator-resources.mjs");
+    const pool = await poolFixture(t);
+    await configureEmulatorLimit(2, pool);
+    const first = await acquireEmulatorLease({ ...pool, workspace: pool.first, runId: randomUUID() });
+    pool.cleanup(() => first.release());
+    const key = createHash("sha256").update(pool.registryDirectory).digest("hex").slice(0, 32);
+    const legacySocket = localPipe(`devpocket-emulator-${key}-registry`);
+    const source = `import fs from "node:fs/promises";import path from "node:path";import {syncBuiltinESMExports} from "node:module";
+      const write=fs.writeFile;fs.writeFile=async function(file,...args){
+        if(path.dirname(file)===${JSON.stringify(pool.registryDirectory)}&&path.basename(file).startsWith("registry-")){
+          console.log("locked");await new Promise(()=>{});return;
+        }
+        return write.call(this,file,...args);
+      };syncBuiltinESMExports();
+      const {configureEmulatorLimit}=await import(${JSON.stringify(pathToFileURL(path.resolve("scripts/emulator-resources.mjs")).href)});
+      setInterval(()=>{},1000);await configureEmulatorLimit(3,{registryDirectory:${JSON.stringify(pool.registryDirectory)}});`;
+    const holder = spawn(process.execPath, ["--input-type=module", "-e", source], { stdio: ["ignore", "pipe", "pipe"] });
+    const exited = once(holder, "exit");
+    holder.stderr.resume();
+    pool.cleanup(async () => {
+      if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
+      await exited;
+      try {
+        const info = await lstat(legacySocket);
+        assert.equal(info.isSocket(), true);
+        await unlink(legacySocket);
+      } catch (error) { if (error.code !== "ENOENT") throw error; }
+    });
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Registry holder did not enter its critical section.")), 10000);
+      let output = "";
+      holder.stdout.on("data", (bytes) => {
+        output += bytes;
+        if (output.includes("locked\n")) { clearTimeout(timer); resolve(); }
+      });
+    });
+    holder.kill("SIGKILL");
+    await exited;
+    await assert.rejects(access(legacySocket), { code: "ENOENT" },
+      "A crashed registry operation must not leave a pathname lock blocking recovery.");
+    const state = await emulatorLeaseStatus(pool);
+    assert.equal(state.limit, 2);
+    assert.equal(state.leases.length, 1);
+    assert.equal(state.leases[0].id, first.id);
+    const second = await acquireEmulatorLease({ ...pool, workspace: pool.second, runId: randomUUID(), timeoutMs: 5000 });
+    await second.release();
+  });
+
+test("macOS upgrades only an idle legacy registry and preserves its limit and retained records",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    const { emulatorLeaseStatus } = await import("../emulator-resources.mjs");
+    const pool = await poolFixture(t), file = path.join(pool.registryDirectory, "registry.json");
+    await mkdir(pool.registryDirectory, { mode: 0o700 });
+    await writeFile(file, JSON.stringify({ version: 1, limit: 3, leases: [], waiters: [] }), { mode: 0o600 });
+    assert.equal((await emulatorLeaseStatus(pool)).limit, 3);
+    assert.equal(JSON.parse(await readFile(file, "utf8")).version, 2);
+    const owner = { id: randomUUID(), runId: randomUUID(), workspace: pool.first, pid: process.pid };
+    for (const entries of [
+      { leases: [{ ...owner, ports: { console: 32500, device: 32501, adb: 32502, grpc: 32503 } }], waiters: [] },
+      { leases: [], waiters: [owner] },
+    ]) {
+      const original = JSON.stringify({ version: 1, limit: 3, ...entries });
+      await writeFile(file, original);
+      await assert.rejects(emulatorLeaseStatus(pool), /legacy macOS emulator registry must be idle/);
+      assert.equal(await readFile(file, "utf8"), original);
+    }
+  });
+
+test("macOS registry locks reject linked and non-private files before changing registry state",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    const { emulatorLeaseStatus } = await import("../emulator-resources.mjs");
+    const pool = await poolFixture(t), file = path.join(pool.registryDirectory, "registry.lock");
+    const target = path.join(pool.first, "untouched");
+    await mkdir(pool.registryDirectory, { mode: 0o700 });
+    await writeFile(target, "unchanged");
+    await symlink(target, file);
+    await assert.rejects(emulatorLeaseStatus(pool), { code: "ELOOP" });
+    assert.equal(await readFile(target, "utf8"), "unchanged");
+    await unlink(file);
+    await writeFile(file, "", { mode: 0o644 });
+    await chmod(file, 0o644);
+    await assert.rejects(emulatorLeaseStatus(pool), /private file identity/);
+    await assert.rejects(access(path.join(pool.registryDirectory, "registry.json")), { code: "ENOENT" });
   });
 
 test("one shared default slot queues another worktree and reserves ports until explicit handoff", async (t) => {
