@@ -199,6 +199,77 @@ test("credential-field aliases are removed before both transport and reference r
   }
 });
 
+test("base64url token bodies are completely removed from transported and retained components", () => {
+  const bodies = ["-" + "A".repeat(42), "B".repeat(20) + "-" + "C".repeat(22),
+    "D".repeat(42) + "-", "_" + "E".repeat(20) + "-" + "F".repeat(20) + "_"];
+  for (const prefix of ["dph", "dpd", "dpp"]) for (const body of bodies) {
+    const projection = new ComponentProjection(randomUUID()), content = `${prefix}_${body}`;
+    projection.beginLive([owner]);
+    projection.observe(start("token-body", { type: "markdown", content }));
+    const record = ready(projection.observe(finish("token-body")));
+    const expected = { type: "markdown", content: "[REDACTED]" };
+    assert.deepEqual(decodeComponentPayload(record.payload, record.sha256), expected);
+    assert.deepEqual(JSON.parse(projection.referenceContent(record).content).spec, expected);
+    assert.equal(record.redacted, true);
+  }
+});
+
+test("dash-qualified assignments cannot expose values through transport or references", () => {
+  const canary = "DASH_QUALIFIER_CREDENTIAL_CANARY";
+  for (const name of ["API key", "private_key", "client_secret", "authorization"]) {
+    for (const dash of ["-", "\u2013", "\u2014"]) {
+      for (const value of [canary, `"prefix ${canary}"`, `first; remaining=${canary}`]) {
+        const projection = new ComponentProjection(randomUUID());
+        projection.beginLive([owner]);
+        projection.observe(start("dash-assignment", { type: "markdown", content: `${name} ${dash} production = ${value}` }));
+        const record = ready(projection.observe(finish("dash-assignment")));
+        assert.ok(!JSON.stringify(decodeComponentPayload(record.payload, record.sha256)).includes(canary));
+        assert.ok(!projection.referenceContent(record).content.includes(canary));
+        assert.equal(record.redacted, true);
+      }
+    }
+  }
+});
+
+test("all cookie header values stay out of transported components and retained references", () => {
+  const canary = "COOKIE_HEADER_CREDENTIAL_CANARY";
+  const headers = [
+    `Cookie: session=first; csrf=${canary}`,
+    `Set-Cookie: session=first; HttpOnly; extra=${canary}`,
+    `Cookie: session="first"; csrf="${canary}"`,
+    `Cookie="session=first"; remaining=${canary}`,
+    `Set-Cookie: "quoted"=first; csrf=${canary}`,
+  ];
+  for (const header of headers) {
+    const projection = new ComponentProjection(randomUUID());
+    projection.beginLive([owner]);
+    projection.observe(start("cookie-header", { type: "markdown", content: header + "\npublic=value" }));
+    const record = ready(projection.observe(finish("cookie-header")));
+    const decoded = decodeComponentPayload(record.payload, record.sha256);
+    assert.ok(!JSON.stringify(decoded).includes(canary));
+    assert.ok(!projection.referenceContent(record).content.includes(canary));
+    assert.ok(JSON.stringify(decoded).includes("public=value"));
+    assert.equal(record.redacted, true);
+  }
+});
+
+test("line-scoped credentials preserve quoted multiline and unterminated-value protection", () => {
+  const canary = "MULTILINE_CREDENTIAL_CANARY";
+  for (const name of ["Cookie", "Set-Cookie", "API key (required) - production"]) {
+    for (const closing of ['"', ""]) {
+      const projection = new ComponentProjection(randomUUID());
+      projection.beginLive([owner]);
+      projection.observe(start("multiline-value", {
+        type: "markdown", content: `${name} = "first\n${canary}${closing}\npublic=value`,
+      }));
+      const record = ready(projection.observe(finish("multiline-value")));
+      const expected = { type: "markdown", content: `${name} = [REDACTED]${closing ? "\npublic=value" : ""}` };
+      assert.deepEqual(decodeComponentPayload(record.payload, record.sha256), expected);
+      assert.deepEqual(JSON.parse(projection.referenceContent(record).content).spec, expected);
+    }
+  }
+});
+
 test("sensitive link columns with static or templated hrefs are unavailable before retention", () => {
   const projection = new ComponentProjection(randomUUID()), canary = "CREDENTIAL_LINK_CANARY";
   projection.beginLive([owner]);

@@ -182,11 +182,36 @@ test("credential assignments with long whitespace cannot stall ordinary prose pr
   await promisify(execFile)(process.execPath, ["--experimental-transform-types", "--input-type=module", "--eval", `
     import assert from "node:assert/strict";
     const { redact } = await import(${JSON.stringify(source)});
-    const value = "secret" + " ".repeat(128 * 1024) + "ordinary prose";
-    const started = performance.now();
-    assert.equal(redact(value, 256 * 1024), value);
-    assert.ok(performance.now() - started < 1000, "Credential matching must not backtrack over whitespace partitions.");
+    for (const value of ["secret" + " ".repeat(128 * 1024) + "ordinary prose",
+      "API key - " + " ".repeat(128 * 1024) + "ordinary prose",
+      "secret - ".repeat(20_000) + "ordinary prose"]) {
+      const started = performance.now();
+      assert.equal(redact(value, 256 * 1024), value);
+      assert.ok(performance.now() - started < 1000, "Credential matching must not rescan whitespace or qualifier tails.");
+    }
   `], { timeout: 5000 });
+});
+
+test("shared redaction consumes base64url bodies, dash-qualified values and complete cookie lines", () => {
+  for (const prefix of ["dph", "dpd", "dpp"]) {
+    for (const body of ["-" + "A".repeat(42), "A".repeat(20) + "-" + "B".repeat(22), "C".repeat(42) + "-"]) {
+      assert.equal(redact(`${prefix}_${body}`), "[REDACTED]");
+    }
+  }
+  const canary = "SHARED_REDACTOR_CREDENTIAL_CANARY";
+  for (const dash of ["-", "\u2013", "\u2014"]) {
+    const name = `API key ${dash} production`;
+    assert.equal(isSensitiveFieldName(name), true);
+    const result = redact(`${name} = first; remaining=${canary}\npublic=value`);
+    assert.equal(result, `${name} = [REDACTED]\npublic=value`);
+    assert.equal(redact(result), result);
+  }
+  assert.equal(redact(`Cookie: first=one; csrf=${canary}\npublic=value`), "Cookie: [REDACTED]\npublic=value");
+  assert.equal(redact(`Set-Cookie: "first"; csrf=${canary}\npublic=value`), "Set-Cookie: [REDACTED]\npublic=value");
+  for (const ordinary of ["API key - production without assignment", "tokenCount - daily = 23",
+    "OAuth - enabled = true", "publicKey - production = public"]) assert.equal(redact(ordinary), ordinary);
+  const longName = "API key - " + "region ".repeat(15_000);
+  assert.ok(!redact(`${longName}= ${canary}`, 256 * 1024).includes(canary));
 });
 
 test("linked worktrees share project identity without changing the original runtime or working directory", async (t) => {

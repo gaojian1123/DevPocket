@@ -109,8 +109,11 @@ Inline text is also checked across formatting such as bold and code spans.
 Separate blocks, table cells and non-text placeholders are not joined into
 invented assignments.
 Recognized assignments mask complete quoted values, including escaped quotes;
-unterminated quotes fail closed. Bare values end at a line, comma or semicolon,
-while unquoted authorization headers are masked through their line.
+unterminated quotes fail closed. Dash-qualified names support hyphens and en/em
+dashes. Ordinary bare values end at a line, comma or semicolon; dash-qualified
+assignments, Cookie/Set-Cookie headers and unquoted authorization headers are
+masked through their line. Known token patterns consume the full base64url
+body, including hyphens, rather than leaving a reconstructable suffix.
 
 Ordinary assistant segments, tools and cards share response styling only when
 runtime origin/tool-request evidence establishes their relationship. Model
