@@ -114,7 +114,10 @@ environment; candidate CWD and allowlisted environment apply only after the
 identity transition. Candidate installation hooks, probes, build/test payloads
 and device cleanup run under the unprivileged identity. Authoritative reports and
 ledger keys are stored under control, separately from candidate-owned raw device
-output. Only bounded named reports and APKs are staged for upload.
+output. Windows explicitly protects the control checkout's `.data` with a
+high-identity-only DACL; POSIX creation modes do not establish Windows privacy.
+The negative fixture must reject evidence reads as well as overwrite/deletion.
+Only bounded named reports and APKs are staged for upload.
 
 Windows requires the control token's existing `SeIncreaseQuotaPrivilege`.
 `SeAssignPrimaryTokenPrivilege` is enabled only when already present; its absence
@@ -131,20 +134,31 @@ not the privileged cancellation pipe. The original Store-PowerShell compatibilit
 unchanged. Actual separate-account token assignability still requires hosted
 evidence; the documented restricted-caller-token exception is not assumed to
 apply to a token for another account.
-Ancestor-only deny rules retain the existing DACL and use a non-propagating
-directory-handle update; attributes, DACL reading and mutation are bound to the
-same opened non-reparse object. They must not trigger an ACL walk of the entire volume.
-The handle requests only `READ_CONTROL`, `WRITE_DAC` and `FILE_READ_ATTRIBUTES`,
-with no sharing, using the documented exclusive-directory behavior of
+Windows ancestor handling remains blocked. Attribute checks and DACL
+read-modify-write are bound to the same opened non-reparse object, but neither
+attempted opening mode has established the required non-propagating update.
+`MAXIMUM_ALLOWED` conflicts with an existing working-directory handle. The
+metadata-only `READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES` handle avoids
+that conflict, but a second directory reader can still open while its share mode
+is zero: it does not establish the exclusive-directory condition documented by
 [`SetSecurityInfo`](https://learn.microsoft.com/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo).
-Unlike `MAXIMUM_ALLOWED`, this does not request `DELETE`, which conflicts with
-an existing working-directory handle. A conflicting live reader still blocks
-the update; there is no shared or propagating fallback.
-Actual protected trees still receive their inheritable ACLs. No owner, SACL,
-user right or process-creation policy is changed by the ancestor update.
-The hosted bootstrap checks the exact parent DACL with a live working-directory
-handle, unchanged child security and rejection of an opened junction before
-applying the update to real ancestors.
+The hosted attempt also failed opening `C:\Program Files` for `WRITE_DAC`
+(native error 5), before reaching the process-creation probe.
+
+The hosted parent/child ACL and junction checks passed, but unchanged child
+security does not by itself prove that no traversal occurred. Do not claim
+ancestor isolation from those checks, enlarge timeouts, take ownership, grant
+additional rights, or substitute a weaker launcher to hide these blockers.
+The dispatch route stays disabled until a supported ancestor strategy and the
+actual cross-account process-creation capability are established.
+The current Windows diagnostic path allocates only owned scratch, a trusted
+control copy and private credentials, then runs the fixed benign Node launch
+through the same owned-runner/isolated-command path before broad ACL setup.
+It loads no candidate code. `atomic-launch-capability.json` records only that
+capability with `acceptance: false`; the bootstrap deliberately exits nonzero
+even when the probe succeeds. It cannot produce an isolation proof or qualify
+the required gate. This diagnostic stop must be removed only after the remaining
+ancestor protection is implemented and verified.
 
 Linux keeps the root process owner outside `setpriv`, drops the target's groups
 and capabilities and sets `no_new_privs`. It consumes queued cancellation/EOF and

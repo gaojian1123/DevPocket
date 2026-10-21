@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -25,10 +25,10 @@ if (mode === "fixture") {
   }
 } else if (mode === "attack") {
   const outcomes = [];
-  const denied = (name, operation) => {
+  const denied = (name, operation, codes = ["EACCES", "EPERM", "EBUSY", "ENOTEMPTY"]) => {
     try { operation(); outcomes.push({ name, denied: false }); }
     catch (error) {
-      if (!["EACCES", "EPERM", "EBUSY", "ENOTEMPTY"].includes(error.code)) throw error;
+      if (!codes.includes(error.code)) throw error;
       outcomes.push({ name, denied: true });
     }
   };
@@ -42,6 +42,7 @@ if (mode === "fixture") {
   denied("supervisor-termination", () => process.kill(input.supervisorPid));
   denied("runner-substitution", () => writeFileSync(input.runner,
     "export const WORKFLOW_TEST_FILES=[];export const WORKFLOW_TEST_SHARDS=[];\n"));
+  denied("evidence-read", () => readFileSync(input.evidence), ["EACCES", "EPERM"]);
   denied("evidence-overwrite", () => writeFileSync(input.evidence, '{"status":"passed","complete":true}\n'));
   denied("evidence-delete", () => rmSync(input.evidence));
   assert.ok(Object.keys(process.env).every((name) => !/^(?:GH_TOKEN|GITHUB_TOKEN|ACTIONS_.*|GITHUB_(?:ENV|OUTPUT|PATH|EVENT_PATH|STEP_SUMMARY))$/.test(name)),

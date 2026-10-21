@@ -160,6 +160,39 @@ test("atomic launch failures preserve bounded native stage and privilege facts",
   });
 });
 
+test("unconfirmed cleanup retains only consistent, identified native failure facts", async (t) => {
+  for (const mode of ["native-cleanup", "outer-cleanup", "wrong-id", "wrong-version", "wrong-started", "wrong-exit"]) {
+    await t.test(mode, async (t) => {
+      const configuration = { ...await fixture(t), platform: "win32" };
+      const boundary = isolatedCommandBoundary(configuration, {}, environment(configuration));
+      await assert.rejects(boundary("node", [], {}, async (_file, args) => {
+        const file = args.at(-1), request = JSON.parse(await readFile(file, "utf8"));
+        await writeFile(`${file}.result.json`, JSON.stringify({
+          version: mode === "wrong-version" ? 2 : 1, id: mode === "wrong-id" ? "another-request" : request.id,
+          status: "blocked", admission: "creation-attempted", started: mode === "wrong-started",
+          processTreeStopped: mode === "outer-cleanup", exitCode: mode === "wrong-exit" ? 0 : null,
+          native: { stage: "create", errorCode: 1314, assignPrimaryTokenEnabled: false, increaseQuotaEnabled: true },
+        }));
+        throw Object.assign(new Error("Native attempt and cleanup did not complete"), successfulCommand(),
+          { processTreeStopped: mode !== "outer-cleanup" });
+      }), (error) => {
+        assert.equal(error.diagnosticCode, "cleanup-failed");
+        assert.equal(error.processTreeStopped, false);
+        if (["native-cleanup", "outer-cleanup"].includes(mode)) {
+          assert.equal(error.isolatedAdmission, "creation-attempted");
+          assert.deepEqual(error.nativeFailure, {
+            stage: "create", errorCode: 1314, assignPrimaryTokenEnabled: false, increaseQuotaEnabled: true,
+          });
+        } else {
+          assert.equal(error.isolatedAdmission, undefined);
+          assert.equal(error.nativeFailure, undefined);
+        }
+        return true;
+      });
+    });
+  }
+});
+
 test("Windows control cancellation and EOF before native creation report a confirmed no-start outcome",
   { skip: process.platform !== "win32" }, async (t) => {
     const configuration = await fixture(t), marker = path.join(configuration.candidate, "must-not-run");
@@ -325,6 +358,58 @@ test("Linux bootstrap refusal reports its bounded stage without entering hosted 
   });
 });
 
+test("evidence-read proof accepts only permission denial, not sharing errors or readable data", async (t) => {
+  const script = String.raw`
+import fs from "node:fs";
+import childProcess from "node:child_process";
+import {syncBuiltinESMExports} from "node:module";
+const [mode, probe] = process.argv.slice(1);
+const source = fs.readFileSync(new URL(probe), "utf8");
+const deny = () => { throw Object.assign(new Error("synthetic permission denial"), {code:"EACCES"}); };
+let reads = 0, outcomes;
+Object.assign(fs, {
+  chmodSync: deny, renameSync: deny, rmSync: deny, symlinkSync: deny, existsSync: () => true,
+  writeFileSync(file, value) {
+    if (file.endsWith("attacks.json")) outcomes = JSON.parse(value);
+    else deny();
+  },
+  readFileSync() {
+    reads++;
+    if (mode === "readable") return Buffer.from("synthetic private data");
+    throw Object.assign(new Error("synthetic read result"), {code:mode});
+  },
+});
+childProcess.spawn = () => ({unref() {}});
+process.kill = deny;
+syncBuiltinESMExports();
+process.argv = ["node", "probe", "attack", JSON.stringify({
+  fixture:"synthetic-fixture", probe:"synthetic-probe", runner:"synthetic-runner",
+  evidence:"synthetic-evidence", supervisorPid:1, protectedPaths:[],
+})];
+try {
+  await import("data:text/javascript;base64," + Buffer.from(source).toString("base64"));
+  console.log(JSON.stringify({status:"passed", reads, outcomes}));
+} catch (error) {
+  console.log(JSON.stringify({status:"blocked", reads, code:error.code}));
+}
+`;
+  for (const mode of ["EACCES", "EPERM", "EBUSY", "ENOTEMPTY", "readable"]) await t.test(mode, async () => {
+    const result = await exec(process.execPath, ["--input-type=module", "-e", script, mode,
+      new URL("../isolated-worker-probe.mjs", import.meta.url).href], {
+      timeout: 30000, env: { PATH: process.env.PATH ?? "", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) },
+    });
+    const outcome = JSON.parse(result.stdout);
+    assert.equal(outcome.reads, 1);
+    if (["EACCES", "EPERM"].includes(mode)) {
+      assert.equal(outcome.status, "passed");
+      assert.deepEqual(outcome.outcomes.filter((item) => item.name === "evidence-read"), [{ name: "evidence-read", denied: true }]);
+    } else {
+      assert.equal(outcome.status, "blocked");
+      assert.equal(outcome.code, mode === "readable" ? "ERR_ASSERTION" : mode);
+    }
+  });
+});
+
 test("Windows bootstrap does not assign the read-only HOME automatic variable", async () => {
   const file = path.resolve("scripts", "isolated-worker.ps1").replaceAll("'", "''");
   const script = `$tokens=$null; $errors=$null; $ast=[Management.Automation.Language.Parser]::ParseFile('${file}',[ref]$tokens,[ref]$errors); ` +
@@ -336,7 +421,7 @@ test("Windows bootstrap does not assign the read-only HOME automatic variable", 
   assert.deepEqual(JSON.parse(result.stdout), []);
 });
 
-test("Windows ancestor protection uses the handle-bound non-propagating mutation",
+test("Windows ancestor caller uses the bound helper and working-directory-compatible opens",
   { skip: process.platform !== "win32" }, async (t) => {
     const configuration = await fixture(t);
     const result = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-File",
@@ -345,6 +430,41 @@ test("Windows ancestor protection uses the handle-bound non-propagating mutation
       "-NativeSource", path.resolve("scripts", "isolated-command.cs"), "-WorkingDirectory", configuration.candidate],
     { timeout: 30000 });
     assert.deepEqual(JSON.parse(result.stdout), ["C:\\fixture", "C:\\"]);
+  });
+
+test("atomic launch diagnostics stop before candidate preparation and cannot become an isolation proof",
+  { skip: process.platform !== "win32" }, async (t) => {
+    const configuration = await fixture(t), scripts = path.join(configuration.control, "scripts");
+    await cp(path.resolve("scripts"), scripts, { recursive: true });
+    const file = path.join(scripts, "process.mjs"), source = await readFile(file, "utf8");
+    const entry = "export function runCommand(file, args, options = {}) {";
+    assert.ok(source.includes(entry));
+    const result = { ...successfulCommand(), stdout: "DEVPOCKET_ISOLATED_LAUNCH",
+      isolatedAdmission: "running", isolatedExecutionObserved: true };
+    await writeFile(file, source.replace(entry, `${entry}
+      if (file !== process.execPath || JSON.stringify(args) !== ${JSON.stringify(JSON.stringify([
+        "--disable-sigusr1", "-e", "process.stdout.write('DEVPOCKET_ISOLATED_LAUNCH')",
+      ]))}) throw new Error("Only the fixed atomic launch is allowed in this fixture.");
+      return Promise.resolve(${JSON.stringify(result)});
+    `));
+    configuration.mode = "atomic-launch-probe";
+    configuration.tools.git = process.execPath;
+    configuration.tools.python = process.execPath;
+    const input = path.join(configuration.private, "configuration.json");
+    await writeFile(input, JSON.stringify(configuration));
+    const output = await exec(process.execPath, [path.join(scripts, "isolated-worker.mjs"), "--configuration", input], {
+      cwd: configuration.control, timeout: 30000,
+      env: { ...process.env, GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted" },
+    });
+    const directory = path.join(configuration.control, ".data", "ci", "isolated");
+    const capability = JSON.parse(await readFile(path.join(directory, "atomic-launch-capability.json"), "utf8"));
+    assert.deepEqual(capability, { version: 1, kind: "atomic-launch-capability", acceptance: false,
+      status: "available", platform: "win32", admission: "running", exitCode: 0, processTreeStopped: true });
+    assert.deepEqual(JSON.parse(output.stdout), capability);
+    await assert.rejects(readFile(path.join(directory, "isolation-proof.json")), { code: "ENOENT" });
+    await assert.rejects(readFile(path.join(directory, "report.json")), { code: "ENOENT" });
+    assert.deepEqual(await readdir(configuration.candidate), []);
+    assert.deepEqual(await readdir(configuration.fixture), []);
   });
 
 test("bootstrap command failures retain the actual bounded diagnostic before exiting",

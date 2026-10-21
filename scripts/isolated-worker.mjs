@@ -68,7 +68,9 @@ async function immutableJson(file, value, maximum = 1024 * 1024) {
 async function configurationFrom(file) {
   const config = await readDiagnosticReport(file, { maximum: 65536 });
   if (config.version !== 1 || config.platform !== process.platform || config.control !== controlRoot ||
-      !["worker", "self-test"].includes(config.mode) || !["tooling", "backend", "android", "device"].includes(config.group) ||
+      !["worker", "self-test", "atomic-launch-probe"].includes(config.mode) ||
+      config.mode === "atomic-launch-probe" && config.platform !== "win32" ||
+      !["tooling", "backend", "android", "device"].includes(config.group) ||
       process.env.GITHUB_ACTIONS !== "true" || process.env.RUNNER_ENVIRONMENT !== "github-hosted") {
     throw new Error("An authenticated hosted bootstrap configuration is required.");
   }
@@ -131,8 +133,16 @@ export function isolatedCommandBoundary(configuration, ownerEnvironment, candida
     const admissionKnown = ["not-admitted", "creation-attempted", "created", "running"].includes(receipt?.admission) &&
         receipt.started === (receipt.admission === "running");
     const interruptionKnown = receipt?.interruption == null || ["cancelled", "timeout"].includes(receipt.interruption);
-    const stopped = receipt?.version === 1 && receipt.id === id && admissionKnown && interruptionKnown && receipt.processTreeStopped === true &&
-      (result?.processTreeStopped ?? failure?.processTreeStopped) === true;
+    const outcome = result?.commandOutcome ?? failure?.commandOutcome;
+    const outerStopped = (result?.processTreeStopped ?? failure?.processTreeStopped) === true;
+    const consistent = receipt?.version === 1 && receipt.id === id && admissionKnown && interruptionKnown &&
+      typeof receipt.processTreeStopped === "boolean" &&
+      (receipt.status === "blocked" && receipt.exitCode === null ||
+        receipt.status === "executed" && receipt.started === true && Number.isInteger(receipt.exitCode) &&
+          (!receipt.processTreeStopped || !outerStopped || receipt.exitCode === outcome?.exitCode));
+    const nativeFacts = consistent
+      ? { isolatedAdmission: receipt.admission, nativeFailure: nativeFailure(receipt.native) } : {};
+    const stopped = consistent && receipt.processTreeStopped === true && outerStopped;
     if ((options.signal?.aborted || receipt?.interruption === "cancelled") && stopped) {
       throw Object.assign(new Error("Isolated command was cancelled.", { cause: options.signal?.reason }),
         { processTreeStopped: true, stdout: failure?.stdout ?? "", stderr: failure?.stderr ?? "",
@@ -149,22 +159,23 @@ export function isolatedCommandBoundary(configuration, ownerEnvironment, candida
     if (receipt?.status === "blocked" && stopped) {
       throw Object.assign(verificationFault("preflight-tool", { phase: "preflight" }), {
         processTreeStopped: true, stdout: failure?.stdout ?? "", stderr: failure?.stderr ?? "",
-        nativeFailure: nativeFailure(receipt.native),
+        ...nativeFacts,
         commandOutcome: { ...(failure?.commandOutcome ?? result?.commandOutcome), reason: "spawn", cleanupFailure: null },
       });
     }
     if (!stopped || receipt.status !== "executed" || receipt.started !== true || !Number.isInteger(receipt.exitCode) ||
         receipt.exitCode !== (result?.commandOutcome ?? failure?.commandOutcome)?.exitCode) {
-      throw Object.assign(verificationFault("cleanup-failed"), { processTreeStopped: false,
+      throw Object.assign(verificationFault("cleanup-failed"), { ...nativeFacts, processTreeStopped: false,
         stdout: result?.stdout ?? failure?.stdout ?? "", stderr: result?.stderr ?? failure?.stderr ?? "",
         commandOutcome: { ...(result?.commandOutcome ?? failure?.commandOutcome), reason: "spawn",
           cleanupFailure: failureDetails(verificationFault("cleanup-failed")) } });
     }
     if (failure) {
       failure.isolatedExecutionObserved = true;
+      failure.isolatedAdmission = receipt.admission;
       throw failure;
     }
-    return result;
+    return { ...result, isolatedAdmission: receipt.admission, isolatedExecutionObserved: true };
   };
 }
 
@@ -183,6 +194,8 @@ async function retainBootstrapFailure(error) {
   const privateLog = await writeBoundedWorkerLog(file, `${error.stdout ?? ""}${error.stderr ?? ""}`);
   const report = { version: 1, kind: "isolated-bootstrap-diagnostics", acceptance: false,
     status: "blocked", phase: bootstrapPhase, failure: failureDetails(error),
+    admission: ["not-admitted", "creation-attempted", "created", "running"].includes(error.isolatedAdmission)
+      ? error.isolatedAdmission : null,
     nativeFailure: nativeFailure(error.nativeFailure), privateLog };
   await immutableJson(path.join(directory, "bootstrap-failure.json"), report);
   console.error(JSON.stringify(report));
@@ -211,7 +224,8 @@ async function proveIsolation(configuration, directory) {
   assert.deepEqual(await readFile(runner), runnerBytes, "A candidate installation replaced trusted selection code.");
   assert.deepEqual(await readFile(evidence), evidenceBytes, "A candidate installation replaced trusted evidence.");
   const attacks = await readDiagnosticReport(path.join(fixture, ".data", "attacks.json"), { maximum: 16384 });
-  assert.equal(attacks.length, configuration.protectedPaths.length * 4 + 4);
+  assert.equal(attacks.length, configuration.protectedPaths.length * 4 + 5);
+  assert.deepEqual(attacks.filter((item) => item.name === "evidence-read"), [{ name: "evidence-read", denied: true }]);
   assert.ok(attacks.every((item) => item.denied === true));
   const descendant = path.join(fixture, ".data", "descendant.json"), stopped = await readFile(descendant);
   assert.equal(JSON.parse(stopped).denied, true);
@@ -336,6 +350,19 @@ async function main(file) {
           ["--disable-sigusr1", "-e", "process.stdout.write('DEVPOCKET_ISOLATED_LAUNCH')"],
           { cwd: controlRoot, timeoutMs: 30000 });
         assert.equal(launch.stdout, "DEVPOCKET_ISOLATED_LAUNCH");
+        if (configuration.mode === "atomic-launch-probe") {
+          assert.equal(launch.isolatedAdmission, "running");
+          assert.equal(launch.isolatedExecutionObserved, true);
+          assert.equal(launch.processTreeStopped, true);
+          assert.equal(launch.commandOutcome?.reason, "exit");
+          assert.equal(launch.commandOutcome?.exitCode, 0);
+          const capability = { version: 1, kind: "atomic-launch-capability", acceptance: false,
+            status: "available", platform: configuration.platform, admission: launch.isolatedAdmission,
+            exitCode: launch.commandOutcome.exitCode, processTreeStopped: launch.processTreeStopped };
+          await immutableJson(path.join(directory, "atomic-launch-capability.json"), capability);
+          console.log(JSON.stringify(capability));
+          return;
+        }
         const proof = await proveIsolation(configuration, directory);
         await immutableJson(path.join(directory, "isolation-proof.json"), proof);
         if (configuration.mode === "self-test") return;

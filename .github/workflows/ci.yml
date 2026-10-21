@@ -423,6 +423,7 @@ jobs:
             control/.data/ci/isolated/isolation-negative-report.json
             control/.data/ci/isolated/bootstrap-failure.json
             control/.data/ci/isolated/bootstrap-capabilities.json
+            control/.data/ci/isolated/atomic-launch-capability.json
           if-no-files-found: error
 
   gate:

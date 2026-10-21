@@ -143,12 +143,58 @@ function Set-CandidateDirectory([string]$Path) {
     Set-ProtectedDirectory $metadata $true
 }
 
+function Invoke-AtomicLaunchProbe {
+    $probePrivate = Join-Path $state 'launch-private'
+    $null = New-Item -ItemType Directory -Path $probePrivate
+    Set-ProtectedDirectory $probePrivate $false
+    $script:controlCopy = Join-Path $state 'launch-control'
+    Copy-Checkout $Control $controlCopy
+    Set-ProtectedDirectory $controlCopy $true
+    $data = Join-Path $controlCopy '.data'
+    $null = New-Item -ItemType Directory -Path $data
+    Set-ProtectedDirectory $data $false
+    $probeHome = Join-Path $state 'launch-home'
+    $null = New-Item -ItemType Directory -Path $probeHome
+    Set-ProtectedDirectory $probeHome $true
+    $temporary = Join-Path $probeHome 'tmp'
+    $null = New-Item -ItemType Directory -Path $temporary
+    $script:identity = Join-Path $probePrivate 'identity.json'
+    [IO.File]::WriteAllText($identity, (@{ user = $name; password = $password; sid = $account.SID.Value } | ConvertTo-Json -Compress))
+    $configuration = @{
+        version = 1; platform = 'win32'; mode = 'atomic-launch-probe'; group = 'tooling'
+        control = $controlCopy; candidate = $probeHome; fixture = $probeHome; private = $probePrivate
+        home = $probeHome; temporary = $temporary; identity = $identity; sid = $account.SID.Value
+        tools = $tools; protectedPaths = @()
+    }
+    $script:file = Join-Path $probePrivate 'configuration.json'
+    [IO.File]::WriteAllText($file, ($configuration | ConvertTo-Json -Depth 8 -Compress))
+    $ownerTemp = Join-Path $probePrivate 'owner-temp'
+    $null = New-Item -ItemType Directory -Path $ownerTemp
+    $env:TEMP = $ownerTemp
+    $env:TMP = $ownerTemp
+    $env:NODE_OPTIONS = $null
+    $env:NODE_PATH = $null
+    Push-Location $controlCopy
+    try {
+        & $tools.node --disable-sigusr1 (Join-Path $controlCopy 'scripts\isolated-worker.mjs') --configuration $file
+        $script:code = $LASTEXITCODE
+    } finally { Pop-Location }
+    if ($code -ne 0) {
+        Write-Host 'The atomic launch capability probe did not succeed; full isolation has not started.'
+    } else {
+        Write-Host '[DEBUG-iso-launch-capability] Atomic launch capability is available; Windows ancestor protection remains blocked.'
+    }
+    $script:code = 78
+    exit 78
+}
+
 try {
     $password = 'aA1!' + [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
     $account = New-LocalUser -Name $name -Password (ConvertTo-SecureString -String $password -AsPlainText -Force) -UserMayNotChangePassword
     Add-LocalGroupMember -SID ([Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')) -Member $account
     $null = New-Item -ItemType Directory -Path $state
     Set-ProtectedDirectory $state $true
+    Invoke-AtomicLaunchProbe
     Assert-AncestorProtection (Join-Path $state 'ancestor-probe')
     Protect-Ancestors $state
     $private = Join-Path $state 'private'
@@ -158,6 +204,9 @@ try {
     $candidateCopy = Join-Path $state 'candidate'
     Copy-Checkout $Control $controlCopy
     Set-ProtectedDirectory $controlCopy $true
+    $controlData = Join-Path $controlCopy '.data'
+    $null = New-Item -ItemType Directory -Path $controlData
+    Set-ProtectedDirectory $controlData $false
     Copy-Checkout $Candidate $candidateCopy
     Set-CandidateDirectory $candidateCopy
     $fixture = Join-Path $state 'fixture'
@@ -190,7 +239,7 @@ try {
         version = 1; platform = 'win32'; control = $controlCopy; candidate = $candidateCopy; fixture = $fixture
         private = $private; home = $candidateHome; temporary = $temporary; identity = $identity; sid = $account.SID.Value
         tools = $tools; group = $Group; mode = $Mode
-        protectedPaths = @($controlCopy, $private, $state, $env:USERPROFILE, $env:RUNNER_TEMP)
+        protectedPaths = @($controlCopy, $controlData, $private, $state, $env:USERPROFILE, $env:RUNNER_TEMP)
     }
     $file = Join-Path $private 'configuration.json'
     [IO.File]::WriteAllText($file, ($configuration | ConvertTo-Json -Depth 8 -Compress))
@@ -221,7 +270,8 @@ try {
         $destination = Join-Path $Control '.data\ci\isolated'
         if (Test-Path -LiteralPath $source) {
             $null = New-Item -ItemType Directory -Path $destination -Force
-            foreach ($name in @('report.json', 'isolation-proof.json', 'isolation-negative-report.json', 'bootstrap-failure.json')) {
+            foreach ($name in @('report.json', 'isolation-proof.json', 'isolation-negative-report.json',
+                'bootstrap-failure.json', 'atomic-launch-capability.json')) {
                 $inputFile = Join-Path $source $name
                 if (Test-Path -LiteralPath $inputFile) {
                     $item = Get-Item -LiteralPath $inputFile
