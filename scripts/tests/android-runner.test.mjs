@@ -11,6 +11,20 @@ import { PassThrough } from "node:stream";
 const exec = promisify(execFile);
 const entry = path.resolve("scripts/android-runner.mjs");
 
+test("native image selection matches the host architecture and macOS requires actual HVF evidence", async () => {
+  const { androidImageArchitecture, androidImagePattern, macOSAcceleration } = await import("../android-platform.mjs");
+  assert.equal(androidImageArchitecture("darwin", "arm64"), "arm64-v8a");
+  for (const platform of ["win32", "linux", "darwin"]) assert.equal(androidImageArchitecture(platform, "x64"), "x86_64");
+  assert.throws(() => androidImageArchitecture("linux", "arm64"), /requires/);
+  assert.equal(androidImagePattern.exec("system-images/android-35/google_apis/arm64-v8a")[1], "arm64-v8a");
+  const valid = "accel:\n0\nHypervisor.Framework OS X Version 15.0\naccel\n";
+  assert.deepEqual(macOSAcceleration(valid), { provider: "HVF", usable: true });
+  for (const output of [valid.replace("\n0\n", "\n1\n"), valid + valid, "Hypervisor.Framework is installed and usable",
+    "accel:\n0\nKVM is installed and usable\naccel\n", ""]) {
+    assert.throws(() => macOSAcceleration(output), /requires/);
+  }
+});
+
 const homeComponent = "com.example.launcher/.Home";
 const homeActivity = [
   "  topResumedActivity=ActivityRecord{123 u0 com.example.launcher/.Home t7}",

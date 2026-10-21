@@ -195,27 +195,27 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   const normalWorkflow = workflow;
   assert.doesNotMatch(workflow, /startup_diagnostic|startup_variant|STARTUP_ONLY|\n  startup:/);
   assert.deepEqual([...workflow.split("\njobs:\n")[1].matchAll(/^  ([A-Za-z_][\w-]*):[ \t]*$/gm)]
-    .map((match) => match[1]), ["plan", "tooling", "backend", "android", "device", "gate"]);
+    .map((match) => match[1]), ["plan", "tooling", "macos", "backend", "android", "device", "gate"]);
   const expandedNormal = `${normalWorkflow}\n${preparation}`;
   const actions = [...expandedNormal.matchAll(/^\s+- uses: (actions\/[^\s]+)$/gm)].map((match) => match[1]);
   const counts = {};
   for (const action of actions) counts[action] = (counts[action] ?? 0) + 1;
   assert.deepEqual(counts, {
-    "actions/checkout@v7": 6, "actions/setup-node@v7": 6, "actions/setup-python@v7": 2,
-    "actions/upload-artifact@v7": 17, "actions/setup-java@v6": 2, "actions/download-artifact@v8": 1,
+    "actions/checkout@v7": 7, "actions/setup-node@v7": 7, "actions/setup-python@v7": 3,
+    "actions/upload-artifact@v7": 19, "actions/setup-java@v6": 2, "actions/download-artifact@v8": 1,
   });
   assert.equal([...normalWorkflow.matchAll(
     /- uses: actions\/checkout@v7\n\s+with:\n\s+fetch-depth: 0\n\s+persist-credentials: false/g,
-  )].length, 6);
+  )].length, 7);
   assert.equal([...expandedNormal.matchAll(
     /- uses: actions\/setup-node@v7\n\s+with:\n\s+node-version: 24\n/g,
-  )].length, 6);
+  )].length, 7);
   assert.equal([...expandedNormal.matchAll(/- uses: actions\/setup-java@v6\n\s+with:\n\s+distribution: temurin\n\s+java-version: '21'/g)].length, 2);
   assert.match(workflow, /- uses: actions\/setup-python@v7\n\s+with:\n\s+python-version: '3\.12'/);
   assert.match(workflow, /^permissions:\n  contents: read\n/m);
   assert.doesNotMatch(workflow, /continue-on-error:|FORCE_JAVASCRIPT_ACTIONS_TO_NODE20|ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION/);
   assert.doesNotMatch(workflow, /^\s+(?:merge-multiple|include-hidden-files|overwrite|archive|digest-mismatch):/m);
-  assert.equal([...normalWorkflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 16);
+  assert.equal([...normalWorkflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 18);
 
   const backend = workflow.split("\n  backend:")[1].split("\n  android:")[0];
   assert.match(backend, /\$env:DEVPOCKET_PROBE_PYTHON = \(Get-Command python -CommandType Application -ErrorAction Stop \| Select-Object -First 1\)\.Source\n\s+node scripts\\verify\.mjs/);
@@ -257,7 +257,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(device, /steps\.device_diagnostics\.outputs\.report_ready == 'true'/);
 
   const gate = workflow.split("\n  gate:")[1];
-  assert.match(gate, /needs: \[plan, tooling, backend, android, device\]\n\s+if: always\(\)/);
+  assert.match(gate, /needs: \[plan, tooling, macos, backend, android, device\]\n\s+if: always\(\)/);
   assert.match(gate, /- uses: actions\/download-artifact@v8\n\s+with:\n\s+pattern: verification-\*\n\s+path: \.data\\ci\\inputs/);
   assert.ok(gate.includes("'scripts\\verification-ci.mjs', '--base', $env:BASE_SHA, '--collect'"));
   assert.ok(gate.includes("'--inputs', '.data\\ci\\inputs'"));
@@ -289,7 +289,7 @@ test("the independent tooling CI job runs the complete workflow suite without ap
   assert.match(tooling, /name: check-diagnostics-tooling-\$\{\{ matrix\.part \}\}-attempt-\$\{\{ github\.run_attempt \}\}\n\s+path: \.data\/ci\/tooling\/verification-diagnostics\.json/);
   assert.doesNotMatch(tooling, /setup-java|prepare-native|prepare-android|npm run build|npm --prefix|pip install|--(?:sdk|jdk|image)|continue-on-error/);
   const gate = workflow.split("\n  gate:")[1];
-  assert.match(gate, /name: Required verification\n\s+needs: \[plan, tooling, backend, android, device\]\n\s+if: always\(\)/);
+  assert.match(gate, /name: Required verification\n\s+needs: \[plan, tooling, macos, backend, android, device\]\n\s+if: always\(\)/);
   assert.ok(gate.includes("TOOLING_RESULT: ${{ needs.tooling.result }}"));
   assert.match(gate, /pattern: verification-\*/);
   const manifest = JSON.parse(await readFile("package.json", "utf8"));

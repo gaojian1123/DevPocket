@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { acquireHostVerificationSlot, admissionVariable } from "../verification-admission.mjs";
 import { toolingCatalogue, toolingShardDescriptor } from "../verification-tooling.mjs";
 import { combineVerification, verificationPlan } from "../verification.mjs";
-import { VERIFICATION_REPORT_VERSION } from "../verification-policy.mjs";
+import { VERIFICATION_REPORT_VERSION, verificationImpact } from "../verification-policy.mjs";
 import { sdkPreparationFixture, syntheticExecution } from "./fixtures/verification-tools.mjs";
 import { WORKFLOW_TEST_FILES, WORKFLOW_TEST_SHARDS } from "../test-workflow.mjs";
 import { ciReportEnvelope, collectCIReports, githubVerificationContext, qualifyGitHubCI, validateLiveCIEnvelope } from "../verification-ci.mjs";
@@ -85,6 +85,136 @@ test("tooling shards partition the complete declared suite and preserve every ex
   const stripped = structuredClone(combined);
   stripped.checks[0].execution.parts.pop();
   assert.throws(() => combineVerification(plan, [stripped]));
+});
+
+test("macOS CI selection includes shared infrastructure without adding a local device requirement", () => {
+  for (const file of [
+    "scripts/owned-command-darwin.py", "scripts/process.mjs", "scripts/local-ipc.mjs",
+    "scripts/emulator-resources.mjs", "scripts/verification-preflight.mjs",
+    "scripts/verification-policy.mjs", "scripts/verification-ci.mjs", "scripts/test-workflow.mjs",
+    "scripts/tests/process.test.mjs", "scripts/tests/emulator-resources.test.mjs",
+    "scripts/tests/macos-host.test.mjs", "scripts/tests/android-runner.test.mjs",
+    "package.json", "package-lock.json", ".github/workflows/ci.yml", "scripts/unknown-owner.mjs",
+  ]) {
+    const plan = verificationImpact([file]);
+    assert.equal(plan.ciMacos, true, file);
+    assert.ok(plan.requiredChecks.includes("workflow-tests"), file);
+  }
+  for (const files of [
+    [], ["README.md"], ["docs/guide.md"], ["backend/src/store.ts"],
+    ["android/app/src/main/java/dev/devpocket/app/MainActivity.kt"],
+    ["scripts/owned-command-linux.py"], ["scripts/owned-command-windows.mjs"],
+    ["scripts/tests/linux-runtime.test.mjs"],
+  ]) assert.equal(verificationImpact(files).ciMacos, false, JSON.stringify(files));
+  const focused = verificationImpact(["scripts/tests/process.test.mjs"]);
+  assert.deepEqual(focused.requiredChecks, ["workflow-tests"]);
+  assert.deepEqual(focused.requiredGroups, ["tooling"]);
+  assert.equal(focused.layouts, false);
+  assert.equal(verificationImpact(["README.md"], true).ciMacos, true);
+  assert.equal(verificationImpact(["README.md", "scripts/process.mjs"]).ciMacos, true);
+});
+
+test("macOS CI requires its own successful upstream and source-bound native report", async () => {
+  const plan = { version: VERIFICATION_REPORT_VERSION, base: "a".repeat(40),
+    source: { head: "b".repeat(40), fingerprint: "c".repeat(64) }, ciMacos: true,
+    requiredChecks: ["workflow-tests"], requiredGroups: ["tooling"], toolingShards: await toolingCatalogue(process.cwd()) };
+  const context = { repository: "fixture/verification", runId: "1234", attempt: 1, event: "pull_request",
+    candidate: "d".repeat(40), pullRequest: 11, pullRequestBase: plan.base,
+    tested: { head: plan.source.head, tree: "e".repeat(40) }, workflowSha: plan.source.head,
+    workflowRef: "fixture/verification/.github/workflows/ci.yml@refs/pull/11/merge" };
+  const reports = plan.toolingShards.parts.map((part) => ({
+    ...plan, group: "tooling", status: "partial", complete: false,
+    environment: { platform: "win32", architecture: "x64" },
+    checks: [{ id: "workflow-tests", status: "passed", exitCode: 0,
+      toolingShard: toolingShardDescriptor(plan, part.id), execution: syntheticExecution(plan.source),
+      executionState: "exited", commandOutcome: {
+        observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0, cleanupFailure: null,
+      } }],
+  }));
+  const windows = reports.map((report) => ciReportEnvelope(report, context, `tooling-${report.checks[0].toolingShard.id}`));
+  const upstream = new Map([["tooling", "success"], ["macos", "success"]]);
+  assert.throws(() => collectCIReports(plan, context, windows, upstream),
+    "Windows tooling cannot substitute for selected macOS coverage.");
+  const macos = structuredClone(reports.find((report) => report.checks[0].toolingShard.id === "native"));
+  macos.environment = { platform: "darwin", architecture: "arm64" };
+  const leaf = ciReportEnvelope(macos, context, "macos");
+  const combined = collectCIReports(plan, context, [...windows, leaf], upstream);
+  assert.equal(combined.report.complete, true);
+  assert.deepEqual(combined.macos.environment, macos.environment);
+  assert.deepEqual(combined.macos.checks[0].execution, macos.checks[0].execution);
+  assert.ok(combined.inputs.some((input) => input.unit === "macos"));
+  const live = { repository: context.repository, candidate: context.candidate,
+    pullRequest: { number: 11, state: "open", head: { sha: context.candidate, repo: { full_name: context.repository, id: 1 } },
+      base: { sha: plan.base, ref: "main", repo: { full_name: context.repository, id: 1 } } },
+    baseReference: { ref: "refs/heads/main", object: { type: "commit", sha: plan.base } },
+    run: { id: 1234, event: "pull_request", path: ".github/workflows/ci.yml", run_attempt: 1,
+      head_sha: context.candidate, status: "completed", conclusion: "success", pull_requests: [{ number: 11 }] },
+    jobs: { jobs: [{ name: "Required verification", status: "completed", conclusion: "success" }] },
+    artifact: { name: "verification-summary-attempt-1", expired: false, digest: `sha256:${"a".repeat(64)}`,
+      workflow_run: { id: 1234, head_sha: context.candidate, repository_id: 1, head_repository_id: 1 } },
+    commit: { sha: context.tested.head, tree: { sha: context.tested.tree },
+      parents: [{ sha: plan.base }, { sha: context.candidate }] } };
+  assert.equal(validateLiveCIEnvelope(combined, live), combined);
+  for (const mutate of [
+    (value) => { delete value.macos; },
+    (value) => { value.macos.environment.platform = "linux"; },
+    (value) => { delete value.macos.checks[0].execution; },
+    (value) => { value.macos.checks[0].privateField = "not-a-public-projection"; },
+    (value) => { value.inputs = value.inputs.filter((input) => input.unit !== "macos"); },
+  ]) {
+    const invalid = structuredClone(combined); mutate(invalid);
+    assert.throws(() => validateLiveCIEnvelope(invalid, live));
+  }
+  const rerun = collectCIReports(plan, { ...context, attempt: 2 }, [...windows, leaf], upstream);
+  const later = structuredClone(live);
+  later.run.run_attempt = 2;
+  later.artifact.name = "verification-summary-attempt-2";
+  assert.equal(validateLiveCIEnvelope(rerun, later), rerun,
+    "A successful Mac shard from the same source's earlier attempt need not rerun with failed jobs.");
+  assert.equal(rerun.inputs.find((input) => input.unit === "macos").attempt, 1);
+  for (const outcome of ["failure", "cancelled", "skipped", "unknown", undefined]) {
+    const results = new Map(upstream);
+    if (outcome === undefined) results.delete("macos"); else results.set("macos", outcome);
+    assert.throws(() => collectCIReports(plan, context, [...windows, leaf], results));
+  }
+  for (const mutate of [
+    (value) => { value.environment.platform = "win32"; },
+    (value) => { value.environment.architecture = "x64"; },
+    (value) => { delete value.environment; },
+    (value) => { value.source = { ...value.source, head: "f".repeat(40) }; },
+    (value) => { value.checks[0].toolingShard.id = "verification"; },
+    (value) => { value.checks[0].status = "failed"; },
+    (value) => { value.checks[0].executionState = "not-started"; },
+    (value) => { value.checks[0].commandOutcome.cleanupFailure = { reason: "cleanup-failed" }; },
+  ]) {
+    const invalid = structuredClone(macos); mutate(invalid);
+    assert.throws(() => collectCIReports(plan, context, [...windows, ciReportEnvelope(invalid, context, "macos")], upstream));
+  }
+  assert.throws(() => collectCIReports(plan, context, [...windows, leaf, leaf], upstream));
+  const unselected = { ...plan, ciMacos: false };
+  const ordinary = reports.map((report) => ciReportEnvelope({ ...report, ciMacos: false }, context,
+    `tooling-${report.checks[0].toolingShard.id}`));
+  assert.equal(collectCIReports(unselected, context, ordinary,
+    new Map([["tooling", "success"], ["macos", "skipped"]])).report.complete, true);
+});
+
+test("macOS CI workflow is plan-selected, source-sealed and required by the final gate", async () => {
+  const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
+  const start = workflow.indexOf("  macos:\n");
+  assert.ok(start >= 0, "The planned macOS job must exist.");
+  const macos = workflow.slice(start, workflow.indexOf("  backend:\n", start));
+  assert.match(macos, /needs: plan/);
+  assert.match(macos, /needs\.plan\.outputs\.macos == 'true'/);
+  assert.match(macos, /runs-on: macos-15/);
+  assert.match(macos, /--tooling-shard native/);
+  assert.match(macos, /--seal --unit macos/);
+  assert.match(macos, /verification-macos-attempt-/);
+  assert.doesNotMatch(macos, /continue-on-error|prepare-native|sdkmanager|test-android\.ps1/);
+  const gate = workflow.slice(workflow.indexOf("  gate:\n"));
+  assert.match(gate, /needs: \[plan, tooling, macos, backend, android, device\]/);
+  assert.match(gate, /MACOS_RESULT: \$\{\{ needs\.macos\.result \}\}/);
+  assert.match(gate, /'tooling', 'macos', 'backend', 'android', 'device'/);
+  assert.match(workflow.slice(workflow.indexOf("  device:\n"), workflow.indexOf("  gate:\n")), /runs-on: ubuntu-24\.04/);
 });
 
 test("the actual shard CLI executes only its assigned files and cannot independently complete verification", async (t) => {
@@ -271,21 +401,30 @@ test("host admission rediscovers a replaced owner without transferring inherited
   });
 });
 
-async function ciFixture(t, { documentation = false } = {}) {
+async function ciFixture(t, { documentation = false, macos = false } = {}) {
   const root = await fixture(t);
   const git = async (...args) => (await exec("git", args, { cwd: root })).stdout.trim();
   await mkdir(path.join(root, ".data"));
   await mkdir(path.join(root, "scripts"));
   await writeFile(path.join(root, ".gitignore"), ".data/\n");
-  await writeFile(path.join(root, "package.json"), '{"scripts":{"test:workflow":"node -e \\"process.exit(0)\\""}}\n');
+  await writeFile(path.join(root, "package.json"), JSON.stringify({
+    scripts: { "test:workflow": macos ? "node scripts/test-workflow.mjs" : 'node -e "process.exit(0)"' },
+  }) + "\n");
+  if (macos) await copyFile("scripts/test-workflow.mjs", path.join(root, "scripts", "test-workflow.mjs"));
   await git("init", "--quiet");
   await git("config", "user.name", "Fixture");
   await git("config", "user.email", "fixture@example.invalid");
   await git("add", ".");
   await git("commit", "--quiet", "-m", "CI base");
+  const originalBase = await git("rev-parse", "HEAD");
+  await writeFile(path.join(root, "scripts", "verification.mjs"), "// already in the PR base\n");
+  await git("add", ".");
+  await git("commit", "--quiet", "-m", "Earlier shared infrastructure change");
   const base = await git("rev-parse", "HEAD");
   await git("checkout", "--quiet", "-b", "candidate");
-  await writeFile(path.join(root, documentation ? "README.md" : "scripts/verification.mjs"), "// fixture input\n");
+  if (!documentation) await mkdir(path.join(root, "scripts", "tests"));
+  await writeFile(path.join(root, documentation ? "README.md" :
+    macos ? "scripts/tests/process.test.mjs" : "scripts/tests/linux-runtime.test.mjs"), "// fixture input\n");
   await git("add", ".");
   await git("commit", "--quiet", "-m", "CI candidate");
   const candidate = await git("rev-parse", "HEAD");
@@ -305,8 +444,46 @@ async function ciFixture(t, { documentation = false } = {}) {
   const context = await githubVerificationContext(root, env), plan = await verificationPlan(root, base);
   const report = { ...plan, group: documentation ? "all" : "tooling", status: "passed", complete: true, fixtureEvidence: true,
     checks: documentation ? [] : [{ id: "workflow-tests", status: "passed", exitCode: 0, execution: syntheticExecution(plan.source) }] };
-  return { root, base, candidate, repository, pullRequest, env, context, plan, report };
+  return { root, base, originalBase, candidate, repository, pullRequest, env, context, plan, report };
 }
+
+test("the CI collector CLI cannot qualify selected macOS coverage from Windows artifacts alone", async (t) => {
+  const item = await ciFixture(t, { macos: true }), inputs = path.join(item.root, ".data", "ci", "inputs");
+  assert.equal(item.plan.ciMacos, true);
+  const reports = item.plan.toolingShards.parts.map((part) => ({
+    ...item.plan, fixtureEvidence: true, group: "tooling", status: "partial", complete: false,
+    environment: { platform: "win32", architecture: "x64" },
+    checks: [{ id: "workflow-tests", status: "passed", exitCode: 0,
+      toolingShard: toolingShardDescriptor(item.plan, part.id), execution: syntheticExecution(item.plan.source),
+      executionState: "exited", commandOutcome: {
+        observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0, cleanupFailure: null,
+      } }],
+  }));
+  const store = async (unit, report) => {
+    const directory = path.join(inputs, `verification-${unit}-attempt-2`);
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, "ci-report.json"), JSON.stringify(ciReportEnvelope(report, item.context, unit)));
+  };
+  for (const report of reports) await store(`tooling-${report.checks[0].toolingShard.id}`, report);
+  const invoke = async (name, status) => {
+    const report = path.join(item.root, ".data", "ci", name, "ci-report.json");
+    await exec(process.execPath, [path.resolve("scripts/verification-ci.mjs"), "--collect", "--base", item.base,
+      "--inputs", inputs, "--report", report, "--upstream", "tooling:success", "--upstream", `macos:${status}`],
+    { cwd: item.root, env: item.env, timeout: 30000 });
+    return JSON.parse(await readFile(report, "utf8"));
+  };
+  await assert.rejects(invoke("missing-mac", "success"), { code: 1 });
+  const macos = structuredClone(reports.find((report) => report.checks[0].toolingShard.id === "native"));
+  macos.environment = { platform: "darwin", architecture: "arm64" };
+  await store("macos", macos);
+  const accepted = await invoke("complete", "success");
+  assert.equal(accepted.report.complete, true);
+  assert.equal(accepted.macos.environment.platform, "darwin");
+  assert.equal(accepted.inputs.find((input) => input.unit === "macos").attempt, 2);
+  await assert.rejects(invoke("cancelled-mac", "cancelled"), { code: 1 });
+  const blocked = JSON.parse(await readFile(path.join(item.root, ".data", "ci", "cancelled-mac", "gate.json"), "utf8"));
+  assert.equal(blocked.complete, false);
+});
 
 test("CI collection binds real merge ancestry while preserving earlier failed attempts", async (t) => {
   const item = await ciFixture(t), inputs = path.join(item.root, ".data", "ci", "inputs");
@@ -602,6 +779,18 @@ test("the qualification CLI keeps requested report names separate from authentic
           await assert.rejects(readFile(file), { code: "ENOENT" });
         }
       } finally { await writeFile(fixtureData, JSON.stringify(responses)); }
+    });
+    await t.test("original task Mac coverage cannot disappear under a narrower PR base", async () => {
+      const original = await verificationPlan(workspace, item.originalBase);
+      assert.deepEqual(original.requiredChecks, item.plan.requiredChecks);
+      assert.equal(original.ciMacos, true);
+      assert.equal(item.plan.ciMacos, false);
+      const file = path.join(workspace, ".data", "verification", "missing-original-macos", "qualification.json");
+      await assert.rejects(exec(process.execPath, ["--import", pathToFileURL(preload).href,
+        path.resolve("scripts/verification-ci.mjs"), "--qualify", "--repository", item.repository,
+        "--pr", "11", "--run", "1234", "--base", item.originalBase, "--report", file],
+      { cwd: workspace, env, timeout: 60000 }), (error) => error.code === 1 && /ci-evidence/.test(error.stderr));
+      await assert.rejects(readFile(file), { code: "ENOENT" });
     });
     const ledger = path.join(workspace, ".data", "verification", "retained", "run");
     await mkdir(ledger, { recursive: true });
