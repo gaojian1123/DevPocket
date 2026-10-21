@@ -199,6 +199,41 @@ test("credential-field aliases are removed before both transport and reference r
   }
 });
 
+test("sensitive link columns with static or templated hrefs are unavailable before retention", () => {
+  const projection = new ComponentProjection(randomUUID()), canary = "CREDENTIAL_LINK_CANARY";
+  projection.beginLive([owner]);
+  for (const [index, column] of [
+    { key: "value", label: "API key", type: "link", href: `https://example.test/keys/${canary}` },
+    { key: "value", label: "API key", type: "link", href: "https://example.test/{target}" },
+    { key: "client_secret", label: "Value", type: "link", href: "https://example.test/{value}" },
+  ].entries()) {
+    const call = `sensitive-link-${index}`;
+    projection.observe(start(call, { type: "datagrid", columns: [column],
+      rows: [{ [column.key]: canary, ...(index === 1 ? { target: canary } : {}) }] }));
+    const output = projection.observe(finish(call)), record = output.find((item) => item.kind === "component")?.data;
+    assert.ok(record && record.status === "unavailable");
+    assert.equal(record.error.code, "COMPONENT_INVALID");
+    assert.ok(!JSON.stringify(output).includes(canary));
+    assert.throws(() => projection.referenceContent({ componentId: record.componentId, sha256: "0".repeat(64) }),
+      { code: "COMPONENT_REFERENCE_EXPIRED" });
+  }
+});
+
+test("ordinary static and templated link columns keep their complete transport and reference content", () => {
+  const projection = new ComponentProjection(randomUUID());
+  projection.beginLive([owner]);
+  for (const [index, href] of ["https://example.test/docs", "https://example.test/{target}"].entries()) {
+    const call = `public-link-${index}`, spec = { type: "datagrid",
+      columns: [{ key: "name", label: "Documentation", type: "link", href }],
+      rows: [{ name: "Guide", ...(index === 1 ? { target: "public-guide" } : {}) }] };
+    projection.observe(start(call, spec));
+    const record = ready(projection.observe(finish(call)));
+    assert.equal(record.redacted, false);
+    assert.deepEqual(decodeComponentPayload(record.payload, record.sha256), spec);
+    assert.deepEqual(JSON.parse(projection.referenceContent(record).content).spec, spec);
+  }
+});
+
 test("ordinary token counts, public keys and similarly named fields retain their values", () => {
   const projection = new ComponentProjection(randomUUID());
   projection.beginLive([owner]);

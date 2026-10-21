@@ -107,7 +107,7 @@ test("a clean release snapshot builds and its pruned runtime resolves the portab
       safeToClean = false;
       try {
         const result = await runCommand("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
-          `$ErrorActionPreference='Stop'; ${command}; exit $LASTEXITCODE`],
+          `$ErrorActionPreference='Stop'; $env:npm_config_cache='${path.join(directory, "npm-cache").replaceAll("'", "''")}'; ${command}; exit $LASTEXITCODE`],
         { cwd: snapshot, timeoutMs: 90000, signal: t.signal });
         safeToClean = result.processTreeStopped === true;
         assert.ok(safeToClean, "Build process cleanup must be confirmed.");
@@ -116,6 +116,10 @@ test("a clean release snapshot builds and its pruned runtime resolves the portab
         throw releaseFixtureFailure(stage, error);
       }
     };
+    await assert.rejects(run("install", "npm ci --offline --ignore-scripts --no-audit --no-fund"),
+      { message: "DEVPOCKET_RELEASE_FIXTURE_FAILURE install ENOTCACHED" });
+    assert.ok(safeToClean, "Cold-cache failure cleanup must be confirmed before dependency preparation.");
+    await run("install", "npm ci --ignore-scripts --no-audit --no-fund");
     await run("install", "npm ci --offline --ignore-scripts --no-audit --no-fund");
     await run("build", "npm run build");
     await run("prune", "npm prune --omit=dev --ignore-scripts --offline --no-audit --no-fund");

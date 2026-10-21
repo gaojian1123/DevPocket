@@ -1432,6 +1432,12 @@ On backend failure, CI emits only distinct stage/code pairs from the bounded
 private Azure-test log; missing markers are explicitly unavailable. Raw child
 output remains private, and the original test failure and cleanup requirements
 are unchanged.
+The fixture owns a fresh npm cache: it first requires an uncached offline install
+to fail, then restores the locked dependencies with lifecycle scripts disabled.
+It repeats the offline clean install before building and pruning the standalone
+runtime. This does not rely on, clear or change the runner's shared cache; only
+the fixture's child processes use its temporary cache, and their original
+deadlines and confirmed-cleanup requirements still apply.
 
 The workflow suite's schema newline regression compiles the actual portable
 contract in its own isolated package fixture. It verifies the missing-export

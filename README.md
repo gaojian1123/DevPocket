@@ -85,6 +85,9 @@ and `secret_key`, are masked before encoding and reference retention, not merely
 hidden in the displayed cell. The same classification applies to table labels
 and URL query names, including labels such as `API key (production)`; assigned
 credential values in text use the shared redactor.
+Sensitive table columns with a static or templated `href` are rejected before
+transport and reference retention; masking only the displayed value cannot make
+those link targets safe. Ordinary links remain supported.
 Recognized assignments mask complete quoted values, including escaped quotes;
 unterminated quotes fail closed. Bare values end at a line, comma or semicolon,
 while unquoted authorization headers are masked through their line.

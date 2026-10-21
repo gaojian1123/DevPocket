@@ -58,6 +58,8 @@ function projectSpec(input: unknown): { spec: ComponentSpec; redacted: boolean }
   if (original.type === "datagrid") {
     const sensitiveColumns = original.columns.filter((column) => isSensitiveFieldName(column.key) || isSensitiveFieldName(column.label));
     if (sensitiveColumns.length) {
+      if (sensitiveColumns.some((column) => column.href !== undefined))
+        throw new ComponentError("COMPONENT_INVALID", "A sensitive link column cannot be safely projected. Review it in the original client.");
       const keys = new Set(sensitiveColumns.flatMap((column) => [column.key, ...(column.hrefKey ? [column.hrefKey] : [])]));
       const candidate = parseComponentSpec(projected);
       if (candidate.type !== "datagrid") throw new ComponentError("COMPONENT_INVALID", "Unexpected table projection.");

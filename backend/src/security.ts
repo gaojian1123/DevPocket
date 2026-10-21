@@ -71,7 +71,7 @@ const credentialName = "(?:(?<![a-z0-9])auth(?:orization)?|password|passwd|secre
 const credentialQualifier = "(?=\\s*(?:\\(|\\[|\\{|:)|\\s+[-\\u2013\\u2014]\\s+)";
 const credentialField = new RegExp(`${credentialName}(?:$|${credentialQualifier})`, "i");
 const credentialAnnotations = "(?:\\s*(?:\\([^\\r\\n()]*\\)|\\[[^\\r\\n\\[\\]]*\\]|\\{[^\\r\\n{}]*\\}))*";
-const credentialAssignment = new RegExp(`(${credentialName})${credentialAnnotations}\\s*["']?\\s*[:=]\\s*`, "gi");
+const credentialAssignment = new RegExp(`(${credentialName})${credentialAnnotations}\\s*(?:["']\\s*)?[:=]\\s*`, "gi");
 
 export function isSensitiveFieldName(name: string): boolean {
   const normalized = name.replace(/[\s_.-]/g, "");

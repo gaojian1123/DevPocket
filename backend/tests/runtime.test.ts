@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
+import { promisify } from "node:util";
 import { CopilotRuntime, type JoinedSession } from "../src/runtime.js";
 import { Action, PendingRequest, SessionSummary, UserEvent } from "../src/protocol.js";
 import { hash, isSensitiveFieldName, redact } from "../src/security.js";
@@ -173,6 +175,18 @@ test("shared credential names cover structured aliases and assigned text without
     assert.equal(redact(`${name}=public-value`), `${name}=public-value`);
     assert.equal(isSensitiveFieldName(`${name} (production)`), false, name);
   }
+});
+
+test("credential assignments with long whitespace cannot stall ordinary prose projection", async () => {
+  const source = new URL("../src/security.ts", import.meta.url).href;
+  await promisify(execFile)(process.execPath, ["--experimental-transform-types", "--input-type=module", "--eval", `
+    import assert from "node:assert/strict";
+    const { redact } = await import(${JSON.stringify(source)});
+    const value = "secret" + " ".repeat(128 * 1024) + "ordinary prose";
+    const started = performance.now();
+    assert.equal(redact(value, 256 * 1024), value);
+    assert.ok(performance.now() - started < 1000, "Credential matching must not backtrack over whitespace partitions.");
+  `], { timeout: 5000 });
 });
 
 test("linked worktrees share project identity without changing the original runtime or working directory", async (t) => {
