@@ -116,18 +116,21 @@ and device cleanup run under the unprivileged identity. Authoritative reports an
 ledger keys are stored under control, separately from candidate-owned raw device
 output. Only bounded named reports and APKs are staged for upload.
 
-Windows requires the control token to possess `SeAssignPrimaryTokenPrivilege`
-and `SeIncreaseQuotaPrivilege`. Being an administrator alone does not establish
-those capabilities. Bootstrap checks them before creating the account, and
-missing capabilities block the route. It does not grant new OS user rights,
-install a service, or fall back to a weaker launcher. `LogonUserW` and
+Windows requires the control token's existing `SeIncreaseQuotaPrivilege`.
+`SeAssignPrimaryTokenPrivilege` is enabled only when already present; its absence
+is recorded rather than assumed to prove that a particular token is unassignable.
+The actual atomic API remains the authority for that decision. A benign fixed
+Node launch must pass before candidate setup or the negative fixture; a native
+rejection retains its exact stage/error code and blocks execution. This does not
+grant new OS user rights, install a service, or fall back to a weaker launcher. `LogonUserW` and
 `CreateProcessAsUserW` attach the target to a kill-on-close Job through the
 creation-time Job-list attribute before it can execute. The helper reads control
 input without blocking startup and checks cancellation before resuming the target.
 Only target standard I/O handles are inherited; Windows candidate stdin is EOF,
 not the privileged cancellation pipe. The original Store-PowerShell compatibility path is
-unchanged. Whether the selected hosted Windows image supplies these capabilities
-still requires actual evidence; the prepared code is not a claim that it does.
+unchanged. Actual separate-account token assignability still requires hosted
+evidence; the documented restricted-caller-token exception is not assumed to
+apply to a token for another account.
 
 Linux keeps the root process owner outside `setpriv`, drops the target's groups
 and capabilities and sets `no_new_privs`. Control and ancestors are root-owned;
@@ -217,6 +220,10 @@ kind and cannot qualify as successful verification. Structured worker reports
 are persisted before printing log tails; the reader accepts the producer's
 1 MiB retained-log bound while printing at most the final 16 KiB.
 Workflow-command interpretation is suspended while untrusted failure tails are printed.
+Bootstrap failures also retain a separate, non-acceptance diagnostic report.
+Only output from an observed candidate command is printed; private native launch
+failures expose allowlisted stage, error code and privilege-presence facts instead.
+Stop/resume markers and their bounded tail use one stream so their ordering is preserved.
 Cancellation stops local waiting, but an already-submitted hosted run may continue
 to its CI timeout; inspect that exact run before a separately scoped cancellation.
 

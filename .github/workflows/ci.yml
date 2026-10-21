@@ -421,6 +421,8 @@ jobs:
           path: |
             control/.data/ci/isolated/isolation-proof.json
             control/.data/ci/isolated/isolation-negative-report.json
+            control/.data/ci/isolated/bootstrap-failure.json
+            control/.data/ci/isolated/bootstrap-capabilities.json
           if-no-files-found: error
 
   gate:

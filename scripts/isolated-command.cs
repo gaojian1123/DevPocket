@@ -82,17 +82,24 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
     public int? ExitCode { get; private set; }
     public string Admission { get; private set; }
     public string Interruption { get; private set; }
+    public string Stage { get; private set; }
+    public string FailureStage { get; private set; }
+    public int? NativeErrorCode { get; private set; }
+    public bool? AssignPrimaryTokenEnabled { get; private set; }
+    public bool? IncreaseQuotaEnabled { get; private set; }
 
     public DevPocketIsolatedCommand() : this(null) {}
     public DevPocketIsolatedCommand(Task<string> controlInput) {
         this.controlInput = controlInput;
         Admission = "not-admitted";
+        Stage = "control";
         ProcessTreeStopped = true;
     }
 
-    public static void RequireCreationPrivileges() {
+    public static bool PrepareCreationPrivileges() {
         IntPtr token;
         if (!OpenProcessToken(GetCurrentProcess(), 0x28, out token)) throw new Win32Exception();
+        bool assignEnabled = false;
         try {
             foreach (string name in new[] { "SeAssignPrimaryTokenPrivilege", "SeIncreaseQuotaPrivilege" }) {
                 IntPtr state = Marshal.AllocHGlobal(16);
@@ -100,12 +107,17 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
                     Marshal.WriteInt32(state, 1);
                     if (!LookupPrivilegeValueW(null, name, IntPtr.Add(state, 4))) throw new Win32Exception();
                     Marshal.WriteInt32(state, 12, 2);
-                    if (!AdjustTokenPrivileges(token, false, state, 0, IntPtr.Zero, IntPtr.Zero) ||
-                        Marshal.GetLastWin32Error() != 0)
+                    bool adjusted = AdjustTokenPrivileges(token, false, state, 0, IntPtr.Zero, IntPtr.Zero);
+                    int error = Marshal.GetLastWin32Error();
+                    if (!adjusted) throw new Win32Exception(error);
+                    if (name == "SeAssignPrimaryTokenPrivilege" && error == 1300) continue;
+                    if (error != 0)
                         throw new InvalidOperationException("Hosted token creation privilege is unavailable: " + name);
+                    if (name == "SeAssignPrimaryTokenPrivilege") assignEnabled = true;
                 } finally { Marshal.FreeHGlobal(state); }
             }
         } finally { CloseHandle(token); }
+        return assignEnabled;
     }
 
     static string Quote(string value) {
@@ -168,7 +180,10 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
         bool initialized = false;
         try {
             CheckControl(cancellation, deadline);
-            RequireCreationPrivileges();
+            Stage = "privileges";
+            AssignPrimaryTokenEnabled = PrepareCreationPrivileges();
+            IncreaseQuotaEnabled = true;
+            Stage = "job";
             job = CreateJobObjectW(IntPtr.Zero, null);
             if (job == IntPtr.Zero) throw new Win32Exception();
             var limits = new ExtendedLimits(); limits.basic.flags = 0x2000;
@@ -177,7 +192,9 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
             foreach (string arg in args) command.Append(' ').Append(Quote(arg));
             Array.Sort(environment, StringComparer.OrdinalIgnoreCase);
             block = Marshal.StringToHGlobalUni(string.Join("\0", environment) + "\0\0");
+            Stage = "logon";
             if (!LogonUserW(user, ".", password, 2, 0, out token)) throw new Win32Exception();
+            Stage = "attributes";
             IntPtr bytes = IntPtr.Zero;
             InitializeProcThreadAttributeList(IntPtr.Zero, 2, 0, ref bytes);
             attributes = Marshal.AllocHGlobal(bytes);
@@ -207,18 +224,22 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
             CheckControl(cancellation, deadline);
             Admission = "creation-attempted";
             ProcessTreeStopped = false;
+            Stage = "create";
             if (!CreateProcessAsUserW(token, file, command, IntPtr.Zero, IntPtr.Zero, true, 0x08080404,
                     block, cwd, ref startup, out info)) throw new Win32Exception();
             process = info.process; thread = info.thread;
             Admission = "created";
+            Stage = "identity";
             bool member;
             if (!IsProcessInJob(process, job, out member) || !member)
                 throw new InvalidOperationException("The candidate did not join the isolated Job.");
             RestrictToken(sid);
+            Stage = "resume";
             CheckControl(cancellation, deadline);
             if (ResumeThread(thread) == 0xffffffff) throw new Win32Exception();
             Started = true;
             Admission = "running";
+            Stage = "wait";
             while (true) {
                 CheckControl(cancellation, deadline);
                 uint status = WaitForSingleObject(process, 50);
@@ -236,7 +257,12 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
         } catch (TimeoutException) {
             Interruption = "timeout";
             throw;
+        } catch (Win32Exception error) {
+            NativeErrorCode = error.NativeErrorCode;
+            throw;
         } finally {
+            if (!ExitCode.HasValue) FailureStage = Stage;
+            Stage = "cleanup";
             if (initialized) DeleteProcThreadAttributeList(attributes);
             if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes);
             if (jobValue != IntPtr.Zero) Marshal.FreeHGlobal(jobValue);

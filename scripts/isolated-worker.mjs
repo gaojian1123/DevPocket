@@ -13,11 +13,20 @@ import { WORKFLOW_TEST_FILES } from "./test-workflow.mjs";
 import { LINUX_PLATFORM_TESTS } from "./backend-diagnostics.mjs";
 import { readDiagnosticReport } from "./worker-diagnostics.mjs";
 import { failureDetails } from "./diagnostic-errors.mjs";
-import { readWorkerLogTail } from "./bounded-worker-log.mjs";
+import { readWorkerLogTail, writeBoundedWorkerLog } from "./bounded-worker-log.mjs";
 
 const controlRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+let bootstrapPhase = "configuration";
+
+function nativeFailure(value) {
+  if (!value || !["control", "privileges", "job", "logon", "attributes", "create", "identity", "resume", "wait", "cleanup"].includes(value.stage)) return null;
+  return { stage: value.stage,
+    errorCode: Number.isInteger(value.errorCode) && value.errorCode >= 0 && value.errorCode <= 65535 ? value.errorCode : null,
+    assignPrimaryTokenEnabled: typeof value.assignPrimaryTokenEnabled === "boolean" ? value.assignPrimaryTokenEnabled : null,
+    increaseQuotaEnabled: typeof value.increaseQuotaEnabled === "boolean" ? value.increaseQuotaEnabled : null };
+}
 
 export function isolatedCandidateEnvironment(configuration, environment) {
   const windows = configuration.platform === "win32";
@@ -141,6 +150,7 @@ export function isolatedCommandBoundary(configuration, ownerEnvironment, candida
     if (receipt?.status === "blocked" && stopped) {
       throw Object.assign(verificationFault("preflight-tool", { phase: "preflight" }), {
         processTreeStopped: true, stdout: failure?.stdout ?? "", stderr: failure?.stderr ?? "",
+        nativeFailure: nativeFailure(receipt.native),
         commandOutcome: { ...(failure?.commandOutcome ?? result?.commandOutcome), reason: "spawn", cleanupFailure: null },
       });
     }
@@ -151,9 +161,33 @@ export function isolatedCommandBoundary(configuration, ownerEnvironment, candida
         commandOutcome: { ...(result?.commandOutcome ?? failure?.commandOutcome), reason: "spawn",
           cleanupFailure: failureDetails(verificationFault("cleanup-failed")) } });
     }
-    if (failure) throw failure;
+    if (failure) {
+      failure.isolatedExecutionObserved = true;
+      throw failure;
+    }
     return result;
   };
+}
+
+async function printFailureTail(file) {
+  const tail = (await readWorkerLogTail(file))
+    .replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g, "")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "");
+  const token = randomUUID();
+  console.error(`::stop-commands::${token}\n${tail}\n::${token}::`);
+}
+
+async function retainBootstrapFailure(error) {
+  const directory = path.join(controlRoot, ".data", "ci", "isolated");
+  await mkdir(directory, { recursive: true });
+  const file = path.join(directory, "bootstrap-failure.log");
+  const privateLog = await writeBoundedWorkerLog(file, `${error.stdout ?? ""}${error.stderr ?? ""}`);
+  const report = { version: 1, kind: "isolated-bootstrap-diagnostics", acceptance: false,
+    status: "blocked", phase: bootstrapPhase, failure: failureDetails(error),
+    nativeFailure: nativeFailure(error.nativeFailure), privateLog };
+  await immutableJson(path.join(directory, "bootstrap-failure.json"), report);
+  console.error(JSON.stringify(report));
+  if (error.isolatedExecutionObserved === true) await printFailureTail(file);
 }
 
 async function proveIsolation(configuration, directory) {
@@ -163,14 +197,18 @@ async function proveIsolation(configuration, directory) {
   const runnerBytes = await readFile(runner), evidenceBytes = await readFile(evidence);
   const input = { fixture, runner, evidence, marker, supervisorPid: process.pid, files: WORKFLOW_TEST_FILES,
     probe: path.join(controlRoot, "scripts", "isolated-worker-probe.mjs"), protectedPaths: configuration.protectedPaths };
+  bootstrapPhase = "fixture-create";
   await runCommand(configuration.tools.node, [input.probe, "fixture", JSON.stringify(input)], { cwd: fixture, timeoutMs: 30000 });
+  bootstrapPhase = "fixture-git";
   await git(fixture, ["-c", "init.templateDir=", "init", "--quiet"]);
   await git(fixture, ["add", "--all"]);
   await git(fixture, ["-c", "user.name=Isolation fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Known failing fixture"]);
   await writeFile(path.join(fixture, "scripts", "verification.mjs"), "// Select the fixed tooling gate.\n");
   const plan = await verificationPlan(fixture, "HEAD", false, { trustedTooling: true });
+  bootstrapPhase = "fixture-install";
   await runCommand(configuration.tools.pwsh, ["-NoProfile", "-NonInteractive", "-Command", "& npm ci --no-audit --no-fund; exit $LASTEXITCODE"],
     { cwd: fixture, timeoutMs: 120000 });
+  bootstrapPhase = "boundary-assertions";
   assert.deepEqual(await readFile(runner), runnerBytes, "A candidate installation replaced trusted selection code.");
   assert.deepEqual(await readFile(evidence), evidenceBytes, "A candidate installation replaced trusted evidence.");
   const attacks = await readDiagnosticReport(path.join(fixture, ".data", "attacks.json"), { maximum: 16384 });
@@ -180,6 +218,7 @@ async function proveIsolation(configuration, directory) {
   assert.equal(JSON.parse(stopped).denied, true);
   await delay(250);
   assert.deepEqual(await readFile(descendant), stopped, "The background candidate descendant survived its owner.");
+  bootstrapPhase = "cancellation-check";
   const cancellation = new AbortController(), counter = path.join(fixture, ".data", "cancelled-descendant.json");
   const cancelled = runCommand(configuration.tools.node, [input.probe, "descendant", JSON.stringify({ counter, runner })],
     { cwd: fixture, signal: cancellation.signal, timeoutMs: 30000 });
@@ -198,6 +237,7 @@ async function proveIsolation(configuration, directory) {
   const cancelledBytes = await readFile(counter);
   await delay(250);
   assert.deepEqual(await readFile(counter), cancelledBytes);
+  bootstrapPhase = "negative-gate";
   const report = await executeVerification(fixture, plan, { group: "tooling", evidenceRoot: controlRoot,
     directory: path.join(directory, "negative-gate"), isolatedTooling: true,
     trustedToolingRunner: runner });
@@ -292,6 +332,11 @@ async function main(file) {
           { ...options, signal: options.signal ?? cancellation.signal }, execute), async () => {
         const context = configuration.mode === "worker" ? await isolatedContext(configuration.candidate) : null;
         const plan = context ? await verificationPlan(configuration.candidate, context.request.base, false, { trustedTooling: true }) : null;
+        bootstrapPhase = "native-launch";
+        const launch = await runCommand(configuration.tools.node,
+          ["--disable-sigusr1", "-e", "process.stdout.write('DEVPOCKET_ISOLATED_LAUNCH')"],
+          { cwd: controlRoot, timeoutMs: 30000 });
+        assert.equal(launch.stdout, "DEVPOCKET_ISOLATED_LAUNCH");
         const proof = await proveIsolation(configuration, directory);
         await immutableJson(path.join(directory, "isolation-proof.json"), proof);
         if (configuration.mode === "self-test") return;
@@ -329,11 +374,7 @@ async function main(file) {
           for (const check of result.checks.filter((check) => ["failed", "blocked"].includes(check.status))) {
             console.error(JSON.stringify({ check: check.id, failure: check.failure ?? null }));
             if (check.privateLog?.availability === "retained") {
-              const tail = await readWorkerLogTail(path.join(directory, "checks", `${check.id}.log`));
-              const token = randomUUID();
-              console.log(`::stop-commands::${token}`);
-              console.error(tail);
-              console.log(`::${token}::`);
+              await printFailureTail(path.join(directory, "checks", `${check.id}.log`));
             }
           }
         }
@@ -350,7 +391,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (!values.configuration) throw new Error("A private bootstrap configuration is required.");
     await main(values.configuration);
   } catch (error) {
-    console.error(JSON.stringify({ status: "blocked", phase: "isolated-worker", failure: failureDetails(error) }));
+    try { await retainBootstrapFailure(error); }
+    catch (diagnosticError) {
+      console.error(JSON.stringify({ status: "blocked", phase: "isolated-worker", failure: failureDetails(error),
+        diagnosticFailure: failureDetails(diagnosticError, "report-write") }));
+    }
     process.exitCode = 78;
   }
 }

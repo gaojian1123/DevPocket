@@ -29,8 +29,18 @@ if (!([Security.Principal.WindowsPrincipal]$runner).IsInRole([Security.Principal
     throw 'The authorized hosted control identity is not administrative.'
 }
 Add-Type -Path (Join-Path $Control 'scripts\isolated-command.cs')
-# Fail before creating an account if atomic token-and-Job creation is unavailable.
-[DevPocketIsolatedCommand]::RequireCreationPrivileges()
+$assignEnabled = [DevPocketIsolatedCommand]::PrepareCreationPrivileges()
+$capabilities = @{
+    kind = 'isolated-creation-capabilities'; acceptance = $false
+    assignPrimaryTokenEnabled = $assignEnabled; increaseQuotaEnabled = $true
+    assignability = 'requires-atomic-creation-probe'
+}
+$capabilityDirectory = Join-Path $Control '.data\ci\isolated'
+$null = New-Item -ItemType Directory -Path $capabilityDirectory -Force
+$capabilityFile = Join-Path $capabilityDirectory 'bootstrap-capabilities.json'
+if (Test-Path -LiteralPath $capabilityFile) { throw 'Creation capability evidence already exists.' }
+[IO.File]::WriteAllText($capabilityFile, ($capabilities | ConvertTo-Json -Compress))
+$capabilities | ConvertTo-Json -Compress
 $name = 'dpw_' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
 $state = Join-Path ([IO.Path]::GetPathRoot($Control)) $name
 if (Test-Path -LiteralPath $state) { throw 'Isolated worker state already exists.' }
@@ -179,7 +189,7 @@ try {
         $destination = Join-Path $Control '.data\ci\isolated'
         if (Test-Path -LiteralPath $source) {
             $null = New-Item -ItemType Directory -Path $destination -Force
-            foreach ($name in @('report.json', 'isolation-proof.json', 'isolation-negative-report.json')) {
+            foreach ($name in @('report.json', 'isolation-proof.json', 'isolation-negative-report.json', 'bootstrap-failure.json')) {
                 $inputFile = Join-Path $source $name
                 if (Test-Path -LiteralPath $inputFile) {
                     $item = Get-Item -LiteralPath $inputFile

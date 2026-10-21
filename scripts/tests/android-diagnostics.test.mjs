@@ -290,7 +290,7 @@ test("the independent tooling CI job runs the complete workflow suite without ap
   assert.match(tooling, /name: check-diagnostics-tooling-\$\{\{ matrix\.part \}\}-attempt-\$\{\{ github\.run_attempt \}\}\n\s+path: \.data\/ci\/tooling\/verification-diagnostics\.json/);
   assert.doesNotMatch(tooling, /setup-java|prepare-native|prepare-android|npm run build|npm --prefix|pip install|--(?:sdk|jdk|image)|continue-on-error/);
   const gate = workflow.split("\n  gate:")[1];
-  assert.match(gate, /name: Required verification\n\s+needs: \[plan, tooling, backend, android, device\]\n\s+if: always\(\)/);
+  assert.match(gate, /name: Required verification\n\s+needs: \[plan, tooling, backend, android, device, isolated-boundary\]\n\s+if: always\(\)/);
   assert.ok(gate.includes("TOOLING_RESULT: ${{ needs.tooling.result }}"));
   assert.match(gate, /pattern: verification-\*/);
   const manifest = JSON.parse(await readFile("package.json", "utf8"));

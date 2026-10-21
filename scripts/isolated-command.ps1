@@ -22,6 +22,12 @@ try {
     $receipt.started = $owner.Started
     $receipt.admission = $owner.Admission
     $receipt.interruption = $owner.Interruption
+    $receipt.native = @{
+        stage = $owner.FailureStage
+        errorCode = $owner.NativeErrorCode
+        assignPrimaryTokenEnabled = $owner.AssignPrimaryTokenEnabled
+        increaseQuotaEnabled = $owner.IncreaseQuotaEnabled
+    }
     $receipt.processTreeStopped = $owner.ProcessTreeStopped
     $receipt.exitCode = $owner.ExitCode
     $owner.Dispose()

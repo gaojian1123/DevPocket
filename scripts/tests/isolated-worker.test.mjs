@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
@@ -140,6 +140,26 @@ test("confirmed no-admission cancellation is distinct from an unconfirmed suspen
   }
 });
 
+test("atomic launch failures preserve bounded native stage and privilege facts", async (t) => {
+  const configuration = { ...await fixture(t), platform: "win32" };
+  const boundary = isolatedCommandBoundary(configuration, {}, environment(configuration));
+  await assert.rejects(boundary("node", [], {}, async (_file, args) => {
+    const file = args.at(-1), request = JSON.parse(await readFile(file, "utf8"));
+    await writeFile(`${file}.result.json`, JSON.stringify({ version: 1, id: request.id, status: "blocked",
+      admission: "creation-attempted", started: false, processTreeStopped: true, exitCode: null,
+      native: { stage: "create", errorCode: 1314, assignPrimaryTokenEnabled: false, increaseQuotaEnabled: true,
+        privateValue: "must-not-be-projected" } }));
+    throw Object.assign(new Error("Atomic launch rejected"), successfulCommand());
+  }), (error) => {
+    assert.equal(error.diagnosticCode, "preflight-tool");
+    assert.equal(error.processTreeStopped, true);
+    assert.equal(error.commandOutcome.reason, "spawn");
+    assert.deepEqual(error.nativeFailure, { stage: "create", errorCode: 1314,
+      assignPrimaryTokenEnabled: false, increaseQuotaEnabled: true });
+    return true;
+  });
+});
+
 test("Windows control cancellation and EOF before native creation report a confirmed no-start outcome",
   { skip: process.platform !== "win32" }, async (t) => {
     const configuration = await fixture(t), marker = path.join(configuration.candidate, "must-not-run");
@@ -201,14 +221,16 @@ test("Windows token creation joins its Job atomically and has no weaker credenti
   assert.match(source, /0x20002/);
   assert.match(source, /0x08080404/);
   assert.doesNotMatch(source, /CreateProcessWithLogonW|AssignProcessToJobObject/);
-  assert.ok(source.indexOf("RequireCreationPrivileges();") < source.indexOf("job = CreateJobObjectW"));
+  assert.ok(source.indexOf("AssignPrimaryTokenEnabled = PrepareCreationPrivileges();") < source.indexOf("job = CreateJobObjectW"));
+  assert.match(source, /name == "SeAssignPrimaryTokenPrivilege" && error == 1300/);
+  assert.match(source, /if \(!adjusted\) throw new Win32Exception\(error\)/);
   assert.ok(source.indexOf("if (!IsProcessInJob") < source.indexOf("if (ResumeThread"));
   assert.match(source, /Task\.Run\(\(\) => Console\.In\.ReadLine\(\)\)/);
   assert.doesNotMatch(source, /Console\.In\.ReadLineAsync|input = GetStdHandle\(-10\)/);
   assert.match(source, /CheckControl\(cancellation, deadline\);\s+if \(ResumeThread/);
   assert.match(source, /input = targetInput/);
   const bootstrap = await readFile(new URL("../isolated-worker.ps1", import.meta.url), "utf8");
-  assert.ok(bootstrap.indexOf("::RequireCreationPrivileges()") < bootstrap.indexOf("New-LocalUser"));
+  assert.ok(bootstrap.indexOf("::PrepareCreationPrivileges()") < bootstrap.indexOf("New-LocalUser"));
 });
 
 test("Linux drops every candidate capability and never places its root owner below setpriv", async () => {
@@ -220,3 +242,49 @@ test("Linux drops every candidate capability and never places its root owner bel
   assert.match(source, /owned\.stop_descendants\(\)/);
   assert.match(source, /os\.O_EXCL/);
 });
+
+test("bootstrap command failures retain the actual bounded diagnostic before exiting",
+  { skip: process.platform !== "win32" }, async (t) => {
+    const configuration = await fixture(t), scripts = path.join(configuration.control, "scripts");
+    await cp(path.resolve("scripts"), scripts, { recursive: true });
+    const file = path.join(scripts, "process.mjs"), original = await readFile(file, "utf8");
+    const entry = "export function runCommand(file, args, options = {}) {";
+    assert.ok(original.includes(entry));
+    const altered = original.replace(entry, `${entry}
+      throw Object.assign(new Error("Synthetic bootstrap command failure"), {
+        code: 1, processTreeStopped: true, isolatedExecutionObserved: true,
+        stdout: "x".repeat(300000), stderr: "\\n::error::ISOLATION_FAILURE_CANARY\\n",
+        commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 1, cleanupFailure: null },
+      });`);
+    assert.notEqual(altered, original);
+    await writeFile(file, altered);
+    assert.equal(await readFile(file, "utf8"), altered, "The isolated fixture must use the failing command implementation.");
+    configuration.mode = "self-test";
+    configuration.tools.git = process.execPath;
+    configuration.tools.python = process.execPath;
+    configuration.protectedPaths = [configuration.control, configuration.private];
+    const input = path.join(configuration.private, "configuration.json");
+    await writeFile(input, JSON.stringify(configuration));
+    let failure;
+    try {
+      await exec(process.execPath, [path.join(scripts, "isolated-worker.mjs"), "--configuration", input], {
+        cwd: configuration.control, timeout: 30000,
+        env: { ...process.env, GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted" },
+      });
+    } catch (error) { failure = error; }
+    assert.equal(failure?.code, 78);
+    assert.match(failure.stderr, /"reason":"command-failed"/, "The fixture must reach the failing command, not an earlier setup error.");
+    const output = path.join(configuration.control, ".data", "ci", "isolated");
+    const report = JSON.parse(await readFile(path.join(output, "bootstrap-failure.json"), "utf8"));
+    assert.equal(report.kind, "isolated-bootstrap-diagnostics");
+    assert.equal(report.acceptance, false);
+    assert.equal(report.status, "blocked");
+    assert.equal(report.phase, "native-launch");
+    assert.equal(report.failure.reason, "command-failed");
+    const log = await readFile(path.join(output, "bootstrap-failure.log"));
+    assert.ok(log.length <= 1024 * 1024);
+    assert.ok(log.toString().endsWith("::error::ISOLATION_FAILURE_CANARY\n"));
+    assert.match(failure.stderr, /::stop-commands::[a-f0-9-]{36}/);
+    assert.match(failure.stderr, /ISOLATION_FAILURE_CANARY/);
+    assert.ok(Buffer.byteLength(failure.stderr) < 20000);
+  });

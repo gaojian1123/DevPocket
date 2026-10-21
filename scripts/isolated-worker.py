@@ -177,7 +177,7 @@ def main():
         if report_directory.is_dir() and not report_directory.is_symlink():
             destination = control / ".data" / "ci" / "isolated"
             destination.mkdir(parents=True, exist_ok=True)
-            for name in ("report.json", "isolation-proof.json", "isolation-negative-report.json"):
+            for name in ("report.json", "isolation-proof.json", "isolation-negative-report.json", "bootstrap-failure.json"):
                 source = report_directory / name
                 if source.is_file() and not source.is_symlink() and source.stat().st_size <= 1024 * 1024:
                     with (destination / name).open("xb") as output:
