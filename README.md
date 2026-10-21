@@ -98,7 +98,11 @@ the original client; partial URL masking must not expose a credential suffix.
 Ordinary quoted URLs and fully encoded private values retain their normal
 preservation or redaction behavior.
 URL inspection covers HTTP(S) spellings accepted by the renderer and repeats
-after control-character cleanup. Markdown inspection shares the renderer's
+after control-character cleanup. Unicode whitespace that remains part of a
+URL value is inspected with that value, not split into an exposed suffix.
+Column sensitivity considers both original and cleaned labels, and template
+links are checked again against the final projected rows.
+Markdown inspection shares the renderer's
 parser, including decoded destinations, text and reference definitions; escaped
 content that would reveal credentials stays in the original client.
 Recognized assignments mask complete quoted values, including escaped quotes;

@@ -34,7 +34,8 @@ export function componentToolLinks(data: Record<string, unknown>): string[] | un
 }
 
 function redactComponentUrls(value: string): string {
-  return value.replace(/https?:[^\s<>]+/gi, (source, offset: number) => {
+  // Removed controls and URL-encoded Unicode whitespace must not split a credential value.
+  return value.replace(/https?:[^\t\n <>]+/gi, (source, offset: number) => {
     const quoted = /["']/.test(source), delimited = /[<>]/.test(value.charAt(offset + source.length));
     let following = offset + source.length;
     while (following < value.length && /\s/.test(value[following]!)) following++;
@@ -74,32 +75,37 @@ function projectSpec(input: unknown): { spec: ComponentSpec; redacted: boolean }
       return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, clean(item, name)]));
     return value;
   };
-  if (original.type === "datagrid" && original.columns.some((column) => {
-    if (column.href === undefined) return false;
-    return clean(column.href) !== column.href || column.href.includes("{") && original.rows.some((row) => {
-      const target = tableLink(column, row);
-      return target === null || clean(target) !== target;
-    });
-  })) {
-    throw new ComponentError("COMPONENT_INVALID", "This component contains a link that cannot be safely projected. Review it in the original client.");
-  }
+  const validateLinkDefinitions = (spec: ComponentSpec): void => {
+    if (spec.type === "datagrid" && spec.columns.some((column) => {
+      if (column.href === undefined) return false;
+      return clean(column.href) !== column.href || column.href.includes("{") && spec.rows.some((row) => {
+        const target = tableLink(column, row);
+        return target === null || clean(target) !== target;
+      });
+    })) {
+      throw new ComponentError("COMPONENT_INVALID", "This component contains a link that cannot be safely projected. Review it in the original client.");
+    }
+  };
+  validateLinkDefinitions(original);
   let projected = clean(original);
   if (original.type === "datagrid") {
-    const sensitiveColumns = original.columns.filter((column) => isSensitiveFieldName(column.key) || isSensitiveFieldName(column.label));
+    const candidate = parseComponentSpec(projected);
+    if (candidate.type !== "datagrid") throw new ComponentError("COMPONENT_INVALID", "Unexpected table projection.");
+    const sensitiveColumns = [...original.columns, ...candidate.columns]
+      .filter((column) => isSensitiveFieldName(column.key) || isSensitiveFieldName(column.label));
     if (sensitiveColumns.length) {
       if (sensitiveColumns.some((column) => column.href !== undefined))
         throw new ComponentError("COMPONENT_INVALID", "A sensitive link column cannot be safely projected. Review it in the original client.");
       const keys = new Set(sensitiveColumns.flatMap((column) => [column.key, ...(column.hrefKey ? [column.hrefKey] : [])]));
-      const candidate = parseComponentSpec(projected);
-      if (candidate.type !== "datagrid") throw new ComponentError("COMPONENT_INVALID", "Unexpected table projection.");
       candidate.rows = candidate.rows.map((row) => Object.fromEntries(Object.entries(row)
         .map(([key, value]) => keys.has(key) ? [key, "[REDACTED]"] : [key, value])));
-      projected = candidate;
       changed = true;
     }
+    projected = candidate;
   }
   try {
     const spec = parseComponentSpec(projected);
+    validateLinkDefinitions(spec);
     if (spec.type === "markdown") {
       const inspect = (value: string) => {
         if (clean(value) !== value)

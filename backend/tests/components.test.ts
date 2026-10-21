@@ -331,6 +331,88 @@ test("ordinary quoted URLs are preserved and encoded private URL values remain s
   assert.ok(!projection.referenceContent(record).content.includes("ENCODED_URL_CANARY"));
 });
 
+test("URL spans include accepted Unicode whitespace and controls removed during cleanup", () => {
+  const canary = "URL_WHITESPACE_CREDENTIAL_CANARY";
+  const separators = ["\u00a0", "\u1680", ...Array.from({ length: 11 }, (_, index) => String.fromCharCode(0x2000 + index)),
+    "\u2028", "\u2029", "\u202f", "\u205f", "\u3000", "\ufeff", "\r", "\v", "\f", "\u0000", "\u007f"];
+  for (const separator of separators) {
+    const url = `https://example.test/?sig=prefix${separator}${canary}`;
+    for (const spec of [
+      { type: "markdown", content: url },
+      { type: "datagrid", columns: [{ key: "url", label: "Link", type: "link" }], rows: [{ url }] },
+      { type: "datagrid", columns: [{ key: "name", label: "Link", type: "link", href: url }], rows: [{ name: "View" }] },
+    ]) {
+      const projection = new ComponentProjection(randomUUID());
+      projection.beginLive([owner]);
+      projection.observe(start("whitespace-url", spec));
+      const record = projection.observe(finish("whitespace-url")).find((item) => item.kind === "component")?.data;
+      assert.ok(record);
+      if (record.status === "ready") {
+        assert.ok(!JSON.stringify(decodeComponentPayload(record.payload, record.sha256)).includes(canary), "No suffix in transport.");
+        assert.ok(!projection.referenceContent(record).content.includes(canary), "No suffix in retained references.");
+        assert.equal(record.redacted, true);
+      } else {
+        assert.equal(record.error.code, "COMPONENT_INVALID");
+        assert.throws(() => projection.referenceContent({ componentId: record.componentId, sha256: "0".repeat(64) }),
+          { code: "COMPONENT_REFERENCE_EXPIRED" });
+      }
+    }
+  }
+});
+
+test("template credentials revealed by field cleanup are rejected before transport and references", () => {
+  const canary = "NORMALIZED_TEMPLATE_CREDENTIAL_CANARY";
+  for (const parameter of ["si\u0000g", "si\u001b[31mg", "si\rg", "client\u0000_secret"]) {
+    const projection = new ComponentProjection(randomUUID());
+    projection.beginLive([owner]);
+    projection.observe(start("normalized-template", { type: "datagrid",
+      columns: [{ key: "id", label: "Record", type: "link", href: "https://example.test/?{parameter}={value}" }],
+      rows: [{ id: canary, parameter }] }));
+    const record = projection.observe(finish("normalized-template")).find((item) => item.kind === "component")?.data;
+    assert.ok(record);
+    if (record.status === "ready") {
+      assert.ok(!JSON.stringify(decodeComponentPayload(record.payload, record.sha256)).includes(canary));
+      assert.ok(!projection.referenceContent(record).content.includes(canary));
+    }
+    assert.equal(record.status, "unavailable");
+    assert.throws(() => projection.referenceContent({ componentId: record.componentId, sha256: "0".repeat(64) }),
+      { code: "COMPONENT_REFERENCE_EXPIRED" });
+  }
+});
+
+test("column sensitivity revealed by label cleanup still masks cells and link backing fields", () => {
+  const canary = "NORMALIZED_LABEL_CREDENTIAL_CANARY";
+  for (const label of ["API \u0000key", "API\u001b[31m key"]) {
+    for (const link of [false, true]) {
+      const projection = new ComponentProjection(randomUUID());
+      projection.beginLive([owner]);
+      projection.observe(start("normalized-label", { type: "datagrid",
+        columns: [{ key: "value", label, ...(link ? { type: "link", hrefKey: "target" } : {}) }],
+        rows: [{ value: canary, ...(link ? { target: `https://example.test/${canary}` } : {}) }] }));
+      const record = ready(projection.observe(finish("normalized-label")));
+      assert.equal(record.redacted, true);
+      assert.ok(!JSON.stringify(decodeComponentPayload(record.payload, record.sha256)).includes(canary));
+      assert.ok(!projection.referenceContent(record).content.includes(canary));
+    }
+  }
+});
+
+test("ordinary Unicode URL spaces and harmless template cleanup preserve safe data", () => {
+  const projection = new ComponentProjection(randomUUID());
+  projection.beginLive([owner]);
+  const content = "https://example.test/?q=public\u00a0value";
+  projection.observe(start("ordinary-url-space", { type: "markdown", content }));
+  const ordinary = ready(projection.observe(finish("ordinary-url-space")));
+  assert.deepEqual(decodeComponentPayload(ordinary.payload, ordinary.sha256), { type: "markdown", content });
+  assert.equal(ordinary.redacted, false);
+  const spec = { type: "datagrid", columns: [{ key: "id", label: "Record", type: "link", href: "https://example.test/?{parameter}={value}" }],
+    rows: [{ id: "public-value", parameter: "pa\u0000ge" }] };
+  projection.observe(start("ordinary-template-cleanup", spec));
+  const cleaned = ready(projection.observe(finish("ordinary-template-cleanup")));
+  assert.deepEqual(decodeComponentPayload(cleaned.payload, cleaned.sha256), { ...spec, rows: [{ id: "public-value", parameter: "page" }] });
+  assert.equal(cleaned.redacted, true);
+});
+
 test("all renderer-accepted HTTP spellings are inspected before transport and reference retention", () => {
   const canary = "NORMALIZED_URL_CREDENTIAL_CANARY";
   for (const prefix of ["https:", "https:/", "http:", "http:/", "ht\u0000tps://", "ht\u001b[31mtps://"]) {
