@@ -4,16 +4,19 @@ import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
   actionCapability, Id, Json, PendingRequest, RequestId, SessionSummary, UserEvent,
-  type Action, type QuestionRecord, type Receipt,
+  type Action, type ComponentReference, type QuestionRecord, type Receipt,
 } from "./protocol.js";
 import { Fault, hash, redact } from "./security.js";
 import { contentExclusionDecisions, ProjectFiles } from "./files.js";
+import { ComponentProjection, componentToolLinks } from "./components.js";
 
 type RpcRead = () => Promise<unknown>;
 const PROBE_TIMEOUT_MS = 5000;
 export type LocalAttachment = { type: "file"; path: string; displayName: string };
+export type ReferencedComponentAttachment = { reference: ComponentReference; file: LocalAttachment };
 export interface JoinedSession {
   sessionId: string;
+  readonly openCanvases?: unknown;
   getEvents(): Promise<unknown[]>;
   on(handler: (event: unknown) => void): () => void;
   send?(options: { prompt: string; mode: "enqueue"; source: "user"; attachments?: LocalAttachment[] }): Promise<unknown>;
@@ -313,15 +316,19 @@ export class CopilotRuntime {
   private projectAbort?: AbortController;
   private readonly refreshInFlight = new Map<ProbeGroup, Promise<void>>();
   private readonly warnings = new Map<string, string>();
+  private readonly components: ComponentProjection;
 
   constructor(readonly session: JoinedSession, private readonly emit: (event: UserEvent) => void,
-    private readonly persistConfirmedAnswer?: (commandId: string, event: UserEvent | undefined) => void) {}
+    private readonly persistConfirmedAnswer?: (commandId: string, event: UserEvent | undefined) => void) {
+    this.components = new ComponentProjection(session.sessionId);
+  }
 
   get summary(): SessionSummary {
     if (!this.current) throw new Fault("NOT_ATTACHED", "The original runtime has not finished registering.", 503);
     const { workspace, ...summary } = this.current;
     return {
       ...summary,
+      componentVersion: 1,
       ...(workspace === undefined ? {} : { workspace }),
       state: this.cancelRequested ? "cancel_requested" : this.observedActiveWork === undefined ? "unsupported" :
         this.requests.size ? "waiting" : this.observedActiveWork ? "running" : "idle",
@@ -329,6 +336,10 @@ export class CopilotRuntime {
   }
 
   get workingDirectory(): string { return this.root; }
+
+  componentReferenceContent(reference: ComponentReference): { content: string; displayName: string } {
+    return this.components.referenceContent(reference);
+  }
 
   private notice(code: string, message: string): void {
     if (this.closed) return;
@@ -383,6 +394,8 @@ export class CopilotRuntime {
 
   async connect(): Promise<SessionSummary> {
     const buffered: unknown[] = [];
+    const initialCanvases = await this.probe("Canvas identity",
+      async () => this.session.openCanvases, (value) => this.components.snapshot(value));
     let hydrating = true;
     this.unsubscribe = this.session.on((event) => {
       if (hydrating) buffered.push(event); else this.consume(event);
@@ -406,6 +419,8 @@ export class CopilotRuntime {
     };
     if (history.length > 15_000) this.notice("HISTORY_WINDOW", "The bridge imports the latest 15,000 runtime events. Older history remains in the original client.");
     for (const event of history.slice(-15_000)) this.consume(event, true);
+    if (!this.components.beginLive(initialCanvases ?? []))
+      this.warnings.set("Canvas identity", "Canvas identities conflict or exceed the supported limit. Unconfirmed cards remain in the original client.");
     hydrating = false;
     for (const event of buffered) this.consume(event);
     this.warnings.set("Recorded version", "GitHub Copilot runtime version is recorded at session creation and is informational only; controls require live capability evidence.");
@@ -632,6 +647,7 @@ export class CopilotRuntime {
     if (event.agentId || event.data.parentToolCallId) return;
     const { data } = event, base = { id: event.id, at: event.timestamp };
     try {
+      const components = this.components.observe(event);
       switch (event.type) {
         case "user.message":
           this.emit(UserEvent.parse({ ...base, kind: "user.message", data: {
@@ -645,10 +661,12 @@ export class CopilotRuntime {
         case "assistant.message": {
           if (["analysis", "thinking", "reasoning"].includes(text(data.phase))) break;
           const messageId = text(data.messageId);
+          const toolCallIds = componentToolLinks(data);
           this.partialMessages.delete(messageId);
           this.emit(UserEvent.parse({ ...base, kind: "assistant.message", data: {
             messageId, content: redact(text(data.content)),
             ...(text(data.originatingMessageId) ? { originatingMessageId: text(data.originatingMessageId) } : {}),
+            ...(toolCallIds === undefined ? {} : { toolCallIds }),
           } }));
           break;
         }
@@ -662,14 +680,17 @@ export class CopilotRuntime {
         }
         case "tool.execution_start": {
           const toolCallId = text(data.toolCallId), name = text(data.toolName);
+          const originatingMessageId = this.components.toolOrigin(toolCallId);
           this.tools.set(toolCallId, name);
           this.emit(UserEvent.parse({ ...base, kind: "tool.start", data: { toolCallId, name: redact(name, 200),
+            ...(originatingMessageId ? { originatingMessageId } : {}),
             text: "Tool arguments remain in the original client; review permission requests before approving." } }));
           break;
         }
         case "tool.execution_partial_result":
         case "tool.execution_complete": {
           const toolCallId = text(data.toolCallId);
+          const originatingMessageId = this.components.toolOrigin(toolCallId);
           const name = (this.tools.get(toolCallId) ?? "").split(/[.:]/).at(-1) ?? "";
           const visible = ["powershell", "bash", "shell", "read_powershell", "read_bash", "rg", "glob", "view", "read_file"].includes(name);
           const complete = event.type === "tool.execution_complete";
@@ -679,6 +700,7 @@ export class CopilotRuntime {
           if (complete) this.partialTools.delete(toolCallId); else this.partialTools.set(toolCallId, whole);
           this.emit(UserEvent.parse({ ...base, kind: "tool.output", data: {
             toolCallId, text: visible ? redact(whole, 32_000) : "Tool details remain in the original client.",
+            ...(originatingMessageId ? { originatingMessageId } : {}),
             complete, ...(typeof data.success === "boolean" ? { success: data.success } : {}),
           } }));
           break;
@@ -818,6 +840,7 @@ export class CopilotRuntime {
             this.emitRequests(event.id, event.timestamp);
           }
       }
+      for (const component of components) this.emit(UserEvent.parse(component));
     } catch {
       this.notice("EVENT_UNSUPPORTED", `Unsupported ${event.type} data. Review the original client.`);
     }
@@ -830,7 +853,8 @@ export class CopilotRuntime {
     return this.modelItems;
   }
 
-  async execute(action: Action, attachments: LocalAttachment[] = [], commandId?: string): Promise<Omit<Receipt, "commandId">> {
+  async execute(action: Action, attachments: LocalAttachment[] = [], commandId?: string,
+    componentAttachment?: ReferencedComponentAttachment): Promise<Omit<Receipt, "commandId">> {
     if (commandId !== undefined) Id.parse(commandId);
     const rpc = this.session.rpc ?? {};
     const capability = actionCapability[action.type];
@@ -844,7 +868,16 @@ export class CopilotRuntime {
         if (!action.text.trim()) throw new Fault("EMPTY_MESSAGE", "Message cannot be blank.");
         if (attachments.length !== action.attachmentIds.length) throw new Fault("ATTACHMENT_MISSING", "Resolve every attachment before sending.");
         if (typeof this.session.send !== "function") throw new Fault("UNSUPPORTED", "Message sending is unavailable.", 409);
-        const messageId = RequestId.parse(await this.session.send({ prompt: action.text, mode: "enqueue", source: "user", attachments }));
+        const files = [...attachments];
+        if (action.componentReference) {
+          this.components.referenceContent(action.componentReference);
+          if (!componentAttachment || componentAttachment.reference.componentId !== action.componentReference.componentId ||
+              componentAttachment.reference.sha256 !== action.componentReference.sha256)
+            throw new Fault("COMPONENT_REFERENCE_NOT_STAGED", "The exact referenced component must be staged before sending.");
+          if (files.length >= 4) throw new Fault("TOO_MANY_ATTACHMENTS", "A message supports four attachments including its referenced component.");
+          files.push(componentAttachment.file);
+        } else if (componentAttachment) throw new Fault("COMPONENT_REFERENCE_MISMATCH", "An unrequested component attachment cannot be sent.");
+        const messageId = RequestId.parse(await this.session.send({ prompt: action.text, mode: "enqueue", source: "user", attachments: files }));
         const queue = await this.probe("Message queue", () => rpc.queue?.pendingItems?.(), messageQueue.parse);
         const queued = queue?.items.some((item) => item.messageId === messageId);
         const status = queued ? "queued" : queue?.withdrawableTurnMessageId === messageId ? "processing" : "admitted";

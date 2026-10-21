@@ -987,3 +987,108 @@ Final acceptance must use a fresh complete source-bound
 report and independent review of the final working-tree snapshot. These
 benchmark logs do not replace that evidence or authorize commits, publication,
 extension installation/reload, deployment or changes to a shared toolchain.
+
+## Portable components implementation checkpoint (2026-10-19)
+
+This checkpoint is working-tree development evidence against original task base
+`decc788cdff660cbe515bd0aeb6a6ee2c8af18da`, not a release, final-commit acceptance
+or an update to sealed build 002.
+
+The independent `packages/components` renderer supports the agreed line, bar,
+datagrid and Markdown subset. Focused Node checks passed 26 tests covering
+exact data limits, safe projection, shared TypeScript/Kotlin wire samples,
+actual local bridge/relay replay and reference staging, legacy negotiation and
+the native test fixture. The fixture uses a deterministic `JoinedSession`
+adapter, not a real Copilot runtime.
+
+The Android debug and instrumentation APKs assembled with the existing JDK 21,
+SDK 35 and pinned Gradle 8.11.1. All 132 JVM tests passed without failures,
+errors or skips, and lint passed. The standalone-build check first removed only
+the generated Node `spec.js` export into a scoped backup; Android's package task
+regenerated it, and the native relay fixture then imported successfully without
+a prior backend build. The backup was removed after success. An earlier
+Gradle temporary-workspace move failure was retained; the diagnostic retry
+succeeded without deleting caches, changing the Gradle version or modifying
+machine configuration.
+
+Regression work caught and corrected two integration mistakes that isolated
+projection tests did not catch: the runtime's card-emission loop was unreachable
+inside a switch, and the composer reference chip was accidentally nested in the
+file-attachment loop. Additional checks cover optional SDK snapshot failure,
+conflicting provider bindings, visible reference failures, draft/cache
+preservation and old-client downgrade refusal.
+
+A separately authorized disposable Copilot App probe established the actual
+runtime-bundled SDK component arguments, provider/instance bindings, successful
+completion correlation and origin/tool-request association. Its retained
+sanitized evidence has SHA256
+`76bb1163d53794ac34064e563f5bff23e9d55143fba7cf9b6fb9e517537708ac`.
+That probe did not establish Android delivery, full spec byte fidelity,
+streaming-delta behavior, failed SDK calls or nested-agent compatibility.
+Its one-use observer was removed and stopped; it does not authorize another
+extension installation, reload, enrollment or live-runtime experiment.
+
+At this checkpoint, the new renderer/device and extended native fixture tests
+were assembled, not yet device-qualified. Complete version-5 diff-selected
+verification, independent review, the required sensitive-change decision and
+real App-to-Android acceptance remain separate requirements. Record their
+subsequent source-bound results separately; these focused results do not replace
+them. No iOS, physical-device or CLI-visualization acceptance is claimed.
+
+Subsequent focused API-35 checks found a real native-view replacement defect:
+an unkeyed `AndroidView` could retain a factory view after its controller had
+been replaced. The isolated failing method reproduced in 20.121 seconds.
+Keying the native view to its owning controller passed both renderer methods
+in 37.181 seconds, including actual chart pixels, complete accessible
+data, table interactions, dark/large-font modes, restricted Markdown/links,
+large content, offline drafts and reading-position preservation.
+
+The connected synthetic flow then repeatedly crashed in the native
+`libmonochrome_64.so` supplied by WebView **124.0.6367.219** during rapid card
+disposal. Moving disposal to `onRelease` and construction into `factory` alone
+did not fix that crash. With the same provider, APK test and fixture data,
+removing only the explicit live-listener removal before owned-view destruction
+allowed the full `FixtureFlowTest` to pass in 166.417 seconds. Inactive callbacks,
+origin/frame/request validation and all resource restrictions remain enforced;
+the view's destruction owns listener cleanup. Temporary lifecycle probes were
+removed. The owned debug emulator and synthetic relay processes were stopped,
+their transient data/pairing pointers removed, and bounded diagnostics retained.
+
+These are focused repair results, not a replacement for the failed earlier
+device report or a completed full gate. The separately opt-in
+`ConnectedFlowTest` component branch is compiled but has not been run against
+the real App at this checkpoint.
+
+The later complete version-5 local gate passed all 11 required checks for source
+fingerprint `c3bbdf3a7f0cb1f1e199e22f09346638abe943662283121e650f341ab0173129`.
+That result was followed by an independent `changes_requested` review, not a
+ready decision. It found missing portable-package inputs in container/release
+staging, a missing locked npm restore in Android CI, and incomplete native
+Node-input qualification. Those integration paths were repaired; the old
+complete result is not evidence for the repaired source.
+
+Native workspace results now deliberately require fresh execution rather than
+reuse an incompletely bound loader/compiler environment. Three focused
+regressions passed through the actual verifier with real workspace compilation
+and explicitly synthetic native artifacts: an ignored lifecycle launcher,
+intermediate package resolution and an ignored compiler sentinel. Each fresh
+failing build executed instead of inheriting a previous success. Clean-source
+release/runtime checks also passed, but no Docker engine or GitHub CI execution
+was performed. Repaired-source complete qualification, final independent review,
+the sensitive-change decision and the separately authorized real App acceptance
+remain outstanding at this repair checkpoint.
+
+A subsequent complete local gate passed for source
+`6a362197d8317bd08781d4b36ac7288be438fab5adc570670f087889d2350ad0`.
+Final independent review nevertheless found conventional credential-field aliases
+missing from component redaction. A canary regression reproduced the leak before
+transport/reference retention was repaired through shared field classification.
+Coverage now includes snake/camel-case keys, labels, URL queries, assigned text
+and ordinary token-count/public-key controls.
+
+Separately authorized real-App preparation was stopped before extension
+installation, reload, SDK attachment, pairing or test messages. Its unused local
+relay and owned emulator were stopped, the host credential removed, and the
+original App runtime was unchanged. That preparation is not live acceptance.
+The repaired source needs fresh qualification and review; a rebuilt bridge does
+not inherit the prior artifact-bound live-experiment permission.

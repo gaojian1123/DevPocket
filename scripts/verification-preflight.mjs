@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, lstat, open, readFile, readdir, realpath } from "node:fs/promises";
+import { access, lstat, open, readFile, readdir, readlink, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,7 +55,7 @@ async function fileIdentity(file, { optional = false } = {}) {
   } finally { await handle.close(); }
 }
 
-async function treeInputs(directory, requiredFile) {
+async function treeInputs(directory, requiredFile, { directoryLinks = new Map(), excludedRootDirectories = [] } = {}) {
   const root = await realpath(directory), files = [], identities = [];
   let count = 0;
   async function visit(current, relative, entry) {
@@ -63,6 +63,15 @@ async function treeInputs(directory, requiredFile) {
     if (++count > 100000) throw diagnosticError("output-limit");
     if (info.isSymbolicLink()) {
       if (entry && !(await lstat(current)).isSymbolicLink()) throw diagnosticError("environment-changed");
+      const approved = [...directoryLinks.entries()].find(([file]) => samePath(file, current))?.[1];
+      if (approved) {
+        const link = await readlink(current), target = await realpath(current);
+        if (!samePath(path.toNamespacedPath(path.resolve(path.dirname(current), link)), path.toNamespacedPath(approved.target)) ||
+            !samePath(target, approved.target) || !(await lstat(target)).isDirectory())
+          throw diagnosticError("preflight-path");
+        identities.push([relative, { workspace: approved.relative, link: digest(link) }]);
+        return;
+      }
       const target = await realpath(current), rel = path.relative(root, target);
       if (!rel || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel) ||
           !(await lstat(target)).isFile()) throw diagnosticError("preflight-path");
@@ -74,7 +83,14 @@ async function treeInputs(directory, requiredFile) {
       }
       const children = (await readdir(current, { withFileTypes: true }))
         .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
-      for (const child of children) await visit(path.join(current, child.name), path.join(relative, child.name), child);
+      for (const child of children) {
+        if (!relative && excludedRootDirectories.includes(child.name)) {
+          const output = await lstat(path.join(current, child.name));
+          if (!output.isDirectory() || output.isSymbolicLink()) throw diagnosticError("preflight-path");
+          continue;
+        }
+        await visit(path.join(current, child.name), path.join(relative, child.name), child);
+      }
     } else {
       // fileIdentity still opens and checks every file before and after hashing.
       files.push({ file: current, relative });
@@ -93,8 +109,8 @@ async function treeInputs(directory, requiredFile) {
   return identities;
 }
 
-async function treeIdentity(directory, requiredFile) {
-  return digest(JSON.stringify(await treeInputs(directory, requiredFile)));
+async function treeIdentity(directory, requiredFile, options) {
+  return digest(JSON.stringify(await treeInputs(directory, requiredFile, options)));
 }
 
 export function emulatorInputDifference(before, after) {
@@ -198,8 +214,9 @@ async function gradleArtifacts(root) {
 export async function resolveVerificationExecutable(root, name, { shell = false } = {}) {
   const windows = process.platform === "win32";
   // libuv tries COM/EXE independently of CMD's PATHEXT order.
-  const extensions = windows ? shell ? (process.env.PATHEXT ?? "").split(";") : [".com", ".exe"] : [""];
-  if (windows && extensions.some((extension) => !/^\.[a-z0-9]+$/i.test(extension))) {
+  const explicitExtension = windows && /\.(?:com|exe|bat|cmd)$/i.test(name);
+  const extensions = explicitExtension ? [""] : windows ? shell ? (process.env.PATHEXT ?? "").split(";") : [".com", ".exe"] : [""];
+  if (windows && !explicitExtension && extensions.some((extension) => !/^\.[a-z0-9]+$/i.test(extension))) {
     throw diagnosticError("preflight-tool");
   }
   const directories = (process.env.PATH ?? process.env.Path ?? "").split(path.delimiter);
@@ -253,21 +270,81 @@ async function writable(root, target) {
 const environment = (pattern) => digest(JSON.stringify(Object.entries(process.env)
   .filter(([name]) => pattern.test(name)).sort(([a], [b]) => a.localeCompare(b))));
 
-async function dependencies(root) {
+const dependencyMap = (value) => {
+  if (value === undefined || value === null) return "[]";
+  if (typeof value !== "object" || Array.isArray(value) ||
+      Object.values(value).some((entry) => typeof entry !== "string")) throw diagnosticError("preflight-dependencies");
+  return JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
+};
+
+async function declaredWorkspaces(root, manifest) {
+  if (manifest.workspaces === undefined) return [];
+  if (!Array.isArray(manifest.workspaces) || manifest.workspaces.length > 32 ||
+      new Set(manifest.workspaces).size !== manifest.workspaces.length) throw diagnosticError("preflight-dependencies");
+  const physicalRoot = await realpath(root), result = [];
+  for (const relative of manifest.workspaces) {
+    if (typeof relative !== "string" || !/^[a-z0-9_.-]+(?:\/[a-z0-9_.-]+)*$/i.test(relative) ||
+        relative.split("/").some((part) => [".", "..", ".git", ".data", ".tools", "node_modules"].includes(part.toLowerCase())))
+      throw diagnosticError("preflight-dependencies");
+    let directory = physicalRoot;
+    for (const part of relative.split("/")) {
+      directory = path.join(directory, part);
+      const info = await lstat(directory);
+      if (!info.isDirectory() || info.isSymbolicLink() || !samePath(directory, await realpath(directory)))
+        throw diagnosticError("preflight-path");
+    }
+    const file = path.join(directory, "package.json"), before = await fileIdentity(file);
+    const text = await readFile(file, "utf8");
+    if (digest(text) !== before.sha256) throw diagnosticError("environment-changed");
+    const contents = JSON.parse(text);
+    if (typeof contents.name !== "string" || !/^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/i.test(contents.name) ||
+        typeof contents.version !== "string" || !contents.version || contents.workspaces !== undefined)
+      throw diagnosticError("preflight-dependencies");
+    result.push({ relative, directory, manifest: contents,
+      outputs: Array.isArray(contents.files) && contents.files.includes("dist") ? ["dist"] : [] });
+  }
+  if (new Set(result.map((item) => item.manifest.name)).size !== result.length)
+    throw diagnosticError("preflight-dependencies");
+  return result;
+}
+
+export async function dependencies(root) {
   const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
   const declared = { ...manifest.dependencies, ...manifest.devDependencies };
-  if (!Object.keys(declared).length) return { manifest: digest(JSON.stringify(manifest)), installed: null };
+  const workspaces = await declaredWorkspaces(root, manifest), workspaceByPath = new Map(workspaces.map((item) => [item.relative, item]));
+  if (!Object.keys(declared).length && !workspaces.length) return { manifest: digest(JSON.stringify(manifest)), installed: null };
   const lock = JSON.parse(await readFile(path.join(root, "package-lock.json"), "utf8"));
   if (!lock.packages || ![2, 3].includes(lock.lockfileVersion)) throw diagnosticError("preflight-dependencies");
   for (const name of Object.keys(declared)) {
     if (!/^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/i.test(name)) throw diagnosticError("preflight-dependencies");
     const installed = JSON.parse(await readFile(path.join(root, "node_modules", name, "package.json"), "utf8"));
-    if (installed.version !== lock.packages[`node_modules/${name}`]?.version) throw diagnosticError("preflight-dependencies");
+    const item = lock.packages[`node_modules/${name}`];
+    const version = item?.link === true ? workspaceByPath.get(item.resolved)?.manifest.version : item?.version;
+    if (installed.version !== version) throw diagnosticError("preflight-dependencies");
+  }
+  const directoryLinks = new Map();
+  for (const workspace of workspaces) {
+    const locked = lock.packages[workspace.relative], link = lock.packages[`node_modules/${workspace.manifest.name}`];
+    if (locked?.name !== workspace.manifest.name || locked?.version !== workspace.manifest.version ||
+        link?.link !== true || link.resolved !== workspace.relative) throw diagnosticError("preflight-dependencies");
+    for (const field of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"])
+      if (dependencyMap(locked[field]) !== dependencyMap(workspace.manifest[field]))
+        throw diagnosticError("preflight-dependencies");
   }
   for (const [name, item] of Object.entries(lock.packages)) {
     if (!name) continue;
-    if (!name.startsWith("node_modules/") || name.split("/").some((part) => [".", ".."].includes(part))) {
+    if (workspaceByPath.has(name)) continue;
+    const modulePath = name.startsWith("node_modules/") ||
+      workspaces.some((workspace) => name.startsWith(`${workspace.relative}/node_modules/`));
+    if (!modulePath || name.includes("\\") || name.split("/").some((part) => ["", ".", ".."].includes(part))) {
       throw diagnosticError("preflight-dependencies");
+    }
+    if (item.link === true) {
+      const workspace = workspaceByPath.get(item.resolved), file = path.join(root, name);
+      if (!workspace || name.split("node_modules/").at(-1) !== workspace.manifest.name ||
+          !(await lstat(file)).isSymbolicLink()) throw diagnosticError("preflight-dependencies");
+      directoryLinks.set(file, { target: workspace.directory, relative: workspace.relative });
+      continue;
     }
     const applicable = (!item.os || item.os.includes(process.platform) || item.os.every((os) => os.startsWith("!") && os !== `!${process.platform}`)) &&
       (!item.cpu || item.cpu.includes(process.arch));
@@ -276,7 +353,11 @@ async function dependencies(root) {
     if (installed.version !== item.version) throw diagnosticError("preflight-dependencies");
   }
   return { manifest: digest(JSON.stringify(manifest)), lock: digest(JSON.stringify(lock)),
-    installed: await treeIdentity(path.join(root, "node_modules")) };
+    installed: await treeIdentity(path.join(root, "node_modules"), undefined, { directoryLinks }),
+    ...(workspaces.length ? { workspaces: await Promise.all(workspaces.map(async (workspace) => ({
+      path: workspace.relative, source: await treeIdentity(workspace.directory, "package.json",
+        { directoryLinks, excludedRootDirectories: workspace.outputs }),
+    }))) } : {}) };
 }
 
 const typecheckInputs = [
@@ -373,6 +454,13 @@ export async function verificationArtifacts(root, plan, group) {
   const paths = group === "backend" && plan.requiredChecks.includes("backend-build") ? ["dist"]
     : ["android", "device"].includes(group)
       ? ["android/app/build/outputs/apk/debug/app-debug.apk", "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"] : [];
+  if (["backend", "android", "device"].includes(group)) {
+    let manifest;
+    try { manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (manifest) for (const workspace of await declaredWorkspaces(root, manifest))
+      paths.push(...workspace.outputs.map((output) => `${workspace.relative}/${output}`));
+  }
   const identities = [];
   for (const relative of paths) {
     const file = path.join(root, ...relative.split("/"));
@@ -447,7 +535,8 @@ export async function verificationPreflight(root, plan, options = {}) {
     const powershellNode = { file: nodeFile, target: nodeTarget, kind: output.nodeType,
       binary: samePath(nodeTarget, hostNode.file) ? hostNode.binary : await fileIdentity(nodeTarget) };
     const config = [];
-    for (const name of [...new Set([path.join(homedir(), ".npmrc"), output.userConfig, output.globalConfig].filter(Boolean))]) {
+    for (const name of [...new Set([path.join(await realpath(root), ".npmrc"), path.join(homedir(), ".npmrc"),
+      output.userConfig, output.globalConfig].filter(Boolean))]) {
       config.push([name, await fileIdentity(name, { optional: true })]);
     }
     const actual = await realpath(output.file);
@@ -500,6 +589,28 @@ export async function verificationPreflight(root, plan, options = {}) {
     return { version: output.version, file: output.file, binary, packageIdentity, config,
       candidateImplementation, candidateSafe, prefixResolution, powershellNode };
   });
+  const nativeNpm = () => once("native-npm", async () => {
+    // Gradle uses CMD's explicit npm.cmd, not PowerShell's preferred launcher.
+    const windows = process.platform === "win32";
+    const file = await resolveVerificationExecutable(root, windows ? "npm.cmd" : "npm", { shell: windows });
+    const actual = await realpath(file), binary = await fileIdentity(actual), identity = await npm();
+    const known = await realpath(identity.file);
+    const sameBootstrap = samePath(path.dirname(actual), path.dirname(known));
+    let interpreter;
+    let bound = identity.candidateSafe && identity.candidateImplementation && samePath(file, actual) && sameBootstrap;
+    if (windows) {
+      const command = await resolveVerificationExecutable(root, "cmd");
+      const expected = path.join(process.env.SystemRoot ?? process.env.WINDIR ?? "", "System32", "cmd.exe");
+      interpreter = { file: command, binary: await fileIdentity(command) };
+      bound &&= binary.sha256 === "21b46c69ad6e2f231f02a9e120f4ba6c8e75fef5a45637103002eab99f888ab8" &&
+        identity.prefixResolution.status === "adjacent" && !/[&|<>^%!]/.test(identity.prefixResolution.prefix) &&
+        samePath(command, expected) &&
+        samePath(process.env.ComSpec ?? process.env.COMSPEC ?? "", expected) &&
+        /^\.COM;\.EXE;\.BAT;\.CMD(?:;|$)/i.test(process.env.PATHEXT ?? "");
+    }
+    return { file, actual, binary, ...(interpreter ? { interpreter } : {}), bound,
+      ...(sameBootstrap ? { packageIdentity: identity.packageIdentity, prefixResolution: identity.prefixResolution } : {}) };
+  });
   const python = (file, requirements) => once(`python:${file}:${requirements ?? ""}`, async () => {
     const program = path.isAbsolute(file) ? file : await resolveVerificationExecutable(root, file);
     const script = "import sys,json,importlib.metadata as m,hashlib\n" +
@@ -540,7 +651,7 @@ export async function verificationPreflight(root, plan, options = {}) {
     await check("command-ownership", owner);
     if (!issues.length) await check("powershell", powershell);
     await check("output-directory", () => writable(root, options.directory), "preflight-path");
-    const usesNpm = ["tooling", "backend", "device"].includes(group);
+    const usesNpm = ["tooling", "backend", "android", "device"].includes(group);
     if (usesNpm) {
       await check("root-dependencies", () => once("root-dependencies", () => dependencies(root)), "preflight-dependencies");
       if (!issues.length) await check("npm", npm);
@@ -560,7 +671,7 @@ export async function verificationPreflight(root, plan, options = {}) {
         if (!/^v24\./.test(output)) throw diagnosticError("preflight-version");
         return { file, target, kind, binary, output: digest(output) };
       }));
-      identities.push(["node-environment", environment(/^(?:NODE_.*|TSX_.*|TS_NODE_.*|NPM_CONFIG_.*|PATH|COMSPEC|PATHEXT|NODEFAULTCURRENTDIRECTORYINEXEPATH|SHELL|SYSTEMROOT|WINDIR|CI|TZ|LANG|LC_.*)$/i)]);
+      identities.push(["node-environment", environment(/^(?:NODE_.*|TSX_.*|TS_NODE_.*|ESBUILD_.*|NPM_CONFIG_.*|PATH|COMSPEC|PATHEXT|NODEFAULTCURRENTDIRECTORYINEXEPATH|SHELL|SYSTEMROOT|WINDIR|CI|TZ|LANG|LC_.*)$/i)]);
     }
     if (has("typecheck") && !issues.length) {
       await check("typecheck-contract", () => typecheckContract(root, inputs,
@@ -612,6 +723,7 @@ export async function verificationPreflight(root, plan, options = {}) {
     }
     if (["android", "device"].includes(group)) {
       const device = group === "device";
+      if (!issues.length) await check("native-npm", nativeNpm);
       await check("android-entry", () => fileIdentity(path.join(root, "scripts", device ? "test-android.ps1" : "build-android.ps1")), "preflight-path");
       const jdk = path.resolve(root, options.jdk ?? (device ? process.env.DEVPOCKET_JDK : undefined) ?? path.join(".tools", "jdk-21"));
       const sdk = path.resolve(root, options.sdk ?? (device ? process.env.DEVPOCKET_ANDROID_SDK : undefined) ?? path.join(".tools", "android-sdk"));
@@ -694,8 +806,10 @@ export async function verificationPreflight(root, plan, options = {}) {
     const candidateSafe = npmIdentity?.candidateSafe === true;
     const injected = (pattern) => Object.entries(process.env).some(([name, value]) => value && pattern.test(name));
     const java = ["android", "device"].includes(group), cache = identities.find(([name]) => name === "gradle-cache")?.[1];
-    const unbound = sourceHasLinks || usesNpm &&
-      (!candidateSafe || npmIdentity?.candidateImplementation !== true || injected(/^(?:TSX_|TS_NODE_)/i) ||
+    // shortcut: Native workspace builds cannot reuse until their loader/compiler input contract is closed.
+    const workspaceBuild = java && Boolean(identities.find(([name]) => name === "root-dependencies")?.[1]?.workspaces?.length);
+    const unbound = sourceHasLinks || workspaceBuild || usesNpm &&
+      (!candidateSafe || npmIdentity?.candidateImplementation !== true || injected(/^(?:TSX_|TS_NODE_|ESBUILD_)/i) ||
         !samePath(identities.find(([name]) => name === "node")?.[1]?.child?.file ?? "", process.execPath) ||
         !directNode(identities.find(([name]) => name === "node-command")?.[1], "native") ||
         !directNode(npmIdentity?.powershellNode, "Application")) ||
@@ -703,6 +817,7 @@ export async function verificationPreflight(root, plan, options = {}) {
         injected(/^(?:PYTHONPATH|PYTHONHOME|PYTHONSTARTUP|PYTHONUSERBASE)$/i) ||
       java && (injected(/^(?:JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|GRADLE_OPTS|JAVA_OPTS)$/i) ||
         cache?.init || cache?.initKotlin || cache?.initDirectory ||
+        identities.find(([name]) => name === "native-npm")?.[1]?.bound !== true ||
         identities.find(([name]) => name === "native-configuration")?.[1]?.reusable !== true);
     results.push({ group, status: issues.length ? "blocked" : "passed", issues,
       candidateSafe, reusable: !issues.length && !unbound,

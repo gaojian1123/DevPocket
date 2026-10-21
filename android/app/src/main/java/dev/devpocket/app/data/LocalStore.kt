@@ -6,7 +6,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import kotlinx.serialization.json.decodeFromJsonElement
 
-class LocalStore(context: Context) : SQLiteOpenHelper(context, "devpocket-cache.db", null, 1) {
+class LocalStore(context: Context) : SQLiteOpenHelper(context, "devpocket-cache.db", null, 2) {
     init { setWriteAheadLoggingEnabled(true) }
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE events (scope TEXT NOT NULL,cursor INTEGER NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(scope,cursor),UNIQUE(scope,id))")
@@ -15,8 +15,11 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "devpocket-cache.
         db.execSQL("CREATE TABLE outbox (id TEXT PRIMARY KEY,scope TEXT NOT NULL,created_at INTEGER NOT NULL,body TEXT NOT NULL)")
         db.execSQL("CREATE TABLE catalogs (account_id TEXT PRIMARY KEY,body TEXT NOT NULL)")
     }
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) =
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        // Old clients must not deserialize a referenced command as an ordinary message and retry altered content.
+        if (oldVersion == 1 && newVersion == 2) return
         error("A DevPocket cache migration is required from $oldVersion to $newVersion.")
+    }
 
     @Synchronized fun catalog(accountId: String): Catalog? =
         readableDatabase.rawQuery("SELECT body FROM catalogs WHERE account_id=?", arrayOf(accountId)).use {
@@ -41,7 +44,8 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "devpocket-cache.
     }
 
     @Synchronized fun stage(scope: Scope, draft: Draft, command: Command): Outbox {
-        val entry = Outbox(scope, command, "sending", System.currentTimeMillis(), attachments = draft.attachments)
+        val entry = Outbox(scope, command, "sending", System.currentTimeMillis(), attachments = draft.attachments,
+            componentReference = draft.componentReference)
         val db = writableDatabase
         db.beginTransaction()
         try {

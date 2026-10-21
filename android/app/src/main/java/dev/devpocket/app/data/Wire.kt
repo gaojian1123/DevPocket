@@ -3,6 +3,9 @@ package dev.devpocket.app.data
 import java.net.URI
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.Transient
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -47,6 +50,7 @@ data class SessionInfo(
     val reasoningEffort: String = "", val capabilities: Capabilities, val warnings: List<String> = emptyList(),
     val registeredAt: Long, val online: Boolean, val pinned: Boolean, val archived: Boolean, val lastSeen: Long,
     val workspace: Workspace? = null,
+    val componentVersion: Int? = null,
 )
 
 @Serializable
@@ -67,7 +71,10 @@ data class Receipt(
 data class WireEvent(
     val id: String, val at: String, val kind: String, val data: JsonObject,
     val cursor: Long, val hostId: String, val sessionId: String,
-)
+) {
+    @Transient
+    val component: ComponentCard? = if (kind == "component") decodeComponentCard(this) else null
+}
 
 @Serializable
 data class EventPage(
@@ -104,7 +111,10 @@ data class QuestionRecord(
 data class Attachment(val id: String, val name: String, val mime: String, val size: Long, val sha256: String)
 
 @Serializable
-data class Draft(val text: String = "", val revision: Long = 0, val attachments: List<Attachment> = emptyList())
+data class Draft(val text: String = "", val revision: Long = 0, val attachments: List<Attachment> = emptyList(),
+    val componentReference: ComponentSelection? = null) {
+    val attachmentCount: Int get() = attachments.size + if (componentReference == null) 0 else 1
+}
 
 object DraftLogic {
     fun afterStaging(current: Draft, sent: Draft): Draft =
@@ -122,7 +132,9 @@ fun acceptDelivery(current: String, incoming: String): String {
 @Serializable
 sealed interface Action {
     @Serializable @SerialName("message")
-    data class Message(val text: String, val attachmentIds: List<String> = emptyList()) : Action
+    @OptIn(ExperimentalSerializationApi::class)
+    data class Message(val text: String, val attachmentIds: List<String> = emptyList(),
+        @EncodeDefault(EncodeDefault.Mode.NEVER) val componentReference: ComponentReference? = null) : Action
     @Serializable @SerialName("abort")
     data object Abort : Action
     @Serializable @SerialName("permission")
@@ -154,6 +166,7 @@ data class Outbox(
     val receipt: Receipt? = null, val error: String? = null,
     val attachments: List<Attachment> = emptyList(),
     val question: AnswerContext? = null,
+    val componentReference: ComponentSelection? = null,
 )
 
 @Serializable
@@ -195,6 +208,7 @@ data class TimelineItem(
     val id: String, val role: String, val text: String, val at: String,
     val streaming: Boolean = false, val name: String = "", val attachments: List<String> = emptyList(),
     val cursor: Long = 0, val question: QuestionHistory? = null,
+    val originatingMessageId: String? = null, val component: ComponentCard? = null,
 )
 
 fun JsonObject.text(name: String): String = get(name)?.jsonPrimitive?.contentOrNull.orEmpty()
@@ -203,6 +217,7 @@ fun timeline(events: List<WireEvent>, outbox: List<Outbox> = emptyList(), scope:
     firstRetainedCursor: Long? = null): List<TimelineItem> {
     val result = linkedMapOf<String, TimelineItem>()
     val scopedEvents = if (scope == null) events else events.filter { it.hostId == scope.hostId && it.sessionId == scope.sessionId }
+    val origins = ResponseOrigins(scopedEvents)
     for (event in scopedEvents.sortedBy { it.cursor }) {
         val data = event.data
         when (event.kind) {
@@ -216,17 +231,27 @@ fun timeline(events: List<WireEvent>, outbox: List<Outbox> = emptyList(), scope:
                 val id = "assistant:${data.text("messageId")}"
                 if (event.kind == "assistant.message" || result[id]?.streaming != false)
                     result[id] = TimelineItem(id, "assistant", data.text("content"), event.at, event.kind == "assistant.delta",
-                        cursor = result[id]?.cursor ?: event.cursor)
+                        cursor = result[id]?.cursor ?: event.cursor, originatingMessageId = origins.message(data.text("messageId")))
             }
             "tool.start", "tool.output" -> {
                 val id = "tool:${data.text("toolCallId")}"
                 val previous = result[id]
                 result[id] = TimelineItem(
-                    id, "tool", data.text("text"), event.at,
+                    id, if (previous?.component == null) "tool" else "component", data.text("text"), event.at,
                     event.kind == "tool.start" || data.text("complete") == "false",
                     if (event.kind == "tool.start") data.text("name") else previous?.name.orEmpty(),
                     cursor = previous?.cursor ?: event.cursor,
+                    originatingMessageId = origins.tool(data.text("toolCallId"),
+                        data.stringValue("originatingMessageId") ?: previous?.originatingMessageId),
+                    component = previous?.component,
                 )
+            }
+            "component" -> {
+                val card = componentCard(event)
+                val id = "tool:${card.toolCallId}"
+                val previous = result[id]
+                result[id] = TimelineItem(id, "component", "", event.at, cursor = previous?.cursor ?: event.cursor,
+                    originatingMessageId = origins.tool(card.toolCallId, card.originatingMessageId), component = card)
             }
             "notice" -> result[event.id] = TimelineItem(event.id, "notice", data.text("message"), event.at, cursor = event.cursor)
         }

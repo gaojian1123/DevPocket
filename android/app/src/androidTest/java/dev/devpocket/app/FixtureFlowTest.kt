@@ -11,6 +11,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.espresso.Espresso
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.devpocket.app.data.*
+import kotlinx.serialization.json.jsonArray
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -174,6 +175,52 @@ class FixtureFlowTest {
             compose.onNodeWithTag("question_input_${question.request.requestId}").assertDoesNotExist()
             compose.onNodeWithTag("question_submit_${question.request.requestId}").assertDoesNotExist()
         }
+        compose.onNodeWithTag("message_input").performTextReplacement("native fixture components")
+        compose.onNodeWithContentDescription("发送到原始 GitHub Copilot 会话").performClick()
+        assertReply("Fixture components ready")
+        compose.waitUntil(20_000) { state().events.count { it.component?.status == "ready" } == 4 }
+        val cards = state().events.mapNotNull { it.component }
+        assertEquals(setOf("line", "bar", "datagrid", "markdown"), cards.map { it.spec?.text("type") }.toSet())
+        val table = cards.single { it.spec?.text("type") == "datagrid" }
+        assertEquals(6, table.spec!!["rows"]!!.jsonArray.size)
+        compose.onNodeWithTag("message_input").performTextInput("Draft kept while reading")
+        closeKeyboardForHistory()
+        fun openTable() {
+            compose.onNodeWithTag("chat_history").performScrollToNode(hasTestTag("component_${table.componentId}"))
+            compose.onNode(hasText("展开查看完整内容") and
+                hasAnyAncestor(hasTestTag("component_${table.componentId}"))).performScrollTo().performClick()
+            compose.onNodeWithTag("component_detail").assertIsDisplayed()
+            compose.waitUntil(20_000) {
+                compose.onAllNodes(hasTestTag("reference_component") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
+            }
+        }
+        openTable()
+        compose.onNodeWithContentDescription("返回对话").performClick()
+        compose.onNodeWithTag("component_${table.componentId}").assertIsDisplayed()
+        val beforeReference = state().outbox.size
+        openTable()
+        compose.onNodeWithTag("reference_component").performClick()
+        compose.onNodeWithTag("component_detail").assertDoesNotExist()
+        compose.onNodeWithTag("component_reference").assertIsDisplayed()
+        compose.onNodeWithTag("message_input").assertTextContains("Draft kept while reading")
+        assertEquals(beforeReference, state().outbox.size)
+        assertEquals(table.selection(), state().draft.componentReference)
+        compose.activityRule.scenario.recreate()
+        compose.waitUntil(20_000) { compose.onAllNodesWithTag("component_reference").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("message_input").assertTextContains("Draft kept while reading")
+        compose.onNodeWithContentDescription("移除卡片引用").performClick()
+        compose.onNodeWithTag("component_reference").assertDoesNotExist()
+        closeKeyboardForHistory()
+        openTable()
+        compose.onNodeWithTag("reference_component").performClick()
+        compose.onNodeWithTag("message_input").performTextReplacement("native fixture referenced card")
+        compose.waitUntil(20_000) {
+            compose.onAllNodes(hasContentDescription("发送到原始 GitHub Copilot 会话") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithContentDescription("发送到原始 GitHub Copilot 会话").performClick()
+        assertReply("Fixture received complete component reference")
+        assertEquals(1, state().outbox.count { (it.command.action as? Action.Message)?.componentReference == table.selection().reference })
+        compose.onNodeWithTag("component_reference").assertDoesNotExist()
         for (kind in List(2) { listOf("choice", "text", "form", "race", "uncertain") }.flatten()) {
             compose.onNodeWithTag("message_input").performTextReplacement("native fixture ask $kind")
             compose.waitUntil(20_000) {

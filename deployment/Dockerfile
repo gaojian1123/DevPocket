@@ -1,7 +1,11 @@
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
+COPY packages/components/package.json packages/components/package.json
 RUN npm ci --ignore-scripts
+COPY packages/components/tsconfig.json packages/components/build.mjs packages/components/
+COPY packages/components/src packages/components/src
+COPY packages/components/web packages/components/web
 COPY backend/tsconfig.json backend/tsconfig.json
 COPY backend/src backend/src
 COPY extension extension
@@ -14,6 +18,8 @@ ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/packages/components/package.json ./packages/components/package.json
+COPY --from=build --chown=node:node /app/packages/components/dist ./packages/components/dist
 COPY --chown=node:node package.json ./
 RUN mkdir /data && chown node:node /data
 USER node

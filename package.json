@@ -3,16 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "packages/components"
+  ],
   "engines": {
     "node": ">=24.0.0 <25"
   },
   "scripts": {
-    "build": "tsc -p backend/tsconfig.json && node scripts/bundle-extension.mjs",
+    "build": "npm run build --workspace @devpocket/components && tsc -p backend/tsconfig.json && node scripts/bundle-extension.mjs",
     "package:extension": "npm run build && pwsh -NoProfile -File scripts\\package-extension.ps1",
     "test:extension-package": "npm run build && node --test scripts\\tests\\extension-package.test.mjs",
     "test:setup": "npm run build && node --import tsx --test deployment/onboarding/tests/setup*.test.mjs && python -B -m unittest discover -s deployment/onboarding/tests -p setup_guest_test.py",
-    "typecheck": "tsc -p backend/tsconfig.json --noEmit && tsc -p backend/tsconfig.cli-proof.json",
-    "test": "node --import tsx --test backend/tests/*.test.ts",
+    "typecheck": "npm run build --workspace @devpocket/components && tsc -p backend/tsconfig.json --noEmit && tsc -p backend/tsconfig.cli-proof.json",
+    "test": "npm test --workspace @devpocket/components && node --import tsx --test backend/tests/*.test.ts",
     "verify": "pwsh -NoProfile -File scripts/verify.ps1",
     "test:workflow": "node scripts/test-workflow.mjs",
     "emulator:status": "node scripts/emulator-resources.mjs status",
@@ -32,6 +35,7 @@
     "test:cli:cancel": "node --import tsx backend/integration/cancel-check.ts"
   },
   "dependencies": {
+    "@devpocket/components": "file:packages/components",
     "ws": "8.21.3",
     "zod": "3.25.76"
   },

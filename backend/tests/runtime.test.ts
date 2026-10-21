@@ -5,7 +5,7 @@ import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { CopilotRuntime, type JoinedSession } from "../src/runtime.js";
 import { Action, PendingRequest, SessionSummary, UserEvent } from "../src/protocol.js";
-import { hash, redact } from "../src/security.js";
+import { hash, isSensitiveFieldName, redact } from "../src/security.js";
 import { gitFixture } from "./git-fixture.js";
 
 export function runtimePeer(root: string, version: string | null = "1.0.90-0") {
@@ -132,6 +132,46 @@ test("original-client truncation notices fit within projection text budgets", ()
     const projected = redact("x".repeat(limit + 1), limit);
     assert.equal(projected.length, limit);
     assert.ok(projected.endsWith("\n[truncated; see original client]"));
+  }
+});
+
+test("shared credential names cover structured aliases and assigned text without masking ordinary metrics", () => {
+  const canary = "CREDENTIAL_CANARY_SHOULD_NOT_LEAVE";
+  for (const name of ["client_secret", "clientSecret", "secret_key", "secretKey", "clientSecretValue",
+    "AWS_SECRET_ACCESS_KEY", "private.key", "signing-key", "dbPassword", "service_token", "API Key", "auth", "authorization"]) {
+    assert.equal(isSensitiveFieldName(name), true, name);
+    assert.ok(!redact(`${name}="${canary}"`).includes(canary), name);
+  }
+  assert.equal(isSensitiveFieldName("OAuth client secret (production)"), true);
+  for (const name of ["API key (production)", "Private key [staging]", "access_token {temporary}",
+    "API key (production [EU])", "API key [production] (required)", "Bearer token - production",
+    "Authorization (required)", "Cookie [session]", "API key: production"]) {
+    assert.equal(isSensitiveFieldName(name), true, name);
+  }
+  for (const name of ["API key (production)", "Private key [staging]", "access_token {temporary}"]) {
+    assert.ok(!redact(`${name}="${canary}"`).includes(canary), name);
+  }
+  for (const name of ["apiKey", "private_key", "access_token", "signing.key", "authorization"]) {
+    for (const qualifier of [" (production)", " [required]", " {temporary}", ": production",
+      " - production", " \u2013 staging", " \u2014 current"]) {
+      assert.equal(isSensitiveFieldName(name + qualifier), true, name + qualifier);
+    }
+  }
+  assert.ok(!redact(`API key (production) [region] (service) [current]="${canary}"`).includes(canary));
+  const annotatedText = "secret" + "(note)".repeat(1000) + " without an assignment";
+  assert.equal(redact(annotatedText), annotatedText);
+  assert.equal(redact(`Authorization (required)="${canary}"`), 'Authorization (required)="[REDACTED]"');
+  assert.equal(redact(`password="prefix ${canary}" public text`), 'password="[REDACTED]" public text');
+  assert.equal(redact(`secret_key='escaped ''quote'' ${canary}'`), "secret_key='[REDACTED]'");
+  assert.equal(redact(`password="prefix ${canary}`), 'password="[REDACTED]');
+  assert.equal(redact(`password=prefix ${canary}\npublic=value`), "password=[REDACTED]\npublic=value");
+  assert.equal(redact(`token=${canary}; public=value`), "token=[REDACTED]; public=value");
+  assert.equal(redact(`Authorization: Basic prefix ${canary}\npublic=value`), "Authorization: [REDACTED]\npublic=value");
+  assert.equal(redact("OAuth=public-value"), "OAuth=public-value");
+  for (const name of ["secretary", "tokenCount", "publicKey", "authenticationRequests"]) {
+    assert.equal(isSensitiveFieldName(name), false, name);
+    assert.equal(redact(`${name}=public-value`), `${name}=public-value`);
+    assert.equal(isSensitiveFieldName(`${name} (production)`), false, name);
   }
 });
 

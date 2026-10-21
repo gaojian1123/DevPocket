@@ -8,6 +8,27 @@ plugins {
 fun configString(name: String): String =
     "\"" + providers.gradleProperty(name).orElse("").get().replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
+val componentRoot = rootProject.projectDir.parentFile.resolve("packages/components")
+val componentAssets = layout.buildDirectory.dir("generated/componentAssets")
+val bundleComponents by tasks.registering(Exec::class) {
+    workingDir(rootProject.projectDir.parentFile)
+    val npm = if (System.getProperty("os.name").startsWith("Windows")) listOf("cmd", "/d", "/c", "npm.cmd") else listOf("npm")
+    commandLine(npm + listOf("run", "build", "--workspace", "@devpocket/components"))
+    inputs.dir(componentRoot.resolve("src"))
+    inputs.dir(componentRoot.resolve("web"))
+    inputs.file(componentRoot.resolve("build.mjs"))
+    inputs.file(componentRoot.resolve("package.json"))
+    inputs.file(componentRoot.resolve("tsconfig.json"))
+    inputs.file(rootProject.projectDir.parentFile.resolve("package-lock.json"))
+    outputs.dir(componentRoot.resolve("dist"))
+    outputs.upToDateWhen { false }
+}
+val copyComponentAssets by tasks.registering(Sync::class) {
+    dependsOn(bundleComponents)
+    from(componentRoot.resolve("dist/web"))
+    into(componentAssets.map { it.dir("components") })
+}
+
 android {
     namespace = "dev.devpocket.app"
     compileSdk = 35
@@ -45,8 +66,11 @@ android {
     buildFeatures { compose = true; buildConfig = true }
     testOptions { unitTests.isIncludeAndroidResources = true }
     sourceSets.getByName("test").resources.srcDir(rootProject.projectDir.parentFile.resolve("test-fixtures"))
+    sourceSets.getByName("main").assets.srcDir(componentAssets)
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
 }
+
+tasks.named("preBuild") { dependsOn(copyComponentAssets) }
 
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.04.01"))
@@ -63,6 +87,7 @@ dependencies {
     implementation("com.google.firebase:firebase-messaging:24.1.2")
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.fragment:fragment-ktx:1.8.6")
+    implementation("androidx.webkit:webkit:1.14.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
     testImplementation("junit:junit:4.13.2")

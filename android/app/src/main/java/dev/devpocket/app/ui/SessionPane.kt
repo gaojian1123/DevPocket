@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -23,12 +24,16 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -45,10 +50,24 @@ fun SessionPane(state: PocketUi, model: PocketViewModel, expanded: Boolean) {
     var modelPicker by rememberSaveable { mutableStateOf(false) }
     var confirmStop by rememberSaveable { mutableStateOf(false) }
     var confirmPermission by remember { mutableStateOf<Pair<PendingRequest, String>?>(null) }
+    var componentId by rememberSaveable { mutableStateOf<String?>(null) }
+    var componentReferenceError by remember(componentId) { mutableStateOf<String?>(null) }
+    var focusComposer by remember { mutableStateOf(false) }
+    val composerFocus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
     val upload = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(model::upload) }
     val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri -> uri?.let(model::savePreview) }
-    BackHandler(enabled = state.preview != null || state.diff != null || tab != "chat") {
-        if (state.preview != null || state.diff != null) model.clearPreview() else tab = "chat"
+    BackHandler(enabled = componentId != null || state.preview != null || state.diff != null || tab != "chat") {
+        if (componentId != null) componentId = null
+        else if (state.preview != null || state.diff != null) model.clearPreview() else tab = "chat"
+    }
+    LaunchedEffect(focusComposer) {
+        if (focusComposer) {
+            withFrameNanos { }
+            composerFocus.requestFocus()
+            keyboard?.show()
+            focusComposer = false
+        }
     }
     Column(Modifier.fillMaxSize().imePadding().testTag("session_detail")) {
         TopAppBar(
@@ -93,15 +112,31 @@ fun SessionPane(state: PocketUi, model: PocketViewModel, expanded: Boolean) {
         if (state.busy || state.uploading) LinearProgressIndicator(Modifier.fillMaxWidth())
         when (tab) {
             "chat" -> {
-                ChatHistory(state, model, { request, decision -> confirmPermission = request to decision }, Modifier.weight(1f))
+                ChatHistory(state, model, { request, decision -> confirmPermission = request to decision },
+                    { componentId = it.componentId }, Modifier.weight(1f))
                 ComposeBar(state, editDraft = model::editDraft, removeAttachment = model::removeAttachment, send = model::send,
                     attach = { upload.launch(arrayOf("text/plain", "application/json", "application/pdf", "image/png", "image/jpeg", "image/webp")) },
-                    models = { modelPicker = true; model.loadModels() }, stop = { confirmStop = true })
+                    models = { modelPicker = true; model.loadModels() }, stop = { confirmStop = true },
+                    removeComponentReference = model::removeComponentReference,
+                    inputModifier = Modifier.focusRequester(composerFocus))
             }
             "files" -> FilesPane(state, model, Modifier.weight(1f))
             "git" -> GitPane(state, model, Modifier.weight(1f))
             "attachments" -> AttachmentsPane(state, model, Modifier.weight(1f))
         }
+    }
+    componentId?.let { selected ->
+        val card = state.events.asReversed().firstOrNull { it.component?.componentId == selected &&
+            it.hostId == state.selected?.hostId && it.sessionId == state.selected?.sessionId }?.component
+        ComponentDetail(card, state.requests.isNotEmpty(), !state.uploading, componentReferenceError,
+            dismiss = { componentId = null }, reference = { value ->
+                val scope = state.selected
+                if (scope != null && model.referenceComponent(scope, value)) {
+                    componentId = null
+                    tab = "chat"
+                    focusComposer = true
+                } else componentReferenceError = model.ui.value.error ?: "无法引用这张卡片，请返回对话重新选择。"
+            })
     }
     if (confirmStop) AlertDialog(
         onDismissRequest = { confirmStop = false }, title = { Text("停止当前工作？") },
@@ -153,7 +188,7 @@ fun SessionPane(state: PocketUi, model: PocketViewModel, expanded: Boolean) {
 
 @Composable
 private fun ChatHistory(state: PocketUi, model: PocketViewModel,
-    decide: (PendingRequest, String) -> Unit, modifier: Modifier) {
+    decide: (PendingRequest, String) -> Unit, openComponent: (ComponentCard) -> Unit, modifier: Modifier) {
     val messages = remember(state.events, state.outbox, state.selected, state.firstRetainedEventCursor) {
         timeline(state.events, state.outbox, state.selected, state.firstRetainedEventCursor)
     }
@@ -163,6 +198,8 @@ private fun ChatHistory(state: PocketUi, model: PocketViewModel,
     }
     val listState = rememberLazyListState()
     var followTail by rememberSaveable { mutableStateOf(true) }
+    var componentLayout by remember { mutableIntStateOf(0) }
+    val responseRail = MaterialTheme.colorScheme.primary.copy(alpha = .3f)
     val outstanding = state.outbox.filter { it.command.action is Action.Message }
     val total = messages.size + requests.size + outstanding.size
     val scrollObserver = remember(listState) {
@@ -173,7 +210,7 @@ private fun ChatHistory(state: PocketUi, model: PocketViewModel,
             }
         }
     }
-    LaunchedEffect(messages, requests, outstanding, state.selected, followTail) {
+    LaunchedEffect(messages, requests, outstanding, state.selected, followTail, componentLayout) {
         if (followTail && total > 0) {
             var positioned = false
             snapshotFlow {
@@ -198,10 +235,12 @@ private fun ChatHistory(state: PocketUi, model: PocketViewModel,
     }
     Box(modifier.fillMaxWidth()) {
         LazyColumn(state = listState, modifier = Modifier.fillMaxSize().nestedScroll(scrollObserver).testTag("chat_history"),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(messages, key = { it.id }) { item ->
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(0.dp)) {
+            itemsIndexed(messages, key = { _, item -> item.id }) { index, item ->
+                val grouped = sameResponse(messages.getOrNull(index - 1), item)
                 val question = item.question
                 if (question != null) {
+                    Spacer(Modifier.height(12.dp))
                     val pending = state.requests.find { it.sameQuestion(question.record.request) }
                     val request = pending ?: question.record.request
                     val supported = state.session?.let { request.supportedBy(it.capabilities) } == true
@@ -209,9 +248,14 @@ private fun ChatHistory(state: PocketUi, model: PocketViewModel,
                         history = question, pending = pending != null, submitting = state.submittingAnswers, retry = model::retry) { answer ->
                         model.action(Action.Answer(request.requestId, answer))
                     }
-                    return@items
+                    return@itemsIndexed
                 }
-                Box(Modifier.fillMaxWidth(), contentAlignment = if (item.role == "user") Alignment.CenterEnd else Alignment.CenterStart) {
+                val associated = item.originatingMessageId != null && item.role in setOf("assistant", "tool", "component")
+                val responseModifier = if (associated) Modifier.drawBehind {
+                    drawLine(responseRail, Offset.Zero, Offset(0f, size.height), strokeWidth = 2.dp.toPx())
+                }.padding(start = 10.dp) else Modifier
+                Box(Modifier.fillMaxWidth().padding(top = if (grouped) 2.dp else 12.dp).then(responseModifier),
+                    contentAlignment = if (item.role == "user") Alignment.CenterEnd else Alignment.CenterStart) {
                     Surface(
                         modifier = Modifier.widthIn(max = 720.dp),
                         shape = MaterialTheme.shapes.large,
@@ -223,12 +267,24 @@ private fun ChatHistory(state: PocketUi, model: PocketViewModel,
                         },
                     ) {
                         Column(Modifier.padding(14.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text(when (item.role) { "user" -> "你"; "assistant" -> "Copilot"; "tool" -> item.name.ifBlank { "工具" }; else -> "提示" },
-                                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                if (item.streaming) CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.dp)
+                            if (!grouped) Row(
+                                modifier = Modifier.testTag("response_header_${item.id}"),
+                                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(if (associated) "Copilot" else when (item.role) {
+                                    "user" -> "你"; "assistant" -> "Copilot"; "tool" -> item.name.ifBlank { "工具" }
+                                    "component" -> "可视化"; else -> "提示"
+                                }, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            if (item.role == "tool") {
+                            if (item.streaming) CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.dp)
+                            if (item.component != null) {
+                                ComponentCardView(item.component, open = {
+                                    followTail = false
+                                    openComponent(item.component)
+                                },
+                                    onMeasured = { componentLayout++ })
+                            } else if (item.role == "tool") {
+                                if (associated) Text(item.name.ifBlank { "工具" }, style = MaterialTheme.typography.labelSmall)
                                 var show by rememberSaveable(item.id) { mutableStateOf(false) }
                                 TextButton(onClick = { show = !show }, modifier = Modifier.heightIn(min = 48.dp)) {
                                     Text(if (show) "收起输出" else "查看工具输出（不可信内容）")
@@ -244,6 +300,7 @@ private fun ChatHistory(state: PocketUi, model: PocketViewModel,
                 }
             }
             items(outstanding, key = { "delivery:${it.command.commandId}" }) { entry ->
+                Spacer(Modifier.height(12.dp))
                 OutlinedCard(Modifier.fillMaxWidth().widthIn(max = 720.dp)) {
                     Column(Modifier.padding(12.dp)) {
                         Text(deliveryLabel(entry.status), style = MaterialTheme.typography.labelMedium,
@@ -261,6 +318,7 @@ private fun ChatHistory(state: PocketUi, model: PocketViewModel,
                 }
             }
             items(requests, key = { "request:${it.requestId}" }) { request ->
+                Spacer(Modifier.height(12.dp))
                 val supported = state.session?.let { request.supportedBy(it.capabilities) } == true
                 RequestCard(request.copy(supported = supported),
                     state.busy || state.session?.online != true, decide) { answer ->
@@ -359,6 +417,8 @@ internal fun ComposeBar(
     attach: () -> Unit,
     models: () -> Unit,
     stop: () -> Unit,
+    removeComponentReference: () -> Unit = {},
+    inputModifier: Modifier = Modifier,
 ) {
     val session = state.session ?: return
     val hasMessage = state.draft.text.isNotBlank()
@@ -372,7 +432,7 @@ internal fun ComposeBar(
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Icon(Icons.Default.ArrowDropDown, contentDescription = null)
                 }
-                IconButton(onClick = attach, enabled = session.online && !state.uploading && state.draft.attachments.size < 4) {
+                IconButton(onClick = attach, enabled = session.online && !state.uploading && state.draft.attachmentCount < 4) {
                     Icon(Icons.Default.AttachFile, contentDescription = "选择附件，最多 2 MiB")
                 }
             }
@@ -382,14 +442,27 @@ internal fun ComposeBar(
                     IconButton(onClick = { removeAttachment(attachment.id) }) { Icon(Icons.Default.Close, contentDescription = "移除附件 ${attachment.name}") }
                 }
             }
+            state.draft.componentReference?.let { selection ->
+                Row(Modifier.fillMaxWidth().testTag("component_reference"), verticalAlignment = Alignment.CenterVertically) {
+                    Text("引用整张卡片：${selection.title}", Modifier.weight(1f), maxLines = 2,
+                        overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+                    IconButton(onClick = removeComponentReference) {
+                        Icon(Icons.Default.Close, contentDescription = "移除卡片引用")
+                    }
+                }
+                if (session.online && session.componentVersion != COMPONENT_VERSION)
+                    Text("当前连接不支持引用；可保留草稿或移除引用。", color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.labelSmall)
+            }
             Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedTextField(state.draft.text, editDraft,
-                    modifier = Modifier.weight(1f).heightIn(max = 180.dp).testTag("message_input"), maxLines = 5,
+                    modifier = Modifier.weight(1f).heightIn(max = 180.dp).then(inputModifier).testTag("message_input"), maxLines = 5,
                     label = { Text(if (session.online) "继续原始会话" else "离线草稿") },
                     supportingText = { Text("原始会话排队处理 · 不立即中断工具", style = MaterialTheme.typography.labelSmall) })
                 FilledIconButton(onClick = if (showStop) stop else send,
                     enabled = if (showStop) session.online && session.capabilities.abort
-                        else hasMessage && session.online && session.capabilities.messages && !state.uploading,
+                        else hasMessage && session.online && session.capabilities.messages && !state.uploading &&
+                            (state.draft.componentReference == null || session.componentVersion == COMPONENT_VERSION),
                     colors = if (showStop) IconButtonDefaults.filledIconButtonColors(
                         containerColor = MaterialTheme.colorScheme.error, contentColor = MaterialTheme.colorScheme.onError,
                     ) else IconButtonDefaults.filledIconButtonColors(),

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -18,6 +18,21 @@ export async function startAndroidFixture(directory: string) {
   const history: { id: string; type: string; timestamp: string; data: object }[] = [];
   let listener: (event: unknown) => void = () => {};
   let active = false, closed = false, count = 0, answerCount = 0;
+  let canvasOpened = false;
+  const canvas = { instanceId: "android-fixture-canvas", canvasId: "agenticdeck-canvas",
+    extensionId: "plugin:agenticdeck-gh-app-extensions:agenticdeck-canvas" };
+  const componentSpecs = [
+    { type: "line", title: "Fixture line", xAxisKey: "day",
+      data: Array.from({ length: 12 }, (_, index) => ({ day: `Day ${index + 1}`, value: index % 3 + 1 })),
+      series: [{ name: "Count", dataKey: "value" }] },
+    { type: "bar", title: "Fixture bar", xAxisKey: "name",
+      data: [{ name: "A", value: 1 }, { name: "B", value: 2 }, { name: "C", value: 3 }],
+      series: [{ name: "Count", dataKey: "value" }] },
+    { type: "datagrid", title: "Fixture table",
+      columns: [{ key: "name", label: "Name" }, { key: "count", label: "Count", type: "number" }],
+      rows: Array.from({ length: 6 }, (_, index) => ({ name: `Fixture row ${index + 1}`, count: index + 1 })) },
+    { type: "markdown", title: "Fixture notes", content: "A complete **offline** component." },
+  ];
   type QuestionKind = "choice" | "text" | "form" | "race" | "uncertain";
   const questions = new Map<string, QuestionKind>();
   const emit = (type: string, data: object) => {
@@ -43,8 +58,9 @@ export async function startAndroidFixture(directory: string) {
   };
   const session: JoinedSession = {
     sessionId, getEvents: async () => [...history],
+    get openCanvases() { return canvasOpened ? [canvas] : []; },
     on: (handler) => { listener = handler; return () => { listener = () => {}; }; },
-    send: async ({ prompt, mode, source }) => {
+    send: async ({ prompt, mode, source, attachments = [] }) => {
       if (mode !== "enqueue" || source !== "user") throw new Error("Invalid fixture message provenance.");
       if (closed) throw new Error("Fixture is closed.");
       count++;
@@ -70,7 +86,28 @@ export async function startAndroidFixture(directory: string) {
         });
         return messageId;
       }
-      emit("assistant.message", { messageId: randomUUID(), content: `Fixture reply: ${prompt}`, originatingMessageId: messageId });
+      let reply = `Fixture reply: ${prompt}`;
+      if (prompt === "native fixture components") {
+        canvasOpened = true;
+        emit("session.canvas.opened", canvas);
+        const ids = componentSpecs.map((_, index) => `fixture-component-${count}-${index}`);
+        emit("assistant.message", { messageId: randomUUID(), content: "Fixture component response",
+          originatingMessageId: messageId, toolRequests: ids.map((toolCallId) => ({ toolCallId })) });
+        componentSpecs.forEach((spec, index) => {
+          emit("tool.execution_start", { toolCallId: ids[index], toolName: "invoke_canvas_action",
+            arguments: { instanceId: canvas.instanceId, actionName: "render_component", input: { spec } } });
+          emit("tool.execution_complete", { toolCallId: ids[index], success: true });
+        });
+        reply = "Fixture components ready";
+      } else if (prompt === "native fixture referenced card") {
+        if (attachments.length !== 1) throw new Error("The complete reference must arrive as one attachment.");
+        const value: unknown = JSON.parse(await readFile(attachments[0]!.path, "utf8"));
+        if (!value || typeof value !== "object" || !("kind" in value) || value.kind !== "devpocket.component-reference" ||
+            !("spec" in value) || JSON.stringify(value.spec) !== JSON.stringify(componentSpecs[2]))
+          throw new Error("The referenced table must retain all six rows, not just its title or inline page.");
+        reply = "Fixture received complete component reference";
+      }
+      emit("assistant.message", { messageId: randomUUID(), content: reply, originatingMessageId: messageId });
       active = false;
       emit("session.idle", {});
       // Deliver completion before admission returns to exercise late acknowledgement handling.

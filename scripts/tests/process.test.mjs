@@ -44,10 +44,15 @@ async function rawOwner(t, root, { deadlineUnixMs = Date.now() + 15000, input = 
   return { code, stdout, stderr };
 }
 
+async function prepareOwner(t, root, options) {
+  const result = await rawOwner(t, root, options);
+  assert.equal(result.code, 0, result.stderr);
+}
+
 test("fragmented cancellation is accepted while the PowerShell preparation mutex remains held",
   { skip: process.platform !== "win32" }, async (t) => {
     const root = await ownerFixture(t);
-    assert.equal((await rawOwner(t, root, { preparationOwner: true })).code, 0);
+    await prepareOwner(t, root, { preparationOwner: true });
     const cache = path.join(root, ".tools", "command-owner-v1");
     const [key] = await readdir(cache);
     const mutexKey = createHash("sha256").update(path.join(cache, key).toLowerCase()).digest("hex");
@@ -82,7 +87,7 @@ test("fragmented cancellation is accepted while the PowerShell preparation mutex
 test("a partial preparation control line survives the handoff to the native parser",
   { skip: process.platform !== "win32" }, async (t) => {
     const root = await ownerFixture(t);
-    assert.equal((await rawOwner(t, root, { preparationOwner: true })).code, 0);
+    await prepareOwner(t, root, { preparationOwner: true });
     const cache = path.join(root, ".tools", "command-owner-v1");
     const [key] = await readdir(cache);
     const mutexKey = createHash("sha256").update(path.join(cache, key).toLowerCase()).digest("hex");
@@ -124,7 +129,7 @@ test("PowerShell preparation rejects oversized or unknown control input before t
     ]) {
       await t.test(name, async (t) => {
         const root = await ownerFixture(t), marker = path.join(root, "must-not-start");
-        assert.equal((await rawOwner(t, root, { preparationOwner: true })).code, 0);
+        await prepareOwner(t, root, { preparationOwner: true });
         const cache = path.join(root, ".tools", "command-owner-v1");
         const [key] = await readdir(cache);
         const mutexKey = createHash("sha256").update(path.join(cache, key).toLowerCase()).digest("hex");
@@ -345,7 +350,7 @@ test("the Windows bootstrap rejects unsupported startup control lines before lau
       for (const followedByCancel of [false, true]) {
         await t.test(`${prepared ? "prepared" : "cold"}${followedByCancel ? " then cancel" : ""}`, async (t) => {
           const root = await ownerFixture(t), marker = path.join(root, "must-not-start");
-          if (prepared) assert.equal((await rawOwner(t, root)).code, 0);
+          if (prepared) await prepareOwner(t, root);
           const result = await rawOwner(t, root, {
             input: "notcancel\n" + (followedByCancel ? "cancel\n" : ""),
             args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'started')`],
@@ -363,7 +368,7 @@ test("the Windows bootstrap rejects unsupported startup control lines before lau
 test("unsupported fragmented bootstrap input stops a preparation wait without launching a target",
   { skip: process.platform !== "win32" }, async (t) => {
     const root = await ownerFixture(t);
-    assert.equal((await rawOwner(t, root)).code, 0);
+    await prepareOwner(t, root);
     const cache = path.join(root, ".tools", "command-owner-native-v1");
     const [key] = await readdir(cache);
     const mutexKey = createHash("sha256").update(path.join(cache, key).toLowerCase()).digest("hex");
@@ -414,6 +419,80 @@ test("bootstrap input failure is not overwritten by an active child's graceful c
     assert.match(result.stderr, /:tree-stopped\u001f/);
   });
 
+async function publicationFixture(t, mode) {
+  const root = await ownerFixture(t), cache = path.join(root, ".tools", "command-owner-native-v1");
+  const marker = path.join(root, "target-started"), count = path.join(root, "publication-count");
+  const entry = path.join(root, "scripts", "publication-failure.mjs");
+  await writeFile(entry, [
+    "import fs from 'node:fs/promises';import path from 'node:path';",
+    "import {syncBuiltinESMExports} from 'node:module';",
+    `const cache=${JSON.stringify(cache)}, count=${JSON.stringify(count)}, mode=${JSON.stringify(mode)};`,
+    "const rename=fs.rename, remove=fs.rm, stat=fs.lstat;let attempts=0, deniedSource;",
+    "fs.rename=async (from,to)=>{",
+    "if(path.dirname(from)!==cache || !path.basename(from).startsWith('prepare-'))return rename(from,to);",
+    "await fs.writeFile(count,String(++attempts));",
+    "if(mode==='transient'&&attempts>1)return rename(from,to);",
+    "if(mode==='collision'){await fs.mkdir(to);await fs.writeFile(path.join(to,'foreign'),'preserve');}",
+    "if(mode==='cancel')process.stdin.emit('data','cancel\\n');",
+    "if(mode==='deadline'){const now=Date.now;Date.now=()=>now()+60000;}",
+    "deniedSource=from;throw Object.assign(new Error('INJECTED_PUBLICATION_FAILURE'),",
+    "{code:mode==='eio'||mode==='cleanup'?'EIO':'EPERM'});};",
+    "fs.lstat=async (file,options)=>{const info=await stat(file,options);",
+    "return mode==='identity'&&file===deniedSource?new Proxy(info,{get(target,key){",
+    "return key==='ino'?target.ino+(typeof target.ino==='bigint'?1n:1):Reflect.get(target,key);}}):info;};",
+    "fs.rm=async (file,options)=>{",
+    "if(mode==='cleanup'&&path.dirname(file)===deniedSource&&path.basename(file)==='owner.exe')",
+    "throw Object.assign(new Error('INJECTED_SCRATCH_FAILURE'),{code:'EACCES'});return remove(file,options);};",
+    "syncBuiltinESMExports();await import('./owned-command-windows.mjs');", "",
+  ].join("\n"));
+  if (mode === "missing-proof")
+    await writeFile(path.join(root, "scripts", "owned-command.ps1"), "[Console]::In.ReadLine()|Out-Null\nexit 0\n");
+  return { root, cache, marker, count, entry };
+}
+
+for (const mode of ["transient", "permanent", "eio", "collision", "identity", "cleanup", "missing-proof", "cancel", "deadline"])
+  test(`Windows publication preserves failure, ownership and cleanup (${mode})`,
+    { skip: process.platform !== "win32" }, async (t) => {
+      const fixture = await publicationFixture(t, mode), { root, cache, marker, count, entry } = fixture;
+      const result = await rawOwner(t, root, { entry,
+        args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'started')`] });
+      assert.equal(result.code, mode === "transient" ? 0 : mode === "cancel" ? 130 : mode === "deadline" ? 124 : 1, result.stderr);
+      if (["identity", "cleanup", "missing-proof"].includes(mode)) assert.doesNotMatch(result.stderr, /:tree-stopped\u001f/);
+      else assert.match(result.stderr, /:tree-stopped\u001f/);
+      if (mode === "transient") {
+        assert.equal(await readFile(marker, "utf8"), "started");
+        assert.ok(Number(await readFile(count, "utf8")) >= 2 && Number(await readFile(count, "utf8")) <= 4);
+      } else {
+        await assert.rejects(access(marker), { code: "ENOENT" });
+        assert.doesNotMatch(result.stderr, /:active\u001f/);
+        if (mode !== "missing-proof") assert.equal(Number(await readFile(count, "utf8")), mode === "permanent" ? 4 : 1);
+      }
+      if (mode === "missing-proof") assert.match(result.stderr, /preparation failed \(0\)/);
+      if (mode === "cleanup") assert.match(result.stderr, /INJECTED_SCRATCH_FAILURE/);
+      if (mode === "identity") assert.match(result.stderr, /staging directory changed/);
+      if (mode === "eio" || mode === "permanent") assert.match(result.stderr, /INJECTED_PUBLICATION_FAILURE/);
+      if (mode === "cancel") assert.match(result.stderr, /:cancel-accepted\u001f/);
+      if (mode === "deadline") assert.match(result.stderr, /:deadline-expired\u001f/);
+      const remaining = await readdir(cache);
+      if (mode === "collision") {
+        assert.equal(remaining.length, 1);
+        assert.equal(await readFile(path.join(cache, remaining[0], "foreign"), "utf8"), "preserve");
+      } else if (["identity", "cleanup"].includes(mode)) {
+        assert.equal(remaining.length, 1);
+        assert.ok(remaining[0].startsWith("prepare-"));
+        await access(path.join(cache, remaining[0], "owner.exe"));
+      } else if (mode !== "transient") assert.deepEqual(remaining, []);
+    });
+
+test("invalid bootstrap requests cannot emit a cleanup acknowledgement for unvalidated input",
+  { skip: process.platform !== "win32" }, async (t) => {
+    const root = await ownerFixture(t), result = await rawOwner(t, root, { file: 42 });
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /Invalid Windows owned-command request/);
+    assert.doesNotMatch(result.stderr, /:tree-stopped\u001f|:active\u001f/);
+    await assert.rejects(access(path.join(root, ".tools")), { code: "ENOENT" });
+  });
+
 test("the bootstrap input budget stays a failure without launching a target",
   { skip: process.platform !== "win32" }, async (t) => {
     const root = await ownerFixture(t), marker = path.join(root, "must-not-start");
@@ -454,7 +533,7 @@ test("cold ownership preparation is atomic across concurrent callers and invalid
 test("deadline and accepted cancellation while awaiting preparation never launch the target",
   { skip: process.platform !== "win32" }, async (t) => {
     const root = await ownerFixture(t);
-    assert.equal((await rawOwner(t, root)).code, 0);
+    await prepareOwner(t, root);
     const cache = path.join(root, ".tools", "command-owner-native-v1");
     const [key] = await readdir(cache);
     const mutexKey = createHash("sha256").update(path.join(cache, key).toLowerCase()).digest("hex");
@@ -526,7 +605,7 @@ test("invalid source, incomplete artifacts and mismatched toolchain evidence fai
         if (fault === "source") {
           await writeFile(path.join(root, "scripts", "owned-command.cs"), "#error rejected ownership fixture\n");
         } else {
-          assert.equal((await rawOwner(t, root)).code, 0);
+          await prepareOwner(t, root);
           const cache = path.join(root, ".tools", "command-owner-native-v1");
           const [key] = await readdir(cache);
           if (fault === "missing-assembly") await rm(path.join(cache, key, "owner.exe"));
@@ -553,7 +632,7 @@ test("invalid source, incomplete artifacts and mismatched toolchain evidence fai
 test("a changed compiler toolchain cannot reuse a previously successful native artifact",
   { skip: process.platform !== "win32" }, async (t) => {
     const root = await ownerFixture(t);
-    assert.equal((await rawOwner(t, root)).code, 0);
+    await prepareOwner(t, root);
     const frameworkParts = ["Microsoft.NET", "Framework64", "v4.0.30319"];
     const original = path.join(process.env.SystemRoot ?? process.env.WINDIR, ...frameworkParts);
     const systemRoot = path.join(root, "changed-toolchain"), selected = path.join(systemRoot, ...frameworkParts);

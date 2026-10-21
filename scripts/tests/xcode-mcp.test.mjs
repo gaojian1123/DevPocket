@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import fileSystem, { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { promisify } from "node:util";
 import { after, before, test } from "node:test";
@@ -216,6 +217,63 @@ test("effective ignore conflicts refuse configuration and lock creation without 
     assert.equal(await readFile(path.join(root, ".gitignore"), "utf8"), ignores);
   }
 });
+
+for (const mode of ["transient", "permanent", "eio", "collision", "identity", "cleanup"])
+  test(`Windows snapshot publication preserves owned data and existing destinations (${mode})`,
+    { skip: process.platform !== "win32" }, async (t) => {
+      const root = await repository(t), installed = path.join(root, ".git", "devpocket-xcode-mcp");
+      const rename = fileSystem.rename, stat = fileSystem.lstat, remove = fileSystem.rm;
+      let attempts = 0, deniedSource;
+      const renameMock = t.mock.method(fileSystem, "rename", async (from, to) => {
+        if (to !== installed) return rename(from, to);
+        attempts++;
+        if (mode === "transient" && attempts > 1) return rename(from, to);
+        if (mode === "collision") {
+          await mkdir(to);
+          await writeFile(path.join(to, "foreign"), "preserve");
+        }
+        deniedSource = from;
+        throw Object.assign(new Error("INJECTED_PUBLICATION_FAILURE"), { code: ["eio", "cleanup"].includes(mode) ? "EIO" : "EPERM" });
+      });
+      const statMock = t.mock.method(fileSystem, "lstat", async (file, options) => {
+        const info = await stat(file, options);
+        return mode === "identity" && file === deniedSource ? new Proxy(info, {
+          get(target, key) { return key === "ino" ? target.ino + (typeof target.ino === "bigint" ? 1n : 1) : Reflect.get(target, key); },
+        }) : info;
+      });
+      const removeMock = t.mock.method(fileSystem, "rm", async (file, options) => {
+        if (mode === "cleanup" && file === deniedSource)
+          throw Object.assign(new Error("INJECTED_SCRATCH_FAILURE"), { code: "EACCES" });
+        return remove(file, options);
+      });
+      syncBuiltinESMExports();
+      try {
+        if (mode === "transient") {
+          assert.equal((await installXcodeMcp(supported(root))).status, "installed");
+          assert.ok(attempts >= 2 && attempts <= 4);
+          assert.deepEqual((await config(root)).mcpServers.xcode, server);
+        } else {
+          await assert.rejects(installXcodeMcp(supported(root)), (error) => {
+            if (["identity", "cleanup"].includes(mode)) return error instanceof AggregateError && error.errors.length === 2;
+            return mode === "collision" ? /destination appeared/.test(error.message) : error.code === (mode === "eio" ? "EIO" : "EPERM");
+          });
+          assert.equal(attempts, mode === "permanent" ? 4 : 1);
+          await absent(configPath(root));
+          await absent(path.join(root, ".git", "hooks", "post-checkout"));
+          if (mode === "collision") assert.equal(await readFile(path.join(installed, "foreign"), "utf8"), "preserve");
+          else await absent(installed);
+          if (["identity", "cleanup"].includes(mode)) {
+            assert.equal((await stat(deniedSource)).isDirectory(), true);
+            assert.ok((await readFile(path.join(deniedSource, "scripts", "setup-xcode-mcp.mjs"))).length > 0);
+          } else await absent(deniedSource);
+        }
+      } finally {
+        renameMock.mock.restore();
+        statMock.mock.restore();
+        removeMock.mock.restore();
+        syncBuiltinESMExports();
+      }
+    });
 
 test("fixture subprocesses ignore inherited hook and object-storage overrides", async (t) => {
   const root = await temporary(t), hooks = path.join(root, "foreign-hooks"), objects = path.join(root, "foreign-objects");

@@ -1,11 +1,11 @@
 import { mkdirSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { lstat, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import WebSocket from "ws";
 import { z } from "zod";
 import { Command, Id, MAX_UPLOAD, PROTOCOL, Receipt, RelayReady, SessionSummary, UserEvent, finalStatus, type DeliveryStatus } from "./protocol.js";
-import { CopilotRuntime, type JoinedSession, type LocalAttachment } from "./runtime.js";
+import { CopilotRuntime, type JoinedSession, type LocalAttachment, type ReferencedComponentAttachment } from "./runtime.js";
 import { Fault, fileName, hash, publicError, relayUrl } from "./security.js";
 import { authenticatedProofFetch, createProofAgent, ProofKey } from "./local-proof.js";
 
@@ -222,7 +222,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     recordedCliVersion: runtime.summary.cliVersion, capabilities: runtime.summary.capabilities,
   }, null, 2), { mode: 0o600 });
   let ws: WebSocket | undefined, stopped = false, ready = false, permanentFailure = false;
-  let workspaceMetadata: boolean | undefined, questionHistory: boolean | undefined;
+  let workspaceMetadata: boolean | undefined, questionHistory: boolean | undefined, componentSupport: boolean | undefined;
   let retry: NodeJS.Timeout | undefined, attempts = 0, eventInFlight = false, closed = false;
   const summaries: {
     through: number; summary: SessionSummary; receiptIds: string[]; nextReceipt: number; sent: boolean;
@@ -240,15 +240,43 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     return true;
   }
   function summaryForRelay(summary: SessionSummary): SessionSummary {
-    const { workspace, ...legacy } = summary;
-    const projected = workspaceMetadata === true ? { ...summary } : legacy;
+    const { workspace, componentVersion, ...legacy } = summary;
+    const projected: SessionSummary = workspaceMetadata === true ? { ...summary } : legacy;
+    if (componentSupport !== true) delete projected.componentVersion;
+    else if (componentVersion !== undefined) projected.componentVersion = componentVersion;
     const warnings: string[] = [];
     if (workspace && workspaceMetadata === false)
       warnings.push("This relay does not support workspace labels. Update the relay to display branches and working trees.");
     if (questionHistory === false)
       warnings.push("This relay does not support question history. Update the relay to retain runtime-confirmed answers across clients.");
+    if (componentSupport === false)
+      warnings.push("This relay does not support component cards or tool-response grouping. Update it before referencing a card.");
     if (warnings.length) projected.warnings = [...summary.warnings.slice(0, 20 - warnings.length), ...warnings];
     return projected;
+  }
+  function eventForRelay(event: UserEvent): UserEvent {
+    if (event.kind === "question" && questionHistory !== true) return {
+      id: event.id, at: event.at, kind: "notice",
+      data: { code: "QUESTION_HISTORY_UNAVAILABLE", message: "Question history requires an updated relay. Pending questions and controls are unchanged." },
+    };
+    if (componentSupport !== true) {
+      if (event.kind === "component") return {
+        id: event.id, at: event.at, kind: "notice",
+        data: { code: "COMPONENTS_UNAVAILABLE", message: "This component requires an updated relay. View it in the original client." },
+      };
+      if (event.kind === "assistant.message") {
+        const { toolCallIds: _links, ...data } = event.data;
+        return { ...event, data };
+      }
+      if (event.kind === "tool.start" || event.kind === "tool.output") {
+        const { originatingMessageId: _origin, ...data } = event.data;
+        return event.kind === "tool.start"
+          ? { ...event, data: { toolCallId: data.toolCallId, name: event.data.name, text: data.text } }
+          : { ...event, data: { toolCallId: data.toolCallId, text: data.text, complete: event.data.complete,
+            ...(event.data.success === undefined ? {} : { success: event.data.success }) } };
+      }
+    }
+    return event;
   }
   function queueSummary(): void {
     if (!ready || stopped) return;
@@ -267,11 +295,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     const snapshot = summaries[0];
     let awaitingEvents = eventInFlight;
     if (!eventInFlight && !snapshot?.sent) {
-      const items = journal.events(snapshot?.through).map((event): UserEvent =>
-        event.kind === "question" && questionHistory !== true ? {
-          id: event.id, at: event.at, kind: "notice",
-          data: { code: "QUESTION_HISTORY_UNAVAILABLE", message: "Question history requires an updated relay. Pending questions and controls are unchanged." },
-        } : event);
+      const items = journal.events(snapshot?.through).map(eventForRelay);
       if (items.length) {
         eventInFlight = send({ type: "events", items });
         awaitingEvents = true;
@@ -337,10 +361,30 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     }
     let invoked = false;
     try {
+      if (command.action.type === "message" && command.action.componentReference && componentSupport !== true)
+        throw new Fault("COMPONENTS_UNAVAILABLE", "Card references require a relay that negotiated component support.", 409);
       const attachments = command.action.type === "message"
         ? await Promise.all(command.action.attachmentIds.map(attachment)) : [];
+      let componentAttachment: ReferencedComponentAttachment | undefined;
+      if (command.action.type === "message" && command.action.componentReference) {
+        if (attachments.length >= 4)
+          throw new Fault("TOO_MANY_ATTACHMENTS", "A message supports four attachments including its referenced component.");
+        const reference = command.action.componentReference;
+        const content = runtime.componentReferenceContent(reference);
+        const bytes = Buffer.from(content.content, "utf8");
+        if (bytes.length > MAX_UPLOAD) throw new Fault("COMPONENT_REFERENCE_TOO_LARGE", "The referenced component exceeds the attachment limit.");
+        const digest = hash(bytes), target = path.join(journal.uploads, `component-${digest}.json`);
+        try { await writeFile(target, bytes, { flag: "wx", mode: 0o600 }); }
+        catch (error) {
+          if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+          const info = await lstat(target);
+          if (!info.isFile() || info.isSymbolicLink() || hash(await readFile(target)) !== digest)
+            throw new Fault("COMPONENT_REFERENCE_CORRUPT", "The private component attachment cache does not match its recorded bytes.");
+        }
+        componentAttachment = { reference, file: { type: "file", path: target, displayName: content.displayName } };
+      }
       invoked = true;
-      const result = await runtime.execute(command.action, attachments, command.commandId);
+      const result = await runtime.execute(command.action, attachments, command.commandId, componentAttachment);
       journal.save({ commandId: command.commandId, ...result });
     } catch (error) {
       const uncertain = invoked && !(error instanceof Fault) &&
@@ -360,11 +404,13 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     if (stopped || permanentFailure) return;
     workspaceMetadata = undefined;
     questionHistory = undefined;
+    componentSupport = undefined;
     const url = new URL("/v1/host/stream", origin);
     url.protocol = origin.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("sessionId", session.sessionId);
     url.searchParams.set("workspaceMetadata", "1");
     url.searchParams.set("questionHistory", "1");
+    url.searchParams.set("components", "1");
     ws = new WebSocket(url, { headers: { Authorization: `Bearer ${config.token}` },
       maxPayload: 4 * 1024 * 1024, perMessageDeflate: false, handshakeTimeout: 15_000,
       ...(proofAgent ? { agent: proofAgent } : {}) });
@@ -378,6 +424,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
           if (frame.hostId !== config.hostId || frame.sessionId !== session.sessionId) throw new Fault("SCOPE_MISMATCH", "Relay registered a different session.");
           workspaceMetadata = frame.workspaceMetadata === true;
           questionHistory = frame.questionHistory === true;
+          componentSupport = frame.components === true;
           ready = true; eventInFlight = false; attempts = 0;
           queueSummary();
           resolveReady(); flush();

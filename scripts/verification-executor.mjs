@@ -256,7 +256,7 @@ async function executeCheck(root, plan, check, options, backend) {
     args: ["-NoProfile", "-NonInteractive", "-Command", check.toolingShard
       ? `& npm run test:workflow -- --workflow-shard ${check.toolingShard.id}; exit $LASTEXITCODE`
       : "& npm run test:workflow; exit $LASTEXITCODE"],
-    timeoutMs: 30 * 60_000, graceMs: 5000,
+    timeoutMs: 60 * 60_000, graceMs: 5000,
   } : definition.group === "backend" ? backendVerification(root, check, backend)
     : await androidVerification(root, check, plan, options);
   const started = Date.now();

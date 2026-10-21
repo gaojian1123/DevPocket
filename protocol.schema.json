@@ -26,6 +26,25 @@
                   },
                   "maxItems": 4,
                   "default": []
+                },
+                "componentReference": {
+                  "type": "object",
+                  "properties": {
+                    "componentId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "componentId",
+                    "sha256"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
@@ -55,9 +74,7 @@
                   "const": "permission"
                 },
                 "requestId": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 200
+                  "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                 },
                 "decision": {
                   "type": "string",
@@ -82,7 +99,7 @@
                   "const": "answer"
                 },
                 "requestId": {
-                  "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                  "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                 },
                 "answer": {
                   "type": "string",
@@ -371,6 +388,10 @@
                     "registeredAt": {
                       "type": "integer",
                       "minimum": 0
+                    },
+                    "componentVersion": {
+                      "type": "number",
+                      "const": 1
                     }
                   },
                   "required": [
@@ -429,7 +450,7 @@
                         "type": "object",
                         "properties": {
                           "id": {
-                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                           },
                           "at": {
                             "type": "string",
@@ -443,7 +464,7 @@
                             "type": "object",
                             "properties": {
                               "messageId": {
-                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                               },
                               "content": {
                                 "type": "string",
@@ -478,7 +499,7 @@
                         "type": "object",
                         "properties": {
                           "id": {
-                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                           },
                           "at": {
                             "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
@@ -491,14 +512,21 @@
                             "type": "object",
                             "properties": {
                               "messageId": {
-                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                               },
                               "content": {
                                 "type": "string",
                                 "maxLength": 64000
                               },
                               "originatingMessageId": {
-                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
+                              },
+                              "toolCallIds": {
+                                "type": "array",
+                                "items": {
+                                  "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
+                                },
+                                "maxItems": 128
                               }
                             },
                             "required": [
@@ -520,7 +548,7 @@
                         "type": "object",
                         "properties": {
                           "id": {
-                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                           },
                           "at": {
                             "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
@@ -533,7 +561,7 @@
                             "type": "object",
                             "properties": {
                               "messageId": {
-                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                               },
                               "content": {
                                 "type": "string",
@@ -559,7 +587,7 @@
                         "type": "object",
                         "properties": {
                           "id": {
-                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                           },
                           "at": {
                             "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
@@ -572,7 +600,7 @@
                             "type": "object",
                             "properties": {
                               "toolCallId": {
-                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                               },
                               "name": {
                                 "type": "string",
@@ -581,6 +609,9 @@
                               "text": {
                                 "type": "string",
                                 "maxLength": 12000
+                              },
+                              "originatingMessageId": {
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                               }
                             },
                             "required": [
@@ -603,7 +634,7 @@
                         "type": "object",
                         "properties": {
                           "id": {
-                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                           },
                           "at": {
                             "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
@@ -616,7 +647,7 @@
                             "type": "object",
                             "properties": {
                               "toolCallId": {
-                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                               },
                               "text": {
                                 "type": "string",
@@ -627,6 +658,9 @@
                               },
                               "success": {
                                 "type": "boolean"
+                              },
+                              "originatingMessageId": {
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                               }
                             },
                             "required": [
@@ -649,7 +683,7 @@
                         "type": "object",
                         "properties": {
                           "id": {
-                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                           },
                           "at": {
                             "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
@@ -667,7 +701,7 @@
                                   "type": "object",
                                   "properties": {
                                     "requestId": {
-                                      "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                      "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                                     },
                                     "type": {
                                       "type": "string",
@@ -736,7 +770,7 @@
                         "type": "object",
                         "properties": {
                           "id": {
-                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                           },
                           "at": {
                             "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
@@ -751,13 +785,13 @@
                                 "type": "object",
                                 "properties": {
                                   "questionId": {
-                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                                   },
                                   "request": {
                                     "type": "object",
                                     "properties": {
                                       "requestId": {
-                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                                       },
                                       "type": {
                                         "type": "string",
@@ -809,7 +843,7 @@
                                 "type": "object",
                                 "properties": {
                                   "questionId": {
-                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                                   },
                                   "request": {
                                     "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/6/properties/data/anyOf/0/properties/request"
@@ -830,7 +864,7 @@
                                 "type": "object",
                                 "properties": {
                                   "questionId": {
-                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                                   },
                                   "request": {
                                     "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/6/properties/data/anyOf/0/properties/request"
@@ -871,7 +905,127 @@
                         "type": "object",
                         "properties": {
                           "id": {
-                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
+                          },
+                          "at": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "const": "component"
+                          },
+                          "data": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "componentId": {
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
+                                  },
+                                  "toolCallId": {
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
+                                  },
+                                  "version": {
+                                    "type": "number",
+                                    "const": 1
+                                  },
+                                  "originatingMessageId": {
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "const": "ready"
+                                  },
+                                  "sha256": {
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/sha256"
+                                  },
+                                  "encoding": {
+                                    "type": "string",
+                                    "const": "base64-json"
+                                  },
+                                  "payload": {
+                                    "type": "string",
+                                    "maxLength": 349528
+                                  },
+                                  "redacted": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "required": [
+                                  "componentId",
+                                  "toolCallId",
+                                  "version",
+                                  "status",
+                                  "sha256",
+                                  "encoding",
+                                  "payload",
+                                  "redacted"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "componentId": {
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
+                                  },
+                                  "toolCallId": {
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
+                                  },
+                                  "version": {
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/7/properties/data/anyOf/0/properties/version"
+                                  },
+                                  "originatingMessageId": {
+                                    "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/7/properties/data/anyOf/0/properties/originatingMessageId"
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "const": "unavailable"
+                                  },
+                                  "error": {
+                                    "type": "object",
+                                    "properties": {
+                                      "code": {
+                                        "type": "string",
+                                        "maxLength": 80
+                                      },
+                                      "message": {
+                                        "type": "string",
+                                        "maxLength": 2000
+                                      }
+                                    },
+                                    "required": [
+                                      "code",
+                                      "message"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "componentId",
+                                  "toolCallId",
+                                  "version",
+                                  "status",
+                                  "error"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "at",
+                          "kind",
+                          "data"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                           },
                           "at": {
                             "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
@@ -908,7 +1062,7 @@
                         "type": "object",
                         "properties": {
                           "id": {
-                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                           },
                           "at": {
                             "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
@@ -956,35 +1110,20 @@
                                     {
                                       "type": "array",
                                       "items": {
-                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/8/properties/data/properties/result/additionalProperties"
+                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/9/properties/data/properties/result/additionalProperties"
                                       }
                                     },
                                     {
                                       "type": "object",
                                       "additionalProperties": {
-                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/8/properties/data/properties/result/additionalProperties"
+                                        "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/9/properties/data/properties/result/additionalProperties"
                                       }
                                     }
                                   ]
                                 }
                               },
                               "error": {
-                                "type": "object",
-                                "properties": {
-                                  "code": {
-                                    "type": "string",
-                                    "maxLength": 80
-                                  },
-                                  "message": {
-                                    "type": "string",
-                                    "maxLength": 2000
-                                  }
-                                },
-                                "required": [
-                                  "code",
-                                  "message"
-                                ],
-                                "additionalProperties": false
+                                "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/7/properties/data/anyOf/1/properties/error"
                               }
                             },
                             "required": [
@@ -1006,7 +1145,7 @@
                         "type": "object",
                         "properties": {
                           "id": {
-                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/2/properties/requestId"
+                            "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/componentReference/properties/componentId"
                           },
                           "at": {
                             "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/0/properties/at"
@@ -1064,13 +1203,13 @@
                   "$ref": "#/definitions/DevPocketProtocolV1/properties/action/anyOf/0/properties/attachmentIds/items"
                 },
                 "status": {
-                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/8/properties/data/properties/status"
+                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/9/properties/data/properties/status"
                 },
                 "result": {
-                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/8/properties/data/properties/result"
+                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/9/properties/data/properties/result"
                 },
                 "error": {
-                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/8/properties/data/properties/error"
+                  "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/9/properties/data/properties/error"
                 }
               },
               "required": [
@@ -1086,7 +1225,7 @@
           "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/5/properties/data/properties/items/items"
         },
         "receipt": {
-          "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/8/properties/data"
+          "$ref": "#/definitions/DevPocketProtocolV1/properties/hostFrame/anyOf/2/properties/items/items/anyOf/9/properties/data"
         },
         "relayReady": {
           "type": "object",
@@ -1110,6 +1249,10 @@
               "const": true
             },
             "questionHistory": {
+              "type": "boolean",
+              "const": true
+            },
+            "components": {
               "type": "boolean",
               "const": true
             }

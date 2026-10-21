@@ -4,6 +4,7 @@ import { access, lstat, mkdir, mkdtemp, open, readFile, rename, rm, unlink, writ
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual, promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
 
 const execute = promisify(execFile);
 const scriptFile = fileURLToPath(import.meta.url);
@@ -40,6 +41,30 @@ async function directory(file, create = false) {
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
     if (create) await mkdir(file);
+  }
+}
+
+async function ownedStaging(file, identity) {
+  const current = await lstat(file, { bigint: true });
+  if (!identity || !current.isDirectory() || current.isSymbolicLink() ||
+      ["dev", "ino", "birthtimeNs"].some((key) => current[key] !== identity[key])) {
+    throw new Error("Xcode MCP staging directory changed; it was preserved.");
+  }
+}
+
+// The installed Git-local snapshot must remain self-contained.
+async function publish(staging, installed, identity) {
+  for (let attempt = 0; ; attempt++) {
+    await ownedStaging(staging, identity);
+    let present = true;
+    try { await lstat(installed); }
+    catch (error) { if (error.code !== "ENOENT") throw error; present = false; }
+    if (present) throw new Error("Xcode MCP publication destination appeared; it was not overwritten.");
+    try { await rename(staging, installed); return; }
+    catch (error) {
+      if (process.platform !== "win32" || !["EPERM", "EBUSY"].includes(error.code) || attempt === 3) throw error;
+      await delay(100);
+    }
   }
 }
 
@@ -214,13 +239,22 @@ export async function installXcodeMcp({ cwd = process.cwd(), platform = process.
     }
   } else {
     const staging = await mkdtemp(path.join(common, `${installationName}-`));
+    let identity;
     try {
+      identity = await lstat(staging, { bigint: true });
+      await ownedStaging(staging, identity);
       await mkdir(path.join(staging, "scripts"));
       await mkdir(path.join(staging, "config"));
       for (const [name, bytes] of copies) await writeFile(path.join(staging, name), bytes, { flag: "wx", mode: 0o600 });
-      await rename(staging, installed);
-    } finally {
-      await rm(staging, { recursive: true, force: true });
+      await publish(staging, installed, identity);
+    } catch (error) {
+      try {
+        await ownedStaging(staging, identity);
+        await rm(staging, { recursive: true, force: true });
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "Xcode MCP publication and its scratch cleanup failed.");
+      }
+      throw error;
     }
   }
   await directory(info, true);

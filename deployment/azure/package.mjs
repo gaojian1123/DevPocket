@@ -4,11 +4,13 @@ import * as tar from "tar";
 import { digest } from "./plan.mjs";
 
 const files = ["package.json", "package-lock.json", ".dockerignore", "backend/tsconfig.json",
+  "packages/components/package.json", "packages/components/tsconfig.json", "packages/components/build.mjs",
+  "packages/components/README.md",
   "scripts/bundle-extension.mjs", "deployment/Dockerfile", "deployment/Caddyfile", "deployment/azure/compose.yaml",
   "deployment/onboarding/setup.mjs", "deployment/onboarding/setup-azure.mjs", "deployment/onboarding/setup-actions.mjs",
   "deployment/onboarding/setup-state.mjs", "deployment/onboarding/handoff.mjs", "deployment/onboarding/cloud-host.mjs",
   "deployment/onboarding/guest.py", "deployment/onboarding/private-directory.ps1"];
-const directories = ["backend/src", "extension", "deployment/azure/vm"];
+const directories = ["backend/src", "extension", "deployment/azure/vm", "packages/components/src", "packages/components/web"];
 const privatePath = /(^|\/)(\.azure|\.data|\.tools|node_modules|\.git|__pycache__)(\/|$)|(^|\/)\.env(?:\.|$)|\.local\.|(?:\.pem|\.key|\.jks|\.keystore|\.sqlite(?:-.*)?|\.db(?:-.*)?|\.apk)$/i;
 const secretContent = /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?:github_pat_|ghp_)[A-Za-z0-9_]{30,}|dp[hdp]_[A-Za-z0-9_-]{43}/;
 const local = (root, name) => path.join(root, ...name.split("/"));

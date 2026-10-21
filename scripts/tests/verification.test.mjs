@@ -565,7 +565,7 @@ test("tooling and application regression deadlines remain bounded without maskin
     "scripts/verification-executor.mjs", "scripts/verification-backend.mjs",
     "scripts/verification-android.mjs", ".github/workflows/ci.yml",
   ].map((file) => readFile(file, "utf8")));
-  assert.match(executor, /definition\.group === "tooling" \? \{[\s\S]*?timeoutMs: 30 \* 60_000, graceMs: 5000/);
+  assert.match(executor, /definition\.group === "tooling" \? \{[\s\S]*?timeoutMs: 60 \* 60_000, graceMs: 5000/);
   assert.match(backend, /timeoutMs: 30 \* 60_000/);
   assert.match(android, /timeoutMs: 30 \* 60_000/);
   const tooling = ci.replaceAll("\r\n", "\n").split("\n  tooling:")[1].split("\n  backend:")[0];
@@ -2149,14 +2149,23 @@ test("a checkout alias shares the physical verification owner without allowing l
   const { root, counts } = await recoveryFixture(t), alias = `${root}-alias`;
   await symlink(root, alias, process.platform === "win32" ? "junction" : "dir");
   t.after(() => rm(alias, { recursive: true, force: true }));
+  await writeFile(path.join(root, ".gitignore"), (await readFile(path.join(root, ".gitignore"), "utf8")) + ".npmrc\n");
+  await writeFile(path.join(root, ".npmrc"), "fund=false\n");
   const first = await verify(root, ["--group", "tooling"]);
   assert.equal(first.report.status, "partial", JSON.stringify(first.report));
   const resumed = await verify(alias, ["--group", "tooling", "--resume", first.report.run.manifest]);
   assert.equal(resumed.report.status, "partial", JSON.stringify(resumed.report));
   const reusable = first.report.preflight.groups[0].reusable;
+  assert.deepEqual(resumed.report.preflight.groups[0].prerequisites, first.report.preflight.groups[0].prerequisites);
   assert.deepEqual(await counts(), { tooling: reusable ? 1 : 2 });
   assert.deepEqual(resumed.report.recovery.reused, reusable ? [{ group: "tooling", attempt: "0001" }] : []);
   if (!reusable) assert.equal(resumed.report.recovery.invalidated[0].reason, "environment-unbound");
+  await writeFile(path.join(root, ".npmrc"), "fund=true\n");
+  const changed = await verify(alias, ["--group", "tooling", "--resume", first.report.run.manifest]);
+  assert.equal(changed.report.status, "partial", JSON.stringify(changed.report));
+  assert.deepEqual(changed.report.source, first.report.source);
+  assert.deepEqual(changed.report.recovery.invalidated, [{ group: "tooling", reason: "environment-changed" }]);
+  assert.deepEqual(await counts(), { tooling: reusable ? 2 : 3 });
   if (process.platform === "win32") {
     const previous = path.dirname(first.reportPath);
     const output = path.join(path.dirname(previous), path.basename(previous).toUpperCase(), "same-output.json");
@@ -2547,6 +2556,240 @@ test("native artifact identity binds Gradle archives and resources while APKs re
   await symlink(path.join(root, ".data"), link, process.platform === "win32" ? "junction" : "dir");
   await assert.rejects(verificationArtifacts(root, plan, "android"), { diagnosticCode: "preflight-path" });
 });
+
+test("Android recovery binds installed Node input bytes even when source and APKs are unchanged", async (t) => {
+  const { verificationPreflight, verificationArtifacts } = await import("../verification-preflight.mjs");
+  const root = await repository(t, { native: true }), tools = toolchains.get(root);
+  await mkdir(path.join(root, "scripts"));
+  await writeFile(path.join(root, "scripts", "build-android.ps1"), "# never executed by this preflight fixture\n");
+  const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  manifest.dependencies = { "renderer-fixture": "1.0.0" };
+  await writeFile(path.join(root, "package.json"), JSON.stringify(manifest));
+  await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {
+    "": { dependencies: manifest.dependencies }, "node_modules/renderer-fixture": { version: "1.0.0" },
+  } }));
+  const dependency = path.join(root, "node_modules", "renderer-fixture");
+  await mkdir(dependency, { recursive: true });
+  await writeFile(path.join(dependency, "package.json"), '{"name":"renderer-fixture","version":"1.0.0"}');
+  const implementation = path.join(dependency, "index.js");
+  await writeFile(implementation, "original renderer bytes");
+  for (const file of ["android/app/build/outputs/apk/debug/app-debug.apk",
+    "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
+    ".tools/gradle-cache/wrapper/dists/fixture/lib/gradle.jar", ".tools/gradle-cache/caches/fixture.jar"]) {
+    await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+    await writeFile(path.join(root, file), "stable artifact");
+  }
+  const plan = await verificationPlan(root, "HEAD");
+  const preflight = () => verificationPreflight(root, plan, {
+    group: "android", jdk: tools.jdk, sdk: tools.sdk, directory: path.join(root, ".data", "verification", "node-inputs"),
+  });
+  const before = (await preflight()).groups[0];
+  assert.equal(before.status, "passed", JSON.stringify(before));
+  for (const name of ["root-dependencies", "npm", "node-environment", "native-npm"])
+    assert.ok(before.prerequisites.some((item) => item.prerequisite === name), name);
+  await t.test("an esbuild binary override is fingerprinted but never treated as a closed input contract", async () => {
+    const previous = process.env.ESBUILD_BINARY_PATH, file = path.join(root, ".data", "alternate-bundler");
+    await writeFile(file, "original alternate bundler bytes");
+    process.env.ESBUILD_BINARY_PATH = file;
+    try {
+      const overridden = (await preflight()).groups[0];
+      assert.equal(overridden.status, "passed", JSON.stringify(overridden));
+      assert.equal(overridden.reusable, false);
+      assert.notEqual(overridden.fingerprint, before.fingerprint);
+      await writeFile(file, "changed alternate bundler bytes");
+      const changed = (await preflight()).groups[0];
+      assert.equal(changed.status, "passed", JSON.stringify(changed));
+      assert.equal(changed.fingerprint, overridden.fingerprint);
+      assert.equal(changed.reusable, false);
+    } finally {
+      if (previous === undefined) delete process.env.ESBUILD_BINARY_PATH;
+      else process.env.ESBUILD_BINARY_PATH = previous;
+    }
+  });
+  const artifacts = await verificationArtifacts(root, plan, "android"), policy = await verificationExecutionPolicy();
+  const first = await openVerificationRun(root, plan, {
+    group: "android", directory: path.join(root, ".data", "verification", "first"),
+  }, policy);
+  const report = { ...plan, group: "android", status: "partial", complete: false, fixtureEvidence: true,
+    checks: plan.requiredChecks.map((id) => id !== "android-build" ? { id, status: "not_run" } : {
+      id, status: "passed", exitCode: 0, execution: syntheticExecution(plan.source), executionState: "exited",
+      privateLog: { availability: "retained" },
+      commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0, cleanupFailure: null },
+    }) };
+  await first.record(report, before.fingerprint, artifacts, before.reusable);
+  await first.finish(report, true, ["android"]);
+  await writeFile(implementation, "changed renderer bytes");
+  assert.deepEqual((await verificationPlan(root, "HEAD")).source, plan.source);
+  assert.deepEqual(await verificationArtifacts(root, plan, "android"), artifacts);
+  const after = (await preflight()).groups[0];
+  assert.equal(after.status, "passed", JSON.stringify(after));
+  assert.notEqual(after.fingerprint, before.fingerprint);
+  const next = await openVerificationRun(root, plan, {
+    group: "android", directory: path.join(root, ".data", "verification", "next"), resume: first.reference.manifest,
+  }, policy);
+  assert.deepEqual(await next.reusable("android", after.fingerprint, artifacts, after.reusable),
+    { status: "invalidated", reason: "environment-changed" });
+  await next.finish({ ...report, checks: report.checks.map(({ id }) => ({ id, status: "not_run" })) }, true, []);
+  await rm(path.join(dependency, "package.json"));
+  const missing = (await preflight()).groups[0];
+  assert.equal(missing.status, "blocked");
+  assert.ok(missing.issues.some((item) => item.prerequisite === "root-dependencies"));
+});
+
+test("Android preflight binds the CMD-selected npm and refuses unknown launchers or prefix redirection",
+  { skip: process.platform !== "win32" }, async (t) => {
+    const { verificationPreflight } = await import("../verification-preflight.mjs");
+    const directoryLookup = process.env.NoDefaultCurrentDirectoryInExePath;
+    delete process.env.NoDefaultCurrentDirectoryInExePath;
+    t.after(() => {
+      if (directoryLookup === undefined) delete process.env.NoDefaultCurrentDirectoryInExePath;
+      else process.env.NoDefaultCurrentDirectoryInExePath = directoryLookup;
+    });
+    const root = await repository(t, { native: true }), tools = toolchains.get(root);
+    await mkdir(path.join(root, "scripts"));
+    await writeFile(path.join(root, "scripts", "build-android.ps1"), "# not executed\n");
+    await writeFile(path.join(root, ".gitignore"), (await readFile(path.join(root, ".gitignore"), "utf8")) + "/npm.cmd\n/.npmrc\n");
+    const original = await resolveVerificationExecutable(root, "npm.cmd", { shell: true });
+    await cp(path.join(path.dirname(original), "node_modules", "npm"), path.join(root, "node_modules", "npm"),
+      { recursive: true, verbatimSymlinks: true });
+    const plan = await verificationPlan(root, "HEAD");
+    const preflight = () => verificationPreflight(root, plan, {
+      group: "android", jdk: tools.jdk, sdk: tools.sdk, directory: path.join(root, ".data", "verification", "npm-inputs"),
+    });
+    const baseline = (await preflight()).groups[0];
+    assert.equal(baseline.status, "passed", JSON.stringify(baseline));
+    const wrapper = path.join(root, "npm.cmd"), marker = path.join(root, ".data", "npm-ran");
+    const body = `@echo off\r\necho called>\"${marker}\"\r\nexit /b 23\r\n`;
+    await writeFile(wrapper, body);
+    assert.equal(await resolveVerificationExecutable(root, "npm.cmd", { shell: true }), wrapper);
+    const before = (await preflight()).groups[0];
+    assert.equal(before.status, "passed", JSON.stringify(before));
+    assert.equal(before.reusable, false);
+    assert.deepEqual(before.prerequisites.find((item) => item.prerequisite === "npm"),
+      baseline.prerequisites.find((item) => item.prerequisite === "npm"));
+    await assert.rejects(readFile(marker), { code: "ENOENT" });
+    await writeFile(wrapper, body + "rem changed ignored execution input\r\n");
+    const changed = (await preflight()).groups[0];
+    assert.notEqual(changed.fingerprint, before.fingerprint);
+    assert.deepEqual((await verificationPlan(root, "HEAD")).source, plan.source);
+    await assert.rejects(exec(process.env.ComSpec, ["/d", "/c", "npm.cmd", "run", "build"],
+      { cwd: root, timeout: 15000 }), (error) => error.code === 23);
+    assert.equal((await readFile(marker, "utf8")).trim(), "called");
+    await rm(wrapper);
+    await writeFile(path.join(root, ".npmrc"), "fund=false\n");
+    const configured = (await preflight()).groups[0];
+    assert.notEqual(configured.fingerprint, baseline.fingerprint);
+    const prior = process.env.NPM_CONFIG_PREFIX;
+    process.env.NPM_CONFIG_PREFIX = root;
+    try {
+      const redirected = (await preflight()).groups[0];
+      assert.equal(redirected.status, "passed", JSON.stringify(redirected));
+      assert.equal(redirected.reusable, false);
+      assert.ok(redirected.prerequisites.some((item) => item.prerequisite === "native-npm"));
+    } finally {
+      if (prior === undefined) delete process.env.NPM_CONFIG_PREFIX;
+      else process.env.NPM_CONFIG_PREFIX = prior;
+    }
+  });
+
+for (const trigger of ["lifecycle", "package-resolution", "compiler-input"])
+  test(`native workspace builds do not reuse unbound inputs (${trigger})`,
+  { skip: process.platform !== "win32" }, async (t) => {
+    const { verificationPreflight, verificationArtifacts } = await import("../verification-preflight.mjs");
+    const root = await repository(t, { native: true }), tools = toolchains.get(root);
+    const workspace = path.join(root, "packages", "components"), modules = path.join(root, "node_modules");
+    await mkdir(path.join(workspace, "src"), { recursive: true });
+    await mkdir(path.join(modules, "@devpocket"), { recursive: true });
+    await mkdir(path.join(modules, ".bin"));
+    await mkdir(path.join(modules, "esbuild"));
+    await cp(path.resolve("node_modules/typescript"), path.join(modules, "typescript"), { recursive: true });
+    await copyFile(path.resolve("node_modules/.bin/tsc.cmd"), path.join(modules, ".bin", "tsc.cmd"));
+    const pkg = { name: "@devpocket/components", version: "0.1.0", type: "module", files: ["dist"],
+      devDependencies: { esbuild: "0.1.0" },
+      scripts: { build: "tsc -p tsconfig.json && node build.mjs" } };
+    const bundler = { name: "esbuild", version: "0.1.0", type: "module", exports: "./index.js" };
+    await writeFile(path.join(modules, "esbuild", "package.json"), JSON.stringify(bundler));
+    await writeFile(path.join(modules, "esbuild", "index.js"), "export async function build() {}\n");
+    await writeFile(path.join(workspace, "package.json"), JSON.stringify(pkg));
+    await writeFile(path.join(workspace, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { outDir: "dist", target: "es2023", types: [] }, include: ["src/*.ts"],
+    }));
+    await writeFile(path.join(workspace, "src", "fixture.ts"), "export const value = 1;\n");
+    await writeFile(path.join(workspace, "build.mjs"),
+      "import {build} from 'esbuild';import {writeFileSync} from 'node:fs';await build();writeFileSync('dist/built','complete');\n");
+    await symlink(workspace, path.join(modules, "@devpocket", "components"), "junction");
+    const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+    manifest.workspaces = ["packages/components"];
+    manifest.dependencies = { "@devpocket/components": "file:packages/components" };
+    manifest.devDependencies = { typescript: "5.8.3" };
+    await writeFile(path.join(root, "package.json"), JSON.stringify(manifest));
+    await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {
+      "": { dependencies: manifest.dependencies, devDependencies: manifest.devDependencies },
+      "packages/components": pkg,
+      "node_modules/@devpocket/components": { resolved: "packages/components", link: true },
+      "node_modules/typescript": { version: "5.8.3" },
+      "node_modules/esbuild": { version: "0.1.0" },
+    } }));
+    const sentinel = path.join(root, ".data", "compiler-input"), marker = path.join(root, ".data", "shadow-ran");
+    const failure = `require('node:fs').writeFileSync(${JSON.stringify(marker)},'called');process.exit(23);`;
+    if (trigger === "compiler-input") {
+      await writeFile(path.join(modules, "typescript", "bin", "tsc"),
+        `#!/usr/bin/env node\nif(require('node:fs').existsSync(${JSON.stringify(sentinel)})){${failure}}\nrequire('../lib/tsc.js');\n`);
+    }
+    await mkdir(path.join(root, "scripts"));
+    if (trigger === "lifecycle")
+      await writeFile(path.join(root, "scripts", "test-android.ps1"), "# preflight only; no device execution\n");
+    await writeFile(path.join(root, "scripts", "build-android.ps1"), [
+      "param($Jdk,$Sdk,[switch]$Lint,[switch]$Instrumentation)",
+      "& $env:ComSpec /d /c npm.cmd run build --workspace '@devpocket/components'",
+      "if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}",
+      "foreach($file in @('android/app/build/outputs/apk/debug/app-debug.apk',",
+      "'android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk',",
+      "'.tools/gradle-cache/wrapper/dists/fixture/lib/gradle.jar','.tools/gradle-cache/caches/fixture.jar')){",
+      " $null=New-Item -ItemType Directory -Path (Split-Path -Parent $file) -Force",
+      " [IO.File]::WriteAllText((Join-Path $PWD $file),'stable native fixture artifact')",
+      "}", "",
+    ].join("\n"));
+    const first = await verify(root, ["--group", "android"]);
+    assert.equal(first.exitCode, 0, JSON.stringify(first.report));
+    const before = first.report.preflight.groups[0];
+    assert.equal(first.report.checks.find((item) => item.id === "android-build").status, "passed");
+    assert.equal(before.reusable, false, "The complete workspace build input contract is intentionally unbound.");
+    const plan = await verificationPlan(root, "HEAD"), artifacts = await verificationArtifacts(root, plan, "android");
+    if (trigger === "lifecycle") {
+      const device = (await verificationPreflight(root, plan, {
+        group: "device", jdk: tools.jdk, sdk: tools.sdk,
+        directory: path.join(root, ".data", "verification", "device-probe"),
+      })).groups[0];
+      assert.equal(device.status, "passed", JSON.stringify(device));
+      assert.equal(device.reusable, false);
+    }
+    const directory = path.join(root, "packages", "node_modules", trigger === "lifecycle" ? ".bin" : "esbuild");
+    if (trigger !== "compiler-input") await mkdir(directory, { recursive: true });
+    if (trigger === "lifecycle") {
+      await writeFile(path.join(directory, "node.cmd"), `@echo off\r\necho called>\"${marker}\"\r\nexit /b 23\r\n`);
+    } else if (trigger === "package-resolution") {
+      await writeFile(path.join(directory, "package.json"), JSON.stringify({ ...bundler, type: "commonjs" }));
+      await writeFile(path.join(directory, "index.js"), `exports.build=()=>{${failure}};\n`);
+    } else {
+      await writeFile(sentinel, "ignored external compiler input\n");
+    }
+    const after = (await verificationPreflight(root, plan, {
+      group: "android", jdk: tools.jdk, sdk: tools.sdk,
+      directory: path.join(root, ".data", "verification", "lifecycle-probe"),
+    })).groups[0];
+    assert.equal(after.status, "passed", JSON.stringify(after));
+    assert.equal(after.reusable, false);
+    assert.equal(after.fingerprint, before.fingerprint, "These triggers lie outside the bound input inventory.");
+    assert.deepEqual((await verificationPlan(root, "HEAD")).source, first.report.source);
+    assert.deepEqual(await verificationArtifacts(root, plan, "android"), artifacts);
+    await assert.rejects(readFile(marker), { code: "ENOENT" });
+    const resumed = await verify(root, ["--group", "android", "--resume", first.report.run.manifest]);
+    assert.deepEqual(resumed.report.recovery.reused, []);
+    assert.ok(resumed.report.recovery.invalidated.some((item) => item.group === "android" && item.reason === "environment-unbound"));
+    assert.equal(resumed.report.checks.find((item) => item.id === "android-build").exitCode, 23);
+    assert.equal((await readFile(marker, "utf8")).trim(), "called");
+  });
 
 test("script and batch locators cannot inherit direct Node identity through a physical-target alias",
   { skip: process.platform !== "win32" }, async (t) => {

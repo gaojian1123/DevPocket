@@ -56,6 +56,73 @@ Current limitations:
 - Attachments expire after seven days, with a 20 MiB per-session relay quota. Private Dev Box attachment staging remains until the operator removes its isolated bridge data; do not remove attachments while GitHub Copilot is using them.
 - The separately authorized Azure relay is running with publicly trusted HTTPS. Public checks, a temporary simulated controller, and the sealed native Android build's actual pairing/message roundtrip on a visible isolated emulator passed against the same ordinary CLI. The emulator login is retained for user trial; physical-phone/cellular acceptance is still pending. FCM, release signing and store distribution remain unprovisioned. Opt-in background monitoring is best-effort, **not** a system-push or vehicle-wake guarantee, and is not part of sealed build 002's acceptance.
 
+## Component cards and response groups
+
+The current development implementation receives the validated `line`, `bar`,
+`datagrid` and `markdown` subset from the installed
+`plugin:agenticdeck-gh-app-extensions:agenticdeck-canvas` provider. The adapter
+uses runtime canvas identity records and successful tool completions, not a
+matching action name alone. Root-agent output follows the existing bridge
+visibility policy; unsupported or unavailable output stays in the original client.
+This is not generic Canvas, nested-agent, CLI-visualization or iOS acceptance.
+
+The independently authored `packages\components` package contains the data
+contract and offline web renderer. Android keeps its native Compose shell and
+loads bundled assets in a restricted WebView. Cards appear in the conversation
+and open into a full-screen detail view; there is no prototype layout switcher,
+fixed turn-navigation bar or generated suggestion row. Markdown does not execute
+HTML or load images. External links require a native confirmation.
+
+Cards are append-only history. Clearing the desktop AgenticDeck panel does not
+delete mobile conversation history. The existing relay/phone retention windows
+still apply. Component JSON is limited to 256 KiB, tables to 1,000 rows and 20
+columns, and charts to 1,000 values across their series. Invalid or oversized
+content is reported rather than silently truncated. Canonical JSON bytes travel
+as bounded base64 with a SHA256 digest, so native clients can verify their exact
+content without reserializing numbers or Unicode.
+Conventional credential-field aliases, including `client_secret`, `clientSecret`
+and `secret_key`, are masked before encoding and reference retention, not merely
+hidden in the displayed cell. The same classification applies to table labels
+and URL query names, including labels such as `API key (production)`; assigned
+credential values in text use the shared redactor.
+Recognized assignments mask complete quoted values, including escaped quotes;
+unterminated quotes fail closed. Bare values end at a line, comma or semicolon,
+while unquoted authorization headers are masked through their line.
+
+Ordinary assistant segments, tools and cards share response styling only when
+runtime origin/tool-request evidence establishes their relationship. Model
+`turnId` is not a session-global response key. Unrelated or unproven entries remain
+independent; queued user input and pending decisions are not moved or hidden.
+
+Referencing a successfully rendered card preserves the draft and creates a removable explicit reference.
+It does not send a message. On Send, the bridge resolves the same-session card
+and its digest and stages its safe contents as a private JSON attachment for the
+original runtime. This consumes one of the four attachment positions and leaves
+the user's question text unchanged. A missing, changed or evicted reference is
+an explicit failure, not a title-only substitute. The bridge retains at most
+32 MiB of reference records; private staging follows the existing attachment
+cleanup rules. Failed message records retain their reference and can be restored
+as a deliberately new draft.
+
+Protocol v1 negotiates `components=1` per bridge connection before transmitting
+component events and extra tool-link metadata. Legacy relays receive a visible
+fallback and unchanged ordinary-message shapes. Android cache version 2 preserves
+version-1 data on upgrade; downgrading an existing cache is intentionally refused
+so an older client cannot drop a reference field and retry a changed command.
+
+These implementation notes do not replace fresh source-bound verification or
+real original-client/device acceptance; see `VALIDATION.md` for recorded evidence.
+The Android asset task runs the complete component package build, so standalone
+native checks also have the exported Node contract needed by their relay fixture.
+It does not depend on a previous backend build or a cached `dist` directory.
+The manual `ConnectedFlowTest` component path requires `components=true` and
+separate authorization for its actual App session, local bridge/relay, owned
+device, pairing and three messages (echo, four-card rendering, and reference).
+It checks exact card data, origin association, native rendering, preserved drafts
+and an SDK-visible reference attachment. It cannot be combined with the older
+`extended=true` permission/cancellation experiments. Automatic device verification
+continues to exclude this real-runtime test rather than silently opting into it.
+
 ## Question history
 
 Supported choice questions, free-text questions and simple elicitation forms
@@ -340,6 +407,15 @@ artifacts fail closed instead of executing stale code or silently falling
 back to compilation. A new source/toolchain identity prepares a separate
 artifact; interrupted preparation directories are not executable cache entries.
 No global installation, concurrency limit or configuration is changed.
+
+Windows directory publication allows at most three additional 100 ms waits for
+`EPERM` or `EBUSY`, with the original staging identity and an absent destination
+checked before every attempt. It does not overwrite another destination or fall
+back to a partial copy; the command owner's cancellation and original deadline
+still apply. Ordinary pre-launch failure remains nonzero and reports a cleanup
+receipt only when both compiler shutdown and owned scratch cleanup are confirmed.
+Missing process evidence, changed staging ownership or failed scratch cleanup
+remain unconfirmed, not successful command execution.
 
 ## Optional project-local Xcode MCP on macOS
 
@@ -687,7 +763,12 @@ Revocation closes live subscriptions and blocks new commands/uploads/downloads f
 
 ## Native Android build
 
-Requirements: JDK 17 or 21, Android SDK platform/build-tools 35, and Gradle 8.11.1 (the wrapper is pinned and checksum-verified). Existing Studio JBR 25 is not selected for this build.
+Requirements: Node.js 24 with the repository's locked npm dependencies restored,
+JDK 17 or 21, Android SDK platform/build-tools 35, and Gradle 8.11.1 (the wrapper
+is pinned and checksum-verified). The native build compiles the portable
+component package; on a clean checkout, run `npm ci` from the repository root
+after the dependency-policy decision and before the Android build.
+Existing Studio JBR 25 is not selected for this build.
 
 If the SDK components/JDK are missing, the supplied preparation script downloads official packages only to `.tools`, verifies published checksums, and reuses an **already accepted** Android SDK license. It does not silently accept licenses, install system packages or change global environment variables.
 

@@ -790,6 +790,16 @@ keeps nested execution in each job within its owning allocation.
 
 ### Selected-group preflight and explicit recovery
 
+Declared npm workspaces use bounded, literal repository-relative paths; globs,
+external paths, redirected workspace directories and undeclared directory links
+are not accepted. Workspace package identities and dependency maps must agree
+with the lockfile and the installed links. Their implementation bytes are hashed
+separately from installed third-party packages. A declared `dist` output is
+excluded from the workspace input tree only because backend/native artifact
+qualification binds that generated directory separately. Other directory links
+remain rejected. This support does not reduce selected checks, grant dependency
+execution consent or substitute for the task's source fingerprint.
+
 Every execution first checks the groups selected by the planner and `--group`.
 The read-only probes cover Node 24, PowerShell 7 and command ownership; selected
 Node checks also inspect npm, declared installed dependencies and effective npm
@@ -804,6 +814,22 @@ installed image, ADB, emulator and acceleration. No dependency installation,
 license acceptance, cache reset, Git/config change or real Copilot runtime
 startup is a preflight operation. The existing owned-command helper may prepare
 its source-bound local executable cache.
+
+Android-build qualification also binds the portable renderer's installed Node
+dependencies and npm/environment inputs. The Gradle task's actual `npm.cmd`
+lookup (including the working directory) and CMD interpreter are bound separately
+to the recognized adjacent npm implementation and prefix result.
+An unknown native launcher cannot supply reusable evidence even if a different
+PowerShell launcher looks familiar; discovery does not execute a project-local
+shadow merely to identify it. Ignored dependency or npm configuration
+changes invalidate a previously qualified native result. Local npm configuration
+uses the physical checkout root for its identity, so equivalent checkout aliases
+agree without hiding changes to the configuration bytes.
+Native groups with declared workspaces deliberately do not reuse prior results:
+workspace lifecycle PATH entries, intermediate package resolution and compiler
+inputs do not yet have a closed applicability contract. Fresh checks remain
+required even when source and generated artifacts are unchanged. `ESBUILD_*`
+overrides are also included in Node environment identity and disable reuse.
 
 The SDK preparation script writes local `package.xml` records from the selected
 repository metadata only when the installed `source.properties` revision matches.
@@ -874,8 +900,9 @@ that an input is irrelevant: cache bookkeeping changes conservatively invalidate
 reuse too. Linked/special files and oversized inventories block binding rather
 than yielding a partial identity. Cleaned, disposable hosted
 device caches cannot seed native reuse. Small immutable-file reads are bounded
-in batches without omitting checks. Tooling, backend, native build and device
-commands retain their 30-minute deadlines. A late result is still a timeout,
+in batches without omitting checks. Tooling has a 60-minute watchdog; backend,
+native build and device commands retain their 30-minute deadlines.
+A late result is still a timeout,
 and neither a timeout nor a passing subset qualifies acceptance.
 
 The regression suite tests data contracts through the same planner, signed-ledger
@@ -1143,6 +1170,13 @@ catalogue and passes that full list to a child `node --test` invocation. Tests a
 CI contracts read the same catalogue rather than parse a package script. The
 impact policy independently names the approved tooling paths; unknown tests and
 runner lookalikes still require all checks.
+
+The tooling command has a 60-minute watchdog for both the complete entry and
+each formal shard. The expanded candidate suite can exceed the former
+30-minute bound on local Windows hosts even without assertion failures.
+Backend and native command deadlines remain unchanged at 30 minutes.
+This is a per-command bound, not a task budget or permission to skip scenarios;
+queue waiting stays separate and cancellation still requires owned cleanup.
 
 `WORKFLOW_TEST_SHARDS` is derived from that catalogue, not a second list. CI runs
 the candidate, verification, diagnostics and native parts independently with

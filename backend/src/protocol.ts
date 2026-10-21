@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { COMPONENT_VERSION, MAX_COMPONENT_BYTES, ComponentError, parseComponentSpec, type ComponentSpec } from "@devpocket/components";
+import { hash } from "./security.js";
 
 export const VERSION = "0.1.0";
 export const PROTOCOL = 1;
@@ -35,6 +37,7 @@ export const SessionSummary = z.object({
   capabilities: Capabilities,
   warnings: z.array(z.string().max(500)).max(20),
   registeredAt: z.number().int().nonnegative(),
+  componentVersion: z.literal(COMPONENT_VERSION).optional(),
 }).strict();
 export type SessionSummary = z.infer<typeof SessionSummary>;
 export type SessionInfo = SessionSummary & {
@@ -44,6 +47,7 @@ export const RelayReady = z.object({
   type: z.literal("ready"), protocol: z.literal(PROTOCOL), hostId: Id, sessionId: Id,
   workspaceMetadata: z.literal(true).optional(),
   questionHistory: z.literal(true).optional(),
+  components: z.literal(true).optional(),
 }).strict();
 
 export const PendingRequest = z.object({
@@ -70,10 +74,56 @@ export const QuestionRecord = z.discriminatedUnion("status", [
 ]);
 export type QuestionRecord = z.infer<typeof QuestionRecord>;
 
+export const ComponentReference = z.object({
+  componentId: RequestId,
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+export type ComponentReference = z.infer<typeof ComponentReference>;
+export const MAX_COMPONENT_PAYLOAD = Math.ceil(MAX_COMPONENT_BYTES / 3) * 4;
+
+// Preserve the exact JSON bytes across native decoders without reserializing numbers or Unicode for the digest.
+export function decodeComponentPayload(payload: string, sha256: string): ComponentSpec {
+  if (payload.length > MAX_COMPONENT_PAYLOAD) throw new ComponentError("COMPONENT_TOO_LARGE", "Component payload is too large.");
+  const bytes = Buffer.from(payload, "base64");
+  if (bytes.length > MAX_COMPONENT_BYTES || bytes.toString("base64") !== payload || hash(bytes) !== sha256)
+    throw new ComponentError("COMPONENT_INVALID", "Component bytes do not match their declared identity.");
+  let value: unknown;
+  try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes)); }
+  catch (error) {
+    if (!(error instanceof SyntaxError || error instanceof TypeError)) throw error;
+    throw new ComponentError("COMPONENT_INVALID", "Component payload is not valid UTF-8 JSON.");
+  }
+  return parseComponentSpec(value);
+}
+
+const componentBase = {
+  componentId: RequestId,
+  toolCallId: RequestId,
+  version: z.literal(COMPONENT_VERSION),
+  originatingMessageId: RequestId.optional(),
+};
+export const ComponentRecord = z.discriminatedUnion("status", [
+  z.object({
+    ...componentBase, status: z.literal("ready"), sha256: ComponentReference.shape.sha256,
+    encoding: z.literal("base64-json"), payload: z.string().max(MAX_COMPONENT_PAYLOAD), redacted: z.boolean(),
+  }).strict(),
+  z.object({
+    ...componentBase, status: z.literal("unavailable"), error: ErrorInfo,
+  }).strict(),
+]).superRefine((value, context) => {
+  if (value.status !== "ready") return;
+  try { decodeComponentPayload(value.payload, value.sha256); }
+  catch (error) {
+    if (!(error instanceof ComponentError)) throw error;
+    context.addIssue({ code: z.ZodIssueCode.custom, message: error.message });
+  }
+});
+export type ComponentRecord = z.infer<typeof ComponentRecord>;
+
 const filePath = z.string().max(1000);
 export const Action = z.discriminatedUnion("type", [
   z.object({ type: z.literal("message"), text: z.string().min(1).max(32_000),
-    attachmentIds: z.array(Id).max(4).default([]) }).strict(),
+    attachmentIds: z.array(Id).max(4).default([]), componentReference: ComponentReference.optional() }).strict(),
   z.object({ type: z.literal("abort") }).strict(),
   z.object({ type: z.literal("permission"), requestId: RequestId,
     decision: z.enum(["approve-once", "reject"]) }).strict(),
@@ -113,20 +163,24 @@ export const UserEvent = z.discriminatedUnion("kind", [
   }).strict() }).strict(),
   z.object({ ...eventBase, kind: z.literal("assistant.message"), data: z.object({
     messageId: RequestId, content: z.string().max(64_000), originatingMessageId: RequestId.optional(),
+    toolCallIds: z.array(RequestId).max(128).optional(),
   }).strict() }).strict(),
   z.object({ ...eventBase, kind: z.literal("assistant.delta"), data: z.object({
     messageId: RequestId, content: z.string().max(16_000),
   }).strict() }).strict(),
   z.object({ ...eventBase, kind: z.literal("tool.start"), data: z.object({
     toolCallId: RequestId, name: z.string().max(200), text: z.string().max(12_000),
+    originatingMessageId: RequestId.optional(),
   }).strict() }).strict(),
   z.object({ ...eventBase, kind: z.literal("tool.output"), data: z.object({
     toolCallId: RequestId, text: z.string().max(32_000), complete: z.boolean(), success: z.boolean().optional(),
+    originatingMessageId: RequestId.optional(),
   }).strict() }).strict(),
   z.object({ ...eventBase, kind: z.literal("requests"), data: z.object({
     items: z.array(PendingRequest).max(100),
   }).strict() }).strict(),
   z.object({ ...eventBase, kind: z.literal("question"), data: QuestionRecord }).strict(),
+  z.object({ ...eventBase, kind: z.literal("component"), data: ComponentRecord }).strict(),
   z.object({ ...eventBase, kind: z.literal("runtime.state"), data: z.object({
     state: RuntimeState, aborted: z.boolean().optional(),
   }).strict() }).strict(),
