@@ -38,12 +38,26 @@ function projectSpec(input: unknown): { spec: ComponentSpec; redacted: boolean }
   const clean = (value: unknown, key = ""): unknown => {
     if (isSensitiveFieldName(key) && value !== undefined && value !== null) { changed = true; return "[REDACTED]"; }
     if (typeof value === "string") {
-      const urls = value.replace(/https?:\/\/[^\s<>"']+/gi, (source) => {
+      const urls = value.replace(/https?:\/\/[^\s<>]+/gi, (source, offset: number) => {
+        const quoted = /["']/.test(source), delimited = /[<>]/.test(value.charAt(offset + source.length));
+        let following = offset + source.length;
+        while (following < value.length && /\s/.test(value[following]!)) following++;
+        const quotedContinuation = value[following] === '"' || value[following] === "'";
+        let end = source.length;
+        while (end && (source[end - 1] === '"' || source[end - 1] === "'")) end--;
         let url: URL;
-        try { url = new URL(source); }
-        catch (error) { if (!(error instanceof TypeError)) throw error; return source; }
-        return url.username || url.password || [...url.searchParams.keys()].some((name) => isSensitiveFieldName(name) ||
-          /^(?:sig|signature|code|x-(?:amz|goog)-(?:signature|credential|security-token))$/i.test(name)) ? "[REDACTED URL]" : source;
+        try { url = new URL(source.slice(0, end)); }
+        catch (error) {
+          if (!(error instanceof TypeError)) throw error;
+          if (quoted || delimited)
+            throw new ComponentError("COMPONENT_INVALID", "This component contains an ambiguous URL. Review it in the original client.");
+          return source;
+        }
+        const sensitive = url.username || url.password || [...url.searchParams.keys()].some((name) => isSensitiveFieldName(name) ||
+          /^(?:sig|signature|code|x-(?:amz|goog)-(?:signature|credential|security-token))$/i.test(name));
+        if (sensitive && (quoted || delimited || quotedContinuation))
+          throw new ComponentError("COMPONENT_INVALID", "This component contains an ambiguous URL. Review it in the original client.");
+        return sensitive ? "[REDACTED URL]" : source;
       });
       const safe = redact(urls, 256 * 1024);
       changed ||= safe !== value;

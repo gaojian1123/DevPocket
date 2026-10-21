@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile, symlink, rm, rename, realpath } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, symlink, rm, rename, realpath, copyFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { promisify, stripVTControlCharacters } from "node:util";
@@ -26,7 +26,7 @@ function releaseFixtureFailure(stage, error) {
 
 function contractResolutionFailure(actual, expected, cause) {
   let code = "OTHER_OUTPUT";
-  if (actual.toLowerCase() === expected.toLowerCase()) code = "CASE_ONLY";
+  if (actual !== expected && actual.toLowerCase() === expected.toLowerCase()) code = "CASE_ONLY";
   else if (!/[\r\n]/.test(actual)) {
     let url;
     try { url = new URL(actual); }
@@ -42,7 +42,7 @@ function contractResolutionFailure(actual, expected, cause) {
 test("runtime resolution diagnostics never disclose URLs, paths or child output", () => {
   const expected = "file:///C:/fixture/packages/components/dist/spec.js";
   const cause = new assert.AssertionError({ actual: "PRIVATE_CANARY", expected, operator: "strictEqual" });
-  for (const [actual, code] of [[expected.toLowerCase(), "CASE_ONLY"],
+  for (const [actual, code] of [[expected.toLowerCase(), "CASE_ONLY"], [expected, "WORKSPACE_PATH"],
     ["file:///C:/PRIVATE_CANARY/node_modules/@devpocket/components/dist/spec.js", "INSTALLED_PATH"],
     ["file:///C:/PRIVATE_CANARY/node_modules/%40devpocket/components/dist/spec.js", "INSTALLED_PATH"],
     ["file:///C:/PRIVATE_CANARY/packages/components/dist/spec.js", "WORKSPACE_PATH"],
@@ -160,17 +160,30 @@ test("a clean release snapshot builds and its pruned runtime resolves the portab
       "packages/components/README.md"]) {
       await rm(path.join(snapshot, ...name.split("/")), { recursive: true });
     }
-    const imported = await exec(process.execPath, ["--input-type=module", "-e",
-      "const c=await import('@devpocket/components'); if(c.parseComponentSpec({type:'markdown',content:'offline'}).type!=='markdown')process.exit(1);" +
-      "console.log(import.meta.resolve('@devpocket/components'));"],
-    { cwd: snapshot, timeout: 15000 });
-    const contract = path.join(snapshot, "packages", "components", "dist", "spec.js");
-    const actual = imported.stdout.trim(), expected = pathToFileURL(await realpath(contract)).href;
-    try { assert.equal(actual, expected); }
-    catch (error) {
-      if (!(error instanceof assert.AssertionError)) throw error;
-      throw contractResolutionFailure(actual, expected, error);
-    }
+    const probe = "import {stat} from 'node:fs/promises'; import {fileURLToPath} from 'node:url';" +
+      "const url=import.meta.resolve('@devpocket/components');" +
+      "const [actual,expected]=await Promise.all([stat(fileURLToPath(url),{bigint:true}),stat(process.argv[1],{bigint:true})]);" +
+      "const sameFile=actual.isFile()&&expected.isFile()&&actual.ino!==0n&&expected.ino!==0n&&actual.dev===expected.dev&&actual.ino===expected.ino;" +
+      "if(sameFile){const c=await import('@devpocket/components');if(c.parseComponentSpec({type:'markdown',content:'offline'}).type!=='markdown')process.exit(1);}" +
+      "console.log(JSON.stringify({url,sameFile}));";
+    const resolveContract = async (expectedFile) => {
+      const imported = await exec(process.execPath, ["--input-type=module", "-e", probe, expectedFile],
+        { cwd: snapshot, timeout: 15000 });
+      const result = JSON.parse(imported.stdout);
+      assert.deepEqual(Object.keys(result).sort(), ["sameFile", "url"]);
+      assert.equal(typeof result.url, "string");
+      try { assert.equal(result.sameFile, true); }
+      catch (error) {
+        if (!(error instanceof assert.AssertionError)) throw error;
+        throw contractResolutionFailure(result.url, pathToFileURL(await realpath(expectedFile)).href, error);
+      }
+    };
+    const contract = path.join(physical, "packages", "components", "dist", "spec.js");
+    await resolveContract(contract);
+    const decoy = path.join(directory, "different-file-same-bytes.js");
+    await copyFile(contract, decoy);
+    await assert.rejects(resolveContract(decoy), (error) => error.cause instanceof assert.AssertionError &&
+      error.cause.actual === false && error.cause.expected === true);
     assert.match((await exec(process.execPath, ["dist/cli.js", "--help"], { cwd: snapshot, timeout: 15000 })).stdout, /DevPocket/);
     await rename(contract, contract + ".not-runtime");
     await assert.rejects(exec(process.execPath, ["dist/cli.js", "--help"], { cwd: snapshot, timeout: 15000 }),

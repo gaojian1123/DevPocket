@@ -1438,12 +1438,15 @@ It repeats the offline clean install before building and pruning the standalone
 runtime. This does not rely on, clear or change the runner's shared cache; only
 the fixture's child processes use its temporary cache, and their original
 deadlines and confirmed-cleanup requirements still apply.
-The runtime fixture deliberately uses an owned directory alias. Its resolved
-contract URL must equal the canonical URL of the exact owned `dist/spec.js`
-file, not a lexical directory prefix that rejects Windows path aliases.
-Only the known expected file is canonicalized; child output is compared as
-data and cannot select an additional filesystem lookup.
-If the exact comparison fails, a `resolve` diagnostic classifies only case
+The runtime fixture deliberately uses an owned directory alias. Within the
+controlled Node probe, the resolved module must be the exact owned `dist/spec.js`
+file: both regular-file observations require matching device and nonzero inode
+identities. A second probe must reject a different file containing identical
+bytes. URL spelling or a matching directory suffix cannot establish ownership.
+Only the probe's own module resolver selects its observed file; stdout never
+selects a filesystem lookup. Its private result has only the URL and an exact
+boolean identity result; paths and identifiers are not published.
+If the identity comparison fails, a `resolve` diagnostic classifies only case
 differences, installed-package/workspace path suffixes, other file URLs or
 non-URL output. These fixed categories do not disclose the child output or
 assertion operands, perform no lookup of its path, and never establish runtime

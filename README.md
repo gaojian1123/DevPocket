@@ -93,6 +93,10 @@ substituting ordinary row fields, are also rejected: masking the URL alone
 must not leave its source values in the transported or retained component.
 Unresolvable templates stay in the original client with an explicit unavailable
 card, rather than exporting row data whose link context cannot be checked.
+Sensitive URLs with ambiguous raw quote or angle delimiters also remain in
+the original client; partial URL masking must not expose a credential suffix.
+Ordinary quoted URLs and fully encoded private values retain their normal
+preservation or redaction behavior.
 Recognized assignments mask complete quoted values, including escaped quotes;
 unterminated quotes fail closed. Bare values end at a line, comma or semicolon,
 while unquoted authorization headers are masked through their line.

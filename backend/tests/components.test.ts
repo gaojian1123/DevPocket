@@ -283,6 +283,54 @@ test("ordinary static and templated link columns keep their complete transport a
   }
 });
 
+test("ambiguous sensitive URL spans cannot expose credential suffixes in transport or references", () => {
+  const canary = "QUOTED_URL_CREDENTIAL_CANARY";
+  const names = ["client_secret", "clientSecret", "sig", "signature", "code", "X-Amz-Signature",
+    "X-Goog-Credential", "X-Amz-Security-Token"];
+  for (const [index, content] of names.flatMap((name) => [
+    `https://example.test/?${name}=prefix'${canary}`,
+    `https://example.test/?${name}=prefix"${canary}`,
+    `https://example.test/?${name}='prefix ${canary}'`,
+    `https://example.test/?${name}= 'prefix ${canary}'`,
+    `https://example.test/?${name}=prefix<${canary}`,
+  ]).concat(`https://fixture:prefix'${canary}@example.test/`).entries()) {
+    for (const spec of [{ type: "markdown", content },
+      { type: "datagrid", columns: [{ key: "value", label: "Value" }], rows: [{ value: content }] }]) {
+      const projection = new ComponentProjection(randomUUID());
+      projection.beginLive([owner]);
+      const call = `quoted-url-${index}`;
+      projection.observe(start(call, spec));
+      const output = projection.observe(finish(call)), record = output.find((item) => item.kind === "component")?.data;
+      if (record?.status === "ready") {
+        assert.ok(!JSON.stringify(decodeComponentPayload(record.payload, record.sha256)).includes(canary), "No credential suffix in transport.");
+        assert.ok(!projection.referenceContent(record).content.includes(canary), "No credential suffix in retained references.");
+      }
+      assert.ok(record && record.status === "unavailable");
+      assert.equal(record.error.code, "COMPONENT_INVALID");
+      assert.ok(!JSON.stringify(output).includes(canary));
+      assert.throws(() => projection.referenceContent({ componentId: record.componentId, sha256: "0".repeat(64) }),
+        { code: "COMPONENT_REFERENCE_EXPIRED" });
+    }
+  }
+});
+
+test("ordinary quoted URLs are preserved and encoded private URL values remain safely redacted", () => {
+  const projection = new ComponentProjection(randomUUID());
+  projection.beginLive([owner]);
+  for (const [index, content] of ['See "https://example.test"', "https://example.test/?q=O'Reilly"].entries()) {
+    projection.observe(start(`ordinary-url-${index}`, { type: "markdown", content }));
+    const record = ready(projection.observe(finish(`ordinary-url-${index}`)));
+    assert.equal(record.redacted, false);
+    assert.deepEqual(decodeComponentPayload(record.payload, record.sha256), { type: "markdown", content });
+  }
+  projection.observe(start("encoded-private-url", { type: "markdown",
+    content: "https://example.test/?sig=prefix%27ENCODED_URL_CANARY" }));
+  const record = ready(projection.observe(finish("encoded-private-url")));
+  assert.equal(record.redacted, true);
+  assert.ok(!JSON.stringify(decodeComponentPayload(record.payload, record.sha256)).includes("ENCODED_URL_CANARY"));
+  assert.ok(!projection.referenceContent(record).content.includes("ENCODED_URL_CANARY"));
+});
+
 test("ordinary token counts, public keys and similarly named fields retain their values", () => {
   const projection = new ComponentProjection(randomUUID());
   projection.beginLive([owner]);
