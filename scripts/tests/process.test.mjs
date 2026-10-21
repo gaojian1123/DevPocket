@@ -292,50 +292,49 @@ print(json.dumps(results))
     });
   });
 
-test("macOS a killed nested supervisor cannot strand the outer target and its live sibling",
-  { skip: process.platform !== "darwin" }, async (t) => {
-    await mkdir(".data/tests", { recursive: true });
-    const directory = await mkdtemp(path.resolve(".data/tests/failed-nested-owner-"));
-    const marker = path.join(directory, "ready.json"), stop = path.join(directory, "stop");
-    t.after(async () => {
-      await writeFile(stop, "stop");
-      let pids = [];
-      try { pids = Object.values(JSON.parse(await readFile(marker, "utf8"))).map((item) => item.pid); }
-      catch (error) { if (error.code !== "ENOENT") throw error; }
-      for (const pid of pids) {
-        let exited = false;
-        for (const deadline = Date.now() + 5000; Date.now() < deadline;) {
-          try { process.kill(pid, 0); }
-          catch (error) { if (error.code !== "ESRCH") throw error; exited = true; break; }
-          await new Promise((resolve) => setTimeout(resolve, 20));
-        }
-        assert.equal(exited, true, "Every cooperative fixture process must exit before its data is removed.");
-      }
-      await rm(directory, { recursive: true, force: true });
-    });
-    const worker = `const fs=require("node:fs");console.log(JSON.stringify({
-      pid:process.pid,scope:JSON.parse(process.env.DEVPOCKET_DARWIN_SCOPE).pid}));
-      setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0)},20);
-      setTimeout(()=>{fs.writeFileSync(${JSON.stringify(directory + "/expired-")}+process.pid,"expired");process.exit(0)},15000);`;
-    const source = `import {spawn} from "node:child_process";import {once} from "node:events";import fs from "node:fs";
-      import {spawnOwnedCommand} from ${JSON.stringify(pathToFileURL(path.resolve("scripts/process.mjs")).href)};
-      const sibling=spawn(process.execPath,["-e",${JSON.stringify(worker)}],{stdio:["ignore","pipe","ignore"]});
-      const siblingReady=JSON.parse((await once(sibling.stdout,"data"))[0]);
-      const nested=spawnOwnedCommand(process.execPath,["-e",${JSON.stringify(worker)}],{timeoutMs:20000,graceMs:100});
-      nested.stderr.resume();const nestedReady=JSON.parse((await once(nested.stdout,"data"))[0]);
-      fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({outer:{pid:process.pid},sibling:siblingReady,nested:nestedReady}));
-      process.kill(nestedReady.scope,"SIGKILL");
-      setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0)},20);
-      setTimeout(()=>{fs.writeFileSync(${JSON.stringify(directory + "/expired-")}+process.pid,"expired");process.exit(0)},15000);`;
-    await assert.rejects(runCommand(process.execPath, ["--input-type=module", "-e", source], { timeoutMs: 20000 }),
-      (error) => error.processTreeStopped === false && /nested macOS|Nested macOS/.test(error.stderr));
-    const ready = JSON.parse(await readFile(marker, "utf8"));
-    for (const { pid } of [ready.outer, ready.sibling]) {
-      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" },
-        "Unconfirmed nested cleanup must not prevent verified sibling cleanup.");
-      await assert.rejects(access(path.join(directory, `expired-${pid}`)), { code: "ENOENT" },
-        "Fixture self-expiry must not masquerade as supervisor cleanup.");
-    }
+test("macOS a failed nested scope drains real PID-bound target and sibling processes",
+  { skip: process.platform !== "darwin" }, async () => {
+    const script = `import json,os,runpy,signal,subprocess,sys
+module=runpy.run_path(sys.argv[1],run_name="fixture")
+native=module["Darwin"]();children=[];scope=None
+try:
+ for _ in range(3):
+  child=subprocess.Popen([sys.executable,"-c","import time;time.sleep(15)"],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  info=native.identity(child.pid)
+  if info is None or info.bsd.parent!=os.getpid():
+   child.kill();child.wait(timeout=5);raise RuntimeError("Missing fixture child identity")
+  children.append((child,info))
+ peer,peer_info=children[0];workers=children[1:]
+ native.send(peer_info,signal.SIGKILL);peer.wait(timeout=5)
+ # Keep the negative protocol state local; never corrupt the enclosing verifier's registered scope.
+ def owned():
+  result=[]
+  for child,bound in workers:
+   if child.poll() is not None:continue
+   current=native.identity(child.pid)
+   if current is None or current.bsd.status==5:continue
+   if (current.identity.unique!=bound.identity.unique or current.identity.version!=bound.identity.version or
+       current.bsd.parent!=os.getpid() or native.responsible(child.pid)!=native.responsible(os.getpid())):
+    raise RuntimeError("Fixture child ownership changed")
+   result.append(current)
+  return result
+ native.owned=owned
+ scope=module["Scope"](native)
+ scope.nested[peer.pid]={"identity":peer_info,"channel":None,"clean":False,"buffer":b""}
+ try:scope.cleanup(workers[0][0]);completed=True
+ except RuntimeError:completed=False
+ result={"completed":completed,"stopped":[child.poll()==-signal.SIGKILL for child,_ in workers]}
+finally:
+ for child,info in children:
+  if child.poll() is None:native.send(info,signal.SIGKILL)
+  child.wait(timeout=5)
+ if scope is not None:scope.close(False)
+print(json.dumps(result))
+`;
+    const result = await exec("python3", ["-B", "-c", script, path.resolve("scripts/owned-command-darwin.py")],
+      { timeout: 10000 });
+    assert.deepEqual(JSON.parse(result.stdout), { completed: false, stopped: [true, true] },
+      "The cleanup error must remain visible after both real owned processes are stopped.");
   });
 
 test("macOS confirms timed-out and cancelled native commands that close their standard input",

@@ -175,6 +175,8 @@ export async function validateVerificationEvidence(root, plan, reports, options 
 
 export function requireCheckPolicy(plan) {
   if (plan.version !== VERIFICATION_REPORT_VERSION || !Array.isArray(plan.requiredChecks) ||
+      plan.ciMacos !== undefined && typeof plan.ciMacos !== "boolean" ||
+      plan.ciMacos === true && !plan.requiredChecks.includes("workflow-tests") ||
       JSON.stringify(plan.requiredChecks) !== JSON.stringify(CHECKS.filter((check) => plan.requiredChecks.includes(check.id)).map((check) => check.id)) ||
       JSON.stringify(plan.requiredGroups) !== JSON.stringify(verificationGroups(plan.requiredChecks))) {
     throw verificationFault("policy-mismatch");
@@ -277,6 +279,7 @@ function validatedReportChecks(plan, report, inputIndex, allowToolingShard = fal
   }
   if (JSON.stringify(report.requiredChecks) !== JSON.stringify(plan.requiredChecks) ||
       JSON.stringify(report.requiredGroups) !== JSON.stringify(plan.requiredGroups) ||
+      (report.ciMacos ?? false) !== (plan.ciMacos ?? false) ||
       JSON.stringify(report.toolingShards ?? null) !== JSON.stringify(plan.toolingShards ?? null)) {
     throw verificationFault("policy-mismatch", context);
   }

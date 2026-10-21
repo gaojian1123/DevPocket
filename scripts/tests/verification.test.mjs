@@ -22,26 +22,6 @@ const exec = promisify(execFile);
 const entry = path.resolve("scripts/verify.mjs");
 const toolchains = new Map();
 
-test("POSIX Python lookup preserves the virtual environment used by the shell",
-  { skip: process.platform === "win32" }, async (t) => {
-    const root = await repository(t), environment = path.join(root, ".data", "python-env");
-    await exec("python", ["-m", "venv", "--without-pip", environment], { timeout: 30000 });
-    const program = path.join(environment, "bin", "python");
-    const packages = (await exec(program, ["-c", "import sysconfig;print(sysconfig.get_path('purelib'))"])).stdout.trim();
-    await writeFile(path.join(packages, "devpocket_lookup_fixture.py"), "marker = 'venv-only'\n");
-    const previous = process.env.PATH;
-    process.env.PATH = `${path.dirname(program)}${path.delimiter}${previous ?? ""}`;
-    try {
-      const resolved = await resolveVerificationExecutable(root, "python", { shell: true });
-      assert.equal(resolved, program);
-      const result = await exec(resolved, ["-B", "-c", "import devpocket_lookup_fixture as f;print(f.marker)"]);
-      assert.equal(result.stdout.trim(), "venv-only");
-    } finally {
-      if (previous === undefined) delete process.env.PATH;
-      else process.env.PATH = previous;
-    }
-  });
-
 async function repository(t, tools) {
   await mkdir(".data/tests", { recursive: true });
   const root = await mkdtemp(path.resolve(".data/tests/verification-"));
@@ -539,12 +519,12 @@ test("public plan diagnostics preserve responsibility-specific selections withou
     const root = await changedRepository(t, [file]), result = await verify(root, ["--plan"]);
     assert.equal(result.exitCode, 0);
     const impact = verificationImpact([file]);
-    for (const key of ["requiredChecks", "requiredGroups", "layouts", "selectionReasons"]) {
+    for (const key of ["requiredChecks", "requiredGroups", "layouts", "ciMacos", "selectionReasons"]) {
       assert.deepEqual(result.report[key], impact[key]);
     }
     assert.deepEqual(result.report.changedFiles, [file]);
     const publicPlan = JSON.parse(result.stdout.split(/\r?\n/).find((line) => line.startsWith("{")));
-    assert.deepEqual(Object.keys(publicPlan).sort(), ["kind", "layouts", "requiredChecks", "requiredGroups", "selectionReasons", "toolingShards"]);
+    assert.deepEqual(Object.keys(publicPlan).sort(), ["ciMacos", "kind", "layouts", "requiredChecks", "requiredGroups", "selectionReasons", "toolingShards"]);
     assert.deepEqual(publicPlan.requiredGroups, impact.requiredGroups);
     const directory = path.dirname(result.reportPath);
     await rename(result.reportPath, path.join(directory, "plan.json"));
@@ -555,6 +535,7 @@ test("public plan diagnostics preserve responsibility-specific selections withou
     assert.equal(diagnostic.collectionStatus, "completed");
     assert.deepEqual(diagnostic.selection.requiredChecks, result.report.requiredChecks);
     assert.deepEqual(diagnostic.selection.requiredGroups, result.report.requiredGroups);
+    assert.equal(diagnostic.selection.ciMacos, result.report.ciMacos);
     assert.deepEqual(diagnostic.selection.selectionReasons, result.report.selectionReasons);
     assert.equal(Object.hasOwn(diagnostic.selection, "requiresHumanReview"), false);
   });
@@ -717,7 +698,9 @@ test("CI projects actual planner groups and forwards selected and unselected job
   const planning = workflow.split("\n  plan:")[1].split("\n  tooling:")[0], gate = workflow.split("\n  gate:")[1];
   const loop = (text) => text.match(/ {10}foreach \(\$group in @\([^\n]+\)\) \{\n[\s\S]+?\n {10}\}/)?.[0];
   const projection = loop(planning), upstream = loop(gate);
+  const macosProjection = planning.match(/ {10}if \(\$plan\.ciMacos -isnot \[bool\]\) [^\n]+\n {10}"macos=[^\n]+/)?.[0];
   assert.ok(projection);
+  assert.ok(macosProjection);
   assert.ok(upstream);
   assert.doesNotMatch(planning, /Where-Object|requiredChecks -contains/);
   assert.doesNotMatch(planning + gate, /requiresHumanReview|development-policy/);
@@ -735,17 +718,20 @@ test("CI projects actual planner groups and forwards selected and unselected job
     const root = await changedRepository(t, files), plan = await verify(root, ["--plan"]);
     const output = path.join(root, ".data", "job-outputs");
     await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
-      `$plan = Get-Content -LiteralPath $env:PLAN_FILE -Raw | ConvertFrom-Json\n${projection}`],
+      `$plan = Get-Content -LiteralPath $env:PLAN_FILE -Raw | ConvertFrom-Json\n${projection}\n${macosProjection}`],
     { cwd: root, env: { ...process.env, PLAN_FILE: plan.reportPath, GITHUB_OUTPUT: output }, timeout: 20000 });
     const flags = Object.fromEntries((await readFile(output, "utf8")).trim().split(/\r?\n/).map((line) => line.split("=")));
-    assert.deepEqual(flags, Object.fromEntries(CHECK_GROUPS.map((group) => [group, String(groups.includes(group))])));
-    const results = Object.fromEntries(CHECK_GROUPS.map((group) =>
-      [`${group.toUpperCase()}_RESULT`, groups.includes(group) ? "success" : "skipped"]));
+    assert.deepEqual(flags, { ...Object.fromEntries(CHECK_GROUPS.map((group) => [group, String(groups.includes(group))])),
+      macos: String(plan.report.ciMacos) });
+    const ciGroups = ["tooling", "macos", "backend", "android", "device"];
+    const selected = new Set([...groups, ...(plan.report.ciMacos ? ["macos"] : [])]);
+    const results = Object.fromEntries(ciGroups.map((group) =>
+      [`${group.toUpperCase()}_RESULT`, selected.has(group) ? "success" : "skipped"]));
     const forwarded = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
       `$arguments = @()\n${upstream}\nConvertTo-Json -InputObject @($arguments) -Compress`],
     { cwd: root, env: { ...process.env, ...results }, timeout: 20000 });
     assert.deepEqual(JSON.parse(forwarded.stdout),
-      CHECK_GROUPS.flatMap((group) => ["--upstream", `${group}:${groups.includes(group) ? "success" : "skipped"}`]));
+      ciGroups.flatMap((group) => ["--upstream", `${group}:${selected.has(group) ? "success" : "skipped"}`]));
   });
 });
 

@@ -32,6 +32,7 @@ jobs:
       base: ${{ steps.plan.outputs.base }}
       tooling: ${{ steps.plan.outputs.tooling }}
       tooling_shards: ${{ steps.plan.outputs.tooling_shards }}
+      macos: ${{ steps.plan.outputs.macos }}
       backend: ${{ steps.plan.outputs.backend }}
       android: ${{ steps.plan.outputs.android }}
       device: ${{ steps.plan.outputs.device }}
@@ -57,8 +58,13 @@ jobs:
           foreach ($group in @('tooling', 'backend', 'android', 'device')) {
             "$group=$($plan.requiredGroups -contains $group)".ToLowerInvariant() >> $env:GITHUB_OUTPUT
           }
+          if ($plan.ciMacos -isnot [bool]) { throw 'CI requires an explicit macOS coverage decision from the planner.' }
+          "macos=$($plan.ciMacos)".ToLowerInvariant() >> $env:GITHUB_OUTPUT
           if (($plan.requiredGroups -contains 'tooling') -and !$plan.toolingShards) {
             throw 'CI requires the reviewed complete test-workflow.mjs entry without replacement scripts or lifecycle hooks.'
+          }
+          if ($plan.ciMacos -and -not ($plan.toolingShards.parts.id -contains 'native')) {
+            throw 'Selected macOS coverage requires the native tooling shard.'
           }
           $shards = @(if ($plan.toolingShards) { $plan.toolingShards.parts.id } else { 'all' })
           "tooling_shards=$(ConvertTo-Json -InputObject $shards -Compress)" >> $env:GITHUB_OUTPUT
@@ -142,6 +148,65 @@ jobs:
           path: |
             .data\ci\tooling\report.json
             .data\ci\tooling\ci-report.json
+          if-no-files-found: error
+
+  macos:
+    needs: plan
+    if: needs.plan.outputs.macos == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic)
+    name: macOS regressions
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Require the intended native host
+        run: node -e "if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('macOS regressions require an ARM64 Mac runner.');"
+      - run: npm ci --no-audit --no-fund
+      - name: Verify macOS native infrastructure
+        id: verify
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ needs.plan.outputs.base }}
+        run: |
+          node scripts/verify.mjs --base $env:BASE_SHA --group tooling --tooling-shard native --report .data/ci/macos/report.json
+          exit $LASTEXITCODE
+      - name: Bind macOS evidence to this CI attempt
+        if: always() && hashFiles('scripts/verification-ci.mjs') != ''
+        shell: pwsh
+        run: |
+          node scripts/verification-ci.mjs --seal --unit macos --input .data/ci/macos/report.json --report .data/ci/macos/ci-report.json
+          exit $LASTEXITCODE
+      - name: Explain macOS check outcome
+        id: diagnostics
+        if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
+        shell: pwsh
+        env:
+          STEP_RESULT: ${{ steps.verify.outcome }}
+        run: |
+          node scripts/verification-diagnostics.mjs --directory .data/ci/macos --job tooling --step-result $env:STEP_RESULT --github
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.diagnostics.outputs.report_ready == 'true'
+        with:
+          name: check-diagnostics-macos-attempt-${{ github.run_attempt }}
+          path: .data/ci/macos/verification-diagnostics.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: verification-macos-attempt-${{ github.run_attempt }}
+          path: |
+            .data/ci/macos/report.json
+            .data/ci/macos/ci-report.json
           if-no-files-found: error
 
   backend:
@@ -378,7 +443,7 @@ jobs:
 
   gate:
     name: Required verification
-    needs: [plan, tooling, backend, android, device]
+    needs: [plan, tooling, macos, backend, android, device]
     if: always()
     runs-on: windows-latest
     steps:
@@ -401,6 +466,7 @@ jobs:
           PLAN_RESULT: ${{ needs.plan.result }}
           BACKEND_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic }}
           TOOLING_RESULT: ${{ needs.tooling.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
           BACKEND_RESULT: ${{ needs.backend.result }}
           ANDROID_RESULT: ${{ needs.android.result }}
           DEVICE_RESULT: ${{ needs.device.result }}
@@ -411,7 +477,7 @@ jobs:
             throw 'A backend diagnostic cannot satisfy Required verification. Run full verification for acceptance.'
           }
           $arguments = @('scripts\verification-ci.mjs', '--base', $env:BASE_SHA, '--collect', '--inputs', '.data\ci\inputs', '--report', '.data\ci\ci-report.json')
-          foreach ($group in @('tooling', 'backend', 'android', 'device')) {
+          foreach ($group in @('tooling', 'macos', 'backend', 'android', 'device')) {
             $result = [Environment]::GetEnvironmentVariable("$($group.ToUpperInvariant())_RESULT")
             if (-not $result) { $result = 'unknown' }
             $arguments += @('--upstream', "${group}:$result")

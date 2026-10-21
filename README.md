@@ -745,6 +745,17 @@ The same entry runs tooling, backend, Android build/unit/lint and actual device
 checks. Platform-specific Windows/Linux tests retain their native hosts; a Mac
 run is not evidence that those OS implementations were exercised.
 
+Hosted CI uses the same planner's `ciMacos` decision to select an ARM64
+`macos-15` job for shared verification infrastructure and relevant native changes.
+It reruns the existing `native` tooling shard, including macOS process cleanup,
+registry locks, IPC/admission and Python-path regressions. `Required verification`
+requires its successful job result and separate source-bound macOS evidence;
+Windows tooling cannot substitute for that evidence. Unrelated application or
+ordinary documentation changes do not start the Mac job. This is targeted host
+coverage, not a second complete Android gate: emulator instrumentation and
+layouts remain on Ubuntu/KVM, and the local macOS HVF path still needs Mac
+hardware acceptance.
+
 The macOS command owner uses kernel responsibility scopes and PID-version-bound
 signals, including nested command ownership; missing native APIs fail closed.
 Command-level environment overrides cannot discard the inherited supervision

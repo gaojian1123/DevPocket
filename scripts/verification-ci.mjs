@@ -7,7 +7,7 @@ import { parseArgs, promisify } from "node:util";
 import { diagnosticDirectory } from "./diagnostic-publication.mjs";
 import { diagnosticError, failureDetails } from "./diagnostic-errors.mjs";
 import { committedInputEntries, readOnlyGit } from "./git-state.mjs";
-import { combineVerification, requireVerificationOutputDirectory, requireVerificationReportPath,
+import { combineVerification, requireToolingShardReport, requireVerificationOutputDirectory, requireVerificationReportPath,
   verificationFailure, verificationPlan } from "./verification.mjs";
 import { CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "./verification-policy.mjs";
 import { readDiagnosticReport } from "./worker-diagnostics.mjs";
@@ -17,13 +17,35 @@ const sha = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const repositoryName = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 const validRepository = (value) => typeof value === "string" && value.length <= 256 && repositoryName.test(value) &&
   value.split("/").every((part) => part !== "." && part !== "..");
-const unitName = /^(?:tooling-(?:all|candidate|verification|diagnostics|native)|backend|android|device|gate)$/;
-const artifactName = /^verification-((?:tooling-(?:all|candidate|verification|diagnostics|native))|backend|android|device)-attempt-([1-9]\d*)$/;
+const unitName = /^(?:tooling-(?:all|candidate|verification|diagnostics|native)|macos|backend|android|device|gate)$/;
+const artifactName = /^verification-((?:tooling-(?:all|candidate|verification|diagnostics|native))|macos|backend|android|device)-attempt-([1-9]\d*)$/;
 const digest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const fail = (cause) => diagnosticError("ci-evidence", cause);
-const unitsFor = (plan) => plan.requiredGroups.flatMap((group) => group === "tooling"
-  ? (plan.toolingShards?.parts.map((part) => `tooling-${part.id}`) ?? ["tooling-all"]) : [group]);
+const unitsFor = (plan) => [...plan.requiredGroups.flatMap((group) => group === "tooling"
+  ? (plan.toolingShards?.parts.map((part) => `tooling-${part.id}`) ?? ["tooling-all"]) : [group]),
+...(plan.ciMacos === true ? ["macos"] : [])];
+
+function macosReport(plan, report) {
+  const [check] = requireToolingShardReport(plan, report);
+  if (plan.ciMacos !== true || check.toolingShard.id !== "native" ||
+      report.environment?.platform !== "darwin" || report.environment.architecture !== "arm64" ||
+      report.failure || report.sourceValidation?.status === "failed" || report.policyValidation?.status === "failed" ||
+      check.executionState !== "exited" || check.commandOutcome?.observedProcess !== "owned-command-supervisor" ||
+      check.commandOutcome.reason !== "exit" || check.commandOutcome.exitCode !== 0 || check.commandOutcome.cleanupFailure !== null) throw fail();
+  return {
+    version: report.version, base: report.base, source: { ...plan.source }, ciMacos: report.ciMacos,
+    requiredChecks: [...plan.requiredChecks], requiredGroups: [...plan.requiredGroups],
+    toolingShards: structuredClone(plan.toolingShards), group: report.group, status: report.status, complete: report.complete,
+    environment: { platform: report.environment.platform, architecture: report.environment.architecture },
+    checks: [{ id: check.id, status: check.status, exitCode: check.exitCode, toolingShard: structuredClone(check.toolingShard),
+      execution: { source: { ...plan.source }, startedAt: check.execution.startedAt, completedAt: check.execution.completedAt },
+      executionState: check.executionState, commandOutcome: {
+        observedProcess: check.commandOutcome.observedProcess, reason: check.commandOutcome.reason,
+        exitCode: check.commandOutcome.exitCode, cleanupFailure: check.commandOutcome.cleanupFailure,
+      } }],
+  };
+}
 
 function requireContext(context) {
   if (!context || !validRepository(context.repository) ||
@@ -62,18 +84,18 @@ export async function githubVerificationContext(root, environment = process.env)
   return context;
 }
 
-export function ciReportEnvelope(report, context, unit, inputs = []) {
+export function ciReportEnvelope(report, context, unit, inputs = [], macos) {
   requireContext(context);
   if (!unitName.test(unit) || report?.version !== VERIFICATION_REPORT_VERSION ||
-      !["passed", "partial", "blocked", "failed"].includes(report.status)) throw fail();
+      !["passed", "partial", "blocked", "failed"].includes(report.status) || macos !== undefined && unit !== "gate") throw fail();
   return { version: 1, kind: "ci-verification-report", context, unit, inputs,
-    reportDigest: digest(report), report };
+    reportDigest: digest(report), report, ...(macos !== undefined ? { macos } : {}) };
 }
 
 function requireEnvelope(value) {
   if (value?.version !== 1 || value.kind !== "ci-verification-report" || !unitName.test(value.unit ?? "") ||
       value.report?.version !== VERIFICATION_REPORT_VERSION || value.reportDigest !== digest(value.report) ||
-      !Array.isArray(value.inputs)) throw fail();
+      !Array.isArray(value.inputs) || value.macos !== undefined && value.unit !== "gate") throw fail();
   requireContext(value.context);
   return value;
 }
@@ -93,6 +115,7 @@ export function collectCIReports(plan, context, envelopes, upstream) {
   requireContext(context);
   const expectedUnits = unitsFor(plan);
   const reports = [], inputs = [], seen = new Set();
+  let macos;
   for (const input of envelopes) {
     const value = requireEnvelope(input), { attempt, ...identity } = value.context;
     const { attempt: currentAttempt, ...currentIdentity } = context;
@@ -100,19 +123,21 @@ export function collectCIReports(plan, context, envelopes, upstream) {
         !expectedUnits.includes(value.unit) || seen.has(value.unit) ||
         value.report.source?.head !== context.tested.head || value.report.base !== plan.base) throw fail();
     seen.add(value.unit);
-    const group = value.unit.startsWith("tooling-") ? "tooling" : value.unit;
+    const group = value.unit.startsWith("tooling-") || value.unit === "macos" ? "tooling" : value.unit;
     if (value.report.group !== group) throw fail();
-    if (group === "tooling") {
+    if (value.unit === "macos") macos = macosReport(plan, value.report);
+    else if (group === "tooling") {
       const descriptor = value.report.checks?.find((check) => check.id === "workflow-tests")?.toolingShard;
       if (value.unit !== `tooling-${descriptor?.id ?? "all"}`) throw fail();
     }
-    reports.push(value.report);
+    if (value.unit !== "macos") reports.push(value.report);
     inputs.push({ unit: value.unit, attempt, reportDigest: value.reportDigest });
   }
   if (expectedUnits.some((unit) => !seen.has(unit)) ||
-      plan.requiredGroups.some((group) => upstream.get(group) !== "success")) throw fail();
+      plan.requiredGroups.some((group) => upstream.get(group) !== "success") ||
+      plan.ciMacos === true && upstream.get("macos") !== "success") throw fail();
   return ciReportEnvelope(combineVerification(plan, reports), context, "gate",
-    inputs.sort((a, b) => a.unit.localeCompare(b.unit)));
+    inputs.sort((a, b) => a.unit.localeCompare(b.unit)), macos);
 }
 
 async function readLatestInputs(root, directory, context) {
@@ -196,6 +221,9 @@ export function validateLiveCIEnvelope(envelope, { repository, pullRequest, base
       value.report.status !== "passed" || value.report.complete !== true) throw fail();
   requireLiveBaseReference(baseReference, pullRequest.base.ref, context.pullRequestBase);
   combineVerification(value.report, [value.report]);
+  if (value.report.ciMacos === true) {
+    if (!equal(value.macos, macosReport(value.report, value.macos))) throw fail();
+  } else if (value.macos !== undefined) throw fail();
   const expected = unitsFor(value.report), units = value.inputs.map((input) => input.unit);
   if (units.length !== expected.length || new Set(units).size !== units.length ||
       expected.some((unit) => !units.includes(unit)) || value.inputs.some((input) =>
@@ -266,6 +294,7 @@ export async function qualifyGitHubCI(root, options) {
   const commit = await api(`repos/${repository}/git/commits/${envelope.context.tested.head}`);
   validateLiveCIEnvelope(envelope, { repository, pullRequest: pr, baseReference, run, jobs, artifact, commit, candidate });
   if (plan.requiredChecks.some((check) => !envelope.report.requiredChecks.includes(check)) ||
+      plan.ciMacos === true && envelope.report.ciMacos !== true ||
       plan.layouts && !envelope.report.layouts ||
       (plan.trustedDeviceClasses ?? []).some((name) => !envelope.report.trustedDeviceClasses?.includes(name))) throw fail();
   for (const policyCommit of new Set([envelope.context.tested.head, envelope.context.workflowSha])) {
@@ -323,7 +352,7 @@ async function main() {
       const upstream = new Map();
       for (const value of values.upstream) {
         const [group, status, extra] = value.split(":");
-        if (!CHECK_GROUPS.includes(group) || upstream.has(group) || extra !== undefined ||
+        if (![...CHECK_GROUPS, "macos"].includes(group) || upstream.has(group) || extra !== undefined ||
             !["success", "failure", "cancelled", "skipped", "unknown"].includes(status)) throw diagnosticError("configuration");
         upstream.set(group, status);
       }

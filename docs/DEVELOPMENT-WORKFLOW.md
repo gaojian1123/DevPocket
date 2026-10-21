@@ -199,6 +199,22 @@ original client or host still need their explicitly authorized local evidence.
 CI releases local CPU/memory but can still queue, spend runner minutes, prepare
 dependencies or time out. Existing deadlines and required coverage are unchanged.
 
+The same plan emits `ciMacos` for relevant shared/native infrastructure, its
+regressions, CI policy and shared dependency changes; `--all` also selects it.
+The ARM64 `macos-15` job depends on that decision and reruns the existing
+`native` tooling shard without provisioning an Android emulator. Its
+`verification-macos-attempt-N` artifact is additional platform evidence, not
+a replacement for the Windows native shard. Collection requires both a
+successful selected Mac upstream and its current-source, Darwin/ARM64 report
+with confirmed command cleanup. The CI envelope retains a bounded Mac report
+projection and its original execution times, source and input-attempt digest.
+Missing, failed, cancelled, unexpectedly skipped or wrong-platform coverage
+cannot qualify; an unselected Mac job may skip. Live qualification also
+preserves any Mac requirement from the original task base when the PR base is
+narrower. Local unsharded verification still covers its current host, not every
+CI platform. Device instrumentation and layouts remain on Ubuntu/KVM; this Mac
+job does not claim the local HVF emulator path has been exercised.
+
 Sealing and collecting CI evidence accepts fork PR heads for eligible checks,
 while retaining the base-repository identity and exact merge-parent checks.
 This lets documentation/tooling-only fork PRs reach their normal gate. It does
