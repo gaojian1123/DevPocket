@@ -415,6 +415,30 @@ test("macOS confirms timed-out and cancelled native commands that close their st
     });
   });
 
+test("macOS a closed caller diagnostic pipe cannot suppress cancellation delivery",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    await mkdir(".data/tests", { recursive: true });
+    const directory = await mkdtemp(path.resolve(".data/tests/closed-diagnostic-pipe-"));
+    const marker = path.join(directory, "cancel-received");
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const target = `const fs=require('node:fs');let input='';process.stdin.on('data',bytes=>{
+      input+=bytes;if(input.includes('cancel\\n')){fs.writeFileSync(${JSON.stringify(marker)},'cancel');process.exit(0)}});
+      console.log('ready');setInterval(()=>{},1000);`;
+    const source = `import {once} from 'node:events';
+      import {spawnOwnedCommand,ownedProcessCleanupConfirmed} from ${JSON.stringify(pathToFileURL(path.resolve("scripts/process.mjs")).href)};
+      const child=spawnOwnedCommand(process.execPath,['-e',${JSON.stringify(target)}],{timeoutMs:5000,graceMs:500});
+      child.stdin.on('error',error=>{if(error.code!=='EPIPE')throw error});
+      const exited=once(child,'close');
+      child.stdout.once('data',()=>{child.stderr.once('close',()=>child.stdin.end('cancel\\n'));child.stderr.destroy()});
+      const [code]=await exited;
+      console.log(JSON.stringify({code,receipt:ownedProcessCleanupConfirmed(child)}));`;
+    const outcome = await runCommand(process.execPath, ["--input-type=module", "-e", source], { timeoutMs: 10000 });
+    assert.equal(await readFile(marker, "utf8"), "cancel", "The target must receive cancellation before forced cleanup.");
+    assert.deepEqual(JSON.parse(outcome.stdout), { code: 130, receipt: false },
+      "Lost diagnostic output cannot fabricate a receipt for its caller.");
+    assert.equal(outcome.processTreeStopped, true, "The enclosing scope still needs its own authentic cleanup receipt.");
+  });
+
 test("macOS cleans a live command after its calling process is forcibly terminated",
   { skip: process.platform !== "darwin" }, async (t) => {
     const source = `import {spawnOwnedCommand} from ${JSON.stringify(pathToFileURL(path.resolve("scripts/process.mjs")).href)};

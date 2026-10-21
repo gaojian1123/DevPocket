@@ -366,11 +366,20 @@ def supervise(native, bootstrap_pid):
     owner = native.identity(request["ownerPid"])
     if owner is None:
         raise RuntimeError("The command owner exited before startup.")
-    control = lambda phase: os.write(2, f"\x1eDEVPOCKET:{request['receiptId']}:{phase}\x1f".encode())
+    state = {"stop": request.get("cancelled") is True, "control_open": True}
+
+    def control(phase):
+        if not state["control_open"]:
+            return
+        try:
+            os.write(2, f"\x1eDEVPOCKET:{request['receiptId']}:{phase}\x1f".encode())
+        except BrokenPipeError:
+            # A lost reader must not skip target cancellation or the stopping grace.
+            state.update(stop=True, control_open=False)
+
     scope = Scope(native)
     child = None
     clean = False
-    state = {"stop": request.get("cancelled") is True}
     for number in (signal.SIGINT, signal.SIGTERM):
         signal.signal(number, lambda _number, _frame: state.update(stop=True))
     deadline = time.monotonic() + max(0, (request["deadlineUnixMs"] - time.time() * 1000) / 1000)
