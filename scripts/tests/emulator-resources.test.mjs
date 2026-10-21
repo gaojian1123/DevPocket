@@ -59,8 +59,9 @@ test("macOS automatically recovers only the failed native run with an authentic 
       `const lease=await acquireEmulatorLease({workspace:process.cwd(),runId:process.argv[2],registryDirectory:${JSON.stringify(pool.registryDirectory)}});`,
       "await lease.handoff();",
       "const child=spawnOwnedCommand(process.execPath,['-e','console.log(process.pid);setInterval(()=>{},1000)'],{timeoutMs:30000,graceMs:100});",
-      "child.stderr.resume();",
-      `child.stdout.once('data',bytes=>{writeFileSync(${JSON.stringify(pidFile)},bytes);process.exit(37)});`,
+      "let ready=false,diagnostics='';child.stderr.on('data',bytes=>{diagnostics=(diagnostics+bytes).slice(-4096)});",
+      "child.once('close',code=>{if(!ready)throw new Error('Nested fixture exited before readiness: '+code+' '+diagnostics.replace(/\\x1eDEVPOCKET:[a-f0-9-]{36}:[a-z-]+\\x1f/g,''))});",
+      `child.stdout.once('data',bytes=>{ready=true;writeFileSync(${JSON.stringify(pidFile)},bytes);process.exit(37)});`,
     ].join("\n"));
     await writeFile(entry, `param([string]$RunDirectory,[string]$Owner)\n& node '${program.replaceAll("'", "''")}' $Owner\nexit $LASTEXITCODE\n`);
     const args = ["-NoProfile", "-NonInteractive", "-File", entry, "-RunDirectory", directory, "-Owner", runId];

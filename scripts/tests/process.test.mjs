@@ -433,9 +433,9 @@ test("macOS a closed caller diagnostic pipe cannot suppress cancellation deliver
       const [code]=await exited;
       console.log(JSON.stringify({code,receipt:ownedProcessCleanupConfirmed(child)}));`;
     const outcome = await runCommand(process.execPath, ["--input-type=module", "-e", source], { timeoutMs: 10000 });
-    assert.equal(await readFile(marker, "utf8"), "cancel", "The target must receive cancellation before forced cleanup.");
     assert.deepEqual(JSON.parse(outcome.stdout), { code: 130, receipt: false },
       "Lost diagnostic output cannot fabricate a receipt for its caller.");
+    assert.equal(await readFile(marker, "utf8"), "cancel", "The target must receive cancellation before forced cleanup.");
     assert.equal(outcome.processTreeStopped, true, "The enclosing scope still needs its own authentic cleanup receipt.");
   });
 
@@ -660,6 +660,7 @@ test("owned command deadlines preserve their explicit reason and actual supervis
   assert.equal(failure.commandOutcome.reason, "timeout");
   assert.ok(failure.commandOutcome.exitCode === null || Number.isInteger(failure.commandOutcome.exitCode));
   assert.equal(failureDetails(failure).reason, "command-timeout");
+  assert.equal(failure.processTreeStopped, true, failure.stderr);
 });
 
 test("an already cancelled command cannot create its target",
@@ -751,11 +752,12 @@ test("an exited launcher cannot strand a descendant or keep a bounded command un
   ].join("\n");
   let timer;
   const outcome = await Promise.race([
-    runCommand(process.execPath, ["-e", program], { timeoutMs: 3000 }).then(() => "settled", () => "settled"),
+    runCommand(process.execPath, ["-e", program], { timeoutMs: 3000 }).then((result) => result, (error) => error),
     new Promise((resolve) => { timer = setTimeout(() => resolve("stranded"), 12_000); }),
   ]);
   clearTimeout(timer);
-  assert.equal(outcome, "settled");
+  assert.notEqual(outcome, "stranded");
+  assert.equal(outcome.processTreeStopped, true, outcome.stderr);
   pid = Number(await readFile(pidFile, "utf8"));
   const alive = await exec("pwsh", ["-NoProfile", "-Command",
     `if (Get-Process -Id ${pid} -ErrorAction SilentlyContinue) { Write-Output alive }`]);

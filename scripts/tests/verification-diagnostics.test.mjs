@@ -227,6 +227,76 @@ test("check log hints accept only source-indexed locations and fixed exception/c
   assert.ok(!JSON.stringify(result).includes("PRIVATE_"));
 });
 
+test("macOS owner log hints distinguish fixed terminal failures without publishing exception text", async () => {
+  const { checkLogHints } = await import("../verification-diagnostics.mjs");
+  for (const [type, message, reason] of [
+    ["RuntimeError", "macOS process ownership did not stabilize; cleanup is unconfirmed.", "ownership-unstable"],
+    ["RuntimeError", "Nested macOS cleanup was not confirmed.", "nested-ack-missing"],
+    ["RuntimeError", "A nested macOS owner exited without confirming cleanup.", "nested-owner-unconfirmed"],
+    ["RuntimeError", "Invalid nested macOS cleanup acknowledgement.", "nested-ack-invalid"],
+    ["RuntimeError", "Owned macOS processes did not confirm exit.", "cleanup-deadline"],
+    ["RuntimeError", "Inherited macOS ownership changed.", "parent-ownership-changed"],
+    ["RuntimeError", "Unbound nested macOS ownership request.", "nested-owner-unbound"],
+    ["RuntimeError", "macOS process enumeration failed.", "process-enumeration-failed"],
+    ["RuntimeError", "macOS process enumeration exceeded its bound.", "process-enumeration-limit"],
+    ["RuntimeError", "The macOS kernel did not establish an isolated responsibility scope.", "scope-unavailable"],
+    ["RuntimeError", "The command owner changed before startup.", "owner-changed"],
+    ["RuntimeError", "The command owner exited before startup.", "owner-exited"],
+    ["RuntimeError", "The parent did not register this macOS scope.", "registration-failed"],
+    ["RuntimeError", "macOS process identity is incomplete (result 0, OS error 1).", "identity-incomplete"],
+    ["OSError", "[Errno 1] Cannot signal the bound macOS process.", "signal-failed"],
+    ["PermissionError", "[Errno 1] Cannot signal the bound macOS process.", "signal-failed"],
+    ["BrokenPipeError", "[Errno 32] PRIVATE_PIPE_CANARY", "broken-pipe"],
+    ["BlockingIOError", "[Errno 35] PRIVATE_CHANNEL_CANARY", "would-block"],
+    ["ConnectionResetError", "[Errno 54] PRIVATE_PEER_CANARY", "connection-reset"],
+    ["AttributeError", "PRIVATE_NATIVE_SYMBOL_CANARY", "unclassified"],
+  ]) {
+    const line = `Owned macOS command failed: ${type}: ${message}`;
+    assert.deepEqual(checkLogHints(line, process.cwd(), new Set(), "workflow-tests"),
+      [{ kind: "macos-owner-failure", type, reason }]);
+  }
+  const findings = checkLogHints([
+    "Owned macOS command failed: RuntimeError: Nested macOS cleanup was not confirmed. PRIVATE_SUFFIX_CANARY",
+    "Owned macOS command failed: ValueError: /private/PRIVATE_PATH_CANARY receipt=PRIVATE_RECEIPT_CANARY",
+    "Owned macOS command failed: PRIVATE_TYPE_CANARY: PRIVATE_MESSAGE_CANARY",
+    `Owned macOS command failed: RuntimeError: ${"PRIVATE_LONG_CANARY".repeat(300)}`,
+  ].join("\n"), process.cwd(), new Set(), "workflow-tests");
+  assert.deepEqual(findings, [
+    { kind: "macos-owner-failure", type: "RuntimeError", reason: "unclassified" },
+    { kind: "macos-owner-failure", type: "ValueError", reason: "unclassified" },
+  ]);
+  assert.ok(!JSON.stringify(findings).includes("PRIVATE_"));
+});
+
+test("the public collector preserves failed cleanup while projecting only a fixed macOS owner hint", async (t) => {
+  await mkdir(".data/verification", { recursive: true });
+  const directory = await mkdtemp(path.resolve(".data/verification/fixture-macos-owner-diagnostic-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = { head: "a".repeat(40), fingerprint: "b".repeat(64) };
+  await writeFile(path.join(directory, "report.json"), JSON.stringify({
+    version: VERIFICATION_REPORT_VERSION, source, status: "failed",
+    checks: [{ id: "workflow-tests", status: "failed", exitCode: 1, executionState: "exited",
+      failure: { reason: "cleanup-failed", processTreeStopped: false },
+      privateLog: { availability: "retained", truncated: false } }],
+  }));
+  await writeFile(path.join(directory, "workflow-tests.log"),
+    "Owned macOS command failed: RuntimeError: Nested macOS cleanup was not confirmed.\nPRIVATE_NATIVE_LOG_CANARY\n");
+  const result = await exec(process.execPath, ["scripts/verification-diagnostics.mjs",
+    "--directory", directory, "--job", "tooling", "--step-result", "failure"], { cwd: process.cwd() });
+  const published = await readFile(path.join(directory, "verification-diagnostics.json"), "utf8");
+  const diagnostic = JSON.parse(published);
+  assert.equal(diagnostic.acceptance, false);
+  assert.equal(diagnostic.status, "failed");
+  assert.equal(diagnostic.executionStep.result, "failure");
+  assert.deepEqual(diagnostic.source, source);
+  assert.equal(diagnostic.checks[0].failure.processTreeStopped, false);
+  assert.deepEqual(diagnostic.checks[0].hints, [
+    { kind: "macos-owner-failure", type: "RuntimeError", reason: "nested-ack-missing" },
+  ]);
+  assert.ok(!result.stdout.includes("PRIVATE_"));
+  assert.ok(!published.includes("PRIVATE_"));
+});
+
 test("actual source-index and log-read collector exceptions publish safe descriptors but remain nonzero", async (t) => {
   await mkdir(".data/tests", { recursive: true });
   const root = await mkdtemp(path.resolve(".data/tests/collector-exit-"));

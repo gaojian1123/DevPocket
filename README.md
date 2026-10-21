@@ -765,6 +765,9 @@ Kernel inspection refusals get bounded retries, not an assumed process exit.
 Empty-tree confirmation requires consecutive stable scans, including after a
 parent disappears or becomes a zombie. A failed nested supervisor still triggers
 cleanup of other verifiably owned processes, but never a successful receipt.
+CI diagnostics project fixed macOS owner error categories from the existing
+private log, not raw exception messages, paths or receipt tokens. These hints
+do not prove a leaf cause or establish successful cleanup.
 If the native test controller crashes while its supervising verifier is alive,
 the verifier automatically releases that run's lease only after the exact
 command's process-tree cleanup is confirmed, its heartbeat is gone and its
