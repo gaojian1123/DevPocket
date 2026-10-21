@@ -128,8 +128,7 @@ export function isolatedCommandBoundary(configuration, ownerEnvironment, candida
     } finally {
       await unlink(requestFile);
     }
-    const admissionKnown = configuration.platform !== "win32" ||
-      ["not-admitted", "creation-attempted", "created", "running"].includes(receipt?.admission) &&
+    const admissionKnown = ["not-admitted", "creation-attempted", "created", "running"].includes(receipt?.admission) &&
         receipt.started === (receipt.admission === "running");
     const interruptionKnown = receipt?.interruption == null || ["cancelled", "timeout"].includes(receipt.interruption);
     const stopped = receipt?.version === 1 && receipt.id === id && admissionKnown && interruptionKnown && receipt.processTreeStopped === true &&

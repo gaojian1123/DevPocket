@@ -22,6 +22,7 @@ def main(request_file):
             or not Path(request.get("cwd", "")).is_absolute()
             or not 0 < request.get("timeoutMs", 0) <= 86400000):
         raise ValueError("Invalid isolated command request.")
+    deadline = time.monotonic() + request["timeoutMs"] / 1000
     helper = Path(__file__).with_name("owned-command-linux.py")
     spec = importlib.util.spec_from_file_location("devpocket_owned_command", helper)
     owned = importlib.util.module_from_spec(spec)
@@ -30,27 +31,35 @@ def main(request_file):
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(36, 1, 0, 0, 0) != 0:
         raise OSError(ctypes.get_errno(), "Cannot establish isolated process ownership.")
-    receipt = {"version": 1, "id": request["id"], "status": "blocked", "started": False,
+    receipt = {"version": 1, "id": request["id"], "status": "blocked", "admission": "not-admitted", "started": False,
                "processTreeStopped": False, "exitCode": None}
+
+    def check_control():
+        if select.select([0], [], [], 0)[0]:
+            message = os.read(0, 4096)
+            if message != b"" and message.strip() != b"cancel":
+                raise ValueError("Unsupported isolated command control message.")
+            receipt["interruption"] = "cancelled"
+            raise InterruptedError("Isolated command was cancelled.")
+        if time.monotonic() >= deadline:
+            receipt["interruption"] = "timeout"
+            raise TimeoutError("Isolated command deadline expired.")
+
     child = None
     try:
+        check_control()
+        receipt["admission"] = "creation-attempted"
         child = subprocess.Popen([
             "/usr/bin/setpriv", "--reuid", str(request["uid"]), "--regid", str(request["gid"]),
             "--clear-groups", "--no-new-privs", "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
             "--", request["file"], *request["arguments"],
         ], cwd=request["cwd"], env=request["environment"], stdin=subprocess.PIPE,
             start_new_session=True, close_fds=True)
-        receipt["started"] = True
-        started = time.monotonic()
+        receipt.update(admission="running", started=True)
         while child.poll() is None:
-            if time.monotonic() - started >= request["timeoutMs"] / 1000:
-                raise TimeoutError("Isolated command deadline expired.")
-            if select.select([0], [], [], 0)[0]:
-                message = os.read(0, 4096)
-                if message != b"" and message.strip() != b"cancel":
-                    raise ValueError("Unsupported isolated command control message.")
-                raise InterruptedError("Isolated command was cancelled.")
+            check_control()
             time.sleep(0.05)
+        check_control()
         code = child.returncode
         receipt.update(status="executed", exitCode=code if code >= 0 else 128 - code)
     finally:

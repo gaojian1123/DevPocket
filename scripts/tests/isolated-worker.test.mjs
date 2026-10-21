@@ -124,9 +124,9 @@ test("missing or contradictory private receipts cannot become successful candida
 });
 
 test("confirmed no-admission cancellation is distinct from an unconfirmed suspended process", async (t) => {
-  for (const admission of ["not-admitted", "created"]) {
-    await t.test(admission, async (t) => {
-      const configuration = { ...await fixture(t), platform: "win32" };
+  for (const platform of ["win32", "linux"]) for (const admission of ["not-admitted", "created"]) {
+    await t.test(`${platform}/${admission}`, async (t) => {
+      const configuration = { ...await fixture(t), platform };
       const boundary = isolatedCommandBoundary(configuration, {}, environment(configuration));
       await assert.rejects(boundary("node", [], {}, async (_file, args) => {
         const file = args.at(-1), request = JSON.parse(await readFile(file, "utf8"));
@@ -192,6 +192,71 @@ test("Windows control cancellation and EOF before native creation report a confi
     await assert.rejects(readFile(marker), { code: "ENOENT" });
   });
 
+test("Linux control cancellation, EOF and expired deadlines stop admission before Popen", async (t) => {
+  const configuration = await fixture(t);
+  const script = String.raw`
+import ctypes
+import importlib.util
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+spec = importlib.util.spec_from_file_location("isolated_command", sys.argv[1])
+worker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worker)
+directory = Path(sys.argv[2])
+for mode in ["cancel", "eof", "timeout", "exit-cancel", "success"]:
+    request = directory / (mode + ".json")
+    request.write_text(json.dumps({"version": 1, "id": mode, "uid": 1234, "gid": 1234,
+        "file": sys.executable, "arguments": [], "cwd": str(directory), "environment": {}, "timeoutMs": 1000}))
+    info = SimpleNamespace(st_uid=0, st_mode=0o600, st_size=request.stat().st_size)
+    spawned = Mock(return_value=SimpleNamespace(poll=lambda: 0, returncode=0))
+    cleanup = Mock()
+    owned = SimpleNamespace(stop_descendants=cleanup)
+    loader = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda module: None))
+    ready = Mock(return_value=([0], [], []) if mode in ["cancel", "eof"] else ([], [], []))
+    if mode == "exit-cancel":
+        ready.side_effect = [([], [], []), ([0], [], [])]
+    clock = Mock(side_effect=[0, 2]) if mode == "timeout" else Mock(return_value=0)
+    error = None
+    with (
+        patch.object(worker.os, "geteuid", return_value=0, create=True),
+        patch.object(worker.Path, "stat", return_value=info),
+        patch.object(worker.importlib.util, "spec_from_file_location", return_value=loader),
+        patch.object(worker.importlib.util, "module_from_spec", return_value=owned),
+        patch.object(ctypes, "CDLL", return_value=SimpleNamespace(prctl=lambda *args: 0)),
+        patch.object(worker.subprocess, "Popen", spawned),
+        patch.object(worker.select, "select", ready),
+        patch.object(worker.os, "read", return_value=b"" if mode == "eof" else b"cancel\n"),
+        patch.object(worker.time, "monotonic", clock),
+    ):
+        try:
+            worker.main(str(request))
+        except (InterruptedError, TimeoutError) as failure:
+            error = failure
+    receipt = json.loads(Path(str(request) + ".result.json").read_text())
+    admitted = mode in ["exit-cancel", "success"]
+    assert spawned.call_count == int(admitted), (mode, receipt)
+    assert receipt["started"] is admitted, (mode, receipt)
+    assert receipt["admission"] == ("running" if admitted else "not-admitted"), (mode, receipt)
+    assert receipt["processTreeStopped"] is True, (mode, receipt)
+    cleanup.assert_called_once()
+    if mode == "success":
+        assert error is None and receipt["status"] == "executed" and receipt["exitCode"] == 0, receipt
+    else:
+        expected = TimeoutError if mode == "timeout" else InterruptedError
+        assert isinstance(error, expected), (mode, error)
+        assert receipt["status"] == "blocked" and receipt["exitCode"] is None, (mode, receipt)
+        assert receipt["interruption"] == ("timeout" if mode == "timeout" else "cancelled"), (mode, receipt)
+print("pre-admission cancellation, EOF, deadline and exit reconciliation passed")
+`;
+  const output = await exec("python", ["-I", "-B", "-c", script, path.resolve("scripts", "isolated-command.py"), configuration.private],
+    { timeout: 30000 });
+  assert.match(output.stdout, /pre-admission cancellation, EOF, deadline and exit reconciliation passed/);
+});
+
 test("cancellation before admission never invokes the native isolated owner", async (t) => {
   const configuration = await fixture(t), controller = new AbortController();
   controller.abort(new Error("Already cancelled"));
@@ -243,6 +308,23 @@ test("Linux drops every candidate capability and never places its root owner bel
   assert.match(source, /os\.O_EXCL/);
 });
 
+test("Linux bootstrap refusal reports its bounded stage without entering hosted OS setup", async () => {
+  const script = [
+    "import os, runpy, sys, types",
+    "sys.modules['pwd'] = types.ModuleType('pwd')",
+    "os.environ['GITHUB_ACTIONS'] = 'false'",
+    "runpy.run_path(sys.argv[1], run_name='__main__')",
+  ].join("\n");
+  await assert.rejects(exec("python", ["-I", "-B", "-c", script, path.resolve("scripts", "isolated-worker.py")],
+    { timeout: 30000 }), (error) => {
+    assert.equal(error.code, 78);
+    assert.deepEqual(JSON.parse(error.stderr), {
+      status: "blocked", phase: "isolated-bootstrap", error: "RuntimeError", stage: "configuration",
+    });
+    return true;
+  });
+});
+
 test("Windows bootstrap does not assign the read-only HOME automatic variable", async () => {
   const file = path.resolve("scripts", "isolated-worker.ps1").replaceAll("'", "''");
   const script = `$tokens=$null; $errors=$null; $ast=[Management.Automation.Language.Parser]::ParseFile('${file}',[ref]$tokens,[ref]$errors); ` +
@@ -253,6 +335,14 @@ test("Windows bootstrap does not assign the read-only HOME automatic variable", 
   const result = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", script], { timeout: 30000 });
   assert.deepEqual(JSON.parse(result.stdout), []);
 });
+
+test("Windows ancestor protection uses the handle-bound non-propagating mutation",
+  { skip: process.platform !== "win32" }, async () => {
+    const result = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-File",
+      path.resolve("scripts", "tests", "fixtures", "isolated-ancestor-acl.ps1"),
+      "-Bootstrap", path.resolve("scripts", "isolated-worker.ps1")], { timeout: 30000 });
+    assert.deepEqual(JSON.parse(result.stdout), ["C:\\fixture", "C:\\"]);
+  });
 
 test("bootstrap command failures retain the actual bounded diagnostic before exiting",
   { skip: process.platform !== "win32" }, async (t) => {

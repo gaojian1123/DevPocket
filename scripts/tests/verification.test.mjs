@@ -884,6 +884,53 @@ test("the native adapter preserves literal parameters, mandatory instrumentation
   });
 });
 
+test("isolated native-only plans reach both native adapters without a tooling catalogue", async (t) => {
+  const root = await repository(t, { native: true }), scripts = path.join(root, "scripts");
+  const environment = isolatedAdmissionEnvironment(root), home = process.platform === "win32" ? "LOCALAPPDATA" : "HOME";
+  const previous = new Map([home, "DEVPOCKET_VERIFIER_ADMISSION"].map((name) => [name, process.env[name]]));
+  process.env[home] = environment[home];
+  delete process.env.DEVPOCKET_VERIFIER_ADMISSION;
+  t.after(() => {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  await mkdir(scripts);
+  for (const name of ["build-android", "test-android"]) {
+    await writeFile(path.join(scripts, `${name}.ps1`), [
+      "param($Jdk,$Sdk,$Image,$RunDirectory,$Owner,[switch]$Lint,[switch]$Instrumentation,[switch]$Layouts)",
+      `Set-Content -LiteralPath '.data/${name}-executed' -Value 'native adapter reached'`,
+      "exit 37", "",
+    ].join("\n"));
+  }
+  await exec("git", ["add", "."], { cwd: root });
+  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+    "commit", "--quiet", "-m", "Native-only adapter fixtures"], { cwd: root });
+  await writeFile(path.join(root, "android", "fixture.kt"), "// native-only change\n");
+  const plan = await verificationPlan(root, "HEAD"), tools = toolchains.get(root);
+  assert.deepEqual(plan.requiredChecks, ["android-build", "android-device"]);
+  assert.equal(plan.toolingShards, undefined);
+  for (const [group, id, marker] of [
+    ["android", "android-build", "build-android"], ["device", "android-device", "test-android"],
+  ]) {
+    const report = await executeVerification(root, plan, {
+      group, jdk: tools.jdk, sdk: tools.sdk, directory: path.join(root, ".data", "verification", group),
+      isolatedTooling: true, trustedToolingRunner: path.resolve("scripts", "test-workflow.mjs"),
+    });
+    const check = report.checks.find((item) => item.id === id);
+    assert.equal(check.exitCode, 37, JSON.stringify(report));
+    assert.equal(check.executionState, "exited");
+    assert.match(await readFile(path.join(root, ".data", `${marker}-executed`), "utf8"), /native adapter reached/);
+  }
+  const invalidPlan = { ...plan, requiredChecks: ["workflow-tests"], requiredGroups: ["tooling"] };
+  const invalidDirectory = path.join(root, ".data", "verification", "invalid-tooling");
+  await assert.rejects(executeVerification(root, invalidPlan, {
+    directory: invalidDirectory, isolatedTooling: true, trustedToolingRunner: path.resolve("scripts", "test-workflow.mjs"),
+  }), { diagnosticCode: "configuration" });
+  await assert.rejects(fileSystem.stat(invalidDirectory), { code: "ENOENT" });
+});
+
 test("backend diagnostics observe the ordered backend entry without running the independent tooling suite", async (t) => {
   const root = await repository(t, { operations: true });
   await writeFile(path.join(root, "deployment", "azure", "package.json"), JSON.stringify({ scripts: { test: "node -e \"process.exit(0)\"" } }));

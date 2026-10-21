@@ -2,6 +2,7 @@ using System;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Threading.Tasks;
@@ -20,6 +21,8 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
     struct ProcessInfo { public IntPtr process, thread; public uint processId, threadId; }
     [StructLayout(LayoutKind.Sequential)]
     struct Security { public int length; public IntPtr descriptor; public int inherit; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct FileAttributeTag { public uint attributes, tag; }
     [StructLayout(LayoutKind.Sequential)]
     struct BasicLimits {
         public long processTime, jobTime; public uint flags; public UIntPtr minWork, maxWork;
@@ -48,11 +51,22 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
     static extern bool LookupPrivilegeNameW(string system, IntPtr luid, StringBuilder name, ref int length);
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern bool LookupPrivilegeValueW(string system, string name, IntPtr luid);
+    [DllImport("advapi32.dll")]
+    static extern uint SetSecurityInfo(IntPtr handle, int objectType, uint information,
+        IntPtr owner, IntPtr group, [In] byte[] dacl, IntPtr sacl);
+    [DllImport("advapi32.dll")]
+    static extern uint GetSecurityInfo(IntPtr handle, int objectType, uint information,
+        IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl, out IntPtr descriptor);
+    [DllImport("advapi32.dll")]
+    static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern IntPtr CreateJobObjectW(IntPtr attributes, string name);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern IntPtr CreateFileW(string name, uint access, uint share, ref Security security,
         uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetFileInformationByHandleEx(IntPtr file, int kind, out FileAttributeTag information, uint size);
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool SetInformationJobObject(IntPtr job, int kind, ref ExtendedLimits value, int size);
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -118,6 +132,43 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
             }
         } finally { CloseHandle(token); }
         return assignEnabled;
+    }
+
+    public static void ProtectAncestor(string path, SecurityIdentifier candidate, FileSystemRights mutation) {
+        if (!Path.IsPathRooted(path) || !string.Equals(Path.GetFullPath(path), path, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("An ancestor must be an absolute directory.");
+        var security = new Security { length = Marshal.SizeOf(typeof(Security)) };
+        // MAXIMUM_ALLOWED prevents SetSecurityInfo from propagating into the volume's descendants.
+        IntPtr directory = CreateFileW(path, 0x02000000, 7, ref security, 3, 0x02200000, IntPtr.Zero);
+        if (directory == new IntPtr(-1)) throw new Win32Exception();
+        IntPtr descriptor = IntPtr.Zero;
+        try {
+            FileAttributeTag attributes;
+            if (!GetFileInformationByHandleEx(directory, 9, out attributes, (uint)Marshal.SizeOf(typeof(FileAttributeTag))))
+                throw new Win32Exception();
+            if ((attributes.attributes & (uint)(FileAttributes.Directory | FileAttributes.ReparsePoint)) != (uint)FileAttributes.Directory)
+                throw new InvalidOperationException("The opened ancestor is not a regular directory.");
+            uint error = GetSecurityInfo(directory, 1, 4, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out descriptor);
+            if (error != 0) throw new Win32Exception((int)error);
+            if (descriptor == IntPtr.Zero) throw new InvalidOperationException("The ancestor security descriptor is unavailable.");
+            uint length = GetSecurityDescriptorLength(descriptor);
+            if (length < 20 || length > 1024 * 1024) throw new InvalidOperationException("The ancestor security descriptor is invalid.");
+            var bytes = new byte[length];
+            Marshal.Copy(descriptor, bytes, 0, bytes.Length);
+            if (new RawSecurityDescriptor(bytes, 0).DiscretionaryAcl == null)
+                throw new InvalidOperationException("An ancestor must retain a non-null DACL.");
+            var acl = new DirectorySecurity();
+            acl.SetSecurityDescriptorBinaryForm(bytes, AccessControlSections.Access);
+            acl.AddAccessRule(new FileSystemAccessRule(candidate, mutation, AccessControlType.Deny));
+            var raw = new RawSecurityDescriptor(acl.GetSecurityDescriptorBinaryForm(), 0).DiscretionaryAcl;
+            var dacl = new byte[raw.BinaryLength];
+            raw.GetBinaryForm(dacl, 0);
+            error = SetSecurityInfo(directory, 1, 4, IntPtr.Zero, IntPtr.Zero, dacl, IntPtr.Zero);
+            if (error != 0) throw new Win32Exception((int)error);
+        } finally {
+            if (descriptor != IntPtr.Zero) LocalFree(descriptor);
+            CloseHandle(directory);
+        }
     }
 
     static string Quote(string value) {

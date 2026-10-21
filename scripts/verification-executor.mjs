@@ -39,6 +39,11 @@ export async function executeVerification(root, plan, options = {}) {
     check.toolingShard = toolingShardDescriptor(plan, options.toolingShard);
   }
   const selected = plan.requiredGroups.filter((item) => group === "all" || item === group);
+  if (options.trustedToolingRunner && path.resolve(options.trustedToolingRunner) !==
+      fileURLToPath(new URL("./test-workflow.mjs", import.meta.url))) throw verificationFault("configuration");
+  if (selected.includes("tooling") && options.isolatedTooling && (!options.trustedToolingRunner || !plan.toolingShards)) {
+    throw verificationFault("configuration");
+  }
   await requireVerificationOutputDirectory(evidenceRoot, options.directory, [options.resume, options.promote]);
   const release = await acquireVerificationLock(evidenceRoot);
   let run, preflight, report, sourceFailure, policy, transition, qualificationFailed = false,
@@ -241,11 +246,6 @@ export async function executeVerification(root, plan, options = {}) {
 async function executeCheck(root, plan, check, options, backend) {
   const definition = CHECKS.find((item) => item.id === check.id);
   const quote = (value) => `'${value.replaceAll("'", "''")}'`;
-  if (options.trustedToolingRunner && path.resolve(options.trustedToolingRunner) !==
-      fileURLToPath(new URL("./test-workflow.mjs", import.meta.url))) throw verificationFault("configuration");
-  if (options.isolatedTooling && (!options.trustedToolingRunner || !plan.toolingShards)) {
-    throw verificationFault("configuration");
-  }
   const adapter = definition.group === "tooling" ? {
     args: ["-NoProfile", "-NonInteractive", "-Command", options.trustedToolingRunner
       ? `& ${quote(process.execPath)} ${quote(options.trustedToolingRunner)}${check.toolingShard ? ` --workflow-shard ${check.toolingShard.id}` : ""}; exit $LASTEXITCODE`

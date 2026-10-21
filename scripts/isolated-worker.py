@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import pwd
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -55,7 +56,7 @@ def protect_tool(executable):
             os.chmod(item, item.stat().st_mode & 0o777 & ~0o022)
 
 
-def main():
+def main(diagnostics):
     if (sys.platform != "linux" or os.geteuid() != 0 or os.environ.get("GITHUB_ACTIONS") != "true"
             or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"):
         raise RuntimeError("Worker bootstrap requires the authorized disposable hosted Linux VM.")
@@ -87,6 +88,7 @@ def main():
     account = None
     exit_code = 78
     try:
+        diagnostics["stage"] = "candidate-identity"
         run("/usr/sbin/useradd", "--no-create-home", "--home-dir", str(state / "home"),
             "--shell", "/usr/sbin/nologin", "--user-group", name)
         account = pwd.getpwnam(name)
@@ -98,22 +100,31 @@ def main():
         temporary = home / "tmp"
         temporary.mkdir(mode=0o700)
         os.chown(temporary, account.pw_uid, account.pw_gid)
+        diagnostics["stage"] = "control-copy"
         control_copy, candidate_copy = state / "control", state / "candidate"
         shutil.copytree(control, control_copy, symlinks=True, ignore=shutil.ignore_patterns(".data", ".tools", "node_modules"))
         shutil.copytree(candidate, candidate_copy, symlinks=True, ignore=shutil.ignore_patterns(".data", ".tools", "node_modules"))
         seal(control_copy)
+        diagnostics["stage"] = "private-control-directories"
         evidence = control_copy / ".data" / "ci" / "isolated"
-        evidence.mkdir(parents=True, mode=0o700)
         bytecode = control_copy / "scripts" / "__pycache__"
-        bytecode.mkdir(mode=0o700)
-        for protected in (control_copy / ".data", control_copy / ".data" / "ci", evidence, bytecode):
-            info = protected.stat()
-            if protected.is_symlink() or info.st_uid != 0 or info.st_mode & 0o077:
+        private_directories = (control_copy / ".data", control_copy / ".data" / "ci", evidence, bytecode)
+        for protected in private_directories:
+            protected.mkdir(mode=0o700, exist_ok=True)
+            info = protected.lstat()
+            if stat.S_ISDIR(info.st_mode) and info.st_uid == 0:
+                protected.chmod(0o700)
+                info = protected.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+                diagnostics["privateDirectory"] = {"path": protected.relative_to(control_copy).as_posix(),
+                                                   "uid": info.st_uid, "mode": oct(info.st_mode)}
                 raise RuntimeError("A private control directory permits candidate access.")
+        diagnostics["stage"] = "candidate-directories"
         candidate_directory(candidate_copy, account.pw_uid, account.pw_gid)
         fixture = state / "fixture"
         fixture.mkdir()
         candidate_directory(fixture, account.pw_uid, account.pw_gid)
+        diagnostics["stage"] = "runner-protection"
         # Runner command files, artifact credentials and action implementations stay outside the candidate identity.
         os.chmod(runner.pw_dir, 0o700)
         ptrace = Path("/proc/sys/kernel/yama/ptrace_scope")
@@ -121,6 +132,7 @@ def main():
         if ptrace.read_text().strip() != "2":
             raise RuntimeError("Candidate processes can still attach to trusted test runners.")
         environment = dict(os.environ)
+        diagnostics["stage"] = "tool-protection"
         for executable in tools.values():
             protect_tool(executable)
         if environment.get("JAVA_HOME"):
@@ -131,6 +143,7 @@ def main():
                 shutil.copytree(jdk, destination, symlinks=True)
                 seal(destination)
                 environment["JAVA_HOME"] = str(destination)
+        diagnostics["stage"] = "device-preparation"
         sdk = Path(environment["ANDROID_HOME"]).resolve(strict=True) if group == "device" else None
         if sdk:
             if not Path("/dev/kvm").is_char_device():
@@ -148,12 +161,13 @@ def main():
             run("/usr/bin/udevadm", "control", "--reload-rules")
             os.chown("/dev/kvm", account.pw_uid, account.pw_gid)
             os.chmod("/dev/kvm", 0o600)
+        diagnostics["stage"] = "supervisor-configuration"
         configuration = {
             "version": 1, "platform": "linux", "control": str(control_copy), "candidate": str(candidate_copy),
             "fixture": str(fixture), "private": str(private), "home": str(home), "temporary": str(temporary),
             "uid": account.pw_uid, "gid": account.pw_gid, "tools": tools, "group": group, "mode": mode,
-            "protectedPaths": [str(control_copy), str(private), str(state), str(control_copy / ".data"),
-                               str(evidence), str(bytecode), runner.pw_dir, environment["RUNNER_TEMP"]],
+            "protectedPaths": [str(control_copy), str(private), str(state), *(str(item) for item in private_directories),
+                               runner.pw_dir, environment["RUNNER_TEMP"]],
         }
         file = private / "configuration.json"
         descriptor = os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -167,10 +181,13 @@ def main():
         owner_home.mkdir(mode=0o700)
         owner_temp.mkdir(mode=0o700)
         environment.update(HOME=str(owner_home), TMP=str(owner_temp), TEMP=str(owner_temp), TMPDIR=str(owner_temp))
+        diagnostics["stage"] = "supervisor"
         result = subprocess.run([tools["node"], "--disable-sigusr1", str(control_copy / "scripts" / "isolated-worker.mjs"),
                                  "--configuration", str(file)], cwd=control_copy, env=environment)
         exit_code = result.returncode
     finally:
+        previous_stage = diagnostics["stage"]
+        diagnostics["stage"] = "candidate-cleanup"
         if account:
             remaining = []
             for entry in Path("/proc").iterdir():
@@ -183,6 +200,7 @@ def main():
             if remaining:
                 raise RuntimeError("Candidate processes remain; isolated worker cleanup is unconfirmed.")
             run("/usr/sbin/userdel", name)
+        diagnostics["stage"] = "publication"
         report_directory = state / "control" / ".data" / "ci" / "isolated"
         if report_directory.is_dir() and not report_directory.is_symlink():
             destination = control / ".data" / "ci" / "isolated"
@@ -213,13 +231,15 @@ def main():
             file = private / name
             if file.exists():
                 file.unlink()
+        diagnostics["stage"] = previous_stage
     return exit_code
 
 
 if __name__ == "__main__":
+    diagnostics = {"stage": "configuration"}
     try:
-        sys.exit(main())
+        sys.exit(main(diagnostics))
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.CalledProcessError) as error:
-        print(json.dumps({"status": "blocked", "phase": "isolated-bootstrap", "error": type(error).__name__}),
-              file=sys.stderr)
+        print(json.dumps({"status": "blocked", "phase": "isolated-bootstrap", "error": type(error).__name__,
+                          **diagnostics}), file=sys.stderr, flush=True)
         sys.exit(78)

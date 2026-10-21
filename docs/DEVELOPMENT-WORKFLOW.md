@@ -131,17 +131,32 @@ not the privileged cancellation pipe. The original Store-PowerShell compatibilit
 unchanged. Actual separate-account token assignability still requires hosted
 evidence; the documented restricted-caller-token exception is not assumed to
 apply to a token for another account.
+Ancestor-only deny rules retain the existing DACL and use a non-propagating
+directory-handle update; attributes, DACL reading and mutation are bound to the
+same opened non-reparse object. They must not trigger an ACL walk of the entire volume.
+The handle uses the documented `MAXIMUM_ALLOWED` behavior of
+[`SetSecurityInfo`](https://learn.microsoft.com/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo).
+Actual protected trees still receive their inheritable ACLs. No owner, SACL,
+user right or process-creation policy is changed by the ancestor update.
+The hosted bootstrap checks the exact parent DACL, unchanged child security and
+rejection of an opened junction before applying the update to real ancestors.
 
 Linux keeps the root process owner outside `setpriv`, drops the target's groups
-and capabilities and sets `no_new_privs`. Control and ancestors are root-owned;
+and capabilities and sets `no_new_privs`. It consumes queued cancellation/EOF and
+checks its deadline before target admission, then reconciles control again before
+accepting exit. Private receipts distinguish confirmed no-start interruption from
+an admitted process requiring descendant cleanup. Control and ancestors are root-owned;
 runner channels remain outside the candidate identity. The disposable VM's
 ptrace policy also denies candidate debugger attachment. Existing approved
 JDK/SDK/KVM preparation runs before candidate code; it is not replaced with
 candidate setup scripts. Public network access remains allowed.
-The root supervisor uses a private umask and preallocates every evidence-directory
-ancestor and its Python bytecode cache as root-only directories. A private file
+The root supervisor uses a private umask and explicitly allocates every evidence-directory
+ancestor and its Python bytecode cache, enforcing root-only modes rather than
+relying on recursive creation or an inherited default ACL. A private file
 mode alone does not prevent deletion through a writable parent. Only the named
 publication directories and outputs are handed back to the original runner.
+Bootstrap failures retain a bounded stage; private-directory rejection also
+identifies the fixed relative path and observed UID/mode without logging credentials.
 Backend installation, Python preflight and operational commands select the same
 candidate-owned venv. Its PATH prefix applies only to low-identity commands, never
 to the privileged owner; ambient `NODE_OPTIONS` remains unset so native startup
@@ -155,7 +170,10 @@ The hosted tooling selector runs in the control process and executes fixed files
 one at a time, with cleanup and source checks between files; ordinary local/CI
 tooling keeps its existing concurrency. Passing hosted reports also need the
 exact fixed file list and each file's execution outcome, retained in the
-authenticated aggregate and revalidated during live qualification. CI includes separate
+authenticated aggregate and revalidated during live qualification. The catalogue
+requirement applies only to selected tooling checks; a native-only plan still runs
+its required build and device checks without inventing a tooling selection.
+CI includes separate
 Windows/Linux bootstrap jobs, but authorizing this CI change is not authorization
 to activate the disabled dispatch route, change local OS policy, or install tools
 on the developer's machine.
