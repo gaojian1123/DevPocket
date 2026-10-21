@@ -129,6 +129,17 @@ The SCM required-privilege list retains only the existing assign-primary-token
 and quota privileges (plus the platform's unavoidable traverse privilege).
 The actual service SID, identity and privilege availability are checked at startup.
 
+The branch diagnostic for `92c193d` confirmed that minimal service token and
+created a suspended candidate, but its identity-stage token inspection failed
+with native error 5; process and service cleanup were confirmed. The prepared
+helper uses the explicit-credential logon token only to open the actual child
+token under the candidate identity, then restores the supervisor before identity
+validation and privilege removal. This
+[documented impersonation route](https://learn.microsoft.com/windows/win32/api/securitybaseapi/nf-securitybaseapi-impersonateloggedonuser)
+does not add `SeDebugPrivilege` or `SeImpersonatePrivilege`. It still requires
+fresh hosted evidence; opening the original logon token is not a substitute for
+checking the actual suspended child.
+
 The trusted Node controller retains the original runner identity. Its owned
 command runner invokes a hash-bound service client; only the service calls the
 existing low-token launcher. A private owner pipe, task nonce and authenticated

@@ -26,6 +26,11 @@ public static class SupervisorContracts {
         var query = typeof(DevPocketWindowsSupervisor).GetMethod("QueryServiceStatusEx", BindingFlags.Static | BindingFlags.NonPublic);
         if (query == null || query.GetParameters()[0].ParameterType != typeof(SafeHandle))
             throw new Exception("SCM queries must retain a marshaler-protected service handle.");
+        var tokenType = typeof(Microsoft.Win32.SafeHandles.SafeAccessTokenHandle);
+        var logon = typeof(DevPocketIsolatedCommand).GetMethod("LogonUserW", BindingFlags.Static | BindingFlags.NonPublic);
+        var create = typeof(DevPocketIsolatedCommand).GetMethod("CreateProcessAsUserW", BindingFlags.Static | BindingFlags.NonPublic);
+        if (logon.GetParameters()[5].ParameterType != tokenType.MakeByRefType() || create.GetParameters()[0].ParameterType != tokenType)
+            throw new Exception("The logon token must remain owned across creation and scoped impersonation.");
         string root = Path.GetFullPath(args[0]), node = Path.Combine(root, "synthetic-node.exe");
         byte[] bytes = Encoding.UTF8.GetBytes("not an executable; validation must never launch it");
         File.WriteAllBytes(node, bytes);

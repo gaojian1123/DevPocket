@@ -141,6 +141,18 @@ test("LocalService validation rejects arbitrary commands and startup injection w
     assert.equal(result.stdout.trim(), "SUPERVISOR_VALIDATION_ONLY");
   });
 
+test("Windows token inspection borrows the candidate identity only to open its actual process token", async () => {
+  const source = await readFile(new URL("../isolated-command.cs", import.meta.url), "utf8");
+  const restriction = source.slice(source.indexOf("void RestrictToken("), source.indexOf("public int Run("));
+  const borrowed = /WindowsIdentity\.RunImpersonated\(logonToken, \(\) => \{([\s\S]*?)\}\);/.exec(restriction);
+  assert.ok(borrowed, "Opening a different account's token must not require adding SeDebugPrivilege.");
+  assert.equal(borrowed[1].replace(/\s+/g, " ").trim(),
+    "if (!OpenProcessToken(process, 0x28, out token)) throw new Win32Exception();");
+  assert.ok(restriction.indexOf("using (var identity") > borrowed.index + borrowed[0].length,
+    "Identity comparison and privilege restriction run after restoring the supervisor identity.");
+  assert.match(source, /RestrictToken\(sid, token\);\s+Stage = "resume";/);
+});
+
 test("Windows cleanup attempts service removal and publication even after a broken owner pipe",
   { skip: process.platform !== "win32" }, async (t) => {
     for (const fault of ["none", "pipe", "service"]) await t.test(fault, async (t) => {

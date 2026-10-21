@@ -7,6 +7,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Threading.Tasks;
+using Microsoft.Win32.SafeHandles;
 
 public sealed class DevPocketIsolatedCommand : IDisposable {
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -37,9 +38,9 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
         public UIntPtr processMemory, jobMemory, peakProcess, peakJob;
     }
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    static extern bool LogonUserW(string user, string domain, string password, int kind, int provider, out IntPtr token);
+    static extern bool LogonUserW(string user, string domain, string password, int kind, int provider, out SafeAccessTokenHandle token);
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    static extern bool CreateProcessAsUserW(IntPtr token, string application, StringBuilder command,
+    static extern bool CreateProcessAsUserW(SafeAccessTokenHandle token, string application, StringBuilder command,
         IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint creationFlags,
         IntPtr environment, string cwd, ref StartupEx startup, out ProcessInfo process);
     [DllImport("advapi32.dll", SetLastError = true)]
@@ -227,10 +228,13 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
         if (DateTime.UtcNow >= deadline) throw new TimeoutException("Isolated command deadline expired.");
     }
 
-    void RestrictToken(string sid) {
-        IntPtr token;
-        if (!OpenProcessToken(process, 0x28, out token)) throw new Win32Exception();
+    void RestrictToken(string sid, SafeAccessTokenHandle logonToken) {
+        IntPtr token = IntPtr.Zero;
         try {
+            // Acquire the candidate's handle without giving LocalService cross-account debug access.
+            WindowsIdentity.RunImpersonated(logonToken, () => {
+                if (!OpenProcessToken(process, 0x28, out token)) throw new Win32Exception();
+            });
             using (var identity = new WindowsIdentity(token)) {
                 if (identity.User.Value != sid || identity.User.Equals(WindowsIdentity.GetCurrent().User) ||
                     identity.Groups.Contains(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null)))
@@ -254,7 +258,7 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
                 if (!AdjustTokenPrivileges(token, false, privileges, 0, IntPtr.Zero, IntPtr.Zero) ||
                     Marshal.GetLastWin32Error() != 0) throw new Win32Exception();
             } finally { Marshal.FreeHGlobal(privileges); }
-        } finally { CloseHandle(token); }
+        } finally { if (token != IntPtr.Zero) CloseHandle(token); }
     }
 
     public int Run(string user, string password, string sid, string file, string[] args,
@@ -266,7 +270,8 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
         string[] environment, string cwd, int timeoutMs, IntPtr standardOutput, IntPtr standardError) {
         Task<string> cancellation = controlInput ?? Task.Run(() => Console.In.ReadLine());
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-        IntPtr block = IntPtr.Zero, token = IntPtr.Zero, attributes = IntPtr.Zero, jobValue = IntPtr.Zero,
+        SafeAccessTokenHandle token = null;
+        IntPtr block = IntPtr.Zero, attributes = IntPtr.Zero, jobValue = IntPtr.Zero,
             handleValues = IntPtr.Zero, targetInput = IntPtr.Zero;
         bool initialized = false;
         try {
@@ -324,7 +329,7 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
             bool member;
             if (!IsProcessInJob(process, job, out member) || !member)
                 throw new InvalidOperationException("The candidate did not join the isolated Job.");
-            RestrictToken(sid);
+            RestrictToken(sid, token);
             Stage = "resume";
             CheckControl(cancellation, deadline);
             if (ResumeThread(thread) == 0xffffffff) throw new Win32Exception();
@@ -359,7 +364,7 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
             if (jobValue != IntPtr.Zero) Marshal.FreeHGlobal(jobValue);
             if (handleValues != IntPtr.Zero) Marshal.FreeHGlobal(handleValues);
             if (targetInput != IntPtr.Zero) CloseHandle(targetInput);
-            if (token != IntPtr.Zero) CloseHandle(token);
+            if (token != null) token.Dispose();
             if (block != IntPtr.Zero) Marshal.FreeHGlobal(block);
             Stop();
         }
