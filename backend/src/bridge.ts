@@ -228,6 +228,7 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
     through: number; summary: SessionSummary; receiptIds: string[]; nextReceipt: number; sent: boolean;
   }[] = [];
   const inFlight = new Map<string, Promise<void>>();
+  const componentStaging = new Map<string, Promise<void>>();
   let resolveReady!: () => void, rejectReady!: (error: Error) => void;
   const firstReady = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   if (options.waitForReady === false) void firstReady.catch((error: unknown) => {
@@ -374,12 +375,19 @@ export async function startBridge(session: JoinedSession, input: HostConfig,
         const bytes = Buffer.from(content.content, "utf8");
         if (bytes.length > MAX_UPLOAD) throw new Fault("COMPONENT_REFERENCE_TOO_LARGE", "The referenced component exceeds the attachment limit.");
         const digest = hash(bytes), target = path.join(journal.uploads, `component-${digest}.json`);
-        try { await writeFile(target, bytes, { flag: "wx", mode: 0o600 }); }
-        catch (error) {
-          if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
-          const info = await lstat(target);
-          if (!info.isFile() || info.isSymbolicLink() || hash(await readFile(target)) !== digest)
-            throw new Fault("COMPONENT_REFERENCE_CORRUPT", "The private component attachment cache does not match its recorded bytes.");
+        let staging = componentStaging.get(digest);
+        if (!staging) {
+          staging = writeFile(target, bytes, { flag: "wx", mode: 0o600 }).catch(async (error: unknown) => {
+            if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+            const info = await lstat(target);
+            if (!info.isFile() || info.isSymbolicLink() || hash(await readFile(target)) !== digest)
+              throw new Fault("COMPONENT_REFERENCE_CORRUPT", "The private component attachment cache does not match its recorded bytes.");
+          });
+          componentStaging.set(digest, staging);
+        }
+        try { await staging; }
+        finally {
+          if (componentStaging.get(digest) === staging) componentStaging.delete(digest);
         }
         componentAttachment = { reference, file: { type: "file", path: target, displayName: content.displayName } };
       }

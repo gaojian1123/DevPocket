@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile, symlink, rm, rename } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, symlink, rm, rename, realpath } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { promisify, stripVTControlCharacters } from "node:util";
@@ -98,8 +98,9 @@ test("a clean release snapshot builds and its pruned runtime resolves the portab
       assert.ok(safeToClean, "Retain the scoped release fixture when process cleanup is unconfirmed.");
       await rm(directory, { recursive: true, force: true });
     });
-    const snapshot = path.join(directory, "runtime");
-    await mkdir(snapshot);
+    const physical = path.join(directory, "runtime"), snapshot = path.join(directory, "runtime-alias");
+    await mkdir(physical);
+    await symlink(physical, snapshot, "junction");
     const archive = await packageRelease(repository, path.join(directory, "archive"));
     await tar.x({ cwd: snapshot, file: archive.file });
     await assert.rejects(readFile(path.join(snapshot, "packages", "components", "dist", "spec.js")), { code: "ENOENT" });
@@ -132,9 +133,9 @@ test("a clean release snapshot builds and its pruned runtime resolves the portab
       "const c=await import('@devpocket/components'); if(c.parseComponentSpec({type:'markdown',content:'offline'}).type!=='markdown')process.exit(1);" +
       "console.log(import.meta.resolve('@devpocket/components'));"],
     { cwd: snapshot, timeout: 15000 });
-    assert.ok(imported.stdout.trim().startsWith(pathToFileURL(path.join(snapshot, "packages", "components")).href + "/"));
-    assert.match((await exec(process.execPath, ["dist/cli.js", "--help"], { cwd: snapshot, timeout: 15000 })).stdout, /DevPocket/);
     const contract = path.join(snapshot, "packages", "components", "dist", "spec.js");
+    assert.equal(imported.stdout.trim(), pathToFileURL(await realpath(contract)).href);
+    assert.match((await exec(process.execPath, ["dist/cli.js", "--help"], { cwd: snapshot, timeout: 15000 })).stdout, /DevPocket/);
     await rename(contract, contract + ".not-runtime");
     await assert.rejects(exec(process.execPath, ["dist/cli.js", "--help"], { cwd: snapshot, timeout: 15000 }),
       (error) => error.code === 1 && /ERR_MODULE_NOT_FOUND/.test(error.stderr));

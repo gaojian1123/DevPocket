@@ -102,7 +102,10 @@ It does not send a message. On Send, the bridge resolves the same-session card
 and its digest and stages its safe contents as a private JSON attachment for the
 original runtime. This consumes one of the four attachment positions and leaves
 the user's question text unchanged. A missing, changed or evicted reference is
-an explicit failure, not a title-only substitute. The bridge retains at most
+an explicit failure, not a title-only substitute.
+Concurrent references to the same card wait for one complete staging write;
+their command IDs and runtime deliveries remain independent, and later uses
+still verify the completed attachment's integrity. The bridge retains at most
 32 MiB of reference records; private staging follows the existing attachment
 cleanup rules. Failed message records retain their reference and can be restored
 as a deliberately new draft.

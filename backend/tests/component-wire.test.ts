@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { readFile, writeFile } from "node:fs/promises";
+import fs, { readFile, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { test } from "node:test";
@@ -11,7 +12,7 @@ import {
   type ComponentRecord, type EventPage, type UserEvent,
 } from "../src/protocol.js";
 import type { JoinedSession, LocalAttachment } from "../src/runtime.js";
-import { secret } from "../src/security.js";
+import { hash, secret } from "../src/security.js";
 import { fixture, newId, nextFrame, sessionPath, wireHost } from "./harness.js";
 
 const owner = { instanceId: "wire-fixture", canvasId: "agenticdeck-canvas",
@@ -138,6 +139,86 @@ test("negotiated cards survive relay replay and references stage exact bytes wit
   assert.equal(peer.calls.length, 1);
   const outsider = await f.pair(f.host("Other fixture host").token);
   assert.equal((await f.request(`${route}/events`, outsider.token)).status, 403);
+});
+
+test("concurrent commands referencing one card wait for complete staging without merging their deliveries", async (t) => {
+  let bridge: Awaited<ReturnType<typeof startBridge>> | undefined, releaseWrite!: () => void;
+  const writing = new Promise<void>((resolve) => { releaseWrite = resolve; });
+  t.after(async () => {
+    releaseWrite();
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    await bridge?.close();
+  });
+  const f = await fixture(t), host = f.host(), phone = await f.pair(host.token), peer = componentPeer();
+  const route = sessionPath(host.hostId, peer.session.sessionId);
+  const dataDir = path.join(f.dataDir, "bridge");
+  bridge = await startBridge(peer.session, { hostId: host.hostId, token: host.token, relayUrl: f.url,
+    dataDir, allowInsecureLoopback: true });
+  let card: Extract<ComponentRecord, { status: "ready" }> | undefined;
+  await eventually(async () => {
+    const page = await (await f.request(`${route}/events`, phone.token)).json() as EventPage;
+    card = page.events.flatMap((event) =>
+      event.kind === "component" && event.data.status === "ready" ? [event.data] : [])[0];
+    return card !== undefined;
+  }, "A completed card must reach the relay before it can be referenced.");
+  assert.ok(card);
+  const reference = { componentId: card.componentId, sha256: card.sha256 };
+  const expected = Buffer.from(bridge.runtime.componentReferenceContent(reference).content);
+  const target = path.join(dataDir, host.hostId, peer.session.sessionId, "uploads", `component-${hash(expected)}.json`);
+  const originalWrite = fs.writeFile, lookup = bridge.runtime.componentReferenceContent.bind(bridge.runtime);
+  let writes = 0, lookups = 0, partial = false;
+  t.mock.method(bridge.runtime, "componentReferenceContent", (...args: Parameters<typeof lookup>) => {
+    lookups++;
+    return lookup(...args);
+  });
+  t.mock.method(fs, "writeFile", async (...args: Parameters<typeof writeFile>) => {
+    if (args[0] !== target || ++writes !== 1) return originalWrite(...args);
+    assert.deepEqual(args[1], expected);
+    assert.deepEqual(args[2], { flag: "wx", mode: 0o600 });
+    const handle = await fs.open(target, "wx", 0o600);
+    try {
+      await handle.writeFile(expected.subarray(0, 8));
+      partial = true;
+      await writing;
+      await handle.writeFile(expected.subarray(8));
+    } finally { await handle.close(); }
+  });
+  syncBuiltinESMExports();
+  const commands = ["First reference", "Second reference"].map((text) => ({
+    commandId: newId(), action: { type: "message" as const, text, attachmentIds: [], componentReference: reference },
+  }));
+  const settled = async (id: string) => {
+    let receipt: Receipt | undefined;
+    await eventually(async () => {
+      receipt = Receipt.parse(await (await f.request(`${route}/commands/${id}`, phone.token)).json());
+      return ["completed", "failed", "uncertain"].includes(receipt.status);
+    }, "Each independent referenced command must settle.");
+    return receipt!;
+  };
+  assert.equal((await f.request(`${route}/commands`, phone.token, commands[0])).status, 202);
+  await eventually(() => partial, "The first staging write must expose an incomplete file.");
+  assert.equal((await f.request(`${route}/commands`, phone.token, commands[1])).status, 202);
+  await eventually(() => lookups === 2, "Both distinct commands must reach reference staging.");
+  if (writes > 1) await settled(commands[1]!.commandId);
+  releaseWrite();
+  const receipts = await Promise.all(commands.map((command) => settled(command.commandId)));
+  assert.deepEqual(receipts.map((receipt) => receipt.status), ["completed", "completed"]);
+  assert.equal(writes, 1);
+  assert.deepEqual(peer.calls.map((call) => call.prompt).sort(), commands.map((command) => command.action.text).sort());
+  for (const call of peer.calls) {
+    assert.equal(call.files.length, 1);
+    assert.equal(call.files[0]!.path, target);
+    assert.deepEqual(call.contents, [JSON.parse(expected.toString())]);
+  }
+  assert.deepEqual(await readFile(target), expected);
+  await originalWrite(target, "tampered after completed staging");
+  const later = { ...commands[0]!, commandId: newId() };
+  assert.equal((await f.request(`${route}/commands`, phone.token, later)).status, 202);
+  const corrupt = await settled(later.commandId);
+  assert.equal(corrupt.status, "failed");
+  assert.equal(corrupt.error?.code, "COMPONENT_REFERENCE_CORRUPT");
+  assert.equal(peer.calls.length, 2, "A settled staging promise must not bypass later file integrity checks.");
 });
 
 test("a bridge renegotiates on reconnect and never sends new card fields to a strict legacy relay", async (t) => {

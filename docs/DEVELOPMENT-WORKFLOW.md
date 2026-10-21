@@ -1438,6 +1438,11 @@ It repeats the offline clean install before building and pruning the standalone
 runtime. This does not rely on, clear or change the runner's shared cache; only
 the fixture's child processes use its temporary cache, and their original
 deadlines and confirmed-cleanup requirements still apply.
+The runtime fixture deliberately uses an owned directory alias. Its resolved
+contract URL must equal the canonical URL of the exact owned `dist/spec.js`
+file, not a lexical directory prefix that rejects Windows path aliases.
+Only the known expected file is canonicalized; child output is compared as
+data and cannot select an additional filesystem lookup.
 
 The workflow suite's schema newline regression compiles the actual portable
 contract in its own isolated package fixture. It verifies the missing-export
