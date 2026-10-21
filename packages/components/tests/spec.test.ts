@@ -90,6 +90,22 @@ test("link handling permits explicit web destinations but no credentials or scri
   assert.equal(tableLink({ key: "id", label: "ID", type: "link" }, { id: "javascript:alert(1)" }), null);
 });
 
+test("link expansion stops reading substitutions once the URL cannot fit its bound", () => {
+  let reads = 0;
+  const row = { id: "View", get detail() { reads++; return "x".repeat(8000); } };
+  const href = "https://example.test/" + "{detail}".repeat(200);
+  assert.equal(tableLink({ key: "id", label: "ID", type: "link", href }, row), null);
+  assert.equal(reads, 2, "Do not expand every occurrence of an already oversized value.");
+  const prefix = "https://example.test/", exact = "x".repeat(2000 - prefix.length);
+  assert.equal(tableLink({ key: "id", label: "ID", type: "link", href: prefix + "{value}" }, { id: exact }), prefix + exact);
+  assert.equal(tableLink({ key: "id", label: "ID", type: "link", href: prefix + "{value}" }, { id: exact + "x" }), null);
+});
+
+test("invalid Unicode disables a templated link rather than throwing during projection or rendering", () => {
+  assert.equal(tableLink({ key: "id", label: "ID", type: "link", href: "https://example.test/{value}" },
+    { id: "\ud800" }), null);
+});
+
 test("date columns reject ambiguous dates and compare actual offset-qualified instants", () => {
   assert.equal(sortableDate("2026-10-19T08:00:00+08:00"), sortableDate("2026-10-19T00:00:00Z"));
   assert.equal(sortableDate("10/19/2026"), null);

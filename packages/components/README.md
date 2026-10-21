@@ -24,6 +24,9 @@ AgenticDeck compatibility.
   never fetches image resources.
 - Links must be absolute HTTP(S) URLs without credentials. User activation
   delegates navigation to the host; the renderer does not open a URL itself.
+  Template substitutions stop once they cannot fit the 2,000-character
+  link-input limit. Missing or malformed Unicode values disable the link
+  instead of throwing.
 
 The portable renderer exposes
 `renderComponent(element, spec, { view, theme, onOpenLink, onSizeChanged })`.

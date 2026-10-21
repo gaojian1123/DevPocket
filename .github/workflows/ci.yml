@@ -194,7 +194,7 @@ jobs:
           } else {
             if (!info.isFile() || info.isSymbolicLink() || info.size > 8 * 1024 * 1024) throw new Error("Unsupported private diagnostic input.");
             const text = fs.readFileSync(file, "utf8");
-            const pattern = /DEVPOCKET_RELEASE_FIXTURE_FAILURE (install|build|prune) (ENOTCACHED|ENOENT|EACCES|EPERM|EUSAGE|ETARGET|ERESOLVE|EINTEGRITY|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|E401|E403|E404|MISSING_SCRIPT|MODULE_NOT_FOUND|TYPESCRIPT_ERROR|UNKNOWN)\b/g;
+            const pattern = /DEVPOCKET_RELEASE_FIXTURE_FAILURE (install|build|prune|resolve) (ENOTCACHED|ENOENT|EACCES|EPERM|EUSAGE|ETARGET|ERESOLVE|EINTEGRITY|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|E401|E403|E404|MISSING_SCRIPT|MODULE_NOT_FOUND|TYPESCRIPT_ERROR|UNKNOWN|CASE_ONLY|INSTALLED_PATH|WORKSPACE_PATH|OTHER_FILE_URL|OTHER_OUTPUT)\b/g;
             const found = new Map();
             for (const item of text.matchAll(pattern)) found.set(`${item[1]}:${item[2]}`, { stage: item[1], code: item[2] });
             const failures = [...found.values()];

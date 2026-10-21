@@ -24,6 +24,37 @@ function releaseFixtureFailure(stage, error) {
   return new Error(`DEVPOCKET_RELEASE_FIXTURE_FAILURE ${stage} ${code}`, { cause: error });
 }
 
+function contractResolutionFailure(actual, expected, cause) {
+  let code = "OTHER_OUTPUT";
+  if (actual.toLowerCase() === expected.toLowerCase()) code = "CASE_ONLY";
+  else if (!/[\r\n]/.test(actual)) {
+    let url;
+    try { url = new URL(actual); }
+    catch (error) { if (!(error instanceof TypeError)) throw error; }
+    if (url?.protocol === "file:") {
+      code = /\/node_modules\/(?:@|%40)devpocket\/components\/dist\/spec\.js$/i.test(url.pathname) ? "INSTALLED_PATH"
+        : /\/packages\/components\/dist\/spec\.js$/i.test(url.pathname) ? "WORKSPACE_PATH" : "OTHER_FILE_URL";
+    }
+  }
+  return new Error(`DEVPOCKET_RELEASE_FIXTURE_FAILURE resolve ${code}`, { cause });
+}
+
+test("runtime resolution diagnostics never disclose URLs, paths or child output", () => {
+  const expected = "file:///C:/fixture/packages/components/dist/spec.js";
+  const cause = new assert.AssertionError({ actual: "PRIVATE_CANARY", expected, operator: "strictEqual" });
+  for (const [actual, code] of [[expected.toLowerCase(), "CASE_ONLY"],
+    ["file:///C:/PRIVATE_CANARY/node_modules/@devpocket/components/dist/spec.js", "INSTALLED_PATH"],
+    ["file:///C:/PRIVATE_CANARY/node_modules/%40devpocket/components/dist/spec.js", "INSTALLED_PATH"],
+    ["file:///C:/PRIVATE_CANARY/packages/components/dist/spec.js", "WORKSPACE_PATH"],
+    ["file:///C:/PRIVATE_CANARY/unknown.js", "OTHER_FILE_URL"], ["PRIVATE_CANARY", "OTHER_OUTPUT"],
+    ["https://example.test/PRIVATE_CANARY", "OTHER_OUTPUT"], [expected + "\nPRIVATE_CANARY", "OTHER_OUTPUT"]]) {
+    const failure = contractResolutionFailure(actual, expected, cause);
+    assert.equal(failure.message, `DEVPOCKET_RELEASE_FIXTURE_FAILURE resolve ${code}`);
+    assert.equal(failure.cause, cause);
+    assert.ok(!failure.message.includes("PRIVATE_CANARY"));
+  }
+});
+
 test("release fixture diagnostics expose only fixed stages and allowlisted failure codes", () => {
   for (const [output, code] of [["npm error code ENOTCACHED", "ENOTCACHED"],
     ["npm \u001b[31merror\u001b[0m code ERESOLVE", "ERESOLVE"],
@@ -134,7 +165,12 @@ test("a clean release snapshot builds and its pruned runtime resolves the portab
       "console.log(import.meta.resolve('@devpocket/components'));"],
     { cwd: snapshot, timeout: 15000 });
     const contract = path.join(snapshot, "packages", "components", "dist", "spec.js");
-    assert.equal(imported.stdout.trim(), pathToFileURL(await realpath(contract)).href);
+    const actual = imported.stdout.trim(), expected = pathToFileURL(await realpath(contract)).href;
+    try { assert.equal(actual, expected); }
+    catch (error) {
+      if (!(error instanceof assert.AssertionError)) throw error;
+      throw contractResolutionFailure(actual, expected, error);
+    }
     assert.match((await exec(process.execPath, ["dist/cli.js", "--help"], { cwd: snapshot, timeout: 15000 })).stdout, /DevPocket/);
     await rename(contract, contract + ".not-runtime");
     await assert.rejects(exec(process.execPath, ["dist/cli.js", "--help"], { cwd: snapshot, timeout: 15000 }),

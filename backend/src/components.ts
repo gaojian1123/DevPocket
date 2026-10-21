@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { COMPONENT_VERSION, ComponentError, parseComponentSpec, type ComponentSpec } from "@devpocket/components";
+import { COMPONENT_VERSION, ComponentError, parseComponentSpec, tableLink, type ComponentSpec } from "@devpocket/components";
 import { RequestId, decodeComponentPayload, type ComponentRecord, type ComponentReference, type UserEvent } from "./protocol.js";
 import { Fault, hash, isSensitiveFieldName, redact } from "./security.js";
 
@@ -54,6 +54,15 @@ function projectSpec(input: unknown): { spec: ComponentSpec; redacted: boolean }
       return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, clean(item, name)]));
     return value;
   };
+  if (original.type === "datagrid" && original.columns.some((column) => {
+    if (column.href === undefined) return false;
+    return clean(column.href) !== column.href || column.href.includes("{") && original.rows.some((row) => {
+      const target = tableLink(column, row);
+      return target === null || clean(target) !== target;
+    });
+  })) {
+    throw new ComponentError("COMPONENT_INVALID", "This component contains a link that cannot be safely projected. Review it in the original client.");
+  }
   let projected = clean(original);
   if (original.type === "datagrid") {
     const sensitiveColumns = original.columns.filter((column) => isSensitiveFieldName(column.key) || isSensitiveFieldName(column.label));

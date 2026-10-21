@@ -88,6 +88,11 @@ credential values in text use the shared redactor.
 Sensitive table columns with a static or templated `href` are rejected before
 transport and reference retention; masking only the displayed value cannot make
 those link targets safe. Ordinary links remain supported.
+Credential-bearing templates, including credentials revealed only after
+substituting ordinary row fields, are also rejected: masking the URL alone
+must not leave its source values in the transported or retained component.
+Unresolvable templates stay in the original client with an explicit unavailable
+card, rather than exporting row data whose link context cannot be checked.
 Recognized assignments mask complete quoted values, including escaped quotes;
 unterminated quotes fail closed. Bare values end at a line, comma or semicolon,
 while unquoted authorization headers are masked through their line.

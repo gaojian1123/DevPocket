@@ -5,6 +5,7 @@ export const MAX_COMPONENT_BYTES = 256 * 1024;
 export const MAX_TABLE_ROWS = 1000;
 export const MAX_TABLE_COLUMNS = 20;
 export const MAX_CHART_POINTS = 1000;
+const MAX_LINK_LENGTH = 2000;
 
 export type ComponentFailure = "COMPONENT_UNSUPPORTED" | "COMPONENT_INVALID" | "COMPONENT_TOO_LARGE";
 
@@ -44,7 +45,7 @@ const column = z.object({
   type: z.enum(["string", "number", "date", "link"]).optional(),
   align: z.enum(["left", "right", "center"]).optional(),
   hrefKey: field.optional(),
-  href: z.string().max(2000).optional(),
+  href: z.string().max(MAX_LINK_LENGTH).optional(),
 }).strict();
 
 const shape = z.discriminatedUnion("type", [
@@ -160,7 +161,7 @@ export function parseComponentSpec(input: unknown): ComponentSpec {
 }
 
 export function safeLink(value: string): string | null {
-  if (value.length > 2000 || /[\u0000-\u0020\u007f\\]/.test(value)) return null;
+  if (value.length > MAX_LINK_LENGTH || /[\u0000-\u0020\u007f\\]/.test(value)) return null;
   try {
     const url = new URL(value);
     return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password
@@ -177,11 +178,21 @@ export function tableLink(item: TableColumn, value: Record<string, CellValue>): 
     const target = value[item.hrefKey ?? item.key];
     return typeof target === "string" ? safeLink(target) : null;
   }
-  let missing = false;
+  let invalid = false, substituted = 0;
   const target = item.href.replace(/\{([^{}]+)\}/g, (_match, key: string) => {
+    if (invalid) return "";
     const fieldName = key === "value" ? item.key : key;
-    if (!own(value, fieldName) || value[fieldName] === null) { missing = true; return ""; }
-    return encodeURIComponent(String(value[fieldName]));
+    if (!own(value, fieldName) || value[fieldName] === null) { invalid = true; return ""; }
+    let encoded: string;
+    try { encoded = encodeURIComponent(String(value[fieldName])); }
+    catch (error) {
+      if (!(error instanceof URIError)) throw error;
+      invalid = true;
+      return "";
+    }
+    substituted += encoded.length;
+    if (substituted > MAX_LINK_LENGTH) { invalid = true; return ""; }
+    return encoded;
   });
-  return missing ? null : safeLink(target);
+  return invalid ? null : safeLink(target);
 }

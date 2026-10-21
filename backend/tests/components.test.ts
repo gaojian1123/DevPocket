@@ -219,13 +219,62 @@ test("sensitive link columns with static or templated hrefs are unavailable befo
   }
 });
 
+test("credential-bearing link templates cannot retain their otherwise ordinary source fields", async (t) => {
+  const canary = "LINK_TEMPLATE_CREDENTIAL_CANARY";
+  const cases = [
+    { name: "value placeholder", href: "https://example.test/?client_secret={value}", fields: [],
+      row: { id: canary } },
+    { name: "named placeholder", href: "https://example.test/?client_secret={target}", fields: ["target"],
+      row: { id: "View", target: canary } },
+    { name: "dynamic query name", href: "https://example.test/?{parameter}={value}", fields: ["parameter"],
+      row: { id: canary, parameter: "client_secret" } },
+    { name: "dynamic signature name and value", href: "https://example.test/?{parameter}={target}",
+      fields: ["parameter", "target"], row: { id: "View", parameter: "X-Amz-Signature", target: canary } },
+    { name: "userinfo placeholders", href: "https://{account}:{access}@example.test/", fields: ["account", "access"],
+      row: { id: "View", account: "fixture", access: canary } },
+    { name: "oversized resolved target", href: "https://example.test/?{parameter}={value}", fields: ["parameter"],
+      row: { id: canary.repeat(80), parameter: "client_secret" } },
+    { name: "incomplete template", href: "https://example.test/{missing}?{parameter}={value}", fields: ["parameter"],
+      row: { id: canary, parameter: "client_secret" } },
+    { name: "malformed template value", href: "https://example.test/?{parameter}={value}", fields: ["parameter"],
+      row: { id: canary + "\ud800", parameter: "client_secret" } },
+  ];
+  for (const value of cases) await t.test(value.name, () => {
+    const projection = new ComponentProjection(randomUUID());
+    projection.beginLive([owner]);
+    projection.observe(start("template", { type: "datagrid", columns: [
+      { key: "id", label: "Record", type: "link", href: value.href },
+      ...value.fields.map((key) => ({ key, label: key })),
+    ], rows: [value.row] }));
+    const output = projection.observe(finish("template")), record = output.find((item) => item.kind === "component")?.data;
+    assert.ok(record && record.status === "unavailable");
+    assert.equal(record.error.code, "COMPONENT_INVALID");
+    assert.ok(!JSON.stringify(output).includes(canary));
+    assert.throws(() => projection.referenceContent({ componentId: record.componentId, sha256: "0".repeat(64) }),
+      { code: "COMPONENT_REFERENCE_EXPIRED" });
+  });
+});
+
+test("unresolvable templates explicitly remain in the original client even for otherwise ordinary data", () => {
+  const projection = new ComponentProjection(randomUUID());
+  projection.beginLive([owner]);
+  projection.observe(start("incomplete-template", { type: "datagrid",
+    columns: [{ key: "name", label: "Name", type: "link", href: "https://example.test/{missing}" }],
+    rows: [{ name: "Ordinary data" }] }));
+  const record = projection.observe(finish("incomplete-template")).find((item) => item.kind === "component")?.data;
+  assert.ok(record && record.status === "unavailable");
+  assert.equal(record.error.code, "COMPONENT_INVALID");
+});
+
 test("ordinary static and templated link columns keep their complete transport and reference content", () => {
   const projection = new ComponentProjection(randomUUID());
   projection.beginLive([owner]);
-  for (const [index, href] of ["https://example.test/docs", "https://example.test/{target}"].entries()) {
+  for (const [index, href] of ["https://example.test/docs", "https://example.test/{target}",
+    "https://example.test/?{parameter}={target}"].entries()) {
     const call = `public-link-${index}`, spec = { type: "datagrid",
       columns: [{ key: "name", label: "Documentation", type: "link", href }],
-      rows: [{ name: "Guide", ...(index === 1 ? { target: "public-guide" } : {}) }] };
+      rows: [{ name: "Guide", ...(index > 0 ? { target: "public-guide" } : {}),
+        ...(index === 2 ? { parameter: "id" } : {}) }] };
     projection.observe(start(call, spec));
     const record = ready(projection.observe(finish(call)));
     assert.equal(record.redacted, false);

@@ -1443,6 +1443,11 @@ contract URL must equal the canonical URL of the exact owned `dist/spec.js`
 file, not a lexical directory prefix that rejects Windows path aliases.
 Only the known expected file is canonicalized; child output is compared as
 data and cannot select an additional filesystem lookup.
+If the exact comparison fails, a `resolve` diagnostic classifies only case
+differences, installed-package/workspace path suffixes, other file URLs or
+non-URL output. These fixed categories do not disclose the child output or
+assertion operands, perform no lookup of its path, and never establish runtime
+ownership or replace the failing assertion.
 
 The workflow suite's schema newline regression compiles the actual portable
 contract in its own isolated package fixture. It verifies the missing-export
