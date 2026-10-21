@@ -1426,6 +1426,18 @@ Observation still drains the runner after reaching its budget and marks itself
 incomplete. The private backend log retains at most 1 MiB of beginning/end data.
 Neither complete diagnostic collection nor exporter success means tests passed.
 
+The clean-release packaging regression separately records a fixed
+`install`/`build`/`prune` stage and an allowlisted failure code for its npm child.
+On backend failure, CI emits only distinct stage/code pairs from the bounded
+private Azure-test log; missing markers are explicitly unavailable. Raw child
+output remains private, and the original test failure and cleanup requirements
+are unchanged.
+
+The workflow suite's schema newline regression compiles the actual portable
+contract in its own isolated package fixture. It verifies the missing-export
+failure before compilation and then compares the regenerated schema bytes;
+parent-worktree build outputs cannot satisfy that prerequisite.
+
 The exporter revalidates identities/categories, reads only the selected
 `report.json` (at most 512 KiB) and `backend-tests.log` (at most 1 MiB), and emits
 at most 16 KiB. Linked inputs/directories and existing output files are refused.

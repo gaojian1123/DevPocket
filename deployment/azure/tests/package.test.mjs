@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, writeFile, symlink, rm, rename } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
-import { promisify } from "node:util";
+import { promisify, stripVTControlCharacters } from "node:util";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { test } from "node:test";
@@ -11,6 +11,31 @@ import { packageRelease } from "../package.mjs";
 import { runCommand } from "../../../scripts/process.mjs";
 
 const exec = promisify(execFile);
+
+function releaseFixtureFailure(stage, error) {
+  assert.ok(["install", "build", "prune"].includes(stage));
+  const output = stripVTControlCharacters(`${error.stdout ?? ""}\n${error.stderr ?? ""}`);
+  const npmCode = /\bnpm (?:error|ERR!) code ([A-Z0-9_]+)/i.exec(output)?.[1]?.toUpperCase();
+  const known = ["ENOTCACHED", "ENOENT", "EACCES", "EPERM", "EUSAGE", "ETARGET", "ERESOLVE",
+    "EINTEGRITY", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "E401", "E403", "E404"];
+  const code = known.includes(npmCode) ? npmCode : /Missing script:/i.test(output) ? "MISSING_SCRIPT"
+    : /ERR_MODULE_NOT_FOUND|Cannot find module/.test(output) ? "MODULE_NOT_FOUND"
+      : /error TS\d{4}/.test(output) ? "TYPESCRIPT_ERROR" : "UNKNOWN";
+  return new Error(`DEVPOCKET_RELEASE_FIXTURE_FAILURE ${stage} ${code}`, { cause: error });
+}
+
+test("release fixture diagnostics expose only fixed stages and allowlisted failure codes", () => {
+  for (const [output, code] of [["npm error code ENOTCACHED", "ENOTCACHED"],
+    ["npm \u001b[31merror\u001b[0m code ERESOLVE", "ERESOLVE"],
+    ['npm error Missing script: "build"', "MISSING_SCRIPT"], ["error TS2307: private-path", "TYPESCRIPT_ERROR"],
+    ["npm error code EPRIVATE_CANARY\npassword=PRIVATE_CANARY", "UNKNOWN"]]) {
+    const original = Object.assign(new Error("PRIVATE_CANARY"), { stderr: output });
+    const failure = releaseFixtureFailure("build", original);
+    assert.equal(failure.message, `DEVPOCKET_RELEASE_FIXTURE_FAILURE build ${code}`);
+    assert.equal(failure.cause, original);
+    assert.ok(!failure.message.includes("PRIVATE_CANARY"));
+  }
+});
 
 test("private release packaging is an allowlist snapshot, never the whole workspace", async (t) => {
   const parent = path.resolve("..", "..", ".data", "azure-tests");
@@ -78,7 +103,7 @@ test("a clean release snapshot builds and its pruned runtime resolves the portab
     const archive = await packageRelease(repository, path.join(directory, "archive"));
     await tar.x({ cwd: snapshot, file: archive.file });
     await assert.rejects(readFile(path.join(snapshot, "packages", "components", "dist", "spec.js")), { code: "ENOENT" });
-    const run = async (command) => {
+    const run = async (stage, command) => {
       safeToClean = false;
       try {
         const result = await runCommand("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
@@ -88,12 +113,12 @@ test("a clean release snapshot builds and its pruned runtime resolves the portab
         assert.ok(safeToClean, "Build process cleanup must be confirmed.");
       } catch (error) {
         safeToClean = error.processTreeStopped === true;
-        throw error;
+        throw releaseFixtureFailure(stage, error);
       }
     };
-    await run("npm ci --offline --ignore-scripts --no-audit --no-fund");
-    await run("npm run build");
-    await run("npm prune --omit=dev --ignore-scripts --offline --no-audit --no-fund");
+    await run("install", "npm ci --offline --ignore-scripts --no-audit --no-fund");
+    await run("build", "npm run build");
+    await run("prune", "npm prune --omit=dev --ignore-scripts --offline --no-audit --no-fund");
     for (const name of ["backend", "scripts", "extension", "deployment", "packages/components/src",
       "packages/components/web", "packages/components/build.mjs", "packages/components/tsconfig.json",
       "packages/components/README.md"]) {

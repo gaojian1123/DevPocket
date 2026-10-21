@@ -1555,9 +1555,25 @@ test("a device shard accepts current complete case and APK evidence without fabr
 
 test("schema regeneration preserves a Windows checkout's unchanged source bytes", async (t) => {
   const root = await repository(t);
+  for (const file of ["scripts/export-schema.ts", "backend/src/protocol.ts", "backend/src/security.ts",
+    "packages/components/package.json", "packages/components/tsconfig.json", "packages/components/src/spec.ts"]) {
+    const target = path.join(root, ...file.split("/"));
+    await mkdir(path.dirname(target), { recursive: true });
+    await copyFile(path.resolve(file), target);
+  }
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
+  await mkdir(path.join(root, "node_modules", "@devpocket"), { recursive: true });
+  await symlink(path.join(root, "packages", "components"), path.join(root, "node_modules", "@devpocket", "components"),
+    process.platform === "win32" ? "junction" : "dir");
   const schema = (await readFile("protocol.schema.json", "utf8")).replace(/\r?\n/g, "\r\n");
   await writeFile(path.join(root, "protocol.schema.json"), schema);
-  await exec(process.execPath, ["--import", "tsx", path.resolve("scripts/export-schema.ts")], { cwd: root });
+  const generate = () => exec(process.execPath, ["--import", "tsx", path.join(root, "scripts", "export-schema.ts")],
+    { cwd: root, timeout: 30000 });
+  await assert.rejects(generate(), (error) => error.code === 1 &&
+    /ERR_MODULE_NOT_FOUND/.test(error.stderr) && /spec\.js/.test(error.stderr));
+  await exec(process.execPath, [path.resolve("node_modules/typescript/bin/tsc"), "-p",
+    path.join(root, "packages", "components", "tsconfig.json")], { cwd: root, timeout: 30000 });
+  await generate();
   const actual = await readFile(path.join(root, "protocol.schema.json"));
   assert.equal(createHash("sha256").update(actual).digest("hex"),
     createHash("sha256").update(schema).digest("hex"), "Unchanged schema generation must preserve source bytes.");

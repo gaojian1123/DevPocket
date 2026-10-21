@@ -179,6 +179,29 @@ jobs:
         run: |
           node scripts\verification-ci.mjs --seal --unit backend --input .data\ci\backend\report.json --report .data\ci\backend\ci-report.json
           exit $LASTEXITCODE
+      - name: Explain bounded clean-release fixture failures
+        if: failure() && steps.verify.outcome == 'failure'
+        shell: pwsh
+        run: |
+          @'
+          const fs = require("node:fs");
+          const file = ".data/ci/backend/azure-tests.log";
+          let info;
+          try { info = fs.lstatSync(file); }
+          catch (error) { if (error.code !== "ENOENT") throw error; }
+          if (!info) {
+            console.log(JSON.stringify({ kind: "release-fixture-diagnostic", status: "unavailable", reason: "missing-log" }));
+          } else {
+            if (!info.isFile() || info.isSymbolicLink() || info.size > 8 * 1024 * 1024) throw new Error("Unsupported private diagnostic input.");
+            const text = fs.readFileSync(file, "utf8");
+            const pattern = /DEVPOCKET_RELEASE_FIXTURE_FAILURE (install|build|prune) (ENOTCACHED|ENOENT|EACCES|EPERM|EUSAGE|ETARGET|ERESOLVE|EINTEGRITY|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|E401|E403|E404|MISSING_SCRIPT|MODULE_NOT_FOUND|TYPESCRIPT_ERROR|UNKNOWN)\b/g;
+            const found = new Map();
+            for (const item of text.matchAll(pattern)) found.set(`${item[1]}:${item[2]}`, { stage: item[1], code: item[2] });
+            const failures = [...found.values()];
+            console.log(JSON.stringify({ kind: "release-fixture-diagnostic", status: failures.length ? "available" : "unavailable", failures }));
+          }
+          '@ | node
+          exit $LASTEXITCODE
       - name: Explain backend check outcomes
         id: diagnostics
         if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
