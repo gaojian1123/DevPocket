@@ -28,19 +28,6 @@ $runner = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (!([Security.Principal.WindowsPrincipal]$runner).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'The authorized hosted control identity is not administrative.'
 }
-Add-Type -Path (Join-Path $Control 'scripts\isolated-command.cs')
-$assignEnabled = [DevPocketIsolatedCommand]::PrepareCreationPrivileges()
-$capabilities = @{
-    kind = 'isolated-creation-capabilities'; acceptance = $false
-    assignPrimaryTokenEnabled = $assignEnabled; increaseQuotaEnabled = $true
-    assignability = 'requires-atomic-creation-probe'
-}
-$capabilityDirectory = Join-Path $Control '.data\ci\isolated'
-$null = New-Item -ItemType Directory -Path $capabilityDirectory -Force
-$capabilityFile = Join-Path $capabilityDirectory 'bootstrap-capabilities.json'
-if (Test-Path -LiteralPath $capabilityFile) { throw 'Creation capability evidence already exists.' }
-[IO.File]::WriteAllText($capabilityFile, ($capabilities | ConvertTo-Json -Compress))
-$capabilities | ConvertTo-Json -Compress
 $name = 'dpw_' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
 $state = Join-Path ([IO.Path]::GetPathRoot($Control)) $name
 if (Test-Path -LiteralPath $state) { throw 'Isolated worker state already exists.' }
@@ -52,14 +39,20 @@ $allow = [Security.AccessControl.AccessControlType]::Allow
 $deny = [Security.AccessControl.AccessControlType]::Deny
 $mutation = [Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership'
 $account = $null
+$serviceCreated = $false
+$serviceSid = $null
+$ownerPipe = $null
 $code = 78
 
-function Set-ProtectedDirectory([string]$Path, [bool]$CandidateRead) {
+function Set-ProtectedDirectory([string]$Path, [bool]$CandidateRead, [string]$ServiceRights = 'ReadAndExecute') {
     $acl = [Security.AccessControl.DirectorySecurity]::new()
     $acl.SetAccessRuleProtection($true, $false)
     $acl.SetOwner($runner.User)
     foreach ($identity in @($administrators, $system, $runner.User)) {
         $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', $inherit, $none, $allow))
+    }
+    if ($serviceSid) {
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($serviceSid, $ServiceRights, $inherit, $none, $allow))
     }
     if ($CandidateRead) {
         $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($account.SID, 'ReadAndExecute', $inherit, $none, $allow))
@@ -160,11 +153,67 @@ function Invoke-AtomicLaunchProbe {
     $null = New-Item -ItemType Directory -Path $temporary
     $script:identity = Join-Path $probePrivate 'identity.json'
     [IO.File]::WriteAllText($identity, (@{ user = $name; password = $password; sid = $account.SID.Value } | ConvertTo-Json -Compress))
+    $binaryDirectory = Join-Path $state 'supervisor-bin'
+    $null = New-Item -ItemType Directory -Path $binaryDirectory
+    Set-ProtectedDirectory $binaryDirectory $false
+    $supervisor = Join-Path $binaryDirectory 'supervisor.exe'
+    $compiler = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+    & $compiler /nologo /target:exe /reference:System.ServiceProcess.dll /reference:System.Web.Extensions.dll "/out:$supervisor" `
+        (Join-Path $Control 'scripts\isolated-command.cs') (Join-Path $Control 'scripts\windows-supervisor.cs')
+    if ($LASTEXITCODE -ne 0) { throw 'The fixed Windows supervisor did not compile.' }
+    $script:serviceName = 'dpws_' + [Guid]::NewGuid().ToString('N').Substring(0, 24)
+    $script:supervisorConfiguration = Join-Path $probePrivate 'supervisor.json'
+    $sc = Join-Path $env:SystemRoot 'System32\sc.exe'
+    & $sc create $serviceName 'type=' own 'start=' demand 'obj=' 'NT AUTHORITY\LocalService' 'binPath=' "`"$supervisor`""
+    if ($LASTEXITCODE -ne 0) { throw 'The task-scoped LocalService registration failed.' }
+    $script:serviceCreated = $true
+    & $sc sidtype $serviceName unrestricted
+    if ($LASTEXITCODE -ne 0) { throw 'The supervisor service SID could not be configured.' }
+    & $sc privs $serviceName 'SeAssignPrimaryTokenPrivilege/SeIncreaseQuotaPrivilege'
+    if ($LASTEXITCODE -ne 0) { throw 'The supervisor privilege list could not be restricted.' }
+    & $sc sdset $serviceName "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;$($runner.User.Value))"
+    if ($LASTEXITCODE -ne 0) { throw 'The supervisor control ACL could not be restricted.' }
+    $script:serviceSid = ([Security.Principal.NTAccount]::new("NT SERVICE\$serviceName")).Translate([Security.Principal.SecurityIdentifier])
+    Set-ProtectedDirectory $state $true
+    Set-ProtectedDirectory $controlCopy $true
+    Set-ProtectedDirectory $data $false
+    Set-ProtectedDirectory $binaryDirectory $false
+    Set-ProtectedDirectory $probePrivate $false 'Modify'
+    $pipeId = [Guid]::NewGuid().ToString('N')
+    $ownerPipeName = "devpocket-$pipeId-owner"
+    $nonce = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant()
+    $serviceConfiguration = @{
+        version = 1; service = $serviceName; serviceSid = $serviceSid.Value; runnerSid = $runner.User.Value; ownerPid = $PID
+        ownerPipe = $ownerPipeName; commandPipe = "devpocket-$pipeId-command"; nonce = $nonce
+        privateRoot = $probePrivate; identity = $identity
+        executableSha256 = (Get-FileHash -LiteralPath $supervisor -Algorithm SHA256).Hash.ToLowerInvariant()
+        probeNode = $tools.node; probeNodeSha256 = (Get-FileHash -LiteralPath $tools.node -Algorithm SHA256).Hash.ToLowerInvariant()
+        probeCwd = $controlCopy
+    }
+    [IO.File]::WriteAllText($supervisorConfiguration, ($serviceConfiguration | ConvertTo-Json -Depth 8 -Compress))
+    $supervisorHash = (Get-FileHash -LiteralPath $supervisorConfiguration -Algorithm SHA256).Hash.ToLowerInvariant()
+    & $sc config $serviceName 'binPath=' "`"$supervisor`" --service `"$supervisorConfiguration`" $supervisorHash"
+    if ($LASTEXITCODE -ne 0) { throw 'The immutable supervisor invocation could not be bound.' }
+    $pipeSecurity = [IO.Pipes.PipeSecurity]::new()
+    $pipeSecurity.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @($runner.User, $serviceSid, $system)) {
+        $pipeSecurity.AddAccessRule([IO.Pipes.PipeAccessRule]::new($sid, [IO.Pipes.PipeAccessRights]::FullControl, $allow))
+    }
+    $script:ownerPipe = [IO.Pipes.NamedPipeServerStreamAcl]::Create($ownerPipeName, [IO.Pipes.PipeDirection]::InOut, 1,
+        [IO.Pipes.PipeTransmissionMode]::Byte, ([IO.Pipes.PipeOptions]::Asynchronous -bor [IO.Pipes.PipeOptions]::FirstPipeInstance),
+        4096, 4096, $pipeSecurity, [IO.HandleInheritability]::None, [IO.Pipes.PipeAccessRights]::ChangePermissions)
+    $connected = $ownerPipe.WaitForConnectionAsync()
+    Start-Service -Name $serviceName
+    if (!$connected.Wait(30000)) { throw 'The supervisor owner pipe did not become ready.' }
+    $hello = [Text.Encoding]::UTF8.GetBytes($nonce + "`n")
+    $ownerPipe.Write($hello, 0, $hello.Length)
+    $ownerPipe.Flush()
     $configuration = @{
         version = 1; platform = 'win32'; mode = 'atomic-launch-probe'; group = 'tooling'
         control = $controlCopy; candidate = $probeHome; fixture = $probeHome; private = $probePrivate
         home = $probeHome; temporary = $temporary; identity = $identity; sid = $account.SID.Value
         tools = $tools; protectedPaths = @()
+        broker = @{ file = $supervisor; configuration = $supervisorConfiguration; sha256 = $supervisorHash }
     }
     $script:file = Join-Path $probePrivate 'configuration.json'
     [IO.File]::WriteAllText($file, ($configuration | ConvertTo-Json -Depth 8 -Compress))
@@ -256,50 +305,113 @@ try {
         $code = $LASTEXITCODE
     } finally { Pop-Location }
 } finally {
-    if ($account) {
-        foreach ($process in Get-CimInstance Win32_Process) {
-            $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid
-            if ($owner.ReturnValue -eq 0 -and $owner.Sid -eq $account.SID.Value) {
-                throw 'Candidate processes remain; isolated worker cleanup is unconfirmed.'
-            }
-        }
-        Remove-LocalUser -SID $account.SID
+    $cleanupIssues = [Collections.Generic.List[object]]::new()
+    $pipeClosed = !$ownerPipe
+    $serviceRemoved = !$serviceCreated
+    $accountRemoved = !$account
+    try {
+        if ($ownerPipe) { $ownerPipe.Dispose() }
+        $pipeClosed = $true
+    } catch { $cleanupIssues.Add(@{ stage = 'owner-pipe'; error = $_.Exception.GetType().Name }) }
+    if ($serviceCreated) {
+        try {
+            $service = Get-Service -Name $serviceName -ErrorAction Stop
+            try {
+                if ($service.Status -ne [ServiceProcess.ServiceControllerStatus]::Stopped) { Stop-Service -Name $serviceName -ErrorAction Stop }
+                $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(40))
+            } finally { $service.Dispose() }
+            & (Join-Path $env:SystemRoot 'System32\sc.exe') delete $serviceName
+            if ($LASTEXITCODE -ne 0) { throw 'The temporary supervisor service was not deleted.' }
+            $deletionDeadline = [DateTime]::UtcNow.AddSeconds(10)
+            do {
+                $remainingService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+                if (!$remainingService) { break }
+                Start-Sleep -Milliseconds 100
+            } while ([DateTime]::UtcNow -lt $deletionDeadline)
+            if ($remainingService) { throw 'The temporary supervisor service still exists.' }
+            $serviceRemoved = $true
+        } catch { $cleanupIssues.Add(@{ stage = 'service'; error = $_.Exception.GetType().Name }) }
     }
-    if ($controlCopy) {
-        $source = Join-Path $controlCopy '.data\ci\isolated'
-        $destination = Join-Path $Control '.data\ci\isolated'
-        if (Test-Path -LiteralPath $source) {
+    if ($serviceRemoved) {
+        try {
+            if ($account) {
+                foreach ($process in Get-CimInstance Win32_Process) {
+                    $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid
+                    if ($owner.ReturnValue -eq 0 -and $owner.Sid -eq $account.SID.Value) {
+                        throw 'Candidate processes remain; isolated worker cleanup is unconfirmed.'
+                    }
+                }
+                Remove-LocalUser -SID $account.SID
+            }
+            $accountRemoved = $true
+        } catch { $cleanupIssues.Add(@{ stage = 'candidate-account'; error = $_.Exception.GetType().Name }) }
+    } elseif ($account) {
+        $cleanupIssues.Add(@{ stage = 'candidate-account'; error = 'ServiceCleanupUnconfirmed' })
+    }
+    try {
+        if ($controlCopy) {
+            $source = Join-Path $controlCopy '.data\ci\isolated'
+            $destination = Join-Path $Control '.data\ci\isolated'
             $null = New-Item -ItemType Directory -Path $destination -Force
-            foreach ($name in @('report.json', 'isolation-proof.json', 'isolation-negative-report.json',
-                'bootstrap-failure.json', 'atomic-launch-capability.json')) {
-                $inputFile = Join-Path $source $name
+            if (Test-Path -LiteralPath $source) {
+                foreach ($name in @('report.json', 'isolation-proof.json', 'isolation-negative-report.json',
+                    'bootstrap-failure.json', 'atomic-launch-capability.json')) {
+                    if ($cleanupIssues.Count -and $name -in @('report.json', 'isolation-proof.json')) { continue }
+                    $inputFile = Join-Path $source $name
+                    if (Test-Path -LiteralPath $inputFile) {
+                        $item = Get-Item -LiteralPath $inputFile
+                        if ($item.Length -gt 1MB -or $item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                            throw 'Invalid isolated worker output.'
+                        }
+                        $output = [IO.File]::Open((Join-Path $destination $name), [IO.FileMode]::CreateNew)
+                        try { $output.Write([IO.File]::ReadAllBytes($inputFile)); $output.Flush($true) } finally { $output.Dispose() }
+                    }
+                }
+                if (!$cleanupIssues.Count -and $code -eq 0 -and $Group -in @('android', 'device') -and $Mode -eq 'worker') {
+                    $artifacts = Join-Path $destination 'artifacts'
+                    $null = New-Item -ItemType Directory -Path $artifacts
+                    foreach ($name in @('app-debug.apk', 'app-debug-androidTest.apk')) {
+                        $inputFile = Join-Path $source "artifacts\$name"
+                        $item = Get-Item -LiteralPath $inputFile
+                        if ($item.Length -gt 256MB -or $item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                            throw 'Invalid isolated build artifact.'
+                        }
+                        $output = [IO.File]::Open((Join-Path $artifacts $name), [IO.FileMode]::CreateNew)
+                        $inputStream = [IO.File]::OpenRead($inputFile)
+                        try { $inputStream.CopyTo($output); $output.Flush($true) }
+                        finally { $inputStream.Dispose(); $output.Dispose() }
+                    }
+                }
+            }
+            foreach ($diagnosticName in @('service-capabilities.json', 'service-failure.json')) {
+                $inputFile = Join-Path (Join-Path $state 'launch-private') $diagnosticName
                 if (Test-Path -LiteralPath $inputFile) {
                     $item = Get-Item -LiteralPath $inputFile
-                    if ($item.Length -gt 1MB -or $item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-                        throw 'Invalid isolated worker output.'
-                    }
-                    $output = [IO.File]::Open((Join-Path $destination $name), [IO.FileMode]::CreateNew)
+                    if ($item.Length -gt 64KB -or $item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Invalid supervisor diagnostic.' }
+                    $output = [IO.File]::Open((Join-Path $destination $diagnosticName), [IO.FileMode]::CreateNew)
                     try { $output.Write([IO.File]::ReadAllBytes($inputFile)); $output.Flush($true) } finally { $output.Dispose() }
                 }
             }
-            if ($code -eq 0 -and $Group -in @('android', 'device') -and $Mode -eq 'worker') {
-                $artifacts = Join-Path $destination 'artifacts'
-                $null = New-Item -ItemType Directory -Path $artifacts
-                foreach ($name in @('app-debug.apk', 'app-debug-androidTest.apk')) {
-                    $inputFile = Join-Path $source "artifacts\$name"
-                    $item = Get-Item -LiteralPath $inputFile
-                    if ($item.Length -gt 256MB -or $item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-                        throw 'Invalid isolated build artifact.'
-                    }
-                    $output = [IO.File]::Open((Join-Path $artifacts $name), [IO.FileMode]::CreateNew)
-                    $inputStream = [IO.File]::OpenRead($inputFile)
-                    try { $inputStream.CopyTo($output); $output.Flush($true) }
-                    finally { $inputStream.Dispose(); $output.Dispose() }
-                }
-            }
         }
+    } catch { $cleanupIssues.Add(@{ stage = 'diagnostic-publication'; error = $_.Exception.GetType().Name }) }
+    if ($serviceRemoved -and $accountRemoved) {
+        try {
+            if ($identity -and (Test-Path -LiteralPath $identity)) { Remove-Item -LiteralPath $identity }
+            if ($file -and (Test-Path -LiteralPath $file)) { Remove-Item -LiteralPath $file }
+            if ($supervisorConfiguration -and (Test-Path -LiteralPath $supervisorConfiguration)) { Remove-Item -LiteralPath $supervisorConfiguration }
+        } catch { $cleanupIssues.Add(@{ stage = 'private-config'; error = $_.Exception.GetType().Name }) }
     }
-    if ($identity -and (Test-Path -LiteralPath $identity)) { Remove-Item -LiteralPath $identity }
-    if ($file -and (Test-Path -LiteralPath $file)) { Remove-Item -LiteralPath $file }
+    $cleanupDirectory = Join-Path $Control '.data\ci\isolated'
+    $null = New-Item -ItemType Directory -Path $cleanupDirectory -Force
+    $cleanupReport = @{
+        version = 1; kind = 'windows-supervisor-cleanup'; acceptance = $false
+        status = $(if ($cleanupIssues.Count) { 'blocked' } else { 'completed' })
+        ownerPipeClosed = $pipeClosed; serviceRemoved = $serviceRemoved; candidateAccountRemoved = $accountRemoved
+        issues = @($cleanupIssues.ToArray())
+    }
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($cleanupReport | ConvertTo-Json -Depth 5 -Compress) + "`n")
+    $output = [IO.File]::Open((Join-Path $cleanupDirectory 'bootstrap-cleanup.json'), [IO.FileMode]::CreateNew)
+    try { $output.Write($bytes); $output.Flush($true) } finally { $output.Dispose() }
+    if ($cleanupIssues.Count) { throw 'Hosted cleanup remains blocked; inspect bootstrap-cleanup.json.' }
 }
 exit $code

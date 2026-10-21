@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { runCommand, spawnOwnedCommand, stopOwnedProcess } from "../process.mjs";
-import { ownsLinuxListener, parseLinuxProcess } from "../linux-emulator.mjs";
+import { ownsLinuxListener } from "../linux-emulator.mjs";
+import { fixture, readWhenReady, alive, checkInterruption } from "./fixtures/linux-process.mjs";
 import { createNativeLifecycleCapture } from "../native-lifecycle.mjs";
 import { prepareAndroidRuntime } from "../android-runner.mjs";
 import { waitForAndroid, withAndroidEmulator } from "../android-emulator.mjs";
@@ -16,27 +17,6 @@ import { createDeviceDiagnostics } from "../device-diagnostics.mjs";
 
 const exec = promisify(execFile);
 assert.equal(process.platform, "linux", "These real Linux lifecycle checks must run on the hosted Ubuntu job.");
-
-async function fixture(t) {
-  await mkdir(".data/tests", { recursive: true });
-  const directory = await mkdtemp(path.resolve(".data/tests/linux-process-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  return directory;
-}
-
-async function readWhenReady(file) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    try { return await readFile(file, "utf8"); }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  throw new Error("Owned Linux fixture did not become ready.");
-}
-
-async function alive(pid) {
-  try { return parseLinuxProcess(await readFile(`/proc/${pid}/stat`, "utf8")).state !== "Z"; }
-  catch (error) { if (error.code === "ENOENT") return false; throw error; }
-}
 
 test("hosted preparation snapshots the JDK cache alias and trust store without changing their sources", async (t) => {
   const directory = await fixture(t), source = path.join(directory, "jdk"), alias = path.join(directory, "cache");
@@ -104,26 +84,8 @@ test("the Linux owner reaps detached descendants after an ordinary launcher exit
 });
 
 test("Linux timeout and cancellation terminate and reap only their owned process family", async (t) => {
-  for (const [cancelled, privileged] of [[false, false], [true, false], [false, true], [true, true]]) {
-    await t.test(`${privileged ? "privileged " : ""}${cancelled ? "cancellation" : "timeout"}`, async (t) => {
-      const directory = await fixture(t), marker = path.join(directory, "child.pid");
-      const program = [
-        "const {spawn}=require('node:child_process');const fs=require('node:fs');",
-        "const child=spawn(process.execPath,['-e','setTimeout(()=>{},60000)'],{detached:true,stdio:'inherit'});",
-        `child.once('spawn',()=>fs.writeFileSync(${JSON.stringify(marker)},String(child.pid)));setInterval(()=>{},1000);`,
-      ].join("\n");
-      const cancellation = new AbortController();
-      const running = runCommand(process.execPath, ["-e", program],
-        { timeoutMs: cancelled ? 5000 : 1000, graceMs: 250, signal: cancellation.signal, privileged })
-        .then(() => ({ passed: true }), (error) => ({ error }));
-      const pid = Number(await readWhenReady(marker));
-      if (cancelled) cancellation.abort();
-      const outcome = await running;
-      assert.ok(outcome.error, "An interrupted command must fail, not return success.");
-      assert.equal(outcome.error.processTreeStopped, true);
-      assert.equal(await alive(pid), false);
-      assert.equal(await alive(process.pid), true);
-    });
+  for (const cancelled of [false, true]) {
+    await t.test(cancelled ? "cancellation" : "timeout", (t) => checkInterruption(t, cancelled, false));
   }
 });
 

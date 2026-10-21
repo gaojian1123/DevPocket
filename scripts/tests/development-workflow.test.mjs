@@ -57,6 +57,7 @@ async function copiedController(root, beforeLoad) {
   for (const input of inputs.files) {
     const bytes = await readFile(path.join(inputs.directory, input.name));
     assert.equal(sha256(bytes), input.sha256);
+    await mkdir(path.dirname(path.join(directory, input.name)), { recursive: true });
     await writeFile(path.join(directory, input.name), bytes, { flag: "wx" });
   }
   await beforeLoad?.(directory);
@@ -2347,8 +2348,21 @@ test("candidate implementation capture includes every verification adapter and r
     assert.match(captured.files.find((file) => file.name === name)?.sha256 ?? "", /^[a-f0-9]{64}$/);
   }
   await requireCandidateImplementation(captured);
+  for (const name of ["windows-supervisor.cs", "tests/linux-privileged-process.test.mjs", "tests/fixtures/linux-process.mjs"]) {
+    assert.ok(captured.files.some((file) => file.name === name));
+    assert.equal(isVerificationPolicyPath(`scripts/${name}`), true);
+  }
   const legacy = { ...captured, files: captured.files.filter((file) => !verificationInputs.includes(file.name)) };
   await assert.rejects(requireCandidateImplementation(legacy), /captured controller\/helper implementation/);
+});
+
+test("candidate implementation capture rejects nested linked input directories", async (t) => {
+  const { root } = await workspace(t), { directory } = await copiedController(root);
+  const original = path.join(directory, "tests"), target = path.join(directory, "actual-tests");
+  await fs.rename(original, target);
+  await symlink(target, original, process.platform === "win32" ? "junction" : "dir");
+  try { await assert.rejects(captureCandidateImplementation(directory), /implementation input is unavailable/); }
+  finally { await rm(original); await fs.rename(target, original); }
 });
 
 test("cold capture only settles byte-identical Windows metadata, never a changed executable input", async (t) => {
@@ -3583,6 +3597,7 @@ test("frozen controller continues to use approved code while candidate tools cha
   const original = await captureCandidateImplementation();
   await mkdir(path.join(root, "scripts"));
   for (const file of original.files) {
+    await mkdir(path.dirname(path.join(root, "scripts", file.name)), { recursive: true });
     await writeFile(path.join(root, "scripts", file.name), await readFile(path.join(original.directory, file.name)));
   }
   const { freezeDevelopmentController } = await import("../development-controller.mjs");

@@ -119,21 +119,29 @@ high-identity-only DACL; POSIX creation modes do not establish Windows privacy.
 The negative fixture must reject evidence reads as well as overwrite/deletion.
 Only bounded named reports and APKs are staged for upload.
 
-Windows requires the control token's existing `SeIncreaseQuotaPrivilege`.
-`SeAssignPrimaryTokenPrivilege` is enabled only when already present; its absence
-is recorded rather than assumed to prove that a particular token is unassignable.
-The actual atomic API remains the authority for that decision. A benign fixed
-Node launch must pass before candidate setup or the negative fixture; a native
-rejection retains its exact stage/error code and blocks execution. This does not
-grant new OS user rights, install a service, or fall back to a weaker launcher. `LogonUserW` and
+The original hosted Windows runner token reached `CreateProcessAsUserW` and
+failed with native error 1314 while `SeAssignPrimaryTokenPrivilege` was absent
+and quota privilege was enabled. The prepared replacement uses a uniquely named,
+demand-start, own-process `LocalService` SCM module, not `LocalSystem` and not an
+elevated candidate. This adds a separately authorized CI-only service lifecycle:
+create/configure/start/stop/delete. It does not change account-level user rights.
+The SCM required-privilege list retains only the existing assign-primary-token
+and quota privileges (plus the platform's unavoidable traverse privilege).
+The actual service SID, identity and privilege availability are checked at startup.
+
+The trusted Node controller retains the original runner identity. Its owned
+command runner invokes a hash-bound service client; only the service calls the
+existing low-token launcher. A private owner pipe, task nonce and authenticated
+SCM/pipe process identity bind the service to that invocation. Neither pipe is
+inherited by the candidate. The current service accepts one fixed benign Node
+marker command only; arbitrary candidate commands remain disabled. `LogonUserW` and
 `CreateProcessAsUserW` attach the target to a kill-on-close Job through the
 creation-time Job-list attribute before it can execute. The helper reads control
 input without blocking startup and checks cancellation before resuming the target.
 Only target standard I/O handles are inherited; Windows candidate stdin is EOF,
 not the privileged cancellation pipe. The original Store-PowerShell compatibility path is
-unchanged. Actual separate-account token assignability still requires hosted
-evidence; the documented restricted-caller-token exception is not assumed to
-apply to a token for another account.
+unchanged. A service capability result is not source verification or isolation
+acceptance. Service operations never run on the developer's machine.
 Windows ancestor handling remains blocked. Attribute checks and DACL
 read-modify-write are bound to the same opened non-reparse object, but neither
 attempted opening mode has established the required non-propagating update.
@@ -153,12 +161,21 @@ The dispatch route stays disabled until a supported ancestor strategy and the
 actual cross-account process-creation capability are established.
 The current Windows diagnostic path allocates only owned scratch, a trusted
 control copy and private credentials, then runs the fixed benign Node launch
-through the same owned-runner/isolated-command path before broad ACL setup.
+through the owned runner, LocalService client and atomic isolated-command module
+before broad ACL setup.
 It loads no candidate code. `atomic-launch-capability.json` records only that
 capability with `acceptance: false`; the bootstrap deliberately exits nonzero
 even when the probe succeeds. It cannot produce an isolation proof or qualify
 the required gate. This diagnostic stop must be removed only after the remaining
 ancestor protection is implemented and verified.
+The service must stop and disappear before the temporary candidate account or
+private credentials are removed. Cleanup stages still attempt service removal
+and bounded diagnostic publication after an owner-pipe failure.
+`bootstrap-cleanup.json` records each failed stage; any cleanup failure blocks
+acceptance reports and build artifacts, without hiding capability/failure
+diagnostics. Missing completion, a mismatched request, unknown cleanup or a
+surviving service remains a failure. The client never reconnects and replays a
+possibly admitted command.
 
 Linux keeps the root process owner outside `setpriv`, drops the target's groups
 and capabilities and sets `no_new_privs`. It consumes queued cancellation/EOF and
@@ -180,6 +197,12 @@ Backend installation, Python preflight and operational commands select the same
 candidate-owned venv. Its PATH prefix applies only to low-identity commands, never
 to the privileged owner; ambient `NODE_OPTIONS` remains unset so native startup
 binding is preserved.
+Linux platform checks are partitioned without dropping the ordinary CI suite:
+the fixed control checkout runs the privilege-dependent lifecycle checks before
+the candidate command scope is installed; candidate-safe files run under the
+low identity. `trusted-platform-preparation.json` retains the controller source
+separately and is not candidate verification. A skipped check is not a passing
+preparation result, and the candidate is never given sudo to make a test pass.
 
 The real bootstrap's negative test installs a fixture whose lifecycle hook tries
 to replace control, evidence, ancestors and runner channels and leaves a detached

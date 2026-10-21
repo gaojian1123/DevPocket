@@ -8,6 +8,8 @@ const implementationFiles = [...new Set([...nativeFiles, "native-candidate.mjs",
   "development-policy.mjs", "development-controller.mjs", "isolated-verification.mjs",
   "isolated-worker.mjs", "isolated-worker.ps1", "isolated-worker.py", "isolated-worker-probe.mjs",
   "isolated-command.cs", "isolated-command.ps1", "isolated-command.py",
+  "windows-supervisor.cs",
+  "tests/linux-privileged-process.test.mjs", "tests/fixtures/linux-process.mjs",
   "verification.mjs", "verification-policy.mjs", "process.mjs", "device-run.mjs", "worker-diagnostics.mjs",
   "device-diagnostics.mjs", "diagnostic-errors.mjs", "bounded-worker-log.mjs", "diagnostic-publication.mjs",
   "native-lifecycle.mjs", "verification-executor.mjs", "verification-backend.mjs", "verification-android.mjs",
@@ -20,7 +22,9 @@ export async function captureCandidateImplementation(directory = fileURLToPath(n
   directory = await realpath(directory);
   const files = await Promise.all(implementationFiles.map(async (name) => {
     const file = path.join(directory, name), info = await lstat(file);
-    if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024) throw new Error("Candidate implementation input is unavailable.");
+    if (!info.isFile() || info.isSymbolicLink() || await realpath(file) !== file || info.size > 1024 * 1024) {
+      throw new Error("Candidate implementation input is unavailable.");
+    }
     const input = await open(file, "r");
     try {
       let first;

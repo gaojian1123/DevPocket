@@ -210,7 +210,8 @@ def main(diagnostics):
                     raise RuntimeError("The owned publication directory changed.")
                 os.chown(directory, runner.pw_uid, runner.pw_gid)
                 os.chmod(directory, 0o700)
-            for name in ("report.json", "isolation-proof.json", "isolation-negative-report.json", "bootstrap-failure.json"):
+            for name in ("report.json", "isolation-proof.json", "isolation-negative-report.json", "bootstrap-failure.json",
+                         "trusted-platform-preparation.json"):
                 source = report_directory / name
                 if source.is_file() and not source.is_symlink() and source.stat().st_size <= 1024 * 1024:
                     with (destination / name).open("xb") as output:

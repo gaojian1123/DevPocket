@@ -10,7 +10,7 @@ import { git, sourceSnapshot, withGitExecutable } from "./git-state.mjs";
 import { executeVerification, verificationPlan, combineVerification, verificationFault, verificationFailure } from "./verification.mjs";
 import { isolatedContext } from "./isolated-verification.mjs";
 import { WORKFLOW_TEST_FILES } from "./test-workflow.mjs";
-import { LINUX_PLATFORM_TESTS } from "./backend-diagnostics.mjs";
+import { LINUX_CANDIDATE_PLATFORM_TESTS, LINUX_PRIVILEGED_PLATFORM_TESTS } from "./backend-diagnostics.mjs";
 import { readDiagnosticReport } from "./worker-diagnostics.mjs";
 import { failureDetails } from "./diagnostic-errors.mjs";
 import { readWorkerLogTail, writeBoundedWorkerLog } from "./bounded-worker-log.mjs";
@@ -63,6 +63,7 @@ async function immutableJson(file, value, maximum = 1024 * 1024) {
   const output = await open(file, "wx", 0o600);
   try { await output.writeFile(bytes); await output.sync(); }
   finally { await output.close(); }
+  return digest(bytes);
 }
 
 async function configurationFrom(file) {
@@ -86,6 +87,14 @@ async function configurationFrom(file) {
     const executable = config.tools?.[name];
     if (!path.isAbsolute(executable) || !(await lstat(executable)).isFile()) throw new Error("A fixed worker tool is unavailable.");
   }
+  if (config.platform === "win32") {
+    const broker = config.broker;
+    if (!broker || !path.isAbsolute(broker.file) || !(await lstat(broker.file)).isFile() ||
+        path.dirname(broker.configuration ?? "") !== config.private || !/^[a-f0-9]{64}$/.test(broker.sha256 ?? "") ||
+        digest(await readFile(broker.configuration)) !== broker.sha256) {
+      throw new Error("The private Windows service configuration is unavailable or changed.");
+    }
+  }
   return config;
 }
 
@@ -104,14 +113,16 @@ export function isolatedCommandBoundary(configuration, ownerEnvironment, candida
       timeoutMs: options.timeoutMs ?? 30000, environment,
       ...(configuration.platform === "win32" ? { identity: configuration.identity }
         : { uid: configuration.uid, gid: configuration.gid }) };
-    await immutableJson(requestFile, request, 65536);
+    const requestSha256 = await immutableJson(requestFile, request, 65536);
+    const broker = configuration.platform === "win32" ? configuration.broker : null;
     let result, failure, receipt, dispatched = false;
     try {
       options.signal?.throwIfAborted();
       const windows = configuration.platform === "win32";
       dispatched = true;
-      result = await execute(windows ? configuration.tools.pwsh : configuration.tools.python3,
-        windows ? ["-NoProfile", "-NonInteractive", "-File", path.join(controlRoot, "scripts", "isolated-command.ps1"),
+      result = await execute(broker ? broker.file : windows ? configuration.tools.pwsh : configuration.tools.python3,
+        broker ? ["--client", broker.configuration, broker.sha256, requestFile]
+          : windows ? ["-NoProfile", "-NonInteractive", "-File", path.join(controlRoot, "scripts", "isolated-command.ps1"),
           "-Request", requestFile]
           : ["-I", path.join(controlRoot, "scripts", "isolated-command.py"), requestFile],
         { ...options, cwd: controlRoot, env: ownerEnvironment, privileged: !windows });
@@ -135,7 +146,8 @@ export function isolatedCommandBoundary(configuration, ownerEnvironment, candida
     const interruptionKnown = receipt?.interruption == null || ["cancelled", "timeout"].includes(receipt.interruption);
     const outcome = result?.commandOutcome ?? failure?.commandOutcome;
     const outerStopped = (result?.processTreeStopped ?? failure?.processTreeStopped) === true;
-    const consistent = receipt?.version === 1 && receipt.id === id && admissionKnown && interruptionKnown &&
+    const consistent = receipt?.version === 1 && receipt.id === id &&
+      (!broker || receipt.requestSha256 === requestSha256) && admissionKnown && interruptionKnown &&
       typeof receipt.processTreeStopped === "boolean" &&
       (receipt.status === "blocked" && receipt.exitCode === null ||
         receipt.status === "executed" && receipt.started === true && Number.isInteger(receipt.exitCode) &&
@@ -294,6 +306,26 @@ async function stageCandidateApks(configuration, directory) {
   }
 }
 
+export async function runIsolatedPlatformChecks(configuration, root, files, signal) {
+  const source = await sourceSnapshot(root), checks = [];
+  for (const file of files) {
+    const startedAt = new Date().toISOString();
+    const output = await runCommand(configuration.tools.node, ["--disable-sigusr1", "--test", "--test-reporter=tap", file],
+      { cwd: root, timeoutMs: 10 * 60_000, signal });
+    const counts = Object.fromEntries(["tests", "pass", "fail", "cancelled", "skipped"].map((name) => {
+      const matches = [...output.stdout.matchAll(new RegExp(`^# ${name} (\\d+)\\r?$`, "gm"))];
+      if (matches.length !== 1) throw verificationFault("collector-failed");
+      return [name, Number(matches[0][1])];
+    }));
+    if (counts.tests < 1 || counts.pass !== counts.tests || counts.fail || counts.cancelled || counts.skipped ||
+        output.processTreeStopped !== true) throw verificationFault("check-failed");
+    if (!same(await sourceSnapshot(root), source)) throw verificationFault("source-changed");
+    checks.push({ file, counts, startedAt, completedAt: new Date().toISOString(),
+      exitCode: output.commandOutcome.exitCode, processTreeStopped: output.processTreeStopped });
+  }
+  return { source, checks };
+}
+
 async function installCandidate(configuration) {
   const root = configuration.candidate;
   await runCommand(configuration.tools.pwsh,
@@ -309,20 +341,7 @@ async function installCandidate(configuration) {
       { cwd: root, timeoutMs: 15 * 60_000 });
   }
   if (configuration.group === "device") {
-    const source = await sourceSnapshot(root);
-    for (const file of LINUX_PLATFORM_TESTS) {
-      const output = await runCommand(configuration.tools.node, ["--disable-sigusr1", "--test", "--test-reporter=tap", file],
-        { cwd: root, timeoutMs: 10 * 60_000 });
-      const counts = Object.fromEntries(["tests", "pass", "fail", "cancelled", "skipped"].map((name) => {
-        const matches = [...output.stdout.matchAll(new RegExp(`^# ${name} (\\d+)\\r?$`, "gm"))];
-        if (matches.length !== 1) throw verificationFault("collector-failed");
-        return [name, Number(matches[0][1])];
-      }));
-      if (counts.tests < 1 || counts.pass !== counts.tests || counts.fail || counts.cancelled || counts.skipped) {
-        throw verificationFault("check-failed");
-      }
-      if (!same(await sourceSnapshot(root), source)) throw verificationFault("source-changed");
-    }
+    await runIsolatedPlatformChecks(configuration, root, LINUX_CANDIDATE_PLATFORM_TESTS);
   }
 }
 
@@ -339,12 +358,20 @@ async function main(file) {
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   try {
-    await withGitExecutable(configuration.tools.git, ownerEnvironment, () =>
-      withCommandBoundary((file, args, options, execute) =>
+    await withGitExecutable(configuration.tools.git, ownerEnvironment, async () => {
+      const context = configuration.mode === "worker" ? await isolatedContext(configuration.candidate) : null;
+      const plan = context ? await verificationPlan(configuration.candidate, context.request.base, false, { trustedTooling: true }) : null;
+      if (context && configuration.group === "device") {
+        bootstrapPhase = "trusted-platform-preparation";
+        const preparation = await runIsolatedPlatformChecks(configuration, controlRoot, LINUX_PRIVILEGED_PLATFORM_TESTS, cancellation.signal);
+        await immutableJson(path.join(directory, "trusted-platform-preparation.json"), {
+          version: 1, kind: "trusted-platform-preparation", acceptance: false,
+          controllerSource: preparation.source, checks: preparation.checks,
+        });
+      }
+      await withCommandBoundary((file, args, options, execute) =>
         boundary(file, args,
           { ...options, signal: options.signal ?? cancellation.signal }, execute), async () => {
-        const context = configuration.mode === "worker" ? await isolatedContext(configuration.candidate) : null;
-        const plan = context ? await verificationPlan(configuration.candidate, context.request.base, false, { trustedTooling: true }) : null;
         bootstrapPhase = "native-launch";
         const launch = await runCommand(configuration.tools.node,
           ["--disable-sigusr1", "-e", "process.stdout.write('DEVPOCKET_ISOLATED_LAUNCH')"],
@@ -404,7 +431,8 @@ async function main(file) {
             }
           }
         }
-      }));
+      });
+    });
   } finally {
     process.off("SIGINT", cancel);
     process.off("SIGTERM", cancel);

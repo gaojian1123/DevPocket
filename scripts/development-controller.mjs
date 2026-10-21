@@ -8,6 +8,7 @@ export async function freezeDevelopmentController(root) {
   await mkdir(parent, { recursive: true });
   const directory = await mkdtemp(path.join(parent, "approved-"));
   for (const input of original.files) {
+    await mkdir(path.dirname(path.join(directory, input.name)), { recursive: true, mode: 0o700 });
     await writeFile(path.join(directory, input.name), await readFile(path.join(original.directory, input.name)),
       { flag: "wx", mode: 0o400 });
   }

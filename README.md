@@ -306,6 +306,10 @@ automatic human-review gates. Protected local execution/adoption retains exact
 approval; an actual hosted task grant permits candidate execution only in its
 named isolated workers. Sensitive/unclassified product changes retain independent
 inspection, independently of CI impact.
+The Windows isolated route remains disabled while its CI-only LocalService
+supervisor is being qualified. The ordinary candidate identity is not elevated;
+temporary service operations require their own exact-input authorization.
+Capability-only diagnostics do not satisfy the complete verification gate.
 Requests describe the action, reason, target, effects, exclusions and validity,
 with actual changes available as details. The optional controller consumes only
 native decisions journaled for the same task and trusted input versions;

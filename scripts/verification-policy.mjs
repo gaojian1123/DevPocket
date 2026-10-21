@@ -64,6 +64,7 @@ const rules = [
       "scripts/manual-emulator.mjs", "scripts/native-startup.mjs", "scripts/platform-diagnostics.mjs",
       "scripts/start-test-emulator.ps1", "scripts/stop-test-emulator.ps1", "scripts/test-native-layouts.ps1",
       "scripts/save-debug-artifact.ps1", "scripts/tests/linux-process.test.mjs",
+      "scripts/tests/linux-privileged-process.test.mjs", "scripts/tests/fixtures/linux-process.mjs",
       ".github/actions/prepare-native/action.yml", ".github/workflows/native-startup-diagnostics.yml"].includes(file) ||
       /^(?:android\/gradle\/|android\/gradlew(?:\.bat)?$)/.test(file) ||
       /^android\/.*(?:\.gradle(?:\.kts)?|gradle\.properties)$/.test(file), ...nativeExecution },
@@ -72,6 +73,7 @@ const rules = [
       "scripts/verification-transition.mjs", "scripts/verification-admission.mjs", "scripts/verification-ci.mjs", "scripts/isolated-verification.mjs",
       "scripts/isolated-worker.mjs", "scripts/isolated-worker.ps1", "scripts/isolated-worker.py", "scripts/isolated-worker-probe.mjs",
       "scripts/isolated-command.cs", "scripts/isolated-command.ps1", "scripts/isolated-command.py",
+      "scripts/windows-supervisor.cs",
       "scripts/verification-ci-artifact.ps1", "scripts/process.mjs", "scripts/owned-command.ps1",
       "scripts/owned-command.cs", "scripts/owned-command-windows.mjs", "scripts/owned-command-linux.py",
       "scripts/bounded-worker-log.mjs", "scripts/backend-diagnostics.mjs"].includes(file), ...full },

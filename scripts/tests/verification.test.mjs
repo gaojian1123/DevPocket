@@ -2873,15 +2873,19 @@ test("a changed captured execution policy cannot resume an earlier successful ru
   const first = await recordedVerification(root, base);
   const copied = path.join(root, ".data", "implementation");
   await mkdir(copied);
-  for (const name of await readdir(path.resolve("scripts"))) {
-    if (/\.(?:mjs|ps1|py|cs)$/.test(name)) await copyFile(path.resolve("scripts", name), path.join(copied, name));
+  const { captureCandidateImplementation } = await import("../native-candidate.mjs");
+  const captured = await captureCandidateImplementation();
+  for (const { name } of captured.files) {
+    await mkdir(path.dirname(path.join(copied, name)), { recursive: true });
+    await copyFile(path.join(captured.directory, name), path.join(copied, name));
   }
   const copiedPolicy = await import(pathToFileURL(path.join(copied, "verification-preflight.mjs")).href);
   assert.equal(await copiedPolicy.verificationExecutionPolicy(), first.policy, "The copied policy must match before mutation.");
   for (const name of ["test-workflow.mjs", "verification-tooling.mjs", "verification-admission.mjs",
     "verification-ci.mjs", "verification-ci-artifact.ps1", "development-policy.mjs",
     "isolated-worker.mjs", "isolated-worker.ps1", "isolated-worker.py", "isolated-worker-probe.mjs",
-    "isolated-command.cs", "isolated-command.ps1", "isolated-command.py"]) await t.test(name, async () => {
+    "isolated-command.cs", "isolated-command.ps1", "isolated-command.py", "windows-supervisor.cs",
+    "tests/linux-privileged-process.test.mjs", "tests/fixtures/linux-process.mjs"]) await t.test(name, async () => {
     const file = path.join(copied, name), original = await readFile(file);
     try {
       await writeFile(file, Buffer.concat([original, Buffer.from("\n")]));

@@ -242,6 +242,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.deepEqual(LINUX_PLATFORM_TESTS, [
     "scripts/tests/linux-emulator.test.mjs", "scripts/tests/linux-process.test.mjs", "scripts/tests/linux-runtime.test.mjs",
     "scripts/tests/worker-diagnostics.test.mjs", "scripts/tests/native-lifecycle.test.mjs", "scripts/tests/bounded-worker-log.test.mjs",
+    "scripts/tests/linux-privileged-process.test.mjs",
   ]);
   assert.match(device, /name: Export bounded owned-worker diagnostics\n\s+id: worker_diagnostics\n\s+if: always\(\)/);
   assert.match(device, /node scripts\/worker-diagnostics\.mjs --directory \.data\/ci\/device --github\n\s+exit \$LASTEXITCODE/);

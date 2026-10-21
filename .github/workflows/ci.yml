@@ -424,6 +424,9 @@ jobs:
             control/.data/ci/isolated/bootstrap-failure.json
             control/.data/ci/isolated/bootstrap-capabilities.json
             control/.data/ci/isolated/atomic-launch-capability.json
+            control/.data/ci/isolated/service-capabilities.json
+            control/.data/ci/isolated/service-failure.json
+            control/.data/ci/isolated/bootstrap-cleanup.json
           if-no-files-found: error
 
   gate:

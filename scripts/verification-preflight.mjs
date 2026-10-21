@@ -22,6 +22,8 @@ const policyInputs = [
   "verification-ci-artifact.ps1", "development-policy.mjs", "development-controller.mjs", "isolated-verification.mjs",
   "isolated-worker.mjs", "isolated-worker.ps1", "isolated-worker.py", "isolated-worker-probe.mjs",
   "isolated-command.cs", "isolated-command.ps1", "isolated-command.py",
+  "windows-supervisor.cs",
+  "tests/linux-privileged-process.test.mjs", "tests/fixtures/linux-process.mjs",
   "candidate-commit.mjs", "native-candidate.mjs", "git-state.mjs", "process.mjs",
   "owned-command-windows.mjs", "owned-command.cs", "owned-command.ps1", "owned-command-linux.py",
   "backend-diagnostics.mjs", "diagnostic-errors.mjs", "diagnostic-publication.mjs", "bounded-worker-log.mjs",

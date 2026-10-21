@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
@@ -134,6 +135,37 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
         return assignEnabled;
     }
 
+    public static string[] RequireSupervisorPrivileges() {
+        IntPtr token;
+        if (!OpenProcessToken(GetCurrentProcess(), 8, out token)) throw new Win32Exception();
+        try {
+            int needed;
+            GetTokenInformation(token, 3, IntPtr.Zero, 0, out needed);
+            if (needed <= 0 || needed > 65536) throw new InvalidDataException("Invalid supervisor privilege buffer.");
+            IntPtr buffer = Marshal.AllocHGlobal(needed);
+            try {
+                if (!GetTokenInformation(token, 3, buffer, needed, out needed)) throw new Win32Exception();
+                int count = Marshal.ReadInt32(buffer);
+                if (count < 0 || 4 + count * 12 > needed) throw new InvalidDataException("Invalid supervisor privileges.");
+                var names = new List<string>();
+                for (int index = 0; index < count; index++) {
+                    IntPtr luid = IntPtr.Add(buffer, 4 + index * 12);
+                    int length = 256;
+                    var name = new StringBuilder(length);
+                    if (!LookupPrivilegeNameW(null, luid, name, ref length)) throw new Win32Exception();
+                    string value = name.ToString();
+                    if (value != "SeAssignPrimaryTokenPrivilege" && value != "SeIncreaseQuotaPrivilege" && value != "SeChangeNotifyPrivilege")
+                        throw new InvalidOperationException("The supervisor retained an unrequested privilege.");
+                    if ((Marshal.ReadInt32(luid, 8) & 2) == 0) throw new InvalidOperationException("A supervisor privilege is not enabled.");
+                    names.Add(value);
+                }
+                if (!names.Contains("SeAssignPrimaryTokenPrivilege") || !names.Contains("SeIncreaseQuotaPrivilege"))
+                    throw new InvalidOperationException("Required supervisor privileges are missing.");
+                return names.ToArray();
+            } finally { Marshal.FreeHGlobal(buffer); }
+        } finally { CloseHandle(token); }
+    }
+
     public static void ProtectAncestor(string path, SecurityIdentifier candidate, FileSystemRights mutation) {
         if (!Path.IsPathRooted(path) || !string.Equals(Path.GetFullPath(path), path, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("An ancestor must be an absolute directory.");
@@ -227,6 +259,11 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
 
     public int Run(string user, string password, string sid, string file, string[] args,
         string[] environment, string cwd, int timeoutMs) {
+        return Run(user, password, sid, file, args, environment, cwd, timeoutMs, GetStdHandle(-11), GetStdHandle(-12));
+    }
+
+    public int Run(string user, string password, string sid, string file, string[] args,
+        string[] environment, string cwd, int timeoutMs, IntPtr standardOutput, IntPtr standardError) {
         Task<string> cancellation = controlInput ?? Task.Run(() => Console.In.ReadLine());
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         IntPtr block = IntPtr.Zero, token = IntPtr.Zero, attributes = IntPtr.Zero, jobValue = IntPtr.Zero,
@@ -263,7 +300,7 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
             if (targetInput == new IntPtr(-1)) { targetInput = IntPtr.Zero; throw new Win32Exception(); }
             handleValues = Marshal.AllocHGlobal(3 * IntPtr.Size);
             for (int index = 0; index < 3; index++) {
-                IntPtr handle = index == 0 ? targetInput : GetStdHandle(-10 - index);
+                IntPtr handle = index == 0 ? targetInput : index == 1 ? standardOutput : standardError;
                 if (handle == IntPtr.Zero || handle == new IntPtr(-1) || !SetHandleInformation(handle, 1, 1))
                     throw new Win32Exception();
                 Marshal.WriteIntPtr(handleValues, index * IntPtr.Size, handle);
@@ -272,7 +309,7 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
                     new IntPtr(3 * IntPtr.Size), IntPtr.Zero, IntPtr.Zero)) throw new Win32Exception();
             var startup = new StartupEx { startup = new Startup {
                 cb = Marshal.SizeOf(typeof(StartupEx)), flags = 0x100,
-                input = targetInput, output = GetStdHandle(-11), error = GetStdHandle(-12)
+                input = targetInput, output = standardOutput, error = standardError
             }, attributes = attributes };
             ProcessInfo info;
             CheckControl(cancellation, deadline);

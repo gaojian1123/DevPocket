@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { isolatedCandidateEnvironment, isolatedCommandBoundary } from "../isolated-worker.mjs";
+import { isolatedCandidateEnvironment, isolatedCommandBoundary, runIsolatedPlatformChecks } from "../isolated-worker.mjs";
+import { LINUX_PLATFORM_TESTS, LINUX_CANDIDATE_PLATFORM_TESTS, LINUX_PRIVILEGED_PLATFORM_TESTS } from "../backend-diagnostics.mjs";
 import { runCommand, withCommandBoundary } from "../process.mjs";
 import { git, withGitExecutable } from "../git-state.mjs";
 import { verificationPlan } from "../verification.mjs";
@@ -35,6 +37,134 @@ function environment(configuration) {
 
 const successfulCommand = () => ({ stdout: "candidate output", stderr: "", processTreeStopped: true,
   commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0, cleanupFailure: null } });
+
+async function fixtureBroker(configuration) {
+  const file = path.join(configuration.private, "supervisor.json"), bytes = "{}\n";
+  await writeFile(file, bytes);
+  configuration.broker = { file: process.execPath, configuration: file, sha256: createHash("sha256").update(bytes).digest("hex") };
+}
+
+test("isolated Linux preparation partitions privileged and candidate checks without dropping ordinary coverage", () => {
+  assert.deepEqual(LINUX_PLATFORM_TESTS, [...LINUX_CANDIDATE_PLATFORM_TESTS, ...LINUX_PRIVILEGED_PLATFORM_TESTS]);
+  assert.equal(new Set(LINUX_PLATFORM_TESTS).size, LINUX_PLATFORM_TESTS.length);
+  assert.deepEqual(LINUX_PRIVILEGED_PLATFORM_TESTS, ["scripts/tests/linux-privileged-process.test.mjs"]);
+  assert.ok(!LINUX_CANDIDATE_PLATFORM_TESTS.some((file) => LINUX_PRIVILEGED_PLATFORM_TESTS.includes(file)));
+});
+
+test("platform preparation retains its real control source separately from candidate checks", async (t) => {
+  const configuration = await fixture(t);
+  for (const root of [configuration.control, configuration.candidate]) {
+    await writeFile(path.join(root, "package.json"), JSON.stringify({ name: path.basename(root), private: true }));
+    await git(root, ["init", "--quiet"]);
+    await git(root, ["add", "--all"]);
+    await git(root, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Platform partition"]);
+  }
+  const calls = [];
+  await withCommandBoundary(async (file, args, options, execute) => {
+    if (!args.includes("--test")) return execute(file, args, options);
+    calls.push({ file: args.at(-1), cwd: options.cwd });
+    return { ...successfulCommand(), stdout: "# tests 1\n# pass 1\n# fail 0\n# cancelled 0\n# skipped 0\n" };
+  }, async () => {
+    const control = await runIsolatedPlatformChecks(configuration, configuration.control, LINUX_PRIVILEGED_PLATFORM_TESTS);
+    const candidate = await runIsolatedPlatformChecks(configuration, configuration.candidate, LINUX_CANDIDATE_PLATFORM_TESTS);
+    assert.notEqual(control.source.head, candidate.source.head);
+    assert.deepEqual(control.checks.map((check) => check.file), LINUX_PRIVILEGED_PLATFORM_TESTS);
+    assert.deepEqual(candidate.checks.map((check) => check.file), LINUX_CANDIDATE_PLATFORM_TESTS);
+  });
+  assert.deepEqual(calls, [
+    ...LINUX_PRIVILEGED_PLATFORM_TESTS.map((file) => ({ file, cwd: configuration.control })),
+    ...LINUX_CANDIDATE_PLATFORM_TESTS.map((file) => ({ file, cwd: configuration.candidate })),
+  ]);
+  const source = await readFile(new URL("../isolated-worker.mjs", import.meta.url), "utf8");
+  assert.ok(source.indexOf('bootstrapPhase = "trusted-platform-preparation"') <
+    source.indexOf("await withCommandBoundary((file, args, options, execute)"));
+});
+
+test("Windows service commands retain the original owner and bind the private service configuration", async (t) => {
+  const configuration = { ...await fixture(t), platform: "win32" };
+  await fixtureBroker(configuration);
+  const ownerEnvironment = { PATH: "trusted-owner" };
+  const boundary = isolatedCommandBoundary(configuration, ownerEnvironment, environment(configuration));
+  await boundary("node", ["--version"], { cwd: configuration.candidate }, async (file, args, options) => {
+    assert.equal(file, configuration.broker.file);
+    assert.deepEqual(args.slice(0, 3), ["--client", configuration.broker.configuration, configuration.broker.sha256]);
+    assert.deepEqual(options.env, ownerEnvironment);
+    assert.notEqual(options.cwd, configuration.candidate);
+    const bytes = await readFile(args.at(-1)), request = JSON.parse(bytes);
+    await writeFile(`${args.at(-1)}.result.json`, JSON.stringify({
+      version: 1, id: request.id, status: "executed", admission: "running", started: true,
+      processTreeStopped: true, exitCode: 0, requestSha256: createHash("sha256").update(bytes).digest("hex"),
+    }));
+    return successfulCommand();
+  });
+});
+
+test("failed service clients cannot lend native facts or cleanup evidence to an unbound receipt", async (t) => {
+  for (const mode of ["matching", "mismatched", "missing"]) await t.test(mode, async (t) => {
+    const configuration = { ...await fixture(t), platform: "win32" };
+    await fixtureBroker(configuration);
+    const boundary = isolatedCommandBoundary(configuration, {}, environment(configuration));
+    await assert.rejects(boundary("node", [], {}, async (_file, args) => {
+      const file = args.at(-1), bytes = await readFile(file), request = JSON.parse(bytes);
+      const receipt = { version: 1, id: request.id, status: "blocked", admission: "creation-attempted",
+        started: false, processTreeStopped: true, exitCode: null,
+        native: { stage: "create", errorCode: 1314, assignPrimaryTokenEnabled: false, increaseQuotaEnabled: true } };
+      if (mode !== "missing") receipt.requestSha256 = mode === "matching"
+        ? createHash("sha256").update(bytes).digest("hex") : "0".repeat(64);
+      await writeFile(`${file}.result.json`, JSON.stringify(receipt));
+      throw Object.assign(new Error("Service client rejected the operation"), successfulCommand(), { code: 78 });
+    }), (error) => {
+      if (mode === "matching") {
+        assert.equal(error.diagnosticCode, "preflight-tool");
+        assert.equal(error.processTreeStopped, true);
+        assert.equal(error.nativeFailure.errorCode, 1314);
+      } else {
+        assert.equal(error.diagnosticCode, "cleanup-failed");
+        assert.equal(error.processTreeStopped, false);
+        assert.equal(error.isolatedAdmission, undefined);
+        assert.equal(error.nativeFailure, undefined);
+      }
+      return true;
+    });
+  });
+});
+
+test("LocalService validation rejects arbitrary commands and startup injection without running a service",
+  { skip: process.platform !== "win32" }, async (t) => {
+    const configuration = await fixture(t), binary = path.join(configuration.private, "contracts.exe");
+    const compiler = path.join(process.env.SystemRoot, "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
+    await exec(compiler, ["/nologo", "/target:exe", "/main:SupervisorContracts",
+      "/reference:System.ServiceProcess.dll", "/reference:System.Web.Extensions.dll", `/out:${binary}`,
+      path.resolve("scripts", "isolated-command.cs"), path.resolve("scripts", "windows-supervisor.cs"),
+      path.resolve("scripts", "tests", "fixtures", "windows-supervisor-contracts.cs")], { timeout: 30000 });
+    const result = await exec(binary, [configuration.private], { timeout: 30000 });
+    assert.equal(result.stdout.trim(), "SUPERVISOR_VALIDATION_ONLY");
+  });
+
+test("Windows cleanup attempts service removal and publication even after a broken owner pipe",
+  { skip: process.platform !== "win32" }, async (t) => {
+    for (const fault of ["none", "pipe", "service"]) await t.test(fault, async (t) => {
+      const configuration = await fixture(t);
+      const output = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-File",
+        path.resolve("scripts", "tests", "fixtures", "windows-cleanup.ps1"),
+        "-Bootstrap", path.resolve("scripts", "isolated-worker.ps1"), "-Root", configuration.home, "-Fault", fault],
+      { timeout: 30000 });
+      const result = JSON.parse(output.stdout);
+      assert.equal(result.failed, fault !== "none");
+      assert.equal(result.report.status, fault === "none" ? "completed" : "blocked");
+      assert.equal(result.report.acceptance, false);
+      assert.ok(result.events.includes("service-stop"));
+      assert.equal(result.events.includes("service-delete"), fault !== "service");
+      assert.equal(result.events.includes("account-delete"), fault !== "service");
+      assert.equal(result.report.serviceRemoved, fault !== "service");
+      assert.equal(result.report.candidateAccountRemoved, fault !== "service");
+      assert.equal(result.capabilityCopied, true);
+      assert.equal(result.diagnosticCopied, true);
+      assert.equal(result.reportCopied, fault === "none");
+      assert.equal(result.credentialsRetained, fault === "service");
+      if (fault === "pipe") assert.ok(result.report.issues.some((issue) => issue.stage === "owner-pipe"));
+    });
+  });
 
 test("candidate environments contain no credentials, runner command files or inherited startup hooks", async (t) => {
   const configuration = await fixture(t), selected = environment(configuration);
@@ -328,7 +458,9 @@ test("Windows token creation joins its Job atomically and has no weaker credenti
   assert.match(source, /CheckControl\(cancellation, deadline\);\s+if \(ResumeThread/);
   assert.match(source, /input = targetInput/);
   const bootstrap = await readFile(new URL("../isolated-worker.ps1", import.meta.url), "utf8");
-  assert.ok(bootstrap.indexOf("::PrepareCreationPrivileges()") < bootstrap.indexOf("New-LocalUser"));
+  assert.match(bootstrap, /NT AUTHORITY\\LocalService/);
+  assert.match(bootstrap, /SeAssignPrimaryTokenPrivilege\/SeIncreaseQuotaPrivilege/);
+  assert.doesNotMatch(bootstrap, /\[DevPocketIsolatedCommand\]::PrepareCreationPrivileges\(\)/);
 });
 
 test("Linux drops every candidate capability and never places its root owner below setpriv", async () => {
@@ -448,6 +580,7 @@ test("atomic launch diagnostics stop before candidate preparation and cannot bec
       return Promise.resolve(${JSON.stringify(result)});
     `));
     configuration.mode = "atomic-launch-probe";
+    await fixtureBroker(configuration);
     configuration.tools.git = process.execPath;
     configuration.tools.python = process.execPath;
     const input = path.join(configuration.private, "configuration.json");
@@ -484,6 +617,7 @@ test("bootstrap command failures retain the actual bounded diagnostic before exi
     await writeFile(file, altered);
     assert.equal(await readFile(file, "utf8"), altered, "The isolated fixture must use the failing command implementation.");
     configuration.mode = "self-test";
+    await fixtureBroker(configuration);
     configuration.tools.git = process.execPath;
     configuration.tools.python = process.execPath;
     configuration.protectedPaths = [configuration.control, configuration.private];

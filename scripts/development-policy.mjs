@@ -11,6 +11,7 @@ const executionScripts = new Set([
   "verification-tooling", "verification-admission", "verification-ci", "verification-ci-artifact",
   "isolated-verification", "development-controller",
   "isolated-worker", "isolated-worker-probe", "isolated-command",
+  "windows-supervisor",
   "owned-command-linux", "device-run", "worker-diagnostics", "device-diagnostics", "diagnostic-errors",
   "bounded-worker-log", "diagnostic-publication", "native-lifecycle", "backend-diagnostics",
   "verification-diagnostics", "android-diagnostics", "platform-diagnostics",
@@ -55,6 +56,7 @@ function classification(file) {
       lower === ".github/copilot-instructions.md" || /^\.github\/instructions\/.*\.instructions\.md$/.test(lower) ||
       /^\.github\/(?:agents|skills)\//.test(lower)) return "instructions";
   if (/^\.github\/(?:workflows|actions|extensions)\//.test(lower) || lower === ".github/codeowners" ||
+      ["scripts/tests/linux-privileged-process.test.mjs", "scripts/tests/fixtures/linux-process.mjs"].includes(lower) ||
       /^scripts\/([^/]+)\.(?:mjs|ps1|cs|py|ts)$/.test(lower) && executionScripts.has(lower.slice(8).replace(/\.[^.]+$/, ""))) {
     return "execution";
   }
