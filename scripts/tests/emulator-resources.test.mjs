@@ -4,9 +4,10 @@ import { access, chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, unlink, wr
 import net from "node:net";
 import path from "node:path";
 import { test } from "node:test";
-import { fork, spawn } from "node:child_process";
+import childProcess, { fork, spawn } from "node:child_process";
 import { once } from "node:events";
 import { execFile } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { runCommand, stopOwnedProcess } from "../process.mjs";
@@ -65,7 +66,12 @@ test("macOS automatically recovers only the failed native run with an authentic 
     const args = ["-NoProfile", "-NonInteractive", "-File", entry, "-RunDirectory", directory, "-Owner", runId];
     let outcome;
     await assert.rejects(runCommand("pwsh", args, { cwd: pool.first, timeoutMs: 30000, graceMs: 100 }),
-      (error) => { outcome = error; return error.code === 37 && error.processTreeStopped === true; });
+      (error) => {
+        outcome = error;
+        assert.equal(error.code, 37, error.stderr);
+        assert.equal(error.processTreeStopped, true, error.stderr);
+        return true;
+      });
     const prior = await emulatorLeaseStatus(pool);
     assert.equal(prior.leases.length, 1, "A missing controller alone must retain its lease.");
     const recovery = { ...pool, workspace: pool.first, runId, directory };
@@ -184,6 +190,53 @@ test("macOS registry locks reject linked and non-private files before changing r
     await chmod(file, 0o644);
     await assert.rejects(emulatorLeaseStatus(pool), /private file identity/);
     await assert.rejects(access(path.join(pool.registryDirectory, "registry.json")), { code: "ENOENT" });
+  });
+
+test("macOS registry helper deadlines retain timeout and cancellation semantics without hiding crashes",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    const { acquireEmulatorLease, configureEmulatorLimit, emulatorLeaseStatus } = await import("../emulator-resources.mjs");
+    for (const mode of ["deadline", "late-success", "cancelled", "crash", "late-crash"]) await t.test(mode, async (t) => {
+      const pool = await poolFixture(t);
+      await configureEmulatorLimit(1, pool);
+      const controller = new AbortController(), original = childProcess.spawn;
+      let intercepted = false, lease, clock;
+      pool.cleanup(async () => { await lease?.release(); });
+      const mock = t.mock.method(childProcess, "spawn", (file, args, options) => {
+        if (!intercepted && file === "python3" && args.includes("--registry-lock")) {
+          intercepted = true;
+          const command = mode === "late-success" ? args
+            : ["-B", "-c", mode.endsWith("crash") ? "import sys;sys.exit(37)" : "import time;time.sleep(1)"];
+          const child = original(file, command, options);
+          if (mode === "cancelled") child.once("spawn", () => controller.abort());
+          if (mode.startsWith("late-")) child.once("close", () => {
+            const elapsed = Date.now() + 6000;
+            clock = t.mock.method(Date, "now", () => elapsed);
+          });
+          return child;
+        }
+        return original(file, args, options);
+      });
+      syncBuiltinESMExports();
+      try {
+        const pending = acquireEmulatorLease({ ...pool, workspace: pool.first, runId: randomUUID(),
+          timeoutMs: mode === "deadline" ? 80 : 5000, signal: controller.signal }).then((value) => { lease = value; return value; });
+        await assert.rejects(pending, (error) => {
+          if (["deadline", "late-success"].includes(mode)) assert.equal(error.code, "EMULATOR_SLOT_TIMEOUT");
+          else if (mode === "cancelled") assert.equal(error.name, "AbortError");
+          else {
+            assert.notEqual(error.code, "EMULATOR_SLOT_TIMEOUT");
+            assert.match(error.message, /registry lock helper failed \(37\)/);
+          }
+          return true;
+        });
+        assert.equal(intercepted, true);
+      } finally {
+        mock.mock.restore();
+        clock?.mock.restore();
+        syncBuiltinESMExports();
+      }
+      assert.equal((await emulatorLeaseStatus(pool)).leases.length, 0);
+    });
   });
 
 test("one shared default slot queues another worktree and reserves ports until explicit handoff", async (t) => {

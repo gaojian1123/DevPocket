@@ -255,6 +255,46 @@ print(json.dumps(results))
     ].map((name) => [name, { completed: false, alive: false, signals: [2] }])));
   });
 
+test("macOS cleanup drains a dead peer's queued acknowledgement before retaining a failure",
+  { skip: process.platform !== "darwin" }, async () => {
+    const script = `import json,os,runpy,socket,sys
+from types import SimpleNamespace as S
+module=runpy.run_path(sys.argv[1],run_name="fixture")
+class Fixture:
+ def __init__(self,mode,writer):self.mode=mode;self.writer=writer;self.observations=0;self.alive=True;self.sent=[]
+ def live(self,info):
+  self.observations+=1
+  if self.observations==1:
+   if self.mode=="late-clean":self.writer.sendall(b"clean\\n");self.writer.close()
+   elif self.mode=="late-fragmented":self.writer.sendall(b"cl")
+   elif self.mode=="partial-eof":self.writer.sendall(b"cl");self.writer.close()
+   elif self.mode=="late-malformed":self.writer.sendall(b"invalid\\n");self.writer.close()
+   else:self.writer.close()
+  elif self.mode=="late-fragmented" and self.observations==2:
+   self.writer.sendall(b"ean\\n");self.writer.close()
+  return False
+ def owned(self):
+  return [S(bsd=S(pid=os.getpid()+2))] if self.alive else []
+ def send(self,info,number):self.sent.append(info.bsd.pid-os.getpid());self.alive=False
+results={}
+for mode in ["late-clean","late-fragmented","late-eof","partial-eof","late-malformed"]:
+ clock=iter(range(1000));module["time"].monotonic=lambda:next(clock)
+ reader,writer=socket.socketpair();native=Fixture(mode,writer);scope=module["Scope"](native)
+ scope.nested[os.getpid()+1]={"identity":S(bsd=S(pid=os.getpid()+1,parent=os.getpid()+3)),"channel":reader,"clean":False,"buffer":b""}
+ try:
+  try:scope.cleanup(None);completed=True
+  except RuntimeError:completed=False
+  results[mode]={"completed":completed,"signals":native.sent}
+ finally:writer.close();scope.close(False)
+print(json.dumps(results))
+`;
+    const result = await exec("python3", ["-B", "-c", script, path.resolve("scripts/owned-command-darwin.py")],
+      { timeout: 10000 });
+    assert.deepEqual(JSON.parse(result.stdout), Object.fromEntries([
+      "late-clean", "late-fragmented", "late-eof", "partial-eof", "late-malformed",
+    ].map((name) => [name, { completed: ["late-clean", "late-fragmented"].includes(name), signals: [2] }])));
+  });
+
 test("macOS cleanup tolerates stable zombies but not continuously disappearing identities",
   { skip: process.platform !== "darwin" }, async () => {
     const script = `import json,os,runpy,sys
@@ -294,16 +334,21 @@ print(json.dumps(results))
 
 test("macOS a failed nested scope drains real PID-bound target and sibling processes",
   { skip: process.platform !== "darwin" }, async () => {
-    const script = `import json,os,runpy,signal,subprocess,sys
+    const script = `import json,os,runpy,select,signal,subprocess,sys
 module=runpy.run_path(sys.argv[1],run_name="fixture")
 native=module["Darwin"]();children=[];scope=None
+worker="import time;print('ready',flush=True);time.sleep(15)"
+launcher="import os,sys;os.execv(sys.executable,[sys.executable,'-c',"+repr(worker)+"])"
 try:
  for _ in range(3):
-  child=subprocess.Popen([sys.executable,"-c","import time;time.sleep(15)"],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  child=subprocess.Popen([sys.executable,"-c",launcher],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+  children.append((child,None))
+  if not select.select([child.stdout],[],[],5)[0] or child.stdout.readline()!=b"ready\\n":
+   raise RuntimeError("Fixture child did not complete interpreter startup")
   info=native.identity(child.pid)
   if info is None or info.bsd.parent!=os.getpid():
-   child.kill();child.wait(timeout=5);raise RuntimeError("Missing fixture child identity")
-  children.append((child,info))
+   raise RuntimeError("Missing fixture child identity")
+  children[-1]=(child,info)
  peer,peer_info=children[0];workers=children[1:]
  native.send(peer_info,signal.SIGKILL);peer.wait(timeout=5)
  # Keep the negative protocol state local; never corrupt the enclosing verifier's registered scope.
@@ -326,13 +371,17 @@ try:
  result={"completed":completed,"stopped":[child.poll()==-signal.SIGKILL for child,_ in workers]}
 finally:
  for child,info in children:
-  if child.poll() is None:native.send(info,signal.SIGKILL)
+  if child.poll() is None:
+   if info is None:child.kill()
+   else:native.send(info,signal.SIGKILL)
   child.wait(timeout=5)
+  child.stdout.close()
  if scope is not None:scope.close(False)
 print(json.dumps(result))
 `;
-    const result = await exec("python3", ["-B", "-c", script, path.resolve("scripts/owned-command-darwin.py")],
-      { timeout: 10000 });
+    const result = await runCommand("python3", ["-B", "-c", script, path.resolve("scripts/owned-command-darwin.py")],
+      { timeoutMs: 10000 });
+    assert.equal(result.processTreeStopped, true);
     assert.deepEqual(JSON.parse(result.stdout), { completed: false, stopped: [true, true] },
       "The cleanup error must remain visible after both real owned processes are stopped.");
   });

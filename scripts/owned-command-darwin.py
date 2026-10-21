@@ -277,6 +277,8 @@ class Scope:
                 data = channel.recv(16)
                 entry["buffer"] += data
                 if not b"clean\n".startswith(entry["buffer"]):
+                    channel.close()
+                    entry["channel"] = None
                     raise RuntimeError("Invalid nested macOS cleanup acknowledgement.")
                 if entry["buffer"] == b"clean\n":
                     entry["clean"] = True
@@ -312,7 +314,11 @@ class Scope:
                             self.native.send(entry["identity"], signal.SIGTERM)
                             signalled.add(pid)
                     elif not entry["clean"]:
-                        failure = failure or RuntimeError("A nested macOS owner exited without confirming cleanup.")
+                        if entry["channel"] is not None:
+                            # Peer exit may precede reading its queued acknowledgement or EOF.
+                            pending = True
+                        else:
+                            failure = failure or RuntimeError("A nested macOS owner exited without confirming cleanup.")
                 except (OSError, ValueError, RuntimeError) as error:
                     failure = failure or error
                     pending = True

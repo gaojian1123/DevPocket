@@ -113,6 +113,8 @@ async function withSocketLock(root, operation, signal, deadline) {
 }
 
 async function tryFileLock(handle, signal, deadline) {
+  signal?.throwIfAborted();
+  if (Date.now() >= deadline) throw waitError();
   return new Promise((resolve, reject) => {
     // flock follows the shared open-file description, retained by Node after this finite helper exits.
     const child = spawn("python3", ["-B", fileURLToPath(new URL("./owned-command-darwin.py", import.meta.url)), "--registry-lock"],
@@ -128,6 +130,7 @@ async function tryFileLock(handle, signal, deadline) {
     child.once("error", (error) => { failure ??= error; });
     child.once("close", (code, stoppedBy) => {
       if (failure) reject(failure);
+      else if (Date.now() >= deadline && (code === 0 || code === 75 || child.killed && stoppedBy === "SIGKILL")) reject(waitError());
       else if (code === 0 || code === 75) resolve(code === 0);
       else reject(new Error(`The macOS registry lock helper failed (${code ?? stoppedBy}): ${output.trim()}`));
     });
@@ -153,6 +156,7 @@ async function withRegistryLock(root, operation, signal, deadline = Date.now() +
         await check();
         await upgradeRegistryLock(root, signal, deadline);
         signal?.throwIfAborted();
+        if (Date.now() >= deadline) throw waitError();
         return await operation();
       }
       await delay(50, undefined, { signal });
