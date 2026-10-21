@@ -118,7 +118,20 @@ function projectSpec(input: unknown): { spec: ComponentSpec; redacted: boolean }
         inspect(token.content);
         inspect(markdown.utils.unescapeAll(token.info));
         for (const [, value] of token.attrs ?? []) inspect(value);
-        for (const child of token.children ?? []) pending.push(child);
+        if (token.children) {
+          const parts: string[] = [];
+          const inspectRun = () => {
+            if (parts.length) inspect(parts.join(""));
+            parts.length = 0;
+          };
+          for (const child of token.children) {
+            pending.push(child);
+            if (child.type === "text" || child.type === "code_inline") parts.push(child.content);
+            else if (child.type === "softbreak" || child.type === "hardbreak") parts.push("\n");
+            else if (child.nesting === 0) inspectRun();
+          }
+          inspectRun();
+        }
       }
       for (const reference of Object.values(environment.references ?? {})) {
         inspect(reference.href);

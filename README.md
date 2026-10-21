@@ -105,6 +105,9 @@ links are checked again against the final projected rows.
 Markdown inspection shares the renderer's
 parser, including decoded destinations, text and reference definitions; escaped
 content that would reveal credentials stays in the original client.
+Inline text is also checked across formatting such as bold and code spans.
+Separate blocks, table cells and non-text placeholders are not joined into
+invented assignments.
 Recognized assignments mask complete quoted values, including escaped quotes;
 unterminated quotes fail closed. Bare values end at a line, comma or semicolon,
 while unquoted authorization headers are masked through their line.

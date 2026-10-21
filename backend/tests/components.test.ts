@@ -491,6 +491,56 @@ test("ordinary Markdown escapes and noncredential URL spellings keep their origi
   }
 });
 
+test("inline Markdown formatting cannot split credential assignments across inspected tokens", async (t) => {
+  const canary = "INLINE_FORMAT_CREDENTIAL_CANARY";
+  const cases: [string, string][] = [
+    ["bold", `**password**: ${canary}`],
+    ["bold API key", `**API key**: ${canary}`],
+    ["code", "`api_key`: " + canary],
+    ["split name", `pass**word**: ${canary}`],
+    ["nested formatting", `***API key***: ${canary}`],
+    ["strikethrough", `~~password~~: ${canary}`],
+    ["link text", `[password](https://example.test/public): ${canary}`],
+    ["decoded name", `**p&#97;ssword**: ${canary}`],
+    ["inline break", `**API**\n**key**: ${canary}`],
+    ["image alt", `![**password**: ${canary}](https://example.test/image)`],
+  ];
+  for (const [name, content] of cases) await t.test(name, () => {
+    const projection = new ComponentProjection(randomUUID());
+    projection.beginLive([owner]);
+    projection.observe(start("formatted-credential", { type: "markdown", content }));
+    const record = projection.observe(finish("formatted-credential")).find((item) => item.kind === "component")?.data;
+    assert.ok(record);
+    if (record.status === "ready") {
+      assert.ok(!JSON.stringify(decodeComponentPayload(record.payload, record.sha256)).includes(canary), "No formatted credential in transport.");
+      assert.ok(!projection.referenceContent(record).content.includes(canary), "No formatted credential in retained references.");
+    }
+    assert.equal(record.status, "unavailable");
+    assert.throws(() => projection.referenceContent({ componentId: record.componentId, sha256: "0".repeat(64) }),
+      { code: "COMPONENT_REFERENCE_EXPIRED" });
+  });
+});
+
+test("Markdown inspection never joins separate blocks or inline placeholder contents", () => {
+  const contents = [
+    "**password**\n\n: ordinary prose",
+    "# **API key**\n\n: a separate paragraph",
+    "| Name | Description |\n| --- | --- |\n| **password** | : ordinary prose |",
+    "```\npassword\n```\n\n: ordinary prose",
+    "pass![icon](https://example.test/image)word: ordinary prose",
+    "**Public key**: public-value\n\n`tokenCount`: 23",
+  ];
+  for (const content of contents) {
+    const projection = new ComponentProjection(randomUUID());
+    projection.beginLive([owner]);
+    projection.observe(start("formatting-control", { type: "markdown", content }));
+    const record = ready(projection.observe(finish("formatting-control")));
+    assert.equal(record.redacted, false);
+    assert.deepEqual(decodeComponentPayload(record.payload, record.sha256), { type: "markdown", content });
+    assert.deepEqual(JSON.parse(projection.referenceContent(record).content).spec, { type: "markdown", content });
+  }
+});
+
 test("redaction expansion still fails the final component byte limit instead of truncating content", () => {
   const spec = { type: "markdown", content: "token=x;".repeat(20_000) };
   assert.ok(Buffer.byteLength(JSON.stringify(spec)) < 256 * 1024);
