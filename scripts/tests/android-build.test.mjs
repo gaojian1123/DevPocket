@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
@@ -25,20 +25,29 @@ async function buildFixture(t) {
   const root = await mkdtemp(path.resolve(".data/tests/android-build-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const directory of [
-    "scripts", "android", "selected jdk/bin", "inherited jdk/bin",
+    "scripts", "android/gradle/wrapper", "selected jdk/bin", "inherited jdk/bin",
     "selected sdk/platforms/android-35", "inherited sdk/platforms/android-35",
   ]) await mkdir(path.join(root, directory), { recursive: true });
   await writeFile(path.join(root, "scripts", "build-android.ps1"), await readFile("scripts/build-android.ps1"));
+  const wrapper = path.join(root, "android", "gradle", "wrapper", "gradle-wrapper.jar");
+  await writeFile(wrapper, "synthetic wrapper");
   for (const name of ["selected", "inherited"]) {
-    await writeFile(path.join(root, `${name} jdk`, "bin", "java.exe"), "");
+    const java = path.join(root, `${name} jdk`, "bin", process.platform === "win32" ? "java.exe" : "java");
+    const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+    await writeFile(java, process.platform === "win32" ? "" :
+      `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(path.join(root, "android", "gradle-fixture.mjs"))} "$@"\n`);
+    if (process.platform !== "win32") await chmod(java, 0o755);
     await writeFile(path.join(root, `${name} sdk`, "platforms", "android-35", "android.jar"), "");
   }
   await writeFile(path.join(root, "android", "gradlew.bat"),
     `@echo off\r\n"${process.execPath}" "%~dp0gradle-fixture.mjs" %*\r\nexit /b %ERRORLEVEL%\r\n`);
   await writeFile(path.join(root, "android", "gradle-fixture.mjs"), [
     "import {writeFileSync} from 'node:fs';",
+    "import assert from 'node:assert/strict';",
+    "const args=process.argv.slice(2);",
+    `if(process.platform!=="win32") assert.deepEqual(args.splice(0,4),["-Dorg.gradle.appname=gradlew","-classpath",${JSON.stringify(wrapper)},"org.gradle.wrapper.GradleWrapperMain"]);`,
     "writeFileSync('invocation.json', JSON.stringify({",
-    "  cwd: process.cwd(), args: process.argv.slice(2),",
+    "  cwd: process.cwd(), args,",
     "  java: process.env.JAVA_HOME, sdk: process.env.ANDROID_HOME,",
     "  sdkRoot: process.env.ANDROID_SDK_ROOT, cache: process.env.GRADLE_USER_HOME,",
     "}));",

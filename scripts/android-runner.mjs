@@ -216,6 +216,7 @@ export async function runAndroidTests(options, { emulator = withAndroidEmulator,
       device = { ...device, diagnostics };
       booted = true;
       report.platform = process.platform;
+      if (process.platform === "darwin") report.architecture = process.arch;
       if (device.acceleration) report.acceleration = device.acceleration;
       report.lease = { id: device.leaseId, ports: device.ports };
       const adbRun = device.adb;

@@ -8,8 +8,10 @@ import { withAndroidEmulator } from "./android-emulator.mjs";
 import { runNativeLayouts } from "./android-runner.mjs";
 import { runCommand } from "./process.mjs";
 import { sourceSnapshot } from "./verification.mjs";
+import { localPipe } from "./local-ipc.mjs";
 
-const controllerPipe = (runId) => `\\\\.\\pipe\\devpocket-manual-emulator-${runId}`;
+const controllerPipe = (runId) => localPipe(`devpocket-manual-emulator-${runId}`);
+const pathKey = (value) => process.platform === "win32" ? value.toLowerCase() : value;
 
 export async function openManualControl(device, { layouts, stop, signal, validate } = {}) {
   let stopping = false, finished = false, busy, stopReady;
@@ -40,7 +42,7 @@ export async function openManualControl(device, { layouts, stop, signal, validat
       try {
         input = JSON.parse(buffer.trim());
         if (!input || input.version !== 1 || input.runId !== device.runId ||
-            typeof input.root !== "string" || path.resolve(input.root).toLowerCase() !== device.root.toLowerCase() ||
+            typeof input.root !== "string" || pathKey(path.resolve(input.root)) !== pathKey(device.root) ||
             Object.keys(input).some((key) => !["version", "runId", "root", "command"].includes(key)) ||
             !["status", "layouts", "stop"].includes(input.command)) throw new Error("Manual emulator ownership or command mismatch.");
       } catch (error) { response(socket, { status: "rejected", reason: error.message }); return; }
@@ -99,9 +101,9 @@ export async function requestManualEmulator({ root = process.cwd(), directory, c
   if (!directory) throw new Error("Specify the owned run directory printed by start-test-emulator.ps1.");
   directory = path.resolve(root, directory);
   if (!path.relative(root, directory).startsWith(`.data${path.sep}`)) throw new Error("The run must belong to this checkout.");
-  if ((await realpath(directory)).toLowerCase() !== directory.toLowerCase()) throw new Error("Linked manual run directories are unsupported.");
+  if (pathKey(await realpath(directory)) !== pathKey(directory)) throw new Error("Linked manual run directories are unsupported.");
   const owner = JSON.parse(await readFile(path.join(directory, "manual.json"), "utf8"));
-  if (owner.version !== 1 || typeof owner.root !== "string" || owner.root.toLowerCase() !== root.toLowerCase() ||
+  if (owner.version !== 1 || typeof owner.root !== "string" || pathKey(owner.root) !== pathKey(root) ||
       !/^[a-f0-9-]{36}$/.test(owner.runId) || owner.pipe !== controllerPipe(owner.runId)) {
     throw new Error("The manual run does not belong to this worktree.");
   }

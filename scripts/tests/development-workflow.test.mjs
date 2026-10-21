@@ -18,7 +18,8 @@ const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
   "verification-android.mjs", "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs",
   "verification-transition.mjs", "test-workflow.mjs", "verification-tooling.mjs",
-  "verification-admission.mjs", "verification-ci.mjs", "verification-ci-artifact.ps1"];
+  "verification-admission.mjs", "verification-ci.mjs", "verification-ci-artifact.ps1",
+  "owned-command-darwin.py", "local-ipc.mjs", "android-platform.mjs", "emulator-resources.mjs"];
 // Top-level tests stay serial; only fresh-workspace cases without shared environment writes use this limit.
 const isolatedCases = { concurrency: 2 };
 
@@ -2344,6 +2345,24 @@ test("candidate implementation capture includes every verification adapter and r
   await requireCandidateImplementation(captured);
   const legacy = { ...captured, files: captured.files.filter((file) => !verificationInputs.includes(file.name)) };
   await assert.rejects(requireCandidateImplementation(legacy), /captured controller\/helper implementation/);
+});
+
+test("cached emulator recovery remains bound to both controller and verifier execution snapshots", async (t) => {
+  const { root } = await workspace(t);
+  const { directory } = await copiedController(root, (directory) =>
+    fs.copyFile(path.resolve("scripts/emulator-resources.mjs"), path.join(directory, "emulator-resources.mjs")));
+  await import(pathToFileURL(path.join(directory, "verification-android.mjs")).href);
+  const verifier = await import(pathToFileURL(path.join(directory, "verification-preflight.mjs")).href);
+  const captured = await captureCandidateImplementation(directory), before = await verifier.verificationExecutionPolicy();
+  const file = path.join(directory, "emulator-resources.mjs");
+  await writeFile(file, (await readFile(file, "utf8")) + "\n// changed in-process recovery policy\n");
+  const controllerRejected = await requireCandidateImplementation(captured).then(() => false, (error) => {
+    assert.match(error.message, /implementation changed/);
+    return true;
+  });
+  assert.deepEqual({
+    controllerRejected, verifierChanged: await verifier.verificationExecutionPolicy() !== before,
+  }, { controllerRejected: true, verifierChanged: true });
 });
 
 test("cold capture only settles byte-identical Windows metadata, never a changed executable input", async (t) => {

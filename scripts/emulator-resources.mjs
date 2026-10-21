@@ -1,20 +1,26 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { ownerProcessFamilyAlive } from "./process.mjs";
-import { execFile } from "node:child_process";
+import { commandCleanupConfirmed, ownerProcessFamilyAlive } from "./process.mjs";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { homedir } from "node:os";
+import { localPipe } from "./local-ipc.mjs";
 
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const exec = promisify(execFile);
+const registryVersion = process.platform === "darwin" ? 2 : 1;
 const portNames = ["console", "device", "adb", "grpc"];
+const pathKey = (value) => process.platform === "win32" ? value.toLowerCase() : value;
 const waitError = () => Object.assign(new Error("Timed out waiting for the shared emulator resource pool."), { code: "EMULATOR_SLOT_TIMEOUT" });
 
 export function defaultEmulatorRegistry() {
+  if (process.platform === "darwin") return path.join(homedir(), ".cache", "DevPocket", "verification", "emulator-pool");
   if (process.platform !== "win32" || !process.env.LOCALAPPDATA) {
     throw new Error("The shared emulator pool requires the Windows account's LOCALAPPDATA directory.");
   }
@@ -23,15 +29,19 @@ export function defaultEmulatorRegistry() {
 
 async function registryRoot(directory) {
   const root = path.resolve(directory ?? defaultEmulatorRegistry());
-  await mkdir(root, { recursive: true });
+  await mkdir(root, { recursive: true, mode: 0o700 });
   const canonical = await realpath(root);
-  if (canonical.toLowerCase() !== root.toLowerCase()) throw new Error("Linked emulator registries are not supported.");
+  if (pathKey(canonical) !== pathKey(root)) throw new Error("Linked emulator registries are not supported.");
+  if (process.platform === "darwin") {
+    const info = await lstat(root);
+    if (info.uid !== process.getuid() || (info.mode & 0o077)) throw new Error("The macOS emulator registry must be private to this user.");
+  }
   return canonical;
 }
 
 function pipeName(root, suffix) {
-  const id = createHash("sha256").update(root.toLowerCase()).digest("hex").slice(0, 32);
-  return `\\\\.\\pipe\\devpocket-emulator-${id}-${suffix}`;
+  const id = createHash("sha256").update(pathKey(root)).digest("hex").slice(0, 32);
+  return localPipe(`devpocket-emulator-${id}-${suffix}`);
 }
 
 async function bindListener(address, response = "") {
@@ -85,13 +95,14 @@ async function listeningPorts() {
   return new Set(ports);
 }
 
-async function withRegistryLock(root, operation, signal, deadline = Date.now() + 30_000) {
+async function withSocketLock(root, operation, signal, deadline) {
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
     let lock;
     try { lock = await listener(pipeName(root, "registry"), "busy\n"); }
     catch (error) {
-      if (!["EADDRINUSE", "EACCES"].includes(error.code)) throw error;
+      if (!["EADDRINUSE", "EACCES"].includes(error.code) &&
+          !(process.platform === "darwin" && error.code === "EEXIST")) throw error;
       await delay(50, undefined, { signal });
       continue;
     }
@@ -101,8 +112,79 @@ async function withRegistryLock(root, operation, signal, deadline = Date.now() +
   throw waitError();
 }
 
-function validateState(value) {
-  if (!value || value.version !== 1 || !Number.isInteger(value.limit) || value.limit < 1 || value.limit > 64 ||
+async function tryFileLock(handle, signal, deadline) {
+  signal?.throwIfAborted();
+  if (Date.now() >= deadline) throw waitError();
+  return new Promise((resolve, reject) => {
+    // flock follows the shared open-file description, retained by Node after this finite helper exits.
+    const child = spawn("python3", ["-B", fileURLToPath(new URL("./owned-command-darwin.py", import.meta.url)), "--registry-lock"],
+      { stdio: ["ignore", "ignore", "pipe", handle.fd], signal,
+        timeout: Math.max(1, Math.min(10000, deadline - Date.now())), killSignal: "SIGKILL" });
+    let failure, output = "";
+    child.stderr.on("data", (bytes) => {
+      if (output.length + bytes.length > 4096) {
+        failure ??= new Error("The macOS registry lock helper exceeded its diagnostic bound.");
+        child.kill("SIGKILL");
+      } else output += bytes.toString();
+    });
+    child.once("error", (error) => { failure ??= error; });
+    child.once("close", (code, stoppedBy) => {
+      if (failure) reject(failure);
+      else if (Date.now() >= deadline && (code === 0 || code === 75 || child.killed && stoppedBy === "SIGKILL")) reject(waitError());
+      else if (code === 0 || code === 75) resolve(code === 0);
+      else reject(new Error(`The macOS registry lock helper failed (${code ?? stoppedBy}): ${output.trim()}`));
+    });
+  });
+}
+
+async function withRegistryLock(root, operation, signal, deadline = Date.now() + 30_000) {
+  if (process.platform !== "darwin") return withSocketLock(root, operation, signal, deadline);
+  const file = path.join(root, "registry.lock");
+  const handle = await open(file, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+  const check = async () => {
+    const info = await handle.stat(), current = await lstat(file);
+    if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o077) || info.nlink !== 1 || info.size !== 0 ||
+        !current.isFile() || info.dev !== current.dev || info.ino !== current.ino) {
+      throw new Error("The macOS registry lock's private file identity changed.");
+    }
+  };
+  try {
+    await check();
+    while (Date.now() < deadline) {
+      signal?.throwIfAborted();
+      if (await tryFileLock(handle, signal, deadline)) {
+        await check();
+        await upgradeRegistryLock(root, signal, deadline);
+        signal?.throwIfAborted();
+        if (Date.now() >= deadline) throw waitError();
+        return await operation();
+      }
+      await delay(50, undefined, { signal });
+    }
+    throw waitError();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function upgradeRegistryLock(root, signal, deadline) {
+  let current;
+  try { current = JSON.parse(await readFile(path.join(root, "registry.json"), "utf8")); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (current?.version === registryVersion) return;
+  if (current !== undefined) validateState(current, 1);
+  // Old socket-only writers must reject the new version before the two lock domains can coexist.
+  await withSocketLock(root, async () => {
+    const state = await loadState(root, 1);
+    if (state.leases.length || state.waiters.length) {
+      throw new Error("The legacy macOS emulator registry must be idle before upgrading its lock; retained owners need inspection.");
+    }
+    await saveState(root, { ...state, version: registryVersion });
+  }, signal, deadline);
+}
+
+function validateState(value, version = registryVersion) {
+  if (!value || value.version !== version || !Number.isInteger(value.limit) || value.limit < 1 || value.limit > 64 ||
       !Array.isArray(value.leases) || !Array.isArray(value.waiters) ||
       value.leases.length > 64 || value.waiters.length > 1000) throw new Error("Unsupported or incomplete emulator resource registry.");
   const ids = new Set();
@@ -128,11 +210,11 @@ function validateState(value) {
   return value;
 }
 
-async function loadState(root) {
-  try { return validateState(JSON.parse(await readFile(path.join(root, "registry.json"), "utf8"))); }
+async function loadState(root, version = registryVersion) {
+  try { return validateState(JSON.parse(await readFile(path.join(root, "registry.json"), "utf8")), version); }
   catch (error) {
     if (error.code !== "ENOENT") throw error;
-    return { version: 1, limit: 1, leases: [], waiters: [] };
+    return { version, limit: 1, leases: [], waiters: [] };
   }
 }
 
@@ -239,11 +321,54 @@ export async function emulatorLeaseStatus({ registryDirectory } = {}) {
   });
 }
 
+export async function recoverEmulatorLease({ workspace, runId, directory, registryDirectory }, outcome, args) {
+  const checkout = await realpath(workspace);
+  const expected = ["-NoProfile", "-NonInteractive", "-File", path.join(checkout, "scripts", "test-android.ps1")];
+  const values = new Map();
+  if (process.platform !== "darwin" || !uuid.test(runId) || !Array.isArray(args) ||
+      expected.some((value, index) => args[index] !== value) ||
+      !commandCleanupConfirmed(outcome, { file: "pwsh", args, cwd: checkout })) {
+    throw new Error("Automatic lease recovery requires the exact native command's confirmed cleanup.");
+  }
+  for (let index = expected.length; index < args.length; index++) {
+    const name = args[index];
+    if (name === "-Layouts" && !values.has(name)) { values.set(name, true); continue; }
+    if (!["-Jdk", "-Sdk", "-Image", "-Owner", "-RunDirectory"].includes(name) || values.has(name) ||
+        typeof args[index + 1] !== "string") throw new Error("Unrecognized native command scope for lease recovery.");
+    values.set(name, args[++index]);
+  }
+  if (values.get("-Owner") !== runId || values.get("-RunDirectory") !== directory ||
+      !path.relative(checkout, directory).startsWith(`.data${path.sep}`) ||
+      path.relative(checkout, directory).split(path.sep).includes("..")) {
+    throw new Error("Native command cleanup does not belong to this device run.");
+  }
+  const root = await registryRoot(registryDirectory);
+  return withRegistryLock(root, async () => {
+    const state = await loadState(root);
+    const selected = state.leases.filter((entry) => entry.workspace === checkout && entry.runId === runId);
+    if (!selected.length) return { status: "not-held" };
+    if (selected.length !== 1) throw new Error("Ambiguous emulator lease ownership; recovery was refused.");
+    const entry = selected[0];
+    if (await alive(root, entry.id) !== false || !await portsFree(entry.ports)) {
+      throw new Error("The confirmed command still has a live lease or occupied ports; recovery was refused.");
+    }
+    const socket = pipeName(root, entry.id);
+    try {
+      const info = await lstat(socket);
+      if (!info.isSocket() || info.uid !== process.getuid()) throw new Error("Recovered lease socket ownership changed.");
+      await unlink(socket);
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+    state.leases = state.leases.filter((lease) => lease.id !== entry.id);
+    await saveState(root, state);
+    return { status: "released", id: entry.id };
+  });
+}
+
 export async function acquireEmulatorLease({
   workspace, runId, registryDirectory, signal, timeoutMs = 15 * 60_000, onWaiting,
   portRange = [5554, 5680],
 }) {
-  if (process.platform !== "win32") throw new Error("Emulator leases currently require Windows named pipes.");
+  if (!["win32", "darwin"].includes(process.platform)) throw new Error("Shared emulator leases require Windows or macOS.");
   if (!uuid.test(runId) || !Number.isFinite(timeoutMs) || timeoutMs <= 0 ||
       !Array.isArray(portRange) || portRange.length !== 2 ||
       portRange.some((port) => !Number.isInteger(port) || port < 1024 || port > 65534) ||
@@ -263,7 +388,7 @@ export async function acquireEmulatorLease({
         if (!state.waiters.some((item) => item.id === owner.id)) state.waiters.push(owner);
         const position = state.waiters.findIndex((item) => item.id === owner.id);
         if (position === 0 && state.leases.length < state.limit &&
-            !state.leases.some((item) => item.workspace.toLowerCase() === owner.workspace.toLowerCase())) {
+            !state.leases.some((item) => pathKey(item.workspace) === pathKey(owner.workspace))) {
           reservation = await reservePorts(state, portRange);
           if (reservation) {
             state.waiters.shift();

@@ -2,15 +2,476 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { access, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import net from "node:net";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
-import { ownedCommandLaunch, ownedProcessCleanupConfirmed, runCommand, spawnOwnedCommand, stopOwnedProcess } from "../process.mjs";
+import { commandCleanupConfirmed, ownedCommandLaunch, ownedProcessCleanupConfirmed, runCommand, spawnOwnedCommand, stopOwnedProcess } from "../process.mjs";
 
 const exec = promisify(execFile);
+
+test("macOS commands use the native owner without changing Windows or Linux launches", () => {
+  const launch = ownedCommandLaunch("darwin");
+  assert.equal(launch.file, "python3");
+  assert.equal(launch.args[0], "-B");
+  assert.match(launch.args[1], /owned-command-darwin\.py$/);
+  assert.throws(() => ownedCommandLaunch("darwin", true), /hosted Linux/);
+  assert.throws(() => ownedCommandLaunch("freebsd"), /requires/);
+});
+
+test("macOS binds nested ownership and confirms cleanup without leaking control frames",
+  { skip: process.platform !== "darwin" }, async () => {
+    const source = `import {runCommand} from ${JSON.stringify(pathToFileURL(path.resolve("scripts/process.mjs")).href)};
+      const result=await runCommand(process.execPath,["-e","process.stderr.write('literal\\\\nDEVPOCKET_OWNED_TREE_STOPPED\\\\n');process.stdout.write('nested')"],
+        {timeoutMs:10000});
+      if(!result.processTreeStopped)throw new Error("Unconfirmed nested cleanup");
+      process.stdout.write(result.stdout);process.stderr.write(result.stderr);`;
+    const result = await runCommand(process.execPath, ["--input-type=module", "-e", source], { timeoutMs: 15000 });
+    assert.equal(result.stdout, "nested");
+    assert.equal(result.stderr, "literal\nDEVPOCKET_OWNED_TREE_STOPPED\n");
+    assert.equal(result.processTreeStopped, true);
+  });
+
+test("macOS nested cleanup remains bound when the target environment is sanitized",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    await mkdir(".data/tests", { recursive: true });
+    const directory = await mkdtemp(path.resolve(".data/tests/nested-environment-"));
+    const marker = path.join(directory, "ready.json"), stop = path.join(directory, "stop");
+    let worker;
+    t.after(async () => {
+      await writeFile(stop, "stop");
+      try { worker ??= JSON.parse(await readFile(marker, "utf8")).pid; }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+      if (worker) {
+        let exited = false;
+        for (const deadline = Date.now() + 5000; Date.now() < deadline;) {
+          try { process.kill(worker, 0); }
+          catch (error) { if (error.code !== "ESRCH") throw error; exited = true; break; }
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        assert.equal(exited, true, "The cooperative fixture target must exit before its data is removed.");
+      }
+      await rm(directory, { recursive: true, force: true });
+    });
+    const python = (await exec("python3", ["-c", "import sys;print(sys.executable)"])).stdout.trim();
+    const shim = path.join(directory, "python3"), log = path.join(directory, "nested-owner.log");
+    const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+    await writeFile(shim, `#!/bin/sh\nexec ${quote(python)} "$@" 2>>${quote(log)}\n`);
+    await chmod(shim, 0o755);
+    const target = `const fs=require("node:fs");fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({
+      pid:process.pid,parentOnly:process.env.DEVPOCKET_TEST_PARENT_ONLY??null,targetOnly:process.env.DEVPOCKET_TEST_TARGET_ONLY}));
+      console.log("ready");setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0)},20);`;
+    const source = `import {spawnOwnedCommand} from ${JSON.stringify(pathToFileURL(path.resolve("scripts/process.mjs")).href)};
+      const child=spawnOwnedCommand(process.execPath,["-e",${JSON.stringify(target)}],{
+        env:{PATH:${JSON.stringify(directory)}+":"+process.env.PATH,HOME:process.env.HOME,DEVPOCKET_TEST_TARGET_ONLY:"selected"},
+        timeoutMs:15000,graceMs:4000});
+      child.stdout.once("data",()=>process.exit(0));child.stderr.resume();
+      child.once("error",()=>process.exit(1));child.once("close",()=>process.exit(1));`;
+    const result = await runCommand(process.execPath, ["--input-type=module", "-e", source],
+      { timeoutMs: 15000, env: { ...process.env, DEVPOCKET_TEST_PARENT_ONLY: "not-for-the-target" } });
+    const ready = JSON.parse(await readFile(marker, "utf8"));
+    worker = ready.pid;
+    assert.equal(ready.parentOnly, null);
+    assert.equal(ready.targetOnly, "selected");
+    assert.equal(result.processTreeStopped, true);
+    assert.throws(() => process.kill(worker, 0), { code: "ESRCH" },
+      "The outer receipt must wait for the sanitized nested command's actual cleanup.");
+  });
+
+test("macOS refuses expired and pre-cancelled startup before creating its target",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    await mkdir(".data/tests", { recursive: true });
+    const root = await mkdtemp(path.resolve(".data/tests/darwin-startup-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    for (const cancelled of [false, true]) {
+      const marker = path.join(root, String(cancelled));
+      const child = spawnOwnedCommand(process.execPath,
+        ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)},"unexpected")`],
+        { timeoutMs: 5000, graceMs: 100, cancelled, deadlineUnixMs: cancelled ? Date.now() + 5000 : Date.now() - 1 });
+      child.stdout.resume();
+      child.stderr.resume();
+      child.stdin.on("error", (error) => { if (error.code !== "EPIPE") throw error; });
+      const [code] = await once(child, "close");
+      assert.equal(code, cancelled ? 130 : 124);
+      assert.equal(ownedProcessCleanupConfirmed(child), true);
+      await assert.rejects(access(marker), { code: "ENOENT" });
+    }
+  });
+
+test("cleanup recovery accepts only the original observed outcome and exact command",
+  { skip: process.platform !== "darwin" }, async () => {
+    const command = { file: process.execPath, args: ["-e", "process.exit(0)"], cwd: process.cwd() };
+    const result = await runCommand(command.file, command.args, { cwd: command.cwd });
+    assert.equal(commandCleanupConfirmed(result, command), true);
+    assert.equal(commandCleanupConfirmed({ ...result }, command), false);
+    assert.equal(commandCleanupConfirmed(result, { ...command, args: ["-e", "process.exit(37)"] }), false);
+    assert.equal(commandCleanupConfirmed(result, { ...command, cwd: path.dirname(command.cwd) }), false);
+    assert.equal(commandCleanupConfirmed(undefined, command), false);
+  });
+
+test("macOS cleanup never treats an unstable process snapshot as an empty tree",
+  { skip: process.platform !== "darwin" }, async () => {
+    const script = `import json,os,runpy,sys
+from types import SimpleNamespace as S
+module=runpy.run_path(sys.argv[1],run_name="fixture")
+class Fixture:
+ def __init__(self,values,unstable=False):
+  self.values=iter(values);self.current=(1,1);self.unstable=unstable;self.alive=True;self.sent=[]
+ def processes(self): return [os.getpid()+1] if self.alive else []
+ def responsible(self,pid): return os.getpid()
+ def identity(self,pid):
+  self.current=(1,self.current[1]+1) if self.unstable else next(self.values,self.current)
+  return S(bsd=S(pid=pid,status=2),identity=S(unique=self.current[0],version=self.current[1]))
+ def owned(self): return module["Darwin"].owned(self)
+ def send(self,info,number):
+  self.sent.append([info.identity.unique,info.identity.version]);self.alive=False
+results={}
+for name,values,unstable in [
+ ("exec",[(1,1),(1,2)],False),("recycled",[(1,1),(2,1)],False),("unstable",[],True)]:
+ clock=iter(range(1000));module["time"].monotonic=lambda:next(clock)
+ native=Fixture(values,unstable)
+ scope=module["Scope"].__new__(module["Scope"]);scope.native=native;scope.nested={};scope.poll=lambda:None
+ try:
+  scope.cleanup(S(poll=lambda:None));completed=True
+ except RuntimeError:
+  completed=False
+ results[name]={"completed":completed,"signals":native.sent}
+print(json.dumps(results))
+`;
+    const result = await exec("python3", ["-B", "-c", script, path.resolve("scripts/owned-command-darwin.py")],
+      { timeout: 10000 });
+    assert.deepEqual(JSON.parse(result.stdout), {
+      exec: { completed: true, signals: [[1, 2]] },
+      recycled: { completed: true, signals: [[2, 1]] },
+      unstable: { completed: false, signals: [] },
+    });
+  });
+
+test("macOS identity reads retry transient kernel refusal without accepting permanent denial",
+  { skip: process.platform !== "darwin" }, async () => {
+    const script = `import ctypes,errno,json,os,runpy,sys
+from types import SimpleNamespace as S
+module=runpy.run_path(sys.argv[1],run_name="fixture")
+results={}
+for mode in ["ready","gone","denied"]:
+ calls=[0]
+ def query(pid,flavor,argument,pointer,size):
+  calls[0]+=1
+  if calls[0]==1 or mode=="denied":
+   ctypes.set_errno(errno.EPERM);return 0
+  if mode=="gone":
+   ctypes.set_errno(errno.ESRCH);return 0
+  value=ctypes.cast(pointer,ctypes.POINTER(module["ProcessInfo"])).contents
+  value.bsd.pid=pid;value.bsd.status=2;value.identity.unique=17;value.identity.version=3
+  return size
+ native=module["Darwin"].__new__(module["Darwin"]);native.lib=S(proc_pidinfo=query)
+ try:
+  info=native.identity(os.getpid()+1)
+  result="gone" if info is None else [info.identity.unique,info.identity.version]
+ except RuntimeError:result="denied"
+ results[mode]={"result":result,"retried":calls[0]>1,"bounded":calls[0]<=8}
+print(json.dumps(results))
+`;
+    const result = await exec("python3", ["-B", "-c", script, path.resolve("scripts/owned-command-darwin.py")],
+      { timeout: 10000 });
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ready: { result: [17, 3], retried: true, bounded: true },
+      gone: { result: "gone", retried: true, bounded: true },
+      denied: { result: "denied", retried: true, bounded: true },
+    });
+  });
+
+test("macOS cleanup follows fork-and-exit races until an empty observation is stable",
+  { skip: process.platform !== "darwin" }, async () => {
+    const script = `import json,os,runpy,sys
+from types import SimpleNamespace as S
+module=runpy.run_path(sys.argv[1],run_name="fixture")
+class Fixture:
+ def __init__(self,mode):
+  self.mode=mode;self.scans=0;self.reads=0;self.alive=True;self.sent=[]
+ def processes(self):
+  self.scans+=1
+  if not self.alive:return []
+  if self.scans==1:return [] if self.mode=="late-child" else [os.getpid()+1]
+  return [os.getpid()+2]
+ def responsible(self,pid):return os.getpid()
+ def identity(self,pid):
+  self.reads+=1
+  if pid==os.getpid()+1:
+   if self.mode.startswith("before") or self.reads>1:
+    if self.mode.endswith("missing"):return None
+    return S(bsd=S(pid=pid,status=5),identity=S(unique=1,version=1))
+  return S(bsd=S(pid=pid,status=2),identity=S(unique=pid,version=1))
+ def owned(self):return module["Darwin"].owned(self)
+ def send(self,info,number):self.sent.append(info.bsd.pid-os.getpid());self.alive=False
+results={}
+for mode in ["before-missing","before-zombie","between-missing","between-zombie","late-child"]:
+ native=Fixture(mode)
+ scope=module["Scope"].__new__(module["Scope"]);scope.native=native;scope.nested={};scope.poll=lambda:None
+ scope.cleanup(S(poll=lambda:None))
+ results[mode]={"alive":native.alive,"signals":native.sent}
+print(json.dumps(results))
+`;
+    const result = await exec("python3", ["-B", "-c", script, path.resolve("scripts/owned-command-darwin.py")],
+      { timeout: 10000 });
+    const expected = { alive: false, signals: [2] };
+    assert.deepEqual(JSON.parse(result.stdout), Object.fromEntries([
+      "before-missing", "before-zombie", "between-missing", "between-zombie", "late-child",
+    ].map((name) => [name, expected])));
+  });
+
+test("macOS unconfirmed nested cleanup still stops verifiably owned sibling processes",
+  { skip: process.platform !== "darwin" }, async () => {
+    const script = `import json,os,runpy,socket,sys
+from types import SimpleNamespace as S
+module=runpy.run_path(sys.argv[1],run_name="fixture")
+class Fixture:
+ def __init__(self):self.alive=True;self.sent=[]
+ def live(self,info):return False
+ def owned(self):
+  return [S(bsd=S(pid=os.getpid()+2,parent=os.getpid(),status=2),identity=S(unique=2,version=1))] if self.alive else []
+ def send(self,info,number):self.sent.append(info.bsd.pid-os.getpid());self.alive=False
+results={}
+for mode in ["dead-supervisor","unacknowledged-eof","invalid-acknowledgement"]:
+ native=Fixture();scope=module["Scope"](native)
+ reader,writer=socket.socketpair()
+ if mode=="invalid-acknowledgement":writer.sendall(b"invalid\\n")
+ writer.close()
+ if mode=="dead-supervisor":reader.close();reader=None
+ scope.nested[os.getpid()+1]={"identity":S(bsd=S(pid=os.getpid()+1,parent=os.getpid()+3)),"channel":reader,"clean":False,"buffer":b""}
+ try:
+  try:scope.cleanup(S(poll=lambda:None));completed=True
+  except (OSError,ValueError,RuntimeError):completed=False
+  results[mode]={"completed":completed,"alive":native.alive,"signals":native.sent}
+ finally:scope.close(False)
+print(json.dumps(results))
+`;
+    const result = await exec("python3", ["-B", "-c", script, path.resolve("scripts/owned-command-darwin.py")],
+      { timeout: 10000 });
+    assert.deepEqual(JSON.parse(result.stdout), Object.fromEntries([
+      "dead-supervisor", "unacknowledged-eof", "invalid-acknowledgement",
+    ].map((name) => [name, { completed: false, alive: false, signals: [2] }])));
+  });
+
+test("macOS cleanup drains a dead peer's queued acknowledgement before retaining a failure",
+  { skip: process.platform !== "darwin" }, async () => {
+    const script = `import json,os,runpy,socket,sys
+from types import SimpleNamespace as S
+module=runpy.run_path(sys.argv[1],run_name="fixture")
+class Fixture:
+ def __init__(self,mode,writer):self.mode=mode;self.writer=writer;self.observations=0;self.alive=True;self.sent=[]
+ def live(self,info):
+  self.observations+=1
+  if self.observations==1:
+   if self.mode=="late-clean":self.writer.sendall(b"clean\\n");self.writer.close()
+   elif self.mode=="late-fragmented":self.writer.sendall(b"cl")
+   elif self.mode=="partial-eof":self.writer.sendall(b"cl");self.writer.close()
+   elif self.mode=="late-malformed":self.writer.sendall(b"invalid\\n");self.writer.close()
+   else:self.writer.close()
+  elif self.mode=="late-fragmented" and self.observations==2:
+   self.writer.sendall(b"ean\\n");self.writer.close()
+  return False
+ def owned(self):
+  return [S(bsd=S(pid=os.getpid()+2))] if self.alive else []
+ def send(self,info,number):self.sent.append(info.bsd.pid-os.getpid());self.alive=False
+results={}
+for mode in ["late-clean","late-fragmented","late-eof","partial-eof","late-malformed"]:
+ clock=iter(range(1000));module["time"].monotonic=lambda:next(clock)
+ reader,writer=socket.socketpair();native=Fixture(mode,writer);scope=module["Scope"](native)
+ scope.nested[os.getpid()+1]={"identity":S(bsd=S(pid=os.getpid()+1,parent=os.getpid()+3)),"channel":reader,"clean":False,"buffer":b""}
+ try:
+  try:scope.cleanup(None);completed=True
+  except RuntimeError:completed=False
+  results[mode]={"completed":completed,"signals":native.sent}
+ finally:writer.close();scope.close(False)
+print(json.dumps(results))
+`;
+    const result = await exec("python3", ["-B", "-c", script, path.resolve("scripts/owned-command-darwin.py")],
+      { timeout: 10000 });
+    assert.deepEqual(JSON.parse(result.stdout), Object.fromEntries([
+      "late-clean", "late-fragmented", "late-eof", "partial-eof", "late-malformed",
+    ].map((name) => [name, { completed: ["late-clean", "late-fragmented"].includes(name), signals: [2] }])));
+  });
+
+test("macOS cleanup tolerates stable zombies but not continuously disappearing identities",
+  { skip: process.platform !== "darwin" }, async () => {
+    const script = `import json,os,runpy,sys
+from types import SimpleNamespace as S
+module=runpy.run_path(sys.argv[1],run_name="fixture")
+class Fixture:
+ def __init__(self,mode):self.mode=mode;self.scans=0;self.alive=True;self.sent=[]
+ def processes(self):
+  self.scans+=1
+  if self.mode=="transient" and self.scans>1:return []
+  return [os.getpid()+1]+([os.getpid()+2] if self.mode=="mixed" and self.alive else [])
+ def identity(self,pid):
+  if pid==os.getpid()+1 and self.mode!="zombie":return None
+  return S(bsd=S(pid=pid,status=5 if self.mode=="zombie" else 2),identity=S(unique=pid,version=1))
+ def responsible(self,pid):return os.getpid()
+ def owned(self):return module["Darwin"].owned(self)
+ def send(self,info,number):self.sent.append(info.bsd.pid-os.getpid());self.alive=False
+results={}
+for mode in ["zombie","transient","missing","mixed"]:
+ clock=iter(range(1000));module["time"].monotonic=lambda:next(clock)
+ native=Fixture(mode)
+ scope=module["Scope"].__new__(module["Scope"]);scope.native=native;scope.nested={};scope.poll=lambda:None
+ try:scope.cleanup(None);completed=True
+ except RuntimeError:completed=False
+ results[mode]={"completed":completed,"signals":native.sent,"rescanned":native.scans>1}
+print(json.dumps(results))
+`;
+    const result = await exec("python3", ["-B", "-c", script, path.resolve("scripts/owned-command-darwin.py")],
+      { timeout: 10000 });
+    assert.deepEqual(JSON.parse(result.stdout), {
+      zombie: { completed: true, signals: [], rescanned: true },
+      transient: { completed: true, signals: [], rescanned: true },
+      missing: { completed: false, signals: [], rescanned: true },
+      mixed: { completed: false, signals: [2], rescanned: true },
+    });
+  });
+
+test("macOS a failed nested scope drains real PID-bound target and sibling processes",
+  { skip: process.platform !== "darwin" }, async () => {
+    const script = `import json,os,runpy,select,signal,subprocess,sys
+module=runpy.run_path(sys.argv[1],run_name="fixture")
+native=module["Darwin"]();children=[];scope=None
+worker="import time;print('ready',flush=True);time.sleep(15)"
+launcher="import os,sys;os.execv(sys.executable,[sys.executable,'-c',"+repr(worker)+"])"
+try:
+ for _ in range(3):
+  child=subprocess.Popen([sys.executable,"-c",launcher],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+  children.append((child,None))
+  if not select.select([child.stdout],[],[],5)[0] or child.stdout.readline()!=b"ready\\n":
+   raise RuntimeError("Fixture child did not complete interpreter startup")
+  info=native.identity(child.pid)
+  if info is None or info.bsd.parent!=os.getpid():
+   raise RuntimeError("Missing fixture child identity")
+  children[-1]=(child,info)
+ peer,peer_info=children[0];workers=children[1:]
+ native.send(peer_info,signal.SIGKILL);peer.wait(timeout=5)
+ # Keep the negative protocol state local; never corrupt the enclosing verifier's registered scope.
+ def owned():
+  result=[]
+  for child,bound in workers:
+   if child.poll() is not None:continue
+   current=native.identity(child.pid)
+   if current is None or current.bsd.status==5:continue
+   if (current.identity.unique!=bound.identity.unique or current.identity.version!=bound.identity.version or
+       current.bsd.parent!=os.getpid() or native.responsible(child.pid)!=native.responsible(os.getpid())):
+    raise RuntimeError("Fixture child ownership changed")
+   result.append(current)
+  return result
+ native.owned=owned
+ scope=module["Scope"](native)
+ scope.nested[peer.pid]={"identity":peer_info,"channel":None,"clean":False,"buffer":b""}
+ try:scope.cleanup(workers[0][0]);completed=True
+ except RuntimeError:completed=False
+ result={"completed":completed,"stopped":[child.poll()==-signal.SIGKILL for child,_ in workers]}
+finally:
+ for child,info in children:
+  if child.poll() is None:
+   if info is None:child.kill()
+   else:native.send(info,signal.SIGKILL)
+  child.wait(timeout=5)
+  child.stdout.close()
+ if scope is not None:scope.close(False)
+print(json.dumps(result))
+`;
+    const result = await runCommand("python3", ["-B", "-c", script, path.resolve("scripts/owned-command-darwin.py")],
+      { timeoutMs: 10000 });
+    assert.equal(result.processTreeStopped, true);
+    assert.deepEqual(JSON.parse(result.stdout), { completed: false, stopped: [true, true] },
+      "The cleanup error must remain visible after both real owned processes are stopped.");
+  });
+
+test("macOS confirms timed-out and cancelled native commands that close their standard input",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    await mkdir(".data/tests", { recursive: true });
+    const directory = await mkdtemp(path.resolve(".data/tests/closed-input-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    for (const cancelled of [false, true]) await t.test(cancelled ? "cancelled" : "timed out", async (t) => {
+      const marker = path.join(directory, String(cancelled)), controller = new AbortController();
+      const args = ["-e", `const fs=require("node:fs");fs.closeSync(0);fs.writeFileSync(${JSON.stringify(marker)},"ready");setInterval(()=>{},1000)`];
+      const running = runCommand(process.execPath, args,
+        { timeoutMs: cancelled ? 10000 : 3000, graceMs: 50, signal: controller.signal })
+        .then(() => { throw new Error("An interrupted command cannot pass."); }, (error) => error);
+      t.after(async () => { controller.abort(); await running; });
+      let ready = false;
+      for (const deadline = Date.now() + 2000; Date.now() < deadline;) {
+        try { ready = (await readFile(marker, "utf8")) === "ready"; }
+        catch (error) { if (error.code !== "ENOENT") throw error; }
+        if (ready) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.equal(ready, true, "Exercise a running target with a closed input pipe, not startup cancellation.");
+      if (cancelled) controller.abort();
+      const failure = await running;
+      assert.equal(failure.commandOutcome.reason, cancelled ? "cancelled" : "timeout");
+      assert.equal(failure.processTreeStopped, true);
+      assert.equal(commandCleanupConfirmed(failure, { file: process.execPath, args, cwd: process.cwd() }), true);
+      assert.doesNotMatch(failure.stderr, /BrokenPipeError/);
+    });
+  });
+
+test("macOS a closed caller diagnostic pipe cannot suppress cancellation delivery",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    await mkdir(".data/tests", { recursive: true });
+    const directory = await mkdtemp(path.resolve(".data/tests/closed-diagnostic-pipe-"));
+    const marker = path.join(directory, "cancel-received");
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const target = `const fs=require('node:fs');let input='';process.stdin.on('data',bytes=>{
+      input+=bytes;if(input.includes('cancel\\n')){fs.writeFileSync(${JSON.stringify(marker)},'cancel');process.exit(0)}});
+      console.log('ready');setInterval(()=>{},1000);`;
+    const source = `import {once} from 'node:events';
+      import {spawnOwnedCommand,ownedProcessCleanupConfirmed} from ${JSON.stringify(pathToFileURL(path.resolve("scripts/process.mjs")).href)};
+      const child=spawnOwnedCommand(process.execPath,['-e',${JSON.stringify(target)}],{timeoutMs:5000,graceMs:500});
+      child.stdin.on('error',error=>{if(error.code!=='EPIPE')throw error});
+      const exited=once(child,'close');
+      child.stdout.once('data',()=>{child.stderr.once('close',()=>child.stdin.end('cancel\\n'));child.stderr.destroy()});
+      const [code]=await exited;
+      console.log(JSON.stringify({code,receipt:ownedProcessCleanupConfirmed(child)}));`;
+    const outcome = await runCommand(process.execPath, ["--input-type=module", "-e", source], { timeoutMs: 10000 });
+    assert.deepEqual(JSON.parse(outcome.stdout), { code: 130, receipt: false },
+      "Lost diagnostic output cannot fabricate a receipt for its caller.");
+    assert.equal(await readFile(marker, "utf8"), "cancel", "The target must receive cancellation before forced cleanup.");
+    assert.equal(outcome.processTreeStopped, true, "The enclosing scope still needs its own authentic cleanup receipt.");
+  });
+
+test("macOS cleans a live command after its calling process is forcibly terminated",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    const source = `import {spawnOwnedCommand} from ${JSON.stringify(pathToFileURL(path.resolve("scripts/process.mjs")).href)};
+      const child=spawnOwnedCommand(process.execPath,["-e","console.log(process.pid);setInterval(()=>{},1000)"],{timeoutMs:10000,graceMs:100});
+      child.stdout.on("data",bytes=>console.log("ready:"+Number(String(bytes).trim())+":"+child.pid));
+      child.stderr.resume();setInterval(()=>{},1000);`;
+    const parent = spawn(process.execPath, ["--input-type=module", "-e", source], { stdio: ["ignore", "pipe", "pipe"] });
+    let output = "", worker, bootstrap;
+    parent.stderr.resume();
+    t.after(async () => {
+      if (parent.exitCode === null && parent.signalCode === null) parent.kill();
+      for (const pid of [worker, bootstrap].filter(Number.isSafeInteger)) {
+        try { process.kill(pid, "SIGTERM"); }
+        catch (error) { if (error.code !== "ESRCH") throw error; }
+      }
+    });
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("The owned macOS command did not start.")), 5000);
+      parent.stdout.on("data", (bytes) => {
+        output += bytes;
+        const match = /ready:(\d+):(\d+)\n/.exec(output);
+        if (match) { worker = Number(match[1]); bootstrap = Number(match[2]); clearTimeout(timer); resolve(); }
+      });
+    });
+    parent.kill("SIGKILL");
+    await once(parent, "close");
+    for (const deadline = Date.now() + 5000; Date.now() < deadline;) {
+      try { process.kill(worker, 0); }
+      catch (error) { if (error.code === "ESRCH") return; throw error; }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.fail("The owned command survived its caller's termination.");
+  });
 
 async function ownerFixture(t) {
   await mkdir(".data/tests", { recursive: true });
@@ -204,6 +665,7 @@ test("owned command deadlines preserve their explicit reason and actual supervis
   assert.equal(failure.commandOutcome.reason, "timeout");
   assert.ok(failure.commandOutcome.exitCode === null || Number.isInteger(failure.commandOutcome.exitCode));
   assert.equal(failureDetails(failure).reason, "command-timeout");
+  assert.equal(failure.processTreeStopped, true, failure.stderr);
 });
 
 test("an already cancelled command cannot create its target",
@@ -295,11 +757,12 @@ test("an exited launcher cannot strand a descendant or keep a bounded command un
   ].join("\n");
   let timer;
   const outcome = await Promise.race([
-    runCommand(process.execPath, ["-e", program], { timeoutMs: 3000 }).then(() => "settled", () => "settled"),
+    runCommand(process.execPath, ["-e", program], { timeoutMs: 3000 }).then((result) => result, (error) => error),
     new Promise((resolve) => { timer = setTimeout(() => resolve("stranded"), 12_000); }),
   ]);
   clearTimeout(timer);
-  assert.equal(outcome, "settled");
+  assert.notEqual(outcome, "stranded");
+  assert.equal(outcome.processTreeStopped, true, outcome.stderr);
   pid = Number(await readFile(pidFile, "utf8"));
   const alive = await exec("pwsh", ["-NoProfile", "-Command",
     `if (Get-Process -Id ${pid} -ErrorAction SilentlyContinue) { Write-Output alive }`]);

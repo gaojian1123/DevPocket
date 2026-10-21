@@ -20,7 +20,7 @@ function reportFor(plan, group, checks) {
   const blocked = checks.some((check) => check.status === "blocked");
   const complete = checks.every((check) => check.status === "passed" && !check.toolingShard);
   return { ...plan, group, checks, complete, status: failed ? "failed" : blocked ? "blocked" : complete ? "passed" : "partial",
-    environment: { node: process.version, platform: process.platform } };
+    environment: { node: process.version, platform: process.platform, architecture: process.arch } };
 }
 
 function checkProcessCleanupConfirmed(check) {

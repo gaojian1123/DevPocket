@@ -139,11 +139,12 @@ export function publicDeviceEvidence(value, workerDiagnostics, deviceDiagnostics
     cases: value.cases.map((item) => ({ name: item.name, class: item.class, tests: item.tests, status: item.status })),
     discoveredClasses: [...value.discoveredClasses],
     apkSha256: value.apkSha256, testApkSha256: value.testApkSha256,
-    ...(value.platform === "linux" || value.platform === "win32" ? { platform: value.platform } : {}),
-    ...(value.acceleration?.provider === "KVM" && value.acceleration.usable === true
-      ? { acceleration: { provider: "KVM", usable: true } } : {}),
+    ...(["linux", "win32", "darwin"].includes(value.platform) ? { platform: value.platform } : {}),
+    ...(value.platform === "darwin" && ["arm64", "x64"].includes(value.architecture) ? { architecture: value.architecture } : {}),
+    ...(["KVM", "HVF"].includes(value.acceleration?.provider) && value.acceleration.usable === true
+      ? { acceleration: { provider: value.acceleration.provider, usable: true } } : {}),
     image: typeof value.image === "string" &&
-      /^system-images[\\/]android-\d+(?:\.\d+)?[\\/](?:google_apis(?:_playstore)?|default)[\\/]x86_64$/.test(value.image) ? value.image : "unknown",
+      /^system-images[\\/]android-\d+(?:\.\d+)?[\\/](?:google_apis(?:_playstore)?|default)[\\/](?:x86_64|arm64-v8a)$/.test(value.image) ? value.image : "unknown",
     toolchain: Object.fromEntries(["java", "adb", "emulator", "imageRevision"].map((name) => [name, version(value.toolchain?.[name])])),
     workerDiagnostics, deviceDiagnostics,
   };
@@ -174,6 +175,8 @@ export async function validateVerificationEvidence(root, plan, reports, options 
 
 export function requireCheckPolicy(plan) {
   if (plan.version !== VERIFICATION_REPORT_VERSION || !Array.isArray(plan.requiredChecks) ||
+      plan.ciMacos !== undefined && typeof plan.ciMacos !== "boolean" ||
+      plan.ciMacos === true && !plan.requiredChecks.includes("workflow-tests") ||
       JSON.stringify(plan.requiredChecks) !== JSON.stringify(CHECKS.filter((check) => plan.requiredChecks.includes(check.id)).map((check) => check.id)) ||
       JSON.stringify(plan.requiredGroups) !== JSON.stringify(verificationGroups(plan.requiredChecks))) {
     throw verificationFault("policy-mismatch");
@@ -276,6 +279,7 @@ function validatedReportChecks(plan, report, inputIndex, allowToolingShard = fal
   }
   if (JSON.stringify(report.requiredChecks) !== JSON.stringify(plan.requiredChecks) ||
       JSON.stringify(report.requiredGroups) !== JSON.stringify(plan.requiredGroups) ||
+      (report.ciMacos ?? false) !== (plan.ciMacos ?? false) ||
       JSON.stringify(report.toolingShards ?? null) !== JSON.stringify(plan.toolingShards ?? null)) {
     throw verificationFault("policy-mismatch", context);
   }
@@ -361,6 +365,13 @@ export function validateDeviceEvidence(evidence, plan, platform) {
   if ((platform === "linux" && evidence.platform !== "linux") ||
       (evidence.platform === "linux" &&
         (evidence.acceleration?.provider !== "KVM" || evidence.acceleration.usable !== true))) {
+    throw verificationFault("acceleration-evidence", context);
+  }
+  if (platform === "darwin" && evidence.platform !== "darwin" || evidence.platform === "darwin" &&
+      (evidence.acceleration?.provider !== "HVF" || evidence.acceleration.usable !== true ||
+        !["arm64", "x64"].includes(evidence.architecture) || typeof evidence.image !== "string" ||
+        !/^system-images\/android-\d+(?:\.\d+)?\/(?:google_apis(?:_playstore)?|default)\/(?:x86_64|arm64-v8a)$/.test(evidence.image) ||
+        !evidence.image.endsWith(evidence.architecture === "arm64" ? "/arm64-v8a" : "/x86_64"))) {
     throw verificationFault("acceleration-evidence", context);
   }
   const baseline = baselineDeviceClasses;

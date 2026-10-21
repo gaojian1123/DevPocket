@@ -6,6 +6,8 @@ import { projectWorkerDiagnostics, readDiagnosticReport } from "./worker-diagnos
 import { deviceSourceCatalogue, projectDeviceDiagnostics, deviceDiagnosticsFromOutput } from "./device-diagnostics.mjs";
 import { diagnosticError, failureDetails } from "./diagnostic-errors.mjs";
 import { publicDeviceEvidence, validateDeviceEvidence, verificationFailure, verificationFault } from "./verification.mjs";
+import { commandCleanupConfirmed } from "./process.mjs";
+import { recoverEmulatorLease } from "./emulator-resources.mjs";
 
 export async function androidVerification(root, check, plan, options) {
   if (!["android-build", "android-device"].includes(check.id)) throw verificationFault("configuration", { check: check.id });
@@ -74,6 +76,11 @@ export async function androidVerification(root, check, plan, options) {
       if (error.processTreeStopped) {
         try {
           const cleaned = await cleanDeviceRun(root, directory, owner);
+          if (process.platform === "darwin") {
+            const command = { file: "pwsh", args, cwd: root };
+            const outcome = commandCleanupConfirmed(error, command) ? error : output;
+            check.leaseRecovery = await recoverEmulatorLease({ workspace: root, directory, runId: owner }, outcome, args);
+          }
           check.cleanup = cleaned ? "completed" : "unknown";
         } catch (cleanupError) {
           check.cleanup = "failed";

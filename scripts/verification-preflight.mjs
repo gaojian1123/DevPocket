@@ -9,6 +9,7 @@ import { readOnlyGit, sourceInputs } from "./git-state.mjs";
 import { diagnosticError, diagnosticVersion, failureDetails } from "./diagnostic-errors.mjs";
 import { CHECKS } from "./verification-policy.mjs";
 import { verificationStorageLocation } from "./verification-run.mjs";
+import { androidImageArchitecture, androidImagePattern, macOSAcceleration } from "./android-platform.mjs";
 
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const scripts = fileURLToPath(new URL(".", import.meta.url));
@@ -21,9 +22,10 @@ const policyInputs = [
   "test-workflow.mjs", "verification-tooling.mjs", "verification-admission.mjs", "verification-ci.mjs",
   "verification-ci-artifact.ps1", "development-policy.mjs",
   "candidate-commit.mjs", "native-candidate.mjs", "git-state.mjs", "process.mjs",
-  "owned-command-windows.mjs", "owned-command.cs", "owned-command.ps1", "owned-command-linux.py",
+  "owned-command-windows.mjs", "owned-command.cs", "owned-command.ps1", "owned-command-linux.py", "owned-command-darwin.py", "local-ipc.mjs",
   "backend-diagnostics.mjs", "diagnostic-errors.mjs", "diagnostic-publication.mjs", "bounded-worker-log.mjs",
-  "device-run.mjs", "worker-diagnostics.mjs", "device-diagnostics.mjs", "native-lifecycle.mjs",
+  "device-run.mjs", "worker-diagnostics.mjs", "device-diagnostics.mjs", "native-lifecycle.mjs", "android-platform.mjs",
+  "emulator-resources.mjs",
 ];
 
 async function fileIdentity(file, { optional = false } = {}) {
@@ -237,7 +239,7 @@ export async function resolveVerificationExecutable(root, name, { shell = false 
       try {
         const resolved = await realpath(file);
         await access(resolved, constants.R_OK | constants.X_OK);
-        if ((await lstat(resolved)).isFile()) return windows && shell ? file : resolved;
+        if ((await lstat(resolved)).isFile()) return shell ? file : resolved;
       } catch (error) { if (!["ENOENT", "ENOTDIR"].includes(error.code)) throw error; }
     }
   }
@@ -507,6 +509,12 @@ export async function verificationPreflight(root, plan, options = {}) {
   };
   const owner = () => once("ownership", async () => {
     if (process.platform === "linux") return tool("python3", ["--version"], (text) => /^Python 3\./.test(text));
+    if (process.platform === "darwin") return tool("python3",
+      ["-B", path.join(scripts, "owned-command-darwin.py"), "--probe"], (text) => {
+        const value = JSON.parse(text);
+        return value.platform === "darwin" && value.ownership === "responsibility-audit-token" &&
+          typeof value.release === "string" && /^\d+\.\d+\.\d+$/.test(value.release);
+      });
     if (process.platform !== "win32") throw diagnosticError("preflight-tool");
     const directory = path.join(process.env.SystemRoot ?? process.env.WINDIR ?? "", "Microsoft.NET", "Framework64", "v4.0.30319");
     return Promise.all(["csc.exe", "csc.exe.config", "csc.rsp", "clr.dll", "mscorlib.dll", "System.Runtime.Serialization.dll"]
@@ -612,7 +620,7 @@ export async function verificationPreflight(root, plan, options = {}) {
       ...(sameBootstrap ? { packageIdentity: identity.packageIdentity, prefixResolution: identity.prefixResolution } : {}) };
   });
   const python = (file, requirements) => once(`python:${file}:${requirements ?? ""}`, async () => {
-    const program = path.isAbsolute(file) ? file : await resolveVerificationExecutable(root, file);
+    const program = path.isAbsolute(file) ? file : await resolveVerificationExecutable(root, file, { shell: process.platform !== "win32" });
     const script = "import sys,json,importlib.metadata as m,hashlib\n" +
       "if sys.version_info < (3,12): raise RuntimeError('Python 3.12 or newer is required')\n" +
       "result={'version':list(sys.version_info[:3]),'executable':sys.executable}\n" +
@@ -631,7 +639,10 @@ export async function verificationPreflight(root, plan, options = {}) {
         "result['dependencies']=h.hexdigest()\n" : "") +
       "print(json.dumps(result))";
     const output = JSON.parse(await probe(program, ["-B", "-c", script]));
-    return { ...output, binary: await fileIdentity(await realpath(program)) };
+    return { ...output, binary: await fileIdentity(await realpath(program)),
+      ...(process.platform !== "win32" ? {
+        virtualEnvironment: await fileIdentity(path.resolve(path.dirname(program), "..", "pyvenv.cfg"), { optional: true }),
+      } : {}) };
   });
   const results = [];
   for (const group of groups) {
@@ -767,10 +778,11 @@ export async function verificationPreflight(root, plan, options = {}) {
       identities.push(["java-environment", environment(/^(?:JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|GRADLE_OPTS|JAVA_OPTS|ORG_GRADLE_PROJECT_.*)$/i)]);
       if (device) {
         const emulatorSdk = path.resolve(root, process.env.DEVPOCKET_EMULATOR_SDK ?? sdk);
+        const architecture = androidImageArchitecture();
         const image = (options.image ?? process.env.DEVPOCKET_ANDROID_IMAGE ??
-          "system-images/android-35/google_apis/x86_64").replaceAll("\\", "/");
+          `system-images/android-35/google_apis/${architecture}`).replaceAll("\\", "/");
         await check("android-image", () => once(`image:${emulatorSdk}:${image}`, async () => {
-          if (!/^system-images\/android-\d+(?:\.\d+)?\/(?:google_apis(?:_playstore)?|default)\/x86_64$/.test(image)) {
+          if (androidImagePattern.exec(image)?.[1] !== architecture) {
             throw diagnosticError("preflight-sdk");
           }
           const directory = path.join(emulatorSdk, ...image.split("/"));
@@ -784,7 +796,8 @@ export async function verificationPreflight(root, plan, options = {}) {
         await check("emulator-acceleration", () => once(`emulator:${emulatorSdk}`, async () => {
           const emulator = path.join(emulatorSdk, "emulator", executableName("emulator"));
           const output = await probe(emulator, ["-accel-check"]);
-          const acceleration = [...new Set([...output.matchAll(
+          const acceleration = process.platform === "darwin" ? [JSON.stringify(macOSAcceleration(output))]
+            : [...new Set([...output.matchAll(
             /\b((?:KVM|WHPX|HAXM|AEHD|Hypervisor\.Framework|Android Emulator hypervisor driver)[^\r\n]*\bis installed and usable)\.?[ \t]*$/gmi,
           )].map((match) => match[1].trim()))];
           if (acceleration.length !== 1 || process.platform === "linux" && !/^KVM\b/i.test(acceleration[0])) {

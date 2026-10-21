@@ -26,7 +26,7 @@ const reasons = {
   "options-interpolation": "Backend diagnostics do not support interpolation-bearing Node options.",
   "upstream-job-failed": "A required upstream job did not complete successfully.",
   "device-evidence": "Required current device evidence is incomplete.",
-  "acceleration-evidence": "Linux device evidence requires usable KVM acceleration.",
+  "acceleration-evidence": "Device evidence requires usable hardware acceleration for its host platform.",
   "case-evidence": "Required native cases are missing, skipped, duplicated or inconsistent.",
   "apk-unavailable": "A required tested APK could not be read.",
   "apk-mismatch": "The tested APK identity does not match the retained artifact.",
