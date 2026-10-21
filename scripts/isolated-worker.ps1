@@ -93,7 +93,13 @@ function Assert-AncestorProtection([string]$Path) {
     $expected = Get-Acl -LiteralPath $Path
     $childBefore = (Get-Acl -LiteralPath $child).GetSecurityDescriptorSddlForm($sections)
     $expected.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($account.SID, $mutation, $deny))
-    [DevPocketIsolatedCommand]::ProtectAncestor($Path, $account.SID, $mutation)
+    $previousDirectory = [Environment]::CurrentDirectory
+    try {
+        [Environment]::CurrentDirectory = $Path
+        [DevPocketIsolatedCommand]::ProtectAncestor($Path, $account.SID, $mutation)
+    } finally {
+        [Environment]::CurrentDirectory = $previousDirectory
+    }
     if ((Get-Acl -LiteralPath $Path).GetSecurityDescriptorSddlForm($sections) -ne $expected.GetSecurityDescriptorSddlForm($sections)) {
         throw 'Ancestor protection changed more than the intended non-inheriting deny.'
     }

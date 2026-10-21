@@ -138,9 +138,12 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
         if (!Path.IsPathRooted(path) || !string.Equals(Path.GetFullPath(path), path, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("An ancestor must be an absolute directory.");
         var security = new Security { length = Marshal.SizeOf(typeof(Security)) };
-        // MAXIMUM_ALLOWED prevents SetSecurityInfo from propagating into the volume's descendants.
-        IntPtr directory = CreateFileW(path, 0x02000000, 7, ref security, 3, 0x02200000, IntPtr.Zero);
-        if (directory == new IntPtr(-1)) throw new Win32Exception();
+        // Exclusive metadata access prevents propagation without requesting DELETE on an in-use directory.
+        IntPtr directory = CreateFileW(path, 0x00060080, 0, ref security, 3, 0x02200000, IntPtr.Zero);
+        if (directory == new IntPtr(-1)) {
+            int error = Marshal.GetLastWin32Error();
+            throw new Win32Exception(error, "Cannot open ancestor " + path + " for metadata protection (native error " + error + ").");
+        }
         IntPtr descriptor = IntPtr.Zero;
         try {
             FileAttributeTag attributes;

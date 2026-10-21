@@ -337,10 +337,13 @@ test("Windows bootstrap does not assign the read-only HOME automatic variable", 
 });
 
 test("Windows ancestor protection uses the handle-bound non-propagating mutation",
-  { skip: process.platform !== "win32" }, async () => {
+  { skip: process.platform !== "win32" }, async (t) => {
+    const configuration = await fixture(t);
     const result = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-File",
       path.resolve("scripts", "tests", "fixtures", "isolated-ancestor-acl.ps1"),
-      "-Bootstrap", path.resolve("scripts", "isolated-worker.ps1")], { timeout: 30000 });
+      "-Bootstrap", path.resolve("scripts", "isolated-worker.ps1"),
+      "-NativeSource", path.resolve("scripts", "isolated-command.cs"), "-WorkingDirectory", configuration.candidate],
+    { timeout: 30000 });
     assert.deepEqual(JSON.parse(result.stdout), ["C:\\fixture", "C:\\"]);
   });
 

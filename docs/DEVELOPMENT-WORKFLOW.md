@@ -134,12 +134,17 @@ apply to a token for another account.
 Ancestor-only deny rules retain the existing DACL and use a non-propagating
 directory-handle update; attributes, DACL reading and mutation are bound to the
 same opened non-reparse object. They must not trigger an ACL walk of the entire volume.
-The handle uses the documented `MAXIMUM_ALLOWED` behavior of
+The handle requests only `READ_CONTROL`, `WRITE_DAC` and `FILE_READ_ATTRIBUTES`,
+with no sharing, using the documented exclusive-directory behavior of
 [`SetSecurityInfo`](https://learn.microsoft.com/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo).
+Unlike `MAXIMUM_ALLOWED`, this does not request `DELETE`, which conflicts with
+an existing working-directory handle. A conflicting live reader still blocks
+the update; there is no shared or propagating fallback.
 Actual protected trees still receive their inheritable ACLs. No owner, SACL,
 user right or process-creation policy is changed by the ancestor update.
-The hosted bootstrap checks the exact parent DACL, unchanged child security and
-rejection of an opened junction before applying the update to real ancestors.
+The hosted bootstrap checks the exact parent DACL with a live working-directory
+handle, unchanged child security and rejection of an opened junction before
+applying the update to real ancestors.
 
 Linux keeps the root process owner outside `setpriv`, drops the target's groups
 and capabilities and sets `no_new_privs`. It consumes queued cancellation/EOF and
