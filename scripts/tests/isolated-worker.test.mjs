@@ -207,12 +207,23 @@ test("operational preflight probes the explicitly selected target without changi
   await git(root, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Python selector fixture"]);
   const plan = { ...await verificationPlan(root, "HEAD"), requiredChecks: ["operations-tests"], requiredGroups: ["backend"] };
   const before = process.env.PATH, calls = [];
-  const result = await withCommandBoundary(async (file, args, options, execute) => {
-    if (args[0] !== "-B") return execute(file, args, options);
+  const boundary = async (file, args, options, execute) => {
+    if (args[0] !== "-B" || args[1] !== "-c") return execute(file, args, options);
     calls.push({ file, args });
     assert.equal(file, process.execPath);
     return { ...successfulCommand(), stdout: JSON.stringify({ version: [3, 12, 0], executable: file, dependencies: "a".repeat(64) }) };
-  }, () => verificationPreflight(root, plan, { group: "backend", operationsPython: process.execPath,
+  };
+  const ownerFile = path.join(root, "owner-python");
+  const ownerArgs = ["-B", path.resolve("scripts", "owned-command-darwin.py"), "--probe"];
+  let forwarded = false;
+  await boundary(ownerFile, ownerArgs, {}, async (file, args) => {
+    forwarded = true;
+    assert.equal(file, ownerFile);
+    assert.deepEqual(args, ownerArgs);
+    return successfulCommand();
+  });
+  assert.equal(forwarded, true);
+  const result = await withCommandBoundary(boundary, () => verificationPreflight(root, plan, { group: "backend", operationsPython: process.execPath,
     directory: path.join(root, ".data", "ci", "preflight") }));
   assert.equal(result.status, "passed", JSON.stringify(result));
   assert.equal(calls.length, 2);
