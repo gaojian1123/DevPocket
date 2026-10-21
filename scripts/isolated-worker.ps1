@@ -72,7 +72,9 @@ function Protect-Ancestors([string]$Path) {
     while ($null -ne $current) {
         $acl = Get-Acl -LiteralPath $current.FullName
         $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($account.SID, $mutation, $deny))
+        Write-Host "[DEBUG-iso-win-acl] ancestor-start $($current.FullName)"
         Set-Acl -LiteralPath $current.FullName -AclObject $acl
+        Write-Host "[DEBUG-iso-win-acl] ancestor-completed $($current.FullName)"
         $current = $current.Parent
     }
 }
@@ -84,7 +86,9 @@ function Protect-Existing([string]$Path, [bool]$Readable) {
     if ($Readable) {
         $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($account.SID, 'ReadAndExecute', $inherit, $none, $allow))
     }
+    Write-Host "[DEBUG-iso-win-acl] tree-start $Path"
     Set-Acl -LiteralPath $Path -AclObject $acl
+    Write-Host "[DEBUG-iso-win-acl] tree-completed $Path"
     Protect-Ancestors $Path
 }
 
@@ -171,11 +175,14 @@ try {
     $env:TMP = $ownerTemp
     Push-Location $controlCopy
     try {
+        Write-Host '[DEBUG-iso-win-acl] supervisor-start'
         & $tools.node --disable-sigusr1 (Join-Path $controlCopy 'scripts\isolated-worker.mjs') --configuration $file
         $code = $LASTEXITCODE
+        Write-Host "[DEBUG-iso-win-acl] supervisor-completed $code"
     } finally { Pop-Location }
 } finally {
     if ($account) {
+        Write-Host '[DEBUG-iso-win-acl] account-cleanup-start'
         foreach ($process in Get-CimInstance Win32_Process) {
             $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid
             if ($owner.ReturnValue -eq 0 -and $owner.Sid -eq $account.SID.Value) {
@@ -183,6 +190,7 @@ try {
             }
         }
         Remove-LocalUser -SID $account.SID
+        Write-Host '[DEBUG-iso-win-acl] account-cleanup-completed'
     }
     if ($controlCopy) {
         $source = Join-Path $controlCopy '.data\ci\isolated'

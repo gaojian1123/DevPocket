@@ -179,7 +179,7 @@ async function printFailureTail(file) {
 
 async function retainBootstrapFailure(error) {
   const directory = path.join(controlRoot, ".data", "ci", "isolated");
-  await mkdir(directory, { recursive: true });
+  await mkdir(directory, { recursive: true, mode: 0o700 });
   const file = path.join(directory, "bootstrap-failure.log");
   const privateLog = await writeBoundedWorkerLog(file, `${error.stdout ?? ""}${error.stderr ?? ""}`);
   const report = { version: 1, kind: "isolated-bootstrap-diagnostics", acceptance: false,
@@ -258,7 +258,7 @@ async function proveIsolation(configuration, directory) {
 async function stageCandidateApks(configuration, directory) {
   if (!["android", "device"].includes(configuration.group)) return;
   const destination = path.join(directory, "artifacts");
-  await mkdir(destination);
+  await mkdir(destination, { mode: 0o700 });
   for (const [parts, name] of [
     [["debug", "app-debug.apk"], "app-debug.apk"],
     [["androidTest", "debug", "app-debug-androidTest.apk"], "app-debug-androidTest.apk"],
@@ -319,7 +319,7 @@ async function main(file) {
   if (candidateEnvironment.DEVPOCKET_PROBE_PYTHON) process.env.DEVPOCKET_PROBE_PYTHON = candidateEnvironment.DEVPOCKET_PROBE_PYTHON;
   const ownerEnvironment = { ...process.env };
   const directory = path.join(controlRoot, ".data", "ci", "isolated");
-  await mkdir(directory, { recursive: true });
+  await mkdir(directory, { recursive: true, mode: 0o700 });
   const boundary = isolatedCommandBoundary(configuration, ownerEnvironment, candidateEnvironment);
   const cancellation = new AbortController();
   const cancel = () => cancellation.abort();

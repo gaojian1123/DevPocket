@@ -138,6 +138,10 @@ runner channels remain outside the candidate identity. The disposable VM's
 ptrace policy also denies candidate debugger attachment. Existing approved
 JDK/SDK/KVM preparation runs before candidate code; it is not replaced with
 candidate setup scripts. Public network access remains allowed.
+The root supervisor uses a private umask and preallocates every evidence-directory
+ancestor and its Python bytecode cache as root-only directories. A private file
+mode alone does not prevent deletion through a writable parent. Only the named
+publication directories and outputs are handed back to the original runner.
 Backend installation, Python preflight and operational commands select the same
 candidate-owned venv. Its PATH prefix applies only to low-identity commands, never
 to the privileged owner; ambient `NODE_OPTIONS` remains unset so native startup

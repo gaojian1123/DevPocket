@@ -59,6 +59,7 @@ def main():
     if (sys.platform != "linux" or os.geteuid() != 0 or os.environ.get("GITHUB_ACTIONS") != "true"
             or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"):
         raise RuntimeError("Worker bootstrap requires the authorized disposable hosted Linux VM.")
+    os.umask(0o077)
     control, candidate = (Path(value).resolve(strict=True) for value in sys.argv[1:3])
     group, mode = sys.argv[3:5]
     if group not in ("tooling", "backend", "android", "device") or mode not in ("worker", "self-test"):
@@ -101,6 +102,14 @@ def main():
         shutil.copytree(control, control_copy, symlinks=True, ignore=shutil.ignore_patterns(".data", ".tools", "node_modules"))
         shutil.copytree(candidate, candidate_copy, symlinks=True, ignore=shutil.ignore_patterns(".data", ".tools", "node_modules"))
         seal(control_copy)
+        evidence = control_copy / ".data" / "ci" / "isolated"
+        evidence.mkdir(parents=True, mode=0o700)
+        bytecode = control_copy / "scripts" / "__pycache__"
+        bytecode.mkdir(mode=0o700)
+        for protected in (control_copy / ".data", control_copy / ".data" / "ci", evidence, bytecode):
+            info = protected.stat()
+            if protected.is_symlink() or info.st_uid != 0 or info.st_mode & 0o077:
+                raise RuntimeError("A private control directory permits candidate access.")
         candidate_directory(candidate_copy, account.pw_uid, account.pw_gid)
         fixture = state / "fixture"
         fixture.mkdir()
@@ -143,7 +152,8 @@ def main():
             "version": 1, "platform": "linux", "control": str(control_copy), "candidate": str(candidate_copy),
             "fixture": str(fixture), "private": str(private), "home": str(home), "temporary": str(temporary),
             "uid": account.pw_uid, "gid": account.pw_gid, "tools": tools, "group": group, "mode": mode,
-            "protectedPaths": [str(control_copy), str(private), str(state), runner.pw_dir, environment["RUNNER_TEMP"]],
+            "protectedPaths": [str(control_copy), str(private), str(state), str(control_copy / ".data"),
+                               str(evidence), str(bytecode), runner.pw_dir, environment["RUNNER_TEMP"]],
         }
         file = private / "configuration.json"
         descriptor = os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -176,7 +186,12 @@ def main():
         report_directory = state / "control" / ".data" / "ci" / "isolated"
         if report_directory.is_dir() and not report_directory.is_symlink():
             destination = control / ".data" / "ci" / "isolated"
-            destination.mkdir(parents=True, exist_ok=True)
+            for directory in (control / ".data", control / ".data" / "ci", destination):
+                directory.mkdir(mode=0o700, exist_ok=True)
+                if directory.is_symlink():
+                    raise RuntimeError("The owned publication directory changed.")
+                os.chown(directory, runner.pw_uid, runner.pw_gid)
+                os.chmod(directory, 0o700)
             for name in ("report.json", "isolation-proof.json", "isolation-negative-report.json", "bootstrap-failure.json"):
                 source = report_directory / name
                 if source.is_file() and not source.is_symlink() and source.stat().st_size <= 1024 * 1024:
@@ -185,7 +200,8 @@ def main():
                     os.chown(destination / name, runner.pw_uid, runner.pw_gid)
             if exit_code == 0 and group in ("android", "device") and mode == "worker":
                 artifacts = destination / "artifacts"
-                artifacts.mkdir()
+                artifacts.mkdir(mode=0o700)
+                os.chown(artifacts, runner.pw_uid, runner.pw_gid)
                 for name in ("app-debug.apk", "app-debug-androidTest.apk"):
                     source = report_directory / "artifacts" / name
                     if not source.is_file() or source.is_symlink() or source.stat().st_size > 256 * 1024 * 1024:
