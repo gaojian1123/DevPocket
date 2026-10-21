@@ -1,4 +1,5 @@
 import { z } from "zod";
+import MarkdownIt from "markdown-it";
 
 export const COMPONENT_VERSION = 1;
 export const MAX_COMPONENT_BYTES = 256 * 1024;
@@ -6,6 +7,10 @@ export const MAX_TABLE_ROWS = 1000;
 export const MAX_TABLE_COLUMNS = 20;
 export const MAX_CHART_POINTS = 1000;
 const MAX_LINK_LENGTH = 2000;
+
+export function createComponentMarkdown(): MarkdownIt {
+  return new MarkdownIt({ html: false, linkify: false, typographer: false, breaks: true });
+}
 
 export type ComponentFailure = "COMPONENT_UNSUPPORTED" | "COMPONENT_INVALID" | "COMPONENT_TOO_LARGE";
 
@@ -164,7 +169,7 @@ export function safeLink(value: string): string | null {
   if (value.length > MAX_LINK_LENGTH || /[\u0000-\u0020\u007f\\]/.test(value)) return null;
   try {
     const url = new URL(value);
-    return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password
+    return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password && url.href.length <= MAX_LINK_LENGTH
       ? url.href : null;
   } catch (error) {
     if (!(error instanceof TypeError)) throw error;

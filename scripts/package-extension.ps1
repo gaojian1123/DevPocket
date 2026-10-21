@@ -26,7 +26,8 @@ $sources = [ordered]@{
     'extension\bridge.mjs' = 'dist\extension\bridge.mjs'
     'README.md' = 'extension\README.md'
 }
-foreach ($name in @($sources.Values) + @('node_modules\ws\LICENSE', 'node_modules\zod\LICENSE')) {
+$componentNotices = 'packages\components\dist\web\THIRD-PARTY-NOTICES.txt'
+foreach ($name in @($sources.Values) + @('node_modules\ws\LICENSE', 'node_modules\zod\LICENSE', $componentNotices)) {
     $item = Get-Item -LiteralPath (Join-Path $root $name)
     if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw "Packaging requires a regular file: $name"
@@ -46,6 +47,8 @@ try {
         $license = Get-Content -LiteralPath (Join-Path $root "node_modules\$dependency\LICENSE") -Raw
         $notices += "`n--- $dependency ---`n$license`n"
     }
+    $notices += "`n--- Portable component dependencies ---`n" +
+        (Get-Content -LiteralPath (Join-Path $root $componentNotices) -Raw)
     Set-Content -LiteralPath (Join-Path $stage 'THIRD-PARTY-NOTICES.txt') -Value $notices -Encoding utf8NoBOM
     $files = foreach ($name in @($sources.Keys) + @('THIRD-PARTY-NOTICES.txt')) {
         $file = Get-Item -LiteralPath (Join-Path $stage $name)

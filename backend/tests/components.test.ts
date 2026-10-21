@@ -331,6 +331,97 @@ test("ordinary quoted URLs are preserved and encoded private URL values remain s
   assert.ok(!projection.referenceContent(record).content.includes("ENCODED_URL_CANARY"));
 });
 
+test("all renderer-accepted HTTP spellings are inspected before transport and reference retention", () => {
+  const canary = "NORMALIZED_URL_CREDENTIAL_CANARY";
+  for (const prefix of ["https:", "https:/", "http:", "http:/", "ht\u0000tps://", "ht\u001b[31mtps://"]) {
+    const url = `${prefix}example.test/?sig=${canary}`;
+    for (const spec of [
+      { type: "markdown", content: url },
+      { type: "datagrid", columns: [{ key: "url", label: "Link", type: "link" }], rows: [{ url }] },
+      { type: "datagrid", columns: [{ key: "name", label: "Link", type: "link", hrefKey: "url" }],
+        rows: [{ name: "View", url }] },
+      { type: "datagrid", columns: [{ key: "name", label: "Link", type: "link", href: url }], rows: [{ name: "View" }] },
+    ]) {
+      const projection = new ComponentProjection(randomUUID());
+      projection.beginLive([owner]);
+      projection.observe(start("normalized-url", spec));
+      const record = projection.observe(finish("normalized-url")).find((item) => item.kind === "component")?.data;
+      assert.ok(record);
+      if (record.status === "ready") {
+        assert.ok(!JSON.stringify(decodeComponentPayload(record.payload, record.sha256)).includes(canary));
+        assert.ok(!projection.referenceContent(record).content.includes(canary));
+        assert.equal(record.redacted, true);
+      } else {
+        assert.equal(record.error.code, "COMPONENT_INVALID");
+        assert.throws(() => projection.referenceContent({ componentId: record.componentId, sha256: "0".repeat(64) }),
+          { code: "COMPONENT_REFERENCE_EXPIRED" });
+      }
+    }
+  }
+});
+
+test("Markdown destinations and text cannot conceal credentials through entity or escape decoding", async (t) => {
+  const canary = "MARKDOWN_ESCAPE_CREDENTIAL_CANARY";
+  const target = `https://example.test/?id=1&amp;sig=${canary}`;
+  const cases: [string, string][] = [
+    ["named entity", `[Download](${target})`],
+    ["decimal entity", `[Download](https://example.test/?id=1&#38;sig=${canary})`],
+    ["hex entity", `[Download](https://example.test/?id=1&#x26;sig=${canary})`],
+    ["encoded scheme", `[Download](&#104;ttps://example.test/?sig=${canary})`],
+    ["escaped delimiter", `[Download](https://example.test/?sig\\=${canary})`],
+    ["reference", `[Download][item]\n\n[item]: ${target}`],
+    ["unused reference", `[item]: ${target}\n\nPublic text.`],
+    ["image", `![Not loaded](${target})`],
+    ["visible link text", `[${target}](https://example.test/public)`],
+    ["title", `[Download](https://example.test/public "${target}")`],
+  ];
+  for (const [name, content] of cases) await t.test(name, () => {
+    const projection = new ComponentProjection(randomUUID());
+    projection.beginLive([owner]);
+    projection.observe(start("escaped-markdown", { type: "markdown", content }));
+    const output = projection.observe(finish("escaped-markdown")), record = output.find((item) => item.kind === "component")?.data;
+    assert.ok(record);
+    if (record.status === "ready") {
+      assert.ok(!JSON.stringify(decodeComponentPayload(record.payload, record.sha256)).includes(canary), "No escaped credential in transport.");
+      assert.ok(!projection.referenceContent(record).content.includes(canary), "No escaped credential in retained source.");
+    }
+    assert.equal(record.status, "unavailable");
+    assert.ok(!JSON.stringify(output).includes(canary));
+  });
+});
+
+test("ordinary Markdown escapes and noncredential URL spellings keep their original source", () => {
+  const projection = new ComponentProjection(randomUUID());
+  projection.beginLive([owner]);
+  const contents = [
+    "Tom &amp; Jerry\n\n[Next](https://example.test/?id=1&amp;page=2)",
+    "[Search](https://example.test/?q=a%26sig%3Db)",
+    "https:example.test/?page=2",
+    "[Too long to navigate](https://example.test/" + "\u754c".repeat(30_000) + ")",
+  ];
+  for (const [index, content] of contents.entries()) {
+    const call = `ordinary-escape-${index}`;
+    projection.observe(start(call, { type: "markdown", content }));
+    const record = ready(projection.observe(finish(call)));
+    assert.equal(record.redacted, false);
+    assert.deepEqual(decodeComponentPayload(record.payload, record.sha256), { type: "markdown", content });
+    assert.deepEqual(JSON.parse(projection.referenceContent(record).content).spec, { type: "markdown", content });
+  }
+});
+
+test("redaction expansion still fails the final component byte limit instead of truncating content", () => {
+  const spec = { type: "markdown", content: "token=x;".repeat(20_000) };
+  assert.ok(Buffer.byteLength(JSON.stringify(spec)) < 256 * 1024);
+  const projection = new ComponentProjection(randomUUID());
+  projection.beginLive([owner]);
+  projection.observe(start("expanded-redaction", spec));
+  const record = projection.observe(finish("expanded-redaction")).find((item) => item.kind === "component")?.data;
+  assert.ok(record && record.status === "unavailable");
+  assert.equal(record.error.code, "COMPONENT_INVALID");
+  assert.throws(() => projection.referenceContent({ componentId: record.componentId, sha256: "0".repeat(64) }),
+    { code: "COMPONENT_REFERENCE_EXPIRED" });
+});
+
 test("ordinary token counts, public keys and similarly named fields retain their values", () => {
   const projection = new ComponentProjection(randomUUID());
   projection.beginLive([owner]);

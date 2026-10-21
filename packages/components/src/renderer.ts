@@ -2,9 +2,8 @@ import {
   BarController, BarElement, CategoryScale, Chart, LinearScale, LineController, LineElement,
   PointElement, Tooltip, type ChartConfiguration,
 } from "chart.js";
-import MarkdownIt from "markdown-it";
 import {
-  ComponentError, parseComponentSpec, safeLink, sortableDate, tableLink,
+  ComponentError, createComponentMarkdown, parseComponentSpec, safeLink, sortableDate, tableLink,
   type CellValue, type ChartSpec, type ComponentSpec, type TableSpec,
 } from "./spec.js";
 
@@ -213,7 +212,7 @@ function renderChart(parent: HTMLElement, spec: ChartSpec, options: RenderOption
 }
 
 function renderMarkdown(parent: HTMLElement, content: string, options: RenderOptions): void {
-  const parser = new MarkdownIt({ html: false, linkify: false, typographer: false, breaks: true });
+  const parser = createComponentMarkdown();
   parser.renderer.rules.image = () => '<span class="unsupported-image" role="note">此客户端暂不显示图片。</span>';
   const renderLink: NonNullable<typeof parser.renderer.rules.link_open> = parser.renderer.rules.link_open ??
     ((tokens, index, settings, _environment, renderer) => renderer.renderToken(tokens, index, settings));

@@ -189,6 +189,8 @@ installed files rather than registering again; use `install --user` for upgrades
 The archive contains standalone `devpocket.mjs` and `setup.mjs` commands, fixed
 onboarding helpers in `setup-assets`, the extension entry and bundled bridge,
 this guide, dependency license notices, and a per-file SHA-256 manifest.
+The notices include the portable Markdown parser and its transitive dependencies,
+which are also bundled for host-side privacy inspection.
 It contains no host/device credentials, local connection
 pointer, runtime evidence, Node.js executable or GitHub Copilot SDK. The original
 runtime provides its own SDK when it launches the installed extension.

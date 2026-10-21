@@ -1,9 +1,10 @@
 import { z } from "zod";
-import { COMPONENT_VERSION, ComponentError, parseComponentSpec, tableLink, type ComponentSpec } from "@devpocket/components";
+import { COMPONENT_VERSION, ComponentError, createComponentMarkdown, parseComponentSpec, tableLink, type ComponentSpec } from "@devpocket/components";
 import { RequestId, decodeComponentPayload, type ComponentRecord, type ComponentReference, type UserEvent } from "./protocol.js";
 import { Fault, hash, isSensitiveFieldName, redact } from "./security.js";
 
 const provider = "plugin:agenticdeck-gh-app-extensions:agenticdeck-canvas";
+const markdown = createComponentMarkdown();
 const binding = z.object({ instanceId: RequestId, extensionId: RequestId, canvasId: RequestId });
 const bindings = z.array(binding).max(512)
   .refine((items) => new Set(items.map((item) => item.instanceId)).size === items.length);
@@ -32,34 +33,39 @@ export function componentToolLinks(data: Record<string, unknown>): string[] | un
   return new Set(ids).size === ids.length ? ids : undefined;
 }
 
+function redactComponentUrls(value: string): string {
+  return value.replace(/https?:[^\s<>]+/gi, (source, offset: number) => {
+    const quoted = /["']/.test(source), delimited = /[<>]/.test(value.charAt(offset + source.length));
+    let following = offset + source.length;
+    while (following < value.length && /\s/.test(value[following]!)) following++;
+    const quotedContinuation = value[following] === '"' || value[following] === "'";
+    let end = source.length;
+    while (end && (source[end - 1] === '"' || source[end - 1] === "'")) end--;
+    let url: URL;
+    try { url = new URL(source.slice(0, end)); }
+    catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      if (quoted || delimited)
+        throw new ComponentError("COMPONENT_INVALID", "This component contains an ambiguous URL. Review it in the original client.");
+      return source;
+    }
+    const sensitive = url.username || url.password || [...url.searchParams.keys()].some((name) => isSensitiveFieldName(name) ||
+      /^(?:sig|signature|code|x-(?:amz|goog)-(?:signature|credential|security-token))$/i.test(name));
+    if (sensitive && (quoted || delimited || quotedContinuation))
+      throw new ComponentError("COMPONENT_INVALID", "This component contains an ambiguous URL. Review it in the original client.");
+    return sensitive ? "[REDACTED URL]" : source;
+  });
+}
+
 function projectSpec(input: unknown): { spec: ComponentSpec; redacted: boolean } {
   const original = parseComponentSpec(input);
   let changed = false;
   const clean = (value: unknown, key = ""): unknown => {
     if (isSensitiveFieldName(key) && value !== undefined && value !== null) { changed = true; return "[REDACTED]"; }
     if (typeof value === "string") {
-      const urls = value.replace(/https?:\/\/[^\s<>]+/gi, (source, offset: number) => {
-        const quoted = /["']/.test(source), delimited = /[<>]/.test(value.charAt(offset + source.length));
-        let following = offset + source.length;
-        while (following < value.length && /\s/.test(value[following]!)) following++;
-        const quotedContinuation = value[following] === '"' || value[following] === "'";
-        let end = source.length;
-        while (end && (source[end - 1] === '"' || source[end - 1] === "'")) end--;
-        let url: URL;
-        try { url = new URL(source.slice(0, end)); }
-        catch (error) {
-          if (!(error instanceof TypeError)) throw error;
-          if (quoted || delimited)
-            throw new ComponentError("COMPONENT_INVALID", "This component contains an ambiguous URL. Review it in the original client.");
-          return source;
-        }
-        const sensitive = url.username || url.password || [...url.searchParams.keys()].some((name) => isSensitiveFieldName(name) ||
-          /^(?:sig|signature|code|x-(?:amz|goog)-(?:signature|credential|security-token))$/i.test(name));
-        if (sensitive && (quoted || delimited || quotedContinuation))
-          throw new ComponentError("COMPONENT_INVALID", "This component contains an ambiguous URL. Review it in the original client.");
-        return sensitive ? "[REDACTED URL]" : source;
-      });
-      const safe = redact(urls, 256 * 1024);
+      // Final spec validation owns the payload limit; decoded inspection text is not a transport payload.
+      const urls = redactComponentUrls(value), text = redact(urls, Number.POSITIVE_INFINITY);
+      const safe = text === urls ? text : redactComponentUrls(text);
       changed ||= safe !== value;
       return safe;
     }
@@ -92,7 +98,29 @@ function projectSpec(input: unknown): { spec: ComponentSpec; redacted: boolean }
       changed = true;
     }
   }
-  try { return { spec: parseComponentSpec(projected), redacted: changed }; }
+  try {
+    const spec = parseComponentSpec(projected);
+    if (spec.type === "markdown") {
+      const inspect = (value: string) => {
+        if (clean(value) !== value)
+          throw new ComponentError("COMPONENT_INVALID", "Decoded Markdown cannot be safely projected.");
+      };
+      const environment: { references?: Record<string, { href: string; title: string }> } = {};
+      const pending = markdown.parse(spec.content, environment);
+      for (let index = 0; index < pending.length; index++) {
+        const token = pending[index]!;
+        inspect(token.content);
+        inspect(markdown.utils.unescapeAll(token.info));
+        for (const [, value] of token.attrs ?? []) inspect(value);
+        for (const child of token.children ?? []) pending.push(child);
+      }
+      for (const reference of Object.values(environment.references ?? {})) {
+        inspect(reference.href);
+        inspect(reference.title);
+      }
+    }
+    return { spec, redacted: changed };
+  }
   catch (error) {
     if (!(error instanceof ComponentError)) throw error;
     throw new ComponentError("COMPONENT_INVALID", "This component cannot be safely projected. Review it in the original client.");

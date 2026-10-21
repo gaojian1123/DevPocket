@@ -26,7 +26,13 @@ AgenticDeck compatibility.
   delegates navigation to the host; the renderer does not open a URL itself.
   Template substitutions stop once they cannot fit the 2,000-character
   link-input limit. Missing or malformed Unicode values disable the link
-  instead of throwing.
+  instead of throwing. The normalized URL must also fit that limit, including
+  percent-encoding and hostname expansion, before the host can receive it.
+
+The renderer and host-side privacy inspection use `createComponentMarkdown()`
+for the same Markdown grammar and entity/escape rules. Renderer-only image and
+navigation handlers remain on the rendering side; the data contract does not
+require a DOM or a network client.
 
 The portable renderer exposes
 `renderComponent(element, spec, { view, theme, onOpenLink, onSizeChanged })`.

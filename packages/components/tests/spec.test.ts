@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  ComponentError, MAX_COMPONENT_BYTES, componentBytes, parseComponentSpec, safeLink, sortableDate, tableLink,
+  ComponentError, MAX_COMPONENT_BYTES, componentBytes, createComponentMarkdown, parseComponentSpec, safeLink, sortableDate, tableLink,
 } from "../src/spec.js";
 
 const chart = () => ({
@@ -104,6 +104,31 @@ test("link expansion stops reading substitutions once the URL cannot fit its bou
 test("invalid Unicode disables a templated link rather than throwing during projection or rendering", () => {
   assert.equal(tableLink({ key: "id", label: "ID", type: "link", href: "https://example.test/{value}" },
     { id: "\ud800" }), null);
+});
+
+test("normalized URL length remains within the native host limit after Unicode expansion", () => {
+  const prefix = "https://example.test/", expanded = prefix + "\u754c".repeat(300);
+  assert.ok(expanded.length < 2000);
+  assert.ok(new URL(expanded).href.length > 2000);
+  assert.equal(safeLink(expanded), null);
+  assert.equal(tableLink({ key: "url", label: "Link", type: "link" }, { url: expanded }), null);
+  const stem = prefix + "\u754c".repeat(210), exact = stem + "x".repeat(2000 - new URL(stem).href.length);
+  assert.equal(new URL(exact).href.length, 2000);
+  assert.equal(safeLink(exact), new URL(exact).href);
+  assert.equal(safeLink(exact + "x"), null);
+});
+
+test("rendering and privacy inspection share the same non-HTML Markdown grammar", () => {
+  const parser = createComponentMarkdown(), environment: { references?: Record<string, { href: string }> } = {};
+  assert.equal(parser.options.html, false);
+  assert.equal(parser.options.linkify, false);
+  assert.equal(parser.options.typographer, false);
+  assert.equal(parser.options.breaks, true);
+  const tokens = parser.parse("[Link][item]\n\n[item]: https://example.test/?id=1&amp;page=2", environment);
+  const link = tokens.flatMap((token) => token.children ?? []).find((token) => token.type === "link_open");
+  assert.equal(link?.attrGet("href"), "https://example.test/?id=1&page=2");
+  assert.equal(environment.references?.ITEM?.href, "https://example.test/?id=1&page=2");
+  assert.ok(parser.render("<script>not executable</script>").includes("&lt;script&gt;"));
 });
 
 test("date columns reject ambiguous dates and compare actual offset-qualified instants", () => {
