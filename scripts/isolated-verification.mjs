@@ -5,11 +5,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
 import { diagnosticDirectory } from "./diagnostic-publication.mjs";
+import { commandDetails, failureDetails, projectFailureDetails } from "./diagnostic-errors.mjs";
 import { inspectWorktree, sameSource, activeHookSnapshot, sameHooks } from "./candidate-commit.mjs";
 import { parseDevelopmentExecution } from "./development-policy.mjs";
 import { readOnlyGit, sourceSnapshot } from "./git-state.mjs";
-import { combineVerification, executeVerification, verificationPlan,
-  requireVerificationReportPath } from "./verification.mjs";
+import { combineVerification, verificationPlan,
+  requireVerificationReportPath, verificationFailure, verificationFault, verificationCleanupConfirmed } from "./verification.mjs";
 import { CHECKS, CHECK_GROUPS } from "./verification-policy.mjs";
 import { readDiagnosticReport } from "./worker-diagnostics.mjs";
 
@@ -19,6 +20,26 @@ const hash = (value) => createHash("sha256").update(value).digest("hex");
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 export const ISOLATED_WORKFLOW = ".github/workflows/isolated-verification.yml";
 const fail = (message) => { throw new Error(`Isolated verification: ${message}`); };
+const isolationChecks = ["protected-control", "protected-evidence", "protected-ancestors", "runner-channels",
+  "descendant-cleanup", "failing-fixed-gate"];
+
+export function validIsolatedWorkerProof(report) {
+  const proof = report?.isolation;
+  return proof?.version === 1 && proof.kind === "hosted-isolation-proof" && proof.status === "passed" &&
+    proof.platform === (report.group === "device" ? "linux" : "win32") && same(proof.checks, isolationChecks) &&
+    sha.test(proof.negativeSource?.head ?? "") && /^[a-f0-9]{64}$/.test(proof.negativeSource?.fingerprint ?? "") &&
+    /^[a-f0-9]{64}$/.test(proof.negativeReportSha256 ?? "");
+}
+
+function requireIsolatedToolingExecutions(plan, tooling) {
+  if (!plan.requiredChecks.includes("workflow-tests")) return;
+  if (!Array.isArray(tooling?.toolingExecutions) ||
+      !same(tooling.toolingExecutions.map((item) => item?.file), plan.toolingShards?.files) ||
+      tooling.toolingExecutions.some((item) => item?.status !== "passed" || item.exitCode !== 0 ||
+        !executionOrigin(item.execution, plan.source) || item.commandOutcome?.reason !== "exit" ||
+        item.commandOutcome.observedProcess !== "owned-command-supervisor" || item.commandOutcome.exitCode !== 0 ||
+        item.commandOutcome.cleanupFailure !== null)) fail("trusted tooling selection has incomplete per-file execution evidence.");
+}
 
 export function isolatedRequest(value) {
   const execution = parseDevelopmentExecution(value?.execution);
@@ -100,8 +121,114 @@ export function collectIsolatedReports(plan, context, reports, workerOutcome) {
       new Set(reports.map((report) => report?.group)).size !== reports.length ||
       reports.some((report) => !plan.requiredGroups.includes(report?.group) ||
         report.failure || report.sourceValidation?.status === "failed")) fail("required worker evidence is missing, duplicated or failed.");
+  if (reports.some((report) => !validIsolatedWorkerProof(report))) fail("OS-enforced worker isolation evidence is missing or invalid.");
   const report = combineVerification(plan, reports);
+  const tooling = reports.find((report) => report.group === "tooling")?.checks?.find((check) => check.id === "workflow-tests");
+  requireIsolatedToolingExecutions(plan, tooling);
+  if (tooling) {
+    report.checks.find((check) => check.id === "workflow-tests").toolingExecutions = structuredClone(tooling.toolingExecutions);
+  }
   return { version: 1, kind: "isolated-verification-report", context,
+    reportDigest: hash(JSON.stringify(report)), report,
+    workerIsolation: reports.map(({ group, isolation }) => ({ group, isolation })) };
+}
+
+function executionOrigin(execution, source) {
+  const timestamp = (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) &&
+    Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+  if (execution?.kind || !same(execution?.source, source) || !timestamp(execution?.startedAt) ||
+      !timestamp(execution?.completedAt) || execution.completedAt < execution.startedAt) return null;
+  return { source: { ...execution.source }, startedAt: execution.startedAt, completedAt: execution.completedAt };
+}
+
+function executedCheckFailure(check, source) {
+  const outcome = check?.commandOutcome;
+  return check?.status === "failed" && Number.isInteger(check.exitCode) && check.exitCode !== 0 &&
+    check.executionState === "exited" && check.failure?.phase === "command" && check.collectionStatus !== "failed" &&
+    outcome?.observedProcess === "owned-command-supervisor" && outcome.reason === "exit" &&
+    outcome.exitCode === check.exitCode && verificationCleanupConfirmed(check) && Boolean(executionOrigin(check.execution, source));
+}
+
+function diagnosticFailure(value) {
+  return { ...projectFailureDetails(value),
+    phase: ["arguments", "plan", "admission", "preflight", "command", "device-validation", "artifact-validation",
+      "source-validation", "log", "aggregate", "report"].includes(value?.phase) ? value.phase : "unknown" };
+}
+
+export function diagnoseIsolatedReports(plan, context, reports, workerOutcome, cause) {
+  const observed = new Map(), groups = new Set(), provenFailures = new Set();
+  let coherent = same(plan.source, context?.source) && plan.base === context?.request?.base &&
+    plan.source.head === context?.request?.candidate && Array.isArray(reports) && reports.length === plan.requiredGroups.length;
+  let blocked = false, reportedBlocker;
+  for (const report of Array.isArray(reports) ? reports : []) {
+    if (!report || report.version !== plan.version || report.base !== plan.base || !same(report.source, plan.source) ||
+        !same(report.requiredChecks, plan.requiredChecks) || !same(report.requiredGroups, plan.requiredGroups) ||
+        !same(report.toolingShards ?? null, plan.toolingShards ?? null) ||
+        !plan.requiredGroups.includes(report.group) || groups.has(report.group) || !Array.isArray(report.checks) ||
+        !["passed", "partial", "failed", "blocked"].includes(report.status) || !validIsolatedWorkerProof(report)) {
+      coherent = false;
+      continue;
+    }
+    groups.add(report.group);
+    blocked ||= report.status === "blocked" || report.preflight?.status === "blocked" ||
+      Boolean(report.failure) || report.sourceValidation?.status === "failed";
+    if (report.failure) reportedBlocker ??= diagnosticFailure(report.failure);
+    else if (report.sourceValidation?.status === "failed") {
+      reportedBlocker ??= report.sourceValidation.failure ? diagnosticFailure(report.sourceValidation.failure)
+        : verificationFailure(verificationFault("source-unavailable"), "source-validation");
+    }
+    const seen = new Set();
+    for (const check of report.checks) {
+      const definition = CHECKS.find((item) => item.id === check?.id);
+      if (!definition || !plan.requiredChecks.includes(check.id) || seen.has(check.id) ||
+          !["passed", "failed", "blocked", "not_run"].includes(check.status)) {
+        coherent = false;
+        continue;
+      }
+      seen.add(check.id);
+      if (definition.group !== report.group) {
+        if (check.status !== "not_run") coherent = false;
+        continue;
+      }
+      blocked ||= check.status === "blocked" || check.collectionStatus === "failed" || !verificationCleanupConfirmed(check);
+      if (check.status === "blocked" && check.failure) {
+        reportedBlocker ??= { ...diagnosticFailure(check.failure), check: check.id, group: report.group };
+      }
+      if (check.status === "failed" && ["passed", "partial"].includes(report.status)) coherent = false;
+      if (report.status === "failed" && executedCheckFailure(check, plan.source)) provenFailures.add(check.id);
+      const projected = { id: check.id, status: check.status };
+      if (check.collectionStatus === "failed") projected.collectionStatus = "failed";
+      if (Number.isInteger(check.exitCode)) projected.exitCode = check.exitCode;
+      if (["not-started", "started", "exited"].includes(check.executionState)) projected.executionState = check.executionState;
+      if (check.commandOutcome) projected.commandOutcome = commandDetails(check.commandOutcome);
+      if (check.failure) projected.failure = diagnosticFailure(check.failure);
+      if (check.id === "android-device") {
+        if (check.cleanup !== undefined) projected.cleanup = ["completed", "failed"].includes(check.cleanup) ? check.cleanup : "unknown";
+        if (check.deviceEvidence) {
+          projected.deviceEvidence = { cleanup: ["completed", "failed"].includes(check.deviceEvidence.cleanup)
+            ? check.deviceEvidence.cleanup : "unknown" };
+        }
+        if (check.diagnosticIssues !== undefined) {
+          projected.diagnosticIssues = Array.isArray(check.diagnosticIssues)
+            ? check.diagnosticIssues.filter((issue) => issue?.operation === "controller-cleanup").map(() => ({ operation: "controller-cleanup" }))
+            : null;
+        }
+      }
+      const origin = executionOrigin(check.execution, plan.source);
+      if (origin) projected.execution = origin;
+      else if (["passed", "failed"].includes(check.status)) coherent = false;
+      observed.set(check.id, projected);
+    }
+    if (seen.size !== plan.requiredChecks.length) coherent = false;
+  }
+  coherent &&= groups.size === plan.requiredGroups.length;
+  const checks = coherent ? plan.requiredChecks.map((id) => observed.get(id) ?? { id, status: "not_run" }) : [];
+  const repairable = coherent && !blocked && workerOutcome === "failure" &&
+    checks.some((check) => provenFailures.has(check.id) && executedCheckFailure(check, plan.source));
+  const report = { ...plan, group: "all", status: repairable ? "failed" : "blocked", complete: false, acceptance: false, checks,
+    failure: coherent && reportedBlocker ? reportedBlocker
+      : verificationFailure(verificationFault(repairable ? "check-failed" : "collector-failed", {}, cause), "aggregate") };
+  return { version: 1, kind: "isolated-verification-failure", context,
     reportDigest: hash(JSON.stringify(report)), report };
 }
 
@@ -149,21 +276,24 @@ export function isolatedPushArguments(request) {
     "--no-force", "--recurse-submodules=no", "origin", `${request.candidate}:${request.branch}`];
 }
 
-export function validateIsolatedEnvelope(value, request, { run, jobs, artifact, repository, trustedRef, candidateRef }) {
+export function validateIsolatedEnvelope(value, request, { run, jobs, artifact, repository, trustedRef, candidateRef }, outcome = "success") {
   request = isolatedRequest(request);
+  if (!["success", "failure"].includes(outcome)) fail("unsupported run outcome.");
+  const diagnostic = outcome === "failure";
   const context = value?.context, report = value?.report;
   const gate = jobs?.jobs?.filter((job) => job.name === "Isolated Required verification") ?? [];
-  if (value?.version !== 1 || value.kind !== "isolated-verification-report" ||
+  if (value?.version !== 1 || value.kind !== (diagnostic ? "isolated-verification-failure" : "isolated-verification-report") ||
       !same(context?.request, request) || context.runId !== String(run.id) ||
       context.attempt !== run.run_attempt || !same(context.source, report?.source) ||
       report?.source?.head !== request.candidate || report.base !== request.base ||
-      report.status !== "passed" || report.complete !== true ||
+      (diagnostic ? !["failed", "blocked"].includes(report.status) || report.complete !== false || report.acceptance !== false
+        : report.status !== "passed" || report.complete !== true) ||
       value.reportDigest !== hash(JSON.stringify(report)) ||
       run.path !== ISOLATED_WORKFLOW || run.event !== "workflow_dispatch" ||
       run.head_sha !== request.execution.trustedSha ||
       run.display_title !== `DevPocket isolated verification ${request.requestId}` ||
-      run.status !== "completed" || run.conclusion !== "success" ||
-      gate.length !== 1 || gate[0].status !== "completed" || gate[0].conclusion !== "success" ||
+      run.status !== "completed" || run.conclusion !== outcome ||
+      gate.length !== 1 || gate[0].status !== "completed" || gate[0].conclusion !== outcome ||
       repository.full_name !== request.execution.repository || !Number.isSafeInteger(repository.id) ||
       run.repository?.id !== repository.id ||
       artifact.expired !== false || artifact.name !== `isolated-summary-attempt-${context.attempt}` ||
@@ -175,7 +305,15 @@ export function validateIsolatedEnvelope(value, request, { run, jobs, artifact, 
       trustedRef.object.sha !== request.execution.trustedSha ||
       candidateRef?.ref !== request.branch || candidateRef.object?.type !== "commit" ||
       candidateRef.object.sha !== request.candidate) fail("live run, trusted source, candidate or artifact identity changed.");
-  combineVerification(report, [report]);
+  if (diagnostic) {
+    if (!Array.isArray(report.checks) || report.status === "failed" &&
+        (!report.checks.some((check) => executedCheckFailure(check, report.source)) ||
+          report.checks.some((check) => check.status === "blocked" || check.collectionStatus === "failed" ||
+            !verificationCleanupConfirmed(check)))) fail("failed diagnostics do not establish an executed-check failure.");
+  } else {
+    combineVerification(report, [report]);
+    requireIsolatedToolingExecutions(report, report.checks.find((check) => check.id === "workflow-tests"));
+  }
   return value;
 }
 
@@ -197,7 +335,7 @@ async function liveRun(request, runId, api) {
   return { run, repository: repositoryInfo, trustedRef, candidateRef, jobs, artifact: matches[0] };
 }
 
-export async function qualifyIsolatedVerification(root, request, runId, directory, { api = github, download } = {}) {
+async function inspectIsolatedEvidence(root, request, runId, directory, { api = github, download } = {}, outcome = "success") {
   request = isolatedRequest(request);
   if (!/^[1-9]\d*$/.test(String(runId))) fail("invalid run identifier.");
   const before = await inspectWorktree(root);
@@ -219,20 +357,26 @@ export async function qualifyIsolatedVerification(root, request, runId, director
   const extracted = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-File",
     fileURLToPath(new URL("./verification-ci-artifact.ps1", import.meta.url)), "-Archive", archive, "-Sha256", artifact.digest.slice(7)],
   { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 30000 });
-  const envelope = validateIsolatedEnvelope(JSON.parse(extracted.stdout), request, observed);
+  const envelope = validateIsolatedEnvelope(JSON.parse(extracted.stdout), request, observed, outcome);
   const plan = await verificationPlan(root, request.base, false, { trustedTooling: true });
-  if (!same(plan.requiredChecks, envelope.report.requiredChecks) || plan.layouts !== envelope.report.layouts ||
+  if (!same(plan.requiredChecks, envelope.report.requiredChecks) ||
+      !same(plan.toolingShards ?? null, envelope.report.toolingShards ?? null) || plan.layouts !== envelope.report.layouts ||
       !same(plan.trustedDeviceClasses ?? [], envelope.report.trustedDeviceClasses ?? [])) fail("trusted local acceptance is not covered by the hosted report.");
   const afterRun = await liveRun(request, runId, api), after = await inspectWorktree(root);
-  validateIsolatedEnvelope(envelope, request, afterRun);
+  validateIsolatedEnvelope(envelope, request, afterRun, outcome);
   if (!same(observed.artifact, afterRun.artifact) || !same(before, after)) fail("candidate or evidence changed during qualification.");
   await writeReport(root, path.join(directory, "ci-report.json"), envelope);
-  const result = { version: 1, kind: "isolated-qualification", status: "verified", request, runId: String(runId),
+  const result = { version: 1, kind: outcome === "success" ? "isolated-qualification" : "isolated-failure",
+    status: outcome === "success" ? "verified" : envelope.report.status, request, runId: String(runId),
     attempt: observed.run.run_attempt, candidate: before.source, tested: envelope.report.source,
     artifact: { id: artifact.id, digest: artifact.digest }, reportDigest: envelope.reportDigest,
     evidence: path.relative(root, path.join(directory, "ci-report.json")), report: envelope.report };
-  await writeReport(root, path.join(directory, "qualification.json"), result);
+  await writeReport(root, path.join(directory, outcome === "success" ? "qualification.json" : "failure.json"), result);
   return result;
+}
+
+export async function qualifyIsolatedVerification(root, request, runId, directory, options = {}) {
+  return inspectIsolatedEvidence(root, request, runId, directory, options);
 }
 
 export async function requireIsolatedPublication(root, request, api = github, expected) {
@@ -307,9 +451,11 @@ export async function prepareIsolatedExecution(root, scope, candidate, hooks, im
 }
 
 export async function executeIsolatedVerification(ctx, root, scope, candidate, hooks, implementation, directory) {
+  ctx.signal?.throwIfAborted();
   const prepared = await prepareIsolatedExecution(root, scope, candidate, hooks, implementation, directory);
   const { request } = prepared;
   const metadata = await ctx.session?.rpc?.tools?.getCurrentMetadata();
+  ctx.signal?.throwIfAborted();
   const tool = metadata?.tools?.find((item) => ["powershell", "functions.powershell"].includes(item.name));
   if (!tool || !ctx.session.rpc.tools.execute) fail("the original native tool/permission pipeline is unavailable.");
   const response = await ctx.session.rpc.tools.execute({ name: tool.name, arguments: {
@@ -332,20 +478,31 @@ export async function executeIsolatedVerification(ctx, root, scope, candidate, h
     const failed = await github(`repos/${request.execution.repository}/actions/runs/${run.id}`);
     if (failed.status !== "completed" || failed.conclusion !== "failure" || failed.path !== ISOLATED_WORKFLOW ||
         failed.head_sha !== request.execution.trustedSha || failed.display_title !== run.display_title) throw error;
-    const log = await exec("gh", ["run", "view", String(run.id), "--repo", request.execution.repository,
-      "--attempt", String(failed.run_attempt), "--log-failed"],
-    { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 60000, env: { ...process.env, GH_HOST: "github.com", GH_PROMPT_DISABLED: "1" } });
-    const diagnostic = path.join(directory, "failed-ci.log"), output = await open(diagnostic, "wx", 0o600);
-    try { await output.writeFile(log.stdout); await output.sync(); }
-    finally { await output.close(); }
     const plan = await verificationPlan(root, request.base, false, { trustedTooling: true });
     if (!sameSource(plan.source, candidate)) fail("candidate changed while its failed run was observed.");
-    return { kind: "isolated-failure", status: "failed", request, runId: String(run.id), attempt: failed.run_attempt,
-      candidate, diagnostics: path.relative(root, diagnostic),
-      report: { ...plan, group: "all", status: "failed", complete: false,
-        checks: plan.requiredChecks.map((id) => ({ id, status: "not_run" })),
-        failure: { code: "isolated-worker-failed", summary: "The scoped hosted run failed. Inspect its retained logs before repairing." },
-        diagnostics: path.relative(root, diagnostic), acceptance: false } };
+    let result;
+    try {
+      result = await inspectIsolatedEvidence(root, request, String(run.id), path.join(directory, "failed-evidence"), {}, "failure");
+    } catch (evidenceError) {
+      ctx.signal?.throwIfAborted();
+      const blocked = diagnoseIsolatedReports(plan, { request, source: plan.source }, [], "failure", evidenceError);
+      result = { kind: "isolated-failure", status: "blocked", request, runId: String(run.id), attempt: failed.run_attempt,
+        candidate, report: blocked.report, diagnosticIssue: failureDetails(evidenceError, "ci-evidence") };
+    }
+    try {
+      const log = await exec("gh", ["run", "view", String(run.id), "--repo", request.execution.repository,
+        "--attempt", String(failed.run_attempt), "--log-failed"],
+      { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 60000, env: { ...process.env, GH_HOST: "github.com", GH_PROMPT_DISABLED: "1" } });
+      const diagnostic = path.join(directory, "failed-ci.log"), output = await open(diagnostic, "wx", 0o600);
+      try { await output.writeFile(log.stdout); await output.sync(); }
+      finally { await output.close(); }
+      result.diagnostics = path.relative(root, diagnostic);
+    } catch (logError) {
+      ctx.signal?.throwIfAborted();
+      result.logDiagnosticIssue = failureDetails(logError, "collector-failed");
+    }
+    await writeReport(root, path.join(directory, "failed-run.json"), result);
+    return result;
   }
   const result = await qualifyIsolatedVerification(root, request, String(run.id), path.join(directory, "qualified"));
   if (result?.kind !== "isolated-qualification" || result.status !== "verified" ||
@@ -399,34 +556,23 @@ async function main() {
     return;
   }
   if (!values.report) fail("select an output for this execution phase.");
+  if (values.run) fail("direct candidate execution is disabled; use the sealed hosted worker bootstrap.");
   const context = await isolatedContext(root);
-  const outputRoot = values.run ? root : path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+  const outputRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const plan = await verificationPlan(root, context.request.base, false, { trustedTooling: true });
   let result;
   if (values.plan) {
     result = { ...plan, status: "planned", complete: false, context, matrix: isolatedMatrix(plan) };
-  } else if (values.run) {
-    if (!plan.requiredGroups.includes(values.group)) fail("worker group is not selected by the trusted plan.");
-    result = await executeVerification(root, plan, { group: values.group, directory: path.dirname(path.resolve(values.report)),
-      trustedToolingRunner: fileURLToPath(new URL("./test-workflow.mjs", import.meta.url)),
-      jdk: process.env.JAVA_HOME, sdk: process.env.ANDROID_HOME,
-      image: "system-images/android-35/google_apis/x86_64" });
-    if (!["passed", "partial"].includes(result.status)) {
-      process.exitCode = 1;
-      console.error(JSON.stringify({ status: result.status, failure: result.failure ?? null, preflight: result.preflight ?? null }));
-      for (const check of result.checks.filter((check) => CHECKS.some((item) => item.id === check.id) &&
-          ["failed", "blocked"].includes(check.status))) {
-        console.error(JSON.stringify({ check: check.id, failure: check.failure ?? null }));
-        if (check.privateLog?.availability !== "retained") continue;
-        const file = path.join(path.dirname(path.resolve(values.report)), `${check.id}.log`), info = await lstat(file);
-        if (!info.isFile() || info.isSymbolicLink() || info.size > 128 * 1024) fail("worker failure log is not a bounded regular file.");
-        console.error((await readFile(file, "utf8")).slice(-16384));
-      }
-    }
   } else {
     const directory = path.resolve(values.inputs ?? "");
-    const reports = await readIsolatedReports(outputRoot, directory, plan, context);
-    result = collectIsolatedReports(plan, context, reports, values.outcome);
+    let reports = [];
+    try {
+      reports = await readIsolatedReports(outputRoot, directory, plan, context);
+      result = collectIsolatedReports(plan, context, reports, values.outcome);
+    } catch (error) {
+      result = diagnoseIsolatedReports(plan, context, reports, values.outcome, error);
+      process.exitCode = 1;
+    }
     await writeReport(outputRoot, path.join(path.dirname(path.resolve(values.report)), "gate.json"), result.report);
   }
   await writeReport(outputRoot, path.resolve(values.report), result);

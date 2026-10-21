@@ -49,7 +49,7 @@ const rules = [
     matches: (file) => [
       "verification", "verification-execution", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
       "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
-      "bounded-worker-log", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner",
+      "bounded-worker-log", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner", "isolated-worker",
     ].some((name) => file === `scripts/tests/${name}.test.mjs`) ||
       ["scripts/tests/fixtures/emulator-lease-peer.mjs", "scripts/tests/fixtures/verification-tools.mjs"].includes(file), checks: tooling },
   { id: "backend-execution", description: "Backend command adaptation, builds and packaging require backend checks, not native execution.",
@@ -70,6 +70,8 @@ const rules = [
   { id: "shared-execution", description: "The shared executor, process ownership, bounded logs and shared backend/native preflight require all downstream checks.",
     matches: (file) => ["scripts/verification-executor.mjs", "scripts/verification-preflight.mjs", "scripts/verification-run.mjs",
       "scripts/verification-transition.mjs", "scripts/verification-admission.mjs", "scripts/verification-ci.mjs", "scripts/isolated-verification.mjs",
+      "scripts/isolated-worker.mjs", "scripts/isolated-worker.ps1", "scripts/isolated-worker.py", "scripts/isolated-worker-probe.mjs",
+      "scripts/isolated-command.cs", "scripts/isolated-command.ps1", "scripts/isolated-command.py",
       "scripts/verification-ci-artifact.ps1", "scripts/process.mjs", "scripts/owned-command.ps1",
       "scripts/owned-command.cs", "scripts/owned-command-windows.mjs", "scripts/owned-command-linux.py",
       "scripts/bounded-worker-log.mjs", "scripts/backend-diagnostics.mjs"].includes(file), ...full },

@@ -161,6 +161,22 @@ export async function executeVerification(root, plan, options = {}) {
   return executor.executeVerification(root, plan, options);
 }
 
+export function verificationProcessCleanupConfirmed(check) {
+  if (check.status === "not_run" || check.executionState === "not-started") return true;
+  return check.executionState === "exited" && check.commandOutcome?.observedProcess === "owned-command-supervisor" &&
+    check.commandOutcome.cleanupFailure === null;
+}
+
+export function verificationCleanupConfirmed(check) {
+  if (check.status === "not_run" || check.executionState === "not-started") return true;
+  if (!verificationProcessCleanupConfirmed(check)) return false;
+  if (check.id !== "android-device") return true;
+  if (check.diagnosticIssues !== undefined && !Array.isArray(check.diagnosticIssues)) return false;
+  if (check.diagnosticIssues?.some((issue) => issue?.operation === "controller-cleanup")) return false;
+  return check.cleanup === "completed" ||
+    check.cleanup === undefined && check.deviceEvidence?.cleanup === "completed";
+}
+
 export async function validateVerificationEvidence(root, plan, reports, options = {}) {
   if (options.requireComplete === true &&
       (reports.length !== 1 || reports[0]?.status !== "passed" || reports[0].complete !== true)) {

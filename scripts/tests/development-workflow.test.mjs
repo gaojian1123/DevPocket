@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import childProcess, { execFile } from "node:child_process";
 import fs, { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { checkDevelopmentReadiness, parseRepairDiagnosis, parseTask, runDevelopment, taskSchema } from "../development-workflow.mjs";
-import { changedPaths, inspectWorktree, prepareCandidate, sha256, validateCandidateReceiptProof } from "../candidate-commit.mjs";
+import { changedPaths, inspectWorktree, prepareCandidate, sha256, validateCandidateReceiptProof, activeHookSnapshot } from "../candidate-commit.mjs";
 import { executeVerification, git, sourceSnapshot, validateVerificationEvidence, verificationPlan } from "../verification.mjs";
 import { captureCandidateImplementation, nativeCandidateCommand, nativeIsolatedCommand, requireCandidateImplementation } from "../native-candidate.mjs";
 import { syntheticExecution } from "./fixtures/verification-tools.mjs";
@@ -17,7 +17,8 @@ import { developmentTaskApprovalRequest, developmentTaskActionAllowed, developme
   parseDevelopmentExecution } from "../development-policy.mjs";
 import { collectIsolatedReports, isolatedMatrix, isolatedRequest, validateIsolatedEnvelope,
   requireIsolatedPublication, qualifyIsolatedVerification, readIsolatedReports,
-  requireIsolatedWorkflowRevision, requireIsolatedPushTarget, isolatedPushArguments } from "../isolated-verification.mjs";
+  requireIsolatedWorkflowRevision, requireIsolatedPushTarget, isolatedPushArguments,
+  executeIsolatedVerification, diagnoseIsolatedReports } from "../isolated-verification.mjs";
 
 const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
@@ -3612,18 +3613,49 @@ function hostedFixture(plan) {
   return { request, context, observed };
 }
 
+function isolationProof(group = "tooling") {
+  return { version: 1, kind: "hosted-isolation-proof", status: "passed", platform: group === "device" ? "linux" : "win32",
+    checks: ["protected-control", "protected-evidence", "protected-ancestors", "runner-channels", "descendant-cleanup", "failing-fixed-gate"],
+    negativeSource: { head: "1".repeat(40), fingerprint: "2".repeat(64) }, negativeReportSha256: "3".repeat(64) };
+}
+
 test("isolated aggregation keeps trusted acceptance independent of candidate reports and actual job failure", async (t) => {
   const { root } = await workspace(t);
   await mkdir(path.join(root, "scripts", "tests"), { recursive: true });
   await writeFile(path.join(root, "scripts", "tests", "development-workflow.test.mjs"), "// fixture\n");
-  const plan = await verificationPlan(root, "HEAD"), fixture = hostedFixture(plan);
+  const plan = await verificationPlan(root, "HEAD", false, { trustedTooling: true }), fixture = hostedFixture(plan);
   assert.deepEqual(isolatedMatrix(plan), [{ group: "tooling", os: "windows-latest" }]);
-  const report = { ...syntheticReport(plan), group: "tooling" };
+  const report = { ...syntheticReport(plan), group: "tooling", isolation: isolationProof() };
+  report.checks[0].toolingExecutions = plan.toolingShards.files.map((file) => ({
+    file, status: "passed", exitCode: 0, execution: syntheticExecution(plan.source),
+    commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0, cleanupFailure: null },
+  }));
   const envelope = collectIsolatedReports(plan, fixture.context, [report], "success");
   assert.equal(validateIsolatedEnvelope(envelope, fixture.request, fixture.observed).report.complete, true);
+  assert.deepEqual(envelope.report.checks[0].toolingExecutions, report.checks[0].toolingExecutions);
+  assert.notEqual(envelope.report.checks[0].toolingExecutions, report.checks[0].toolingExecutions);
+  for (const mutate of [
+    (value) => { delete value.report.checks[0].toolingExecutions; },
+    (value) => { value.report.checks[0].toolingExecutions.pop(); },
+    (value) => { value.report.checks[0].toolingExecutions[0].execution.source.head = "f".repeat(40); },
+  ]) {
+    const invalid = structuredClone(envelope);
+    mutate(invalid);
+    invalid.reportDigest = sha256(JSON.stringify(invalid.report));
+    assert.throws(() => validateIsolatedEnvelope(invalid, fixture.request, fixture.observed), /per-file execution evidence/);
+  }
   assert.throws(() => collectIsolatedReports(plan, fixture.context, [], "success"), /missing/);
   assert.throws(() => collectIsolatedReports(plan, fixture.context, [report], "failure"), /worker failed/);
   assert.throws(() => collectIsolatedReports(plan, fixture.context, [report, report], "success"), /duplicated/);
+  for (const isolation of [undefined, { ...isolationProof(), status: "failed" }, { ...isolationProof(), platform: "linux" },
+    { ...isolationProof(), checks: [] }]) {
+    assert.throws(() => collectIsolatedReports(plan, fixture.context, [{ ...report, isolation }], "success"), /isolation evidence/);
+  }
+  for (const entries of [undefined, report.checks[0].toolingExecutions.slice(1)]) {
+    const incomplete = structuredClone(report);
+    incomplete.checks[0].toolingExecutions = entries;
+    assert.throws(() => collectIsolatedReports(plan, fixture.context, [incomplete], "success"), /per-file execution evidence/);
+  }
   assert.throws(() => collectIsolatedReports(plan, fixture.context, [{ ...report, checks: [] }], "success"), { diagnosticCode: "shard-missing" });
   assert.throws(() => collectIsolatedReports(plan, fixture.context, [{ ...report, requiredChecks: [] }], "success"), /policy|Policy/);
   for (const mutate of [
@@ -3668,6 +3700,10 @@ test("hosted workflow has fixed control, disposable workers and a non-executing 
   assert.equal((workflow.match(/ref: \$\{\{ github\.workflow_sha \}\}/g) ?? []).length, 3);
   assert.equal((workflow.match(/persist-credentials: false/g) ?? []).length, 6);
   assert.match(workflow, /cache: 'false'/);
+  assert.match(workflow, /prepare-only: 'true'/);
+  assert.match(workflow, /isolated-worker\.ps1 -Control/);
+  assert.match(workflow, /isolated-worker\.py/);
+  assert.doesNotMatch(workflow, /npm ci|pip install|isolated-verification\.mjs --run/);
   assert.doesNotMatch(workflow, /actions\/cache|cache: npm/);
   const gate = workflow.slice(workflow.indexOf("\n  gate:"));
   assert.doesNotMatch(gate, /npm ci|pip install|--run|uses: \.\/candidate/);
@@ -3679,6 +3715,7 @@ test("hosted workflow has fixed control, disposable workers and a non-executing 
   assert.match(gate, /if: always\(\) && github\.workflow_sha == inputs\.trusted_sha/);
   assert.match(workflow, /Resolve-Path \.\.\/control\/\.tools\/android-sdk/);
   assert.match(workflow, /"ANDROID_HOME=\$sdk" >> \$env:GITHUB_ENV/);
+  assert.match(workflow, /workers:[\s\S]*?if: false && github\.workflow_sha == inputs\.trusted_sha/);
   assert.throws(() => parseDevelopmentExecution({ kind: "github-hosted", repository: "owner/repo",
     trustedRef: "refs/heads/main\nrun", trustedSha: "a".repeat(40) }), /exact GitHub/);
   assert.throws(() => isolatedRequest({ execution: { kind: "github-hosted", repository: "owner/repo",
@@ -3829,4 +3866,217 @@ test("isolated push publishes only the granted branch despite follow-tags and mi
   assert.equal(refs, "refs/heads/task");
   assert.equal((await git(root, ["config", "--get", "push.followTags"])).trim(), "true");
   assert.equal((await git(root, ["config", "--get", "remote.origin.mirror"])).trim(), "true");
+});
+
+test("prepared delivery readiness rejects a changed origin or push destination", isolatedCases, async (t) => {
+  await Promise.all(["remote.origin.url", "remote.origin.pushurl"].map((key) => t.test(key, async (t) => {
+    const { root } = await workspace(t), session = nativeSession();
+    await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
+    session.capabilities = { ui: { elicitation: true } };
+    session.ui = { elicitation: async () => ({ action: "accept", content: { decision: "approve" } }) };
+    const ctx = documentationTask(root, {
+      session, args: { goal: "Explain behavior", acceptance: ["Document the behavior"], prepare: true,
+        mode: "autopilot", delivery: "pull-request" },
+      pause: async () => {},
+    });
+    const result = await runDevelopment(ctx, { root });
+    assert.equal(result.status, "ready", result.reason);
+    assert.ok(result.authorizedDeliveryActions.includes("push"));
+    await git(root, ["config", key, "https://github.com/another/repo.git"]);
+    assert.equal((await checkDevelopmentReadiness(root, result)).status, "blocked",
+      "A native grant must not follow a changed publication destination.");
+  })));
+});
+
+test("isolated cancellation prevents native execution before or during metadata lookup", isolatedCases, async (t) => {
+  await Promise.all(["before-preparation", "during-metadata", "not-cancelled"].map((phase) => t.test(phase, async (t) => {
+    const { root } = await workspace(t), signal = new AbortController(), cancellation = new Error("Fixture cancellation");
+    await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
+    const before = await inspectWorktree(root), hooks = await activeHookSnapshot(root);
+    const scope = { base: before.source.head, workspace: before.identity, task: { execution: {
+      kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: before.source.head,
+    } } };
+    let calls = 0, lookups = 0;
+    const ctx = { signal: signal.signal, session: { rpc: { tools: {
+      getCurrentMetadata: async () => {
+        lookups++;
+        if (phase === "during-metadata") signal.abort(cancellation);
+        return { tools: [{ name: "functions.powershell" }] };
+      },
+      execute: async () => { calls++; return { resultType: "failure" }; },
+    } } } };
+    if (phase === "before-preparation") signal.abort(cancellation);
+    await assert.rejects(executeIsolatedVerification(ctx, root, scope, before.source, hooks,
+      await captureCandidateImplementation(), path.join(root, ".data", "verification", "cancelled-dispatch")),
+    phase === "not-cancelled" ? /denied, failed or is uncertain/ : (error) => error === cancellation);
+    assert.equal(calls, phase === "not-cancelled" ? 1 : 0);
+    if (phase === "before-preparation") assert.equal(lookups, 0);
+  })));
+});
+
+test("hosted setup failures with no executed checks remain blocked diagnostics", async (t) => {
+  const { root } = await workspace(t);
+  await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
+  const base = (await sourceSnapshot(root)).head;
+  await mkdir(path.join(root, "scripts", "tests"), { recursive: true });
+  await writeFile(path.join(root, "scripts", "tests", "development-workflow.test.mjs"), "// candidate fixture\n");
+  await git(root, ["add", "--", "scripts/tests/development-workflow.test.mjs"]);
+  await git(root, ["commit", "--quiet", "-m", "Candidate check selection fixture"]);
+  const before = await inspectWorktree(root), hooks = await activeHookSnapshot(root);
+  const scope = { base, workspace: before.identity, task: { execution: {
+    kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: base,
+  } } };
+  const directory = path.join(root, ".data", "verification", "setup-failure");
+  let dispatched, artifactLookups = 0;
+  const unexpected = [], endpoints = [];
+  const original = childProcess.execFile, fallback = promisify(original);
+  const stub = (...args) => original(...args);
+  stub[promisify.custom] = async (file, args, options) => {
+    if (file !== "gh") return fallback(file, args, options);
+    const run = { id: 123, run_attempt: 1, status: "completed", conclusion: "failure", event: "workflow_dispatch",
+      path: ".github/workflows/isolated-verification.yml", head_sha: base,
+      display_title: `DevPocket isolated verification ${dispatched.requestId}`,
+      repository: { id: 42, full_name: "owner/repo" } };
+    if (args[0] === "run" && args[1] === "watch") throw Object.assign(new Error("Hosted setup failed"), { code: 1 });
+    if (args[0] === "run" && args[1] === "view") return { stdout: "SDK setup failed before verification.", stderr: "" };
+    const endpoint = args.at(-1);
+    endpoints.push(endpoint);
+    if (endpoint.includes("/workflows/") && endpoint.includes("/runs?")) return { stdout: JSON.stringify({ workflow_runs: [run] }), stderr: "" };
+    if (endpoint.endsWith("/actions/runs/123")) return { stdout: JSON.stringify(run), stderr: "" };
+    if (endpoint === "repos/owner/repo") return { stdout: JSON.stringify({ id: 42, full_name: "owner/repo" }), stderr: "" };
+    if (endpoint === "repos/owner/repo/git/ref/heads/main") {
+      return { stdout: JSON.stringify({ ref: "refs/heads/main", object: { type: "commit", sha: base } }), stderr: "" };
+    }
+    if (endpoint === "repos/owner/repo/git/ref/heads/task") {
+      return { stdout: JSON.stringify({ ref: "refs/heads/task", object: { type: "commit", sha: before.source.head } }), stderr: "" };
+    }
+    if (endpoint.includes("/jobs?")) return { stdout: JSON.stringify({ total_count: 2, jobs: [
+      { name: "Isolated tooling", status: "completed", conclusion: "failure", steps: [
+        { name: "Install candidate dependencies only on this disposable worker", conclusion: "failure" },
+        { name: "Run the fixed acceptance checks against the candidate", conclusion: "skipped" },
+      ] },
+      { name: "Isolated Required verification", status: "completed", conclusion: "failure", steps: [] },
+    ] }), stderr: "" };
+    if (endpoint.includes("/artifacts?")) {
+      artifactLookups++;
+      return { stdout: JSON.stringify({ total_count: 0, artifacts: [] }), stderr: "" };
+    }
+    unexpected.push(args);
+    throw new Error("Unexpected GitHub operation in setup-failure fixture.");
+  };
+  childProcess.execFile = stub;
+  syncBuiltinESMExports();
+  try {
+    const isolated = await import(new URL(`../isolated-verification.mjs?setup-failure=${path.basename(path.dirname(root))}`, import.meta.url).href);
+    const result = await isolated.executeIsolatedVerification({ session: { rpc: { tools: {
+      getCurrentMetadata: async () => ({ tools: [{ name: "functions.powershell" }] }),
+      execute: async () => {
+        const input = JSON.parse(await readFile(path.join(directory, "native-isolated-request.json"), "utf8"));
+        dispatched = input.request;
+        await writeFile(path.join(directory, "dispatch.json"), JSON.stringify({ status: "submitted", request: dispatched }));
+        return { resultType: "success" };
+      },
+    } } } }, root, scope, before.source, hooks, await captureCandidateImplementation(), directory);
+    assert.equal(result.report.status, "blocked");
+    assert.equal(result.report.complete, false);
+    assert.ok(result.report.checks.every((check) => check.status === "not_run"));
+    assert.equal(artifactLookups, 1, "The fixture must reach the intended missing-summary lookup.");
+    for (const endpoint of ["repos/owner/repo", "repos/owner/repo/git/ref/heads/main", "repos/owner/repo/git/ref/heads/task"]) {
+      assert.ok(endpoints.includes(endpoint), `Missing identity lookup: ${endpoint}`);
+    }
+    assert.deepEqual(unexpected, [], "An incomplete API mock must not masquerade as a blocked setup result.");
+  } finally {
+    childProcess.execFile = original;
+    syncBuiltinESMExports();
+  }
+});
+
+test("hosted failure classification requires source-bound executed-check evidence", async (t) => {
+  const { root } = await workspace(t);
+  await mkdir(path.join(root, "scripts", "tests"), { recursive: true });
+  await writeFile(path.join(root, "scripts", "tests", "development-workflow.test.mjs"), "// fixture\n");
+  const plan = await verificationPlan(root, "HEAD"), { context, request, observed } = hostedFixture(plan);
+  const check = { id: "workflow-tests", status: "failed", exitCode: 1, executionState: "exited",
+    execution: syntheticExecution(plan.source),
+    failure: { reason: "command-failed", phase: "command", exitCode: 1 },
+    commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 1, cleanupFailure: null } };
+  const worker = { ...plan, group: "tooling", status: "failed", complete: false, isolation: isolationProof(),
+    preflight: { status: "passed" }, checks: [check] };
+  const failure = diagnoseIsolatedReports(plan, context, [worker], "failure");
+  assert.equal(failure.kind, "isolated-verification-failure");
+  assert.equal(failure.report.status, "failed");
+  assert.equal(failure.report.complete, false);
+  assert.deepEqual(failure.report.checks[0].execution, check.execution);
+  observed.run.conclusion = "failure";
+  observed.jobs.jobs[0].conclusion = "failure";
+  assert.equal(validateIsolatedEnvelope(failure, request, observed, "failure"), failure);
+  assert.throws(() => validateIsolatedEnvelope(failure, request, observed), /identity changed/);
+  for (const mutate of [
+    (value) => { value.status = "blocked"; },
+    (value) => { value.preflight.status = "blocked"; },
+    (value) => { value.checks[0].executionState = "not-started"; },
+    (value) => { delete value.checks[0].execution; },
+    (value) => { delete value.checks[0].commandOutcome.cleanupFailure; },
+    (value) => { value.checks[0].failure.phase = "preflight"; },
+    (value) => { value.source = { ...plan.source, head: "9".repeat(40) }; },
+    (value) => { delete value.isolation; },
+  ]) {
+    const input = structuredClone(worker);
+    mutate(input);
+    assert.equal(diagnoseIsolatedReports(plan, context, [input], "failure").report.status, "blocked");
+  }
+  assert.equal(diagnoseIsolatedReports(plan, context, [], "failure").report.status, "blocked");
+  assert.equal(diagnoseIsolatedReports(plan, context, [worker], "skipped").report.status, "blocked");
+  for (const [reason, phase] of [
+    ["source-changed", "source-validation"], ["policy-mismatch", "preflight"],
+    ["environment-changed", "preflight"], ["collector-failed", "log"],
+  ]) {
+    const invalidated = { ...worker, failure: { reason, phase } };
+    const result = diagnoseIsolatedReports(plan, context, [invalidated], "failure");
+    assert.equal(result.report.status, "blocked");
+    assert.equal(result.report.failure.reason, reason);
+    assert.equal(result.report.failure.phase, phase);
+  }
+  const unavailable = { ...worker, sourceValidation: { status: "failed",
+    failure: { reason: "source-unavailable", phase: "source-validation" } } };
+  const unavailableResult = diagnoseIsolatedReports(plan, context, [unavailable], "failure");
+  assert.equal(unavailableResult.report.status, "blocked");
+  assert.equal(unavailableResult.report.failure.reason, "source-unavailable");
+  assert.equal(unavailableResult.report.failure.phase, "source-validation");
+  const unknownSource = diagnoseIsolatedReports(plan, context, [{ ...worker, sourceValidation: { status: "failed" } }], "failure");
+  assert.equal(unknownSource.report.status, "blocked");
+  assert.equal(unknownSource.report.failure.reason, "source-unavailable");
+});
+
+test("hosted device failure requires confirmed owned-data cleanup as well as process exit", async (t) => {
+  const { root } = await workspace(t);
+  await mkdir(path.join(root, "android", "app", "src", "main", "java"), { recursive: true });
+  await writeFile(path.join(root, "android", "app", "src", "main", "java", "Fixture.kt"), "class Fixture\n");
+  const plan = await verificationPlan(root, "HEAD"), { context } = hostedFixture(plan);
+  const sourceCheck = (id, exitCode) => ({
+    id, status: exitCode ? "failed" : "passed", exitCode, executionState: "exited",
+    execution: syntheticExecution(plan.source),
+    commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode, cleanupFailure: null },
+    ...(exitCode ? { failure: { reason: "command-failed", phase: "command", exitCode }, cleanup: "completed" } : {}),
+  });
+  const build = { ...plan, group: "android", status: "partial", complete: false, isolation: isolationProof("android"), preflight: { status: "passed" },
+    checks: plan.requiredChecks.map((id) => id === "android-build" ? sourceCheck(id, 0) : { id, status: "not_run" }) };
+  const device = { ...plan, group: "device", status: "failed", complete: false, isolation: isolationProof("device"), preflight: { status: "passed" },
+    checks: plan.requiredChecks.map((id) => id === "android-device" ? sourceCheck(id, 1) : { id, status: "not_run" }) };
+  assert.equal(diagnoseIsolatedReports(plan, context, [build, device], "failure").report.status, "failed");
+  for (const mutate of [
+    (check) => { check.cleanup = "failed"; },
+    (check) => { delete check.cleanup; },
+    (check) => { check.diagnosticIssues = [{ operation: "controller-cleanup" }]; },
+    (check) => { check.diagnosticIssues = null; },
+    (check) => { delete check.cleanup; check.deviceEvidence = { cleanup: "failed" }; },
+  ]) {
+    const input = structuredClone(device);
+    mutate(input.checks.find((check) => check.id === "android-device"));
+    assert.equal(diagnoseIsolatedReports(plan, context, [build, input], "failure").report.status, "blocked");
+  }
+  const fallback = structuredClone(device), check = fallback.checks.find((check) => check.id === "android-device");
+  delete check.cleanup;
+  check.deviceEvidence = { cleanup: "completed" };
+  assert.equal(diagnoseIsolatedReports(plan, context, [build, fallback], "failure").report.status, "failed");
 });

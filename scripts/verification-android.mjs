@@ -5,14 +5,16 @@ import { cleanDeviceRun } from "./device-run.mjs";
 import { projectWorkerDiagnostics, readDiagnosticReport } from "./worker-diagnostics.mjs";
 import { deviceSourceCatalogue, projectDeviceDiagnostics, deviceDiagnosticsFromOutput } from "./device-diagnostics.mjs";
 import { diagnosticError, failureDetails } from "./diagnostic-errors.mjs";
-import { publicDeviceEvidence, validateDeviceEvidence, verificationFailure, verificationFault } from "./verification.mjs";
+import { publicDeviceEvidence, validateDeviceEvidence, verificationFailure, verificationFault,
+  requireVerificationOutputDirectory } from "./verification.mjs";
 
 export async function androidVerification(root, check, plan, options) {
   if (!["android-build", "android-device"].includes(check.id)) throw verificationFault("configuration", { check: check.id });
   const device = check.id === "android-device", owner = device ? randomUUID() : undefined;
-  const directory = path.join(options.directory, "device");
+  const directory = options.deviceDirectory ?? path.join(options.directory, "device");
   let catalogue;
   if (device) {
+    await requireVerificationOutputDirectory(root, directory);
     check.deviceRunId = owner;
     try { catalogue = await deviceSourceCatalogue(root); }
     catch (error) {
@@ -73,7 +75,7 @@ export async function androidVerification(root, check, plan, options) {
         `${error.stdout ?? output?.stdout ?? ""}\n${error.stderr ?? output?.stderr ?? ""}`, catalogue, owner);
       if (error.processTreeStopped) {
         try {
-          const cleaned = await cleanDeviceRun(root, directory, owner);
+          const cleaned = await (options.deviceCleanup ?? cleanDeviceRun)(root, directory, owner);
           check.cleanup = cleaned ? "completed" : "unknown";
         } catch (cleanupError) {
           check.cleanup = "failed";

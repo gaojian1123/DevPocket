@@ -244,6 +244,12 @@ not source confidentiality against malicious packages. No production secrets,
 repository write token or persistent caches are supplied to those workers.
 See **Unattended execution** in `docs\DEVELOPMENT-WORKFLOW.md` for one-time
 task preparation, frozen control, native dispatch and live qualification.
+Hosted worker activation is currently blocked. A candidate OS-identity bootstrap,
+separate protected evidence storage and real hosted negative tests are prepared,
+but have not established an approved, verified boundary. Windows token-creation
+capabilities are a fail-closed prerequisite, not assumed from administrator status.
+The dispatch worker remains disabled; existing CI results do not validate these
+new inputs or authorize their privileged hosted setup.
 
 Verification classifies changed paths centrally and derives CI lanes from the
 selected check definitions, independently of local Agent trust requirements.

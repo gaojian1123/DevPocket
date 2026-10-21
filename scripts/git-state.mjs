@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
 import { lstat, readFile, readlink } from "node:fs/promises";
@@ -8,10 +9,20 @@ import { promisify } from "node:util";
 const exec = promisify(execFile);
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const splitPaths = (value) => value.split("\0").filter(Boolean);
+const fixedGit = new AsyncLocalStorage();
+
+export function withGitExecutable(executable, environment, operation) {
+  if (!path.isAbsolute(executable) || typeof operation !== "function" || fixedGit.getStore()) {
+    throw new Error("An absolute, non-replaceable Git executable is required.");
+  }
+  return fixedGit.run({ executable, environment: { ...environment } }, operation);
+}
 
 export async function git(root, args) {
-  const result = await exec("git", ["--no-pager", ...args], {
+  const fixed = fixedGit.getStore();
+  const result = await exec(fixed?.executable ?? "git", ["--no-pager", ...args], {
     cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 30_000,
+    ...(fixed ? { env: fixed.environment } : {}),
   });
   return result.stdout;
 }

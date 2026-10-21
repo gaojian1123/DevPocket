@@ -69,7 +69,8 @@ jobs:
 
   workers:
     needs: plan
-    if: github.workflow_sha == inputs.trusted_sha && needs.plan.outputs.required == 'true'
+    # Activation still requires approved bootstrap inputs and real Windows/Linux isolation evidence.
+    if: false && github.workflow_sha == inputs.trusted_sha && needs.plan.outputs.required == 'true'
     name: Isolated ${{ matrix.group }}
     strategy:
       fail-fast: false
@@ -105,19 +106,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - name: Install candidate dependencies only on this disposable worker
-        if: matrix.group != 'device'
-        run: |
-          npm ci --no-audit --no-fund
-          exit $LASTEXITCODE
-      - name: Install candidate operational dependencies
-        if: matrix.group == 'backend'
-        run: |
-          npm --prefix deployment/azure ci --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m pip install -r deployment/azure/probe/requirements-test.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "DEVPOCKET_PROBE_PYTHON=$((Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source)" >> $env:GITHUB_ENV
       - name: Prepare hosted Android SDK
         if: matrix.group == 'android'
         run: |
@@ -131,25 +119,40 @@ jobs:
         with:
           working-directory: candidate
           cache: 'false'
-      - name: Run the fixed acceptance checks against the candidate
+          prepare-only: 'true'
+      - name: Establish the candidate identity before installing or executing candidate inputs
         env:
           CHECK_GROUP: ${{ matrix.group }}
         run: |
-          node ../control/scripts/isolated-verification.mjs --run --repo . --group $env:CHECK_GROUP --report .data/ci/isolated/report.json
+          if ($IsWindows) {
+            ../control/scripts/isolated-worker.ps1 -Control ../control -Candidate . -Group $env:CHECK_GROUP
+          } else {
+            $control = (Resolve-Path ../control).Path
+            $candidate = (Resolve-Path .).Path
+            sudo -n --preserve-env=PATH,JAVA_HOME,ANDROID_HOME,ANDROID_SDK_ROOT,GITHUB_ACTIONS,RUNNER_ENVIRONMENT,GITHUB_WORKFLOW_REF,GITHUB_SHA,GITHUB_EVENT_PATH,GITHUB_EVENT_NAME,GITHUB_REPOSITORY,GITHUB_REF,GITHUB_WORKFLOW_SHA,GITHUB_RUN_ID,GITHUB_RUN_ATTEMPT,RUNNER_TEMP python3 -I "$control/scripts/isolated-worker.py" $control $candidate $env:CHECK_GROUP worker
+          }
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: isolated-verification-${{ matrix.group }}-attempt-${{ github.run_attempt }}
-          path: candidate/.data/ci/isolated/report.json
+          path: control/.data/ci/isolated/report.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: isolated-boundary-${{ matrix.group }}-attempt-${{ github.run_attempt }}
+          path: |
+            control/.data/ci/isolated/isolation-proof.json
+            control/.data/ci/isolated/isolation-negative-report.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         if: success() && (matrix.group == 'android' || matrix.group == 'device')
         with:
           name: isolated-build-${{ matrix.group }}-attempt-${{ github.run_attempt }}
           path: |
-            candidate/android/app/build/outputs/apk/debug/app-debug.apk
-            candidate/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            control/.data/ci/isolated/artifacts/app-debug.apk
+            control/.data/ci/isolated/artifacts/app-debug-androidTest.apk
           if-no-files-found: error
 
   gate:
@@ -188,7 +191,7 @@ jobs:
           node control/scripts/isolated-verification.mjs --collect --repo candidate --inputs control/.data/ci/isolated/inputs --outcome $env:WORKER_RESULT --report control/.data/ci/isolated/ci-report.json
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v7
-        if: success()
+        if: always()
         with:
           name: isolated-summary-attempt-${{ github.run_attempt }}
           path: |

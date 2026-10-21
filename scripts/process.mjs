@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,15 @@ import { failureDetails } from "./diagnostic-errors.mjs";
 
 const exec = promisify(execFile);
 const ownedProcesses = new WeakMap();
+const commandBoundary = new AsyncLocalStorage();
+
+export function withCommandBoundary(boundary, operation) {
+  if (typeof boundary !== "function" || typeof operation !== "function") {
+    throw new TypeError("A command boundary and operation are required.");
+  }
+  if (commandBoundary.getStore()) throw new Error("A command boundary cannot be replaced while it is active.");
+  return commandBoundary.run(boundary, operation);
+}
 
 function windowsTargetStderr(bytes, receiptId) {
   const frames = ["active", "tree-stopped", "cancel-accepted", "deadline-expired", "preparation-wait"]
@@ -115,7 +125,13 @@ export async function stopOwnedProcess(child, { force = false } = {}) {
   }
 }
 
-export function runCommand(file, args, {
+export function runCommand(file, args, options = {}) {
+  const boundary = commandBoundary.getStore();
+  if (boundary) return commandBoundary.run(undefined, () => boundary(file, args, options, runCommand));
+  return runOwnedCommand(file, args, options);
+}
+
+function runOwnedCommand(file, args, {
   cwd, env = process.env, timeoutMs = 30_000, graceMs = 5000, signal, privileged = false,
 } = {}) {
   const deadlineUnixMs = Date.now() + timeoutMs;

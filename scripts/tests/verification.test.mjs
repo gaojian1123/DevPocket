@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationImpact } from "../verification-policy.mjs";
 import { developmentReviewRequirements, isVerificationPolicyPath } from "../development-policy.mjs";
 import { syntheticExecution, verificationTools, windowsNodeLauncher } from "./fixtures/verification-tools.mjs";
-import { combineVerification, verificationPlan } from "../verification.mjs";
+import { combineVerification, executeVerification, verificationPlan } from "../verification.mjs";
 import { openVerificationRun, readVerificationRun } from "../verification-run.mjs";
 import { emulatorInputDifference, resolveVerificationExecutable, verificationExecutionPolicy } from "../verification-preflight.mjs";
 import { capturePromotionContext, prepareVerificationTransition } from "../verification-transition.mjs";
@@ -136,6 +136,22 @@ test("trusted tooling manifests round-trip and resume without becoming ordinary 
   await assert.rejects(openVerificationRun(root, plan, {
     directory: path.join(root, ".data", "verification", "wrong-mode"), resume: run.reference.manifest,
   }, policy));
+});
+
+test("hosted evidence storage stays separate from candidate-owned source and cannot be promoted or resumed", async (t) => {
+  const source = await repository(t), control = await repository(t);
+  await writeFile(path.join(source, "README.md"), "Documentation fixture for separate evidence storage\n");
+  const plan = await verificationPlan(source, "HEAD");
+  const options = { evidenceRoot: control, directory: path.join(control, ".data", "ci", "isolated") };
+  const report = await executeVerification(source, plan, options);
+  assert.equal(report.status, "passed");
+  assert.deepEqual(report.source, plan.source);
+  const stored = await readVerificationRun(control, report.run.manifest);
+  assert.equal(stored.manifest.root, await fileSystem.realpath(control));
+  assert.deepEqual(stored.manifest.plan.source, plan.source);
+  await assert.rejects(readFile(path.join(source, ".data", "verification", "local", "receipt.key")), { code: "ENOENT" });
+  await assert.rejects(executeVerification(source, plan, { ...options, resume: "existing-run.json" }), { diagnosticCode: "configuration" });
+  await assert.rejects(executeVerification(source, plan, { ...options, promote: "existing-run.json" }), { diagnosticCode: "configuration" });
 });
 
 test("report destinations cannot occupy private verification control storage", async (t) => {
@@ -2816,7 +2832,9 @@ test("a changed captured execution policy cannot resume an earlier successful ru
   const copiedPolicy = await import(pathToFileURL(path.join(copied, "verification-preflight.mjs")).href);
   assert.equal(await copiedPolicy.verificationExecutionPolicy(), first.policy, "The copied policy must match before mutation.");
   for (const name of ["test-workflow.mjs", "verification-tooling.mjs", "verification-admission.mjs",
-    "verification-ci.mjs", "verification-ci-artifact.ps1", "development-policy.mjs"]) await t.test(name, async () => {
+    "verification-ci.mjs", "verification-ci-artifact.ps1", "development-policy.mjs",
+    "isolated-worker.mjs", "isolated-worker.ps1", "isolated-worker.py", "isolated-worker-probe.mjs",
+    "isolated-command.cs", "isolated-command.ps1", "isolated-command.py"]) await t.test(name, async () => {
     const file = path.join(copied, name), original = await readFile(file);
     try {
       await writeFile(file, Buffer.concat([original, Buffer.from("\n")]));

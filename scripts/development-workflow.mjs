@@ -223,6 +223,7 @@ export async function checkDevelopmentReadiness(root, result) {
     const requirements = await inspectDevelopmentPolicy(root, result.base, plan.changedFiles, readOnlyGit, result.policyPaths);
     const { scope, receipts } = result.authorization;
     if (!scope || scope.runId !== result.runId || scope.base !== result.base ||
+        scope.task.prepare && current.configuration !== scope.configuration ||
         JSON.stringify(scope.workspace) !== JSON.stringify(current.identity) ||
         JSON.stringify(result.policyReview) !== JSON.stringify(policyEvidence(requirements, plan.source)) ||
         developmentExecutionAuthorization(scope, requirements, result.hooks, result.execution, receipts).status !== "allowed" ||

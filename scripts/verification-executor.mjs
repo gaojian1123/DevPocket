@@ -7,7 +7,7 @@ import { diagnosticError, failureDetails, commandDetails, contextualFailure } fr
 import { boundedDiagnosticBytes } from "./bounded-worker-log.mjs";
 import { CHECKS, CHECK_GROUPS } from "./verification-policy.mjs";
 import { combineVerification, requireCheckPolicy, requirePlanCollection, requireVerificationOutputDirectory,
-  verificationFailure, verificationFault } from "./verification.mjs";
+  verificationFailure, verificationFault, verificationProcessCleanupConfirmed, verificationCleanupConfirmed } from "./verification.mjs";
 import { backendVerification, prepareBackendVerification } from "./verification-backend.mjs";
 import { androidVerification } from "./verification-android.mjs";
 import { acquireVerificationLock, openVerificationRun, readVerificationRun } from "./verification-run.mjs";
@@ -24,24 +24,11 @@ function reportFor(plan, group, checks) {
     environment: { node: process.version, platform: process.platform } };
 }
 
-function checkProcessCleanupConfirmed(check) {
-  if (check.status === "not_run" || check.executionState === "not-started") return true;
-  return check.executionState === "exited" && check.commandOutcome?.observedProcess === "owned-command-supervisor" &&
-    check.commandOutcome.cleanupFailure === null;
-}
-
-function checkCleanupConfirmed(check) {
-  if (check.status === "not_run" || check.executionState === "not-started") return true;
-  if (!checkProcessCleanupConfirmed(check)) return false;
-  if (check.id !== "android-device") return true;
-  if (check.diagnosticIssues?.some((issue) => issue.operation === "controller-cleanup")) return false;
-  return check.cleanup === "completed" ||
-    check.cleanup === undefined && check.deviceEvidence?.cleanup === "completed";
-}
-
 export async function executeVerification(root, plan, options = {}) {
   requirePlanCollection(plan);
   requireCheckPolicy(plan);
+  const evidenceRoot = options.evidenceRoot ?? root;
+  if (evidenceRoot !== root && (options.resume || options.promote)) throw verificationFault("configuration");
   const group = options.group ?? "all";
   if (!["all", ...CHECK_GROUPS].includes(group)) throw verificationFault("configuration");
   if (options.toolingShard && (group !== "tooling" || options.promote)) throw verificationFault("configuration");
@@ -52,8 +39,8 @@ export async function executeVerification(root, plan, options = {}) {
     check.toolingShard = toolingShardDescriptor(plan, options.toolingShard);
   }
   const selected = plan.requiredGroups.filter((item) => group === "all" || item === group);
-  await requireVerificationOutputDirectory(root, options.directory, [options.resume, options.promote]);
-  const release = await acquireVerificationLock(root);
+  await requireVerificationOutputDirectory(evidenceRoot, options.directory, [options.resume, options.promote]);
+  const release = await acquireVerificationLock(evidenceRoot);
   let run, preflight, report, sourceFailure, policy, transition, qualificationFailed = false,
     policyChanged = false, changed = false, safe = true, processesStopped = true, finished = false;
   const recovery = { reused: [], reusedChecks: [], invalidated: [], executed: [] };
@@ -76,8 +63,8 @@ export async function executeVerification(root, plan, options = {}) {
       policy = await verificationExecutionPolicy();
       transition = options.promote ? await prepareVerificationTransition(root, plan, options)
         : options.resume ? (await readVerificationRun(root, options.resume)).manifest.transition : null;
-      const promotionContext = transition ? null : await capturePromotionContext(root, plan);
-      run = await openVerificationRun(root, plan, { ...options, transition }, policy, promotionContext);
+      const promotionContext = transition || evidenceRoot !== root ? null : await capturePromotionContext(root, plan);
+      run = await openVerificationRun(evidenceRoot, plan, { ...options, transition }, policy, promotionContext);
       const backend = await prepareBackendVerification(root, plan, options);
       preflight = await verificationPreflight(root, plan, { ...options,
         onEmulatorIdentity: (value) => { initialEmulator = value; } });
@@ -122,8 +109,8 @@ export async function executeVerification(root, plan, options = {}) {
             safe = false;
             processesStopped = false;
             await executeCheck(root, plan, check, { ...options, admissionEnvironment: admission?.environment }, backend);
-            processesStopped = checks.every(checkProcessCleanupConfirmed);
-            safe = checks.every(checkCleanupConfirmed);
+            processesStopped = checks.every(verificationProcessCleanupConfirmed);
+            safe = checks.every(verificationCleanupConfirmed);
             if (check.status !== "passed") break;
           }
           const groupChecks = checks.map((check) => selectedChecks.includes(check) ? structuredClone(check) : { id: check.id, status: "not_run" });
@@ -256,6 +243,9 @@ async function executeCheck(root, plan, check, options, backend) {
   const quote = (value) => `'${value.replaceAll("'", "''")}'`;
   if (options.trustedToolingRunner && path.resolve(options.trustedToolingRunner) !==
       fileURLToPath(new URL("./test-workflow.mjs", import.meta.url))) throw verificationFault("configuration");
+  if (options.isolatedTooling && (!options.trustedToolingRunner || !plan.toolingShards)) {
+    throw verificationFault("configuration");
+  }
   const adapter = definition.group === "tooling" ? {
     args: ["-NoProfile", "-NonInteractive", "-Command", options.trustedToolingRunner
       ? `& ${quote(process.execPath)} ${quote(options.trustedToolingRunner)}${check.toolingShard ? ` --workflow-shard ${check.toolingShard.id}` : ""}; exit $LASTEXITCODE`
@@ -304,10 +294,13 @@ async function executeCheck(root, plan, check, options, backend) {
     checkPhase = "command";
     check.executionState = "started";
     check.execution = { source: structuredClone(plan.source), startedAt: new Date().toISOString() };
-    output = await runCommand("pwsh", adapter.args, {
+    const commandOptions = {
       cwd: root, env: options.admissionEnvironment ? { ...(adapter.env ?? process.env), ...options.admissionEnvironment } : adapter.env,
       timeoutMs: adapter.timeoutMs, graceMs: adapter.graceMs, signal: options.signal,
-    });
+    };
+    output = definition.group === "tooling" && options.isolatedTooling
+      ? await executeIsolatedTooling(root, plan, check, commandOptions)
+      : await runCommand("pwsh", adapter.args, commandOptions);
     check.executionState = "exited";
     check.commandOutcome = commandDetails(output.commandOutcome);
     if (!await writeLog(output.stdout + output.stderr)) {
@@ -347,4 +340,39 @@ async function executeCheck(root, plan, check, options, backend) {
   check.durationMs = Date.now() - started;
   if (check.execution) check.execution.completedAt = new Date().toISOString();
   check.log = path.relative(root, log);
+}
+
+async function executeIsolatedTooling(root, plan, check, options) {
+  const files = check.toolingShard ? plan.toolingShards.parts.find((part) => part.id === check.toolingShard.id).files
+    : plan.toolingShards.files;
+  const deadline = Date.now() + options.timeoutMs;
+  check.toolingExecutions = [];
+  let retained = Buffer.alloc(0), last;
+  const append = (value) => { retained = boundedDiagnosticBytes(Buffer.concat([retained, Buffer.from(value)])).bytes; };
+  // Selection stays in the control identity; each file's candidate processes stop before the next file starts.
+  for (const file of files) {
+    options.signal?.throwIfAborted();
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw verificationFault("command-timeout", { check: check.id });
+    const execution = { source: structuredClone(plan.source), startedAt: new Date().toISOString() };
+    try {
+      last = await runCommand(process.execPath, ["--disable-sigusr1", "--test", file], { ...options, timeoutMs: remaining });
+      execution.completedAt = new Date().toISOString();
+      check.toolingExecutions.push({ file, status: "passed", exitCode: 0, execution, commandOutcome: commandDetails(last.commandOutcome) });
+      append(`${file}\n${last.stdout}${last.stderr}`);
+    } catch (error) {
+      execution.completedAt = new Date().toISOString();
+      check.toolingExecutions.push({ file, status: "failed", exitCode: Number.isInteger(error.code) ? error.code : null,
+        execution, commandOutcome: commandDetails(error.commandOutcome) });
+      append(`${file}\n${error.stdout ?? ""}${error.stderr ?? ""}`);
+      error.stdout = retained.toString("utf8");
+      error.stderr = "";
+      throw error;
+    }
+    const current = await sourceSnapshot(root);
+    if (current.head !== plan.source.head || current.fingerprint !== plan.source.fingerprint) {
+      throw verificationFault("source-changed", { phase: "source-validation", check: check.id });
+    }
+  }
+  return { ...last, stdout: retained.toString("utf8"), stderr: "" };
 }

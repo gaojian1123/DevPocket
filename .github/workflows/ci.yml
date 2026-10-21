@@ -376,9 +376,56 @@ jobs:
             .data/ci/device/device/device-report.json
           if-no-files-found: error
 
+  isolated-boundary:
+    needs: plan
+    if: needs.plan.outputs.tooling == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic)
+    name: Isolated boundary (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          path: control
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          path: candidate
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Exercise the actual hosted identity and owned-command boundary
+        shell: pwsh
+        run: |
+          $control = (Resolve-Path control).Path
+          $candidate = (Resolve-Path candidate).Path
+          if ($IsWindows) {
+            & "$control/scripts/isolated-worker.ps1" -Control $control -Candidate $candidate -Group tooling -Mode self-test
+          } else {
+            sudo -n --preserve-env=PATH,GITHUB_ACTIONS,RUNNER_ENVIRONMENT,GITHUB_WORKFLOW_REF,GITHUB_SHA,GITHUB_RUN_ID,GITHUB_RUN_ATTEMPT,RUNNER_TEMP python3 -I "$control/scripts/isolated-worker.py" $control $candidate tooling self-test
+          }
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: isolation-boundary-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: |
+            control/.data/ci/isolated/isolation-proof.json
+            control/.data/ci/isolated/isolation-negative-report.json
+          if-no-files-found: error
+
   gate:
     name: Required verification
-    needs: [plan, tooling, backend, android, device]
+    needs: [plan, tooling, backend, android, device, isolated-boundary]
     if: always()
     runs-on: windows-latest
     steps:
@@ -401,6 +448,8 @@ jobs:
           PLAN_RESULT: ${{ needs.plan.result }}
           BACKEND_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic }}
           TOOLING_RESULT: ${{ needs.tooling.result }}
+          ISOLATION_REQUIRED: ${{ needs.plan.outputs.tooling }}
+          ISOLATION_RESULT: ${{ needs.isolated-boundary.result }}
           BACKEND_RESULT: ${{ needs.backend.result }}
           ANDROID_RESULT: ${{ needs.android.result }}
           DEVICE_RESULT: ${{ needs.device.result }}
@@ -409,6 +458,9 @@ jobs:
           if ($env:BACKEND_ONLY -eq 'true') {
             node scripts\verify.mjs --base $env:BASE_SHA --plan --report .data\ci\gate.json
             throw 'A backend diagnostic cannot satisfy Required verification. Run full verification for acceptance.'
+          }
+          if ($env:ISOLATION_REQUIRED -eq 'true' -and $env:ISOLATION_RESULT -ne 'success') {
+            throw 'Both hosted isolation boundaries must pass their real negative and lifecycle checks.'
           }
           $arguments = @('scripts\verification-ci.mjs', '--base', $env:BASE_SHA, '--collect', '--inputs', '.data\ci\inputs', '--report', '.data\ci\ci-report.json')
           foreach ($group in @('tooling', 'backend', 'android', 'device')) {

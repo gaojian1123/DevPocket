@@ -99,6 +99,63 @@ grant additional execution effects.
 
 ### Disposable hosted execution
 
+**Activation blocked:** the worker job remains disabled. The candidate bootstrap
+and its adversarial checks are source changes awaiting execution/adoption approval
+and actual hosted evidence, not an established isolation boundary. Sibling
+checkouts owned by the same account are not sufficient. Do not enable the job
+merely by removing its false condition or substitute the old candidate's CI for
+the new bootstrap's validation.
+
+The proposed `isolated-worker.ps1`/`isolated-worker.py` bootstrap creates a temporary
+unprivileged account only in the named disposable hosted VM. Trusted supervision,
+Git inspection, fixed test selection and receipt production retain the control
+identity. The command owner has a protected working directory, home/temp and tool
+environment; candidate CWD and allowlisted environment apply only after the
+identity transition. Candidate installation hooks, probes, build/test payloads
+and device cleanup run under the unprivileged identity. Authoritative reports and
+ledger keys are stored under control, separately from candidate-owned raw device
+output. Only bounded named reports and APKs are staged for upload.
+
+Windows requires the control token to possess `SeAssignPrimaryTokenPrivilege`
+and `SeIncreaseQuotaPrivilege`. Being an administrator alone does not establish
+those capabilities. Bootstrap checks them before creating the account, and
+missing capabilities block the route. It does not grant new OS user rights,
+install a service, or fall back to a weaker launcher. `LogonUserW` and
+`CreateProcessAsUserW` attach the target to a kill-on-close Job through the
+creation-time Job-list attribute before it can execute. The helper reads control
+input without blocking startup and checks cancellation before resuming the target.
+Only target standard I/O handles are inherited; Windows candidate stdin is EOF,
+not the privileged cancellation pipe. The original Store-PowerShell compatibility path is
+unchanged. Whether the selected hosted Windows image supplies these capabilities
+still requires actual evidence; the prepared code is not a claim that it does.
+
+Linux keeps the root process owner outside `setpriv`, drops the target's groups
+and capabilities and sets `no_new_privs`. Control and ancestors are root-owned;
+runner channels remain outside the candidate identity. The disposable VM's
+ptrace policy also denies candidate debugger attachment. Existing approved
+JDK/SDK/KVM preparation runs before candidate code; it is not replaced with
+candidate setup scripts. Public network access remains allowed.
+Backend installation, Python preflight and operational commands select the same
+candidate-owned venv. Its PATH prefix applies only to low-identity commands, never
+to the privileged owner; ambient `NODE_OPTIONS` remains unset so native startup
+binding is preserved.
+
+The real bootstrap's negative test installs a fixture whose lifecycle hook tries
+to replace control, evidence, ancestors and runner channels and leaves a detached
+descendant. It checks cleanup and cancellation, then runs a deliberately failing
+required test through the actual verifier. The gate must reject that result.
+The hosted tooling selector runs in the control process and executes fixed files
+one at a time, with cleanup and source checks between files; ordinary local/CI
+tooling keeps its existing concurrency. Passing hosted reports also need the
+exact fixed file list and each file's execution outcome, retained in the
+authenticated aggregate and revalidated during live qualification. CI includes separate
+Windows/Linux bootstrap jobs, but authorizing this CI change is not authorization
+to activate the disabled dispatch route, change local OS policy, or install tools
+on the developer's machine.
+
+The following describes the intended execution contract after that blocker is
+resolved, not evidence that the isolation boundary already exists.
+
 The approved `.github\workflows\isolated-verification.yml` runs only through
 explicit dispatch at a named trusted branch and exact approved commit. It uses
 GitHub-hosted Windows/Ubuntu VMs, read-only repository permissions, no production
@@ -120,8 +177,8 @@ The plan, workers and final gate have separate fresh VMs and checkouts. Plan and
 gate load only the trusted `control` checkout, inspect candidate source as data,
 and store/download evidence under the control checkout rather than a candidate
 path that could redirect writes. Only workers execute candidate programs. The
-tooling check uses the fixed control runner's test catalogue, not a replacement
-candidate runner or npm lifecycle hook. Other candidate commands remain subjects
+tooling check uses the fixed control runner's test catalogue in the trusted
+supervisor, not a replacement candidate runner or npm lifecycle hook. Other candidate commands remain subjects
 for independent review; isolated execution is not proof of arbitrary code's
 honesty. Required checks, device evidence and per-check origins remain mandatory.
 The clean gate rejects missing/duplicate/failed worker reports and actual failed
@@ -152,6 +209,14 @@ workflow once. A dispatch intent is written before either effect.
 Denied, interrupted or uncertain operations are inspected through their retained
 intent/run, never blindly resubmitted. The automatic waiter reads the same run;
 failed-run logs are diagnostic input for same-task repair, never acceptance.
+Only an authenticated failed-check report with an actual execution origin may
+start an implementation repair. Setup, admission, missing/invalid collection and
+preflight outcomes remain `blocked`; a failed GitHub run alone is not evidence
+that candidate code failed. Failed summaries retain their separate diagnostic
+kind and cannot qualify as successful verification. Structured worker reports
+are persisted before printing log tails; the reader accepts the producer's
+1 MiB retained-log bound while printing at most the final 16 KiB.
+Workflow-command interpretation is suspended while untrusted failure tails are printed.
 Cancellation stops local waiting, but an already-submitted hosted run may continue
 to its CI timeout; inspect that exact run before a separately scoped cancellation.
 
@@ -235,6 +300,9 @@ The controller can push/dispatch only its recorded hosted scope. It returns the
 actual `authorizedDeliveryActions` after verification and independent review;
 the owning original client completes any authorized PR work using native tools.
 A `ready` candidate is not a claim that a PR already exists.
+Prepared delivery readiness also checks the approved Git configuration. Changing
+an origin or push URL invalidates the retained delivery grant even if the source,
+index, branch and hooks are otherwise unchanged.
 
 ## Scoped development approvals
 

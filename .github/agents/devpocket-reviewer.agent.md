@@ -66,7 +66,8 @@ approved instructions.
 Missing or stale local policy evidence cannot establish readiness.
 Match actual user decisions to the task, target, allowed effects and relevant
 trusted input versions. Candidate dependency/tool changes inside an authorized
-hosted worker do not need per-revision human approval or permission to run locally.
+hosted worker do not need per-revision human approval for that hosted execution.
+The hosted grant does not authorize running those changes locally.
 Use `developmentExecutionAuthorization`, rather than `requiresHumanReview` alone,
 to identify an unsatisfied requirement. Ordinary code/test repairs do not require repeated human consent
 when that scope is unchanged; their verification and independent review must

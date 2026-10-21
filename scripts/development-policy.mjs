@@ -10,6 +10,7 @@ const executionScripts = new Set([
   "verification-preflight", "verification-run", "verification-transition",
   "verification-tooling", "verification-admission", "verification-ci", "verification-ci-artifact",
   "isolated-verification", "development-controller",
+  "isolated-worker", "isolated-worker-probe", "isolated-command",
   "owned-command-linux", "device-run", "worker-diagnostics", "device-diagnostics", "diagnostic-errors",
   "bounded-worker-log", "diagnostic-publication", "native-lifecycle", "backend-diagnostics",
   "verification-diagnostics", "android-diagnostics", "platform-diagnostics",
