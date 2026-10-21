@@ -243,6 +243,17 @@ test("Linux drops every candidate capability and never places its root owner bel
   assert.match(source, /os\.O_EXCL/);
 });
 
+test("Windows bootstrap does not assign the read-only HOME automatic variable", async () => {
+  const file = path.resolve("scripts", "isolated-worker.ps1").replaceAll("'", "''");
+  const script = `$tokens=$null; $errors=$null; $ast=[Management.Automation.Language.Parser]::ParseFile('${file}',[ref]$tokens,[ref]$errors); ` +
+    "if($errors.Count){throw 'Bootstrap syntax failed'}; " +
+    "$assignments=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and " +
+    "$node.Left -is [Management.Automation.Language.VariableExpressionAst] -and $node.Left.VariablePath.UserPath -ieq 'HOME'},$true)); " +
+    "ConvertTo-Json -InputObject @($assignments | ForEach-Object { $_.Extent.StartLineNumber }) -Compress";
+  const result = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", script], { timeout: 30000 });
+  assert.deepEqual(JSON.parse(result.stdout), []);
+});
+
 test("bootstrap command failures retain the actual bounded diagnostic before exiting",
   { skip: process.platform !== "win32" }, async (t) => {
     const configuration = await fixture(t), scripts = path.join(configuration.control, "scripts");

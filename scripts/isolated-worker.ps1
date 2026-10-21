@@ -131,10 +131,10 @@ try {
     $fixture = Join-Path $state 'fixture'
     $null = New-Item -ItemType Directory -Path $fixture
     Set-CandidateDirectory $fixture
-    $home = Join-Path $state 'home'
-    $null = New-Item -ItemType Directory -Path $home
-    Set-CandidateDirectory $home
-    $temporary = Join-Path $home 'tmp'
+    $candidateHome = Join-Path $state 'home'
+    $null = New-Item -ItemType Directory -Path $candidateHome
+    Set-CandidateDirectory $candidateHome
+    $temporary = Join-Path $candidateHome 'tmp'
     $null = New-Item -ItemType Directory -Path $temporary
     foreach ($path in @($env:USERPROFILE, $env:RUNNER_TEMP, $env:GITHUB_WORKSPACE) | Select-Object -Unique) {
         Protect-Existing $path $false
@@ -156,7 +156,7 @@ try {
     $password = $null
     $configuration = @{
         version = 1; platform = 'win32'; control = $controlCopy; candidate = $candidateCopy; fixture = $fixture
-        private = $private; home = $home; temporary = $temporary; identity = $identity; sid = $account.SID.Value
+        private = $private; home = $candidateHome; temporary = $temporary; identity = $identity; sid = $account.SID.Value
         tools = $tools; group = $Group; mode = $Mode
         protectedPaths = @($controlCopy, $private, $state, $env:USERPROFILE, $env:RUNNER_TEMP)
     }

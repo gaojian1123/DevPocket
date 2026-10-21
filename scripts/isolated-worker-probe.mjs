@@ -54,7 +54,8 @@ if (mode === "fixture") {
   while (!existsSync(counter) && Date.now() < deadline) await delay(20);
   assert.ok(existsSync(counter), "The background descendant never started.");
   writeFileSync(path.join(input.fixture, ".data", "attacks.json"), JSON.stringify(outcomes));
-  assert.ok(outcomes.every((item) => item.denied), "The candidate crossed a protected boundary.");
+  assert.ok(outcomes.every((item) => item.denied),
+    `The candidate crossed protected boundaries: ${outcomes.filter((item) => !item.denied).map((item) => item.name).join(", ")}`);
 } else if (mode === "descendant") {
   let attempts = 0;
   setInterval(() => {
