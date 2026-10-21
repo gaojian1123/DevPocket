@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { diagnosticError } from "./diagnostic-errors.mjs";
+import { localPipe } from "./local-ipc.mjs";
 
 export const admissionVariable = "DEVPOCKET_VERIFIER_ADMISSION";
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
@@ -49,8 +50,8 @@ async function readOwner(file) {
 
 function address(root) {
   const key = createHash("sha256").update(canonical(root)).digest("hex").slice(0, 24);
-  return process.platform === "win32" ? `\\\\.\\pipe\\devpocket-verification-${key}`
-    : path.join(root, "owner.sock");
+  return process.platform === "darwin" ? localPipe(`devpocket-verification-${key}`)
+    : process.platform === "win32" ? `\\\\.\\pipe\\devpocket-verification-${key}` : path.join(root, "owner.sock");
 }
 
 async function probe(socketPath, request, signal) {
@@ -142,7 +143,10 @@ export async function acquireHostVerificationSlot(workspace, options = {}) {
     const bytes = Buffer.from(JSON.stringify(owner) + "\n"), token = randomBytes(32);
     if (!ticket) {
       try { server = await serve(address(root), owner, token); }
-      catch (error) { if (!["EADDRINUSE", "EACCES"].includes(error.code)) throw fail(error); }
+      catch (error) {
+        if (!["EADDRINUSE", "EACCES"].includes(error.code) &&
+            !(process.platform === "darwin" && error.code === "EEXIST")) throw fail(error);
+      }
     }
     if (server) {
       try {

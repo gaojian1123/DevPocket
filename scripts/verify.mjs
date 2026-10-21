@@ -136,7 +136,7 @@ async function main() {
   }
   if (report.status === "planned") console.log(JSON.stringify({
     kind: "verification-plan", requiredChecks: report.requiredChecks, requiredGroups: report.requiredGroups,
-    layouts: report.layouts, selectionReasons: report.selectionReasons, toolingShards: report.toolingShards ?? null,
+    layouts: report.layouts, ciMacos: report.ciMacos, selectionReasons: report.selectionReasons, toolingShards: report.toolingShards ?? null,
   }));
   if (report.failure) console.error(JSON.stringify({ kind: "verification-failure", ...report.failure }));
 }

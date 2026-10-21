@@ -20,6 +20,9 @@ const hash = (value) => createHash("sha256").update(value).digest("hex");
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 export const ISOLATED_WORKFLOW = ".github/workflows/isolated-verification.yml";
 const fail = (message) => { throw new Error(`Isolated verification: ${message}`); };
+const requireSupportedPlatforms = (plan) => {
+  if (plan.ciMacos === true) fail("selected macOS coverage has no approved isolated worker.");
+};
 const isolationChecks = ["protected-control", "protected-evidence", "protected-ancestors", "runner-channels",
   "descendant-cleanup", "failing-fixed-gate"];
 
@@ -51,6 +54,7 @@ export function isolatedRequest(value) {
 }
 
 export function isolatedMatrix(plan) {
+  requireSupportedPlatforms(plan);
   return plan.requiredGroups.map((group) => {
     if (!CHECK_GROUPS.includes(group)) fail("unknown required check group.");
     return { group, os: group === "device" ? "ubuntu-24.04" : "windows-latest" };
@@ -113,6 +117,7 @@ export async function readIsolatedReports(root, directory, plan, context) {
 }
 
 export function collectIsolatedReports(plan, context, reports, workerOutcome) {
+  requireSupportedPlatforms(plan);
   if (!same(plan.source, context.source) || plan.base !== context.request.base ||
       plan.source.head !== context.request.candidate) fail("plan does not describe the requested source.");
   if (plan.requiredGroups.length && workerOutcome !== "success" ||
@@ -159,7 +164,7 @@ export function diagnoseIsolatedReports(plan, context, reports, workerOutcome, c
   const observed = new Map(), groups = new Set(), provenFailures = new Set();
   let coherent = same(plan.source, context?.source) && plan.base === context?.request?.base &&
     plan.source.head === context?.request?.candidate && Array.isArray(reports) && reports.length === plan.requiredGroups.length;
-  let blocked = false, reportedBlocker;
+  let blocked = plan.ciMacos === true, reportedBlocker;
   for (const report of Array.isArray(reports) ? reports : []) {
     if (!report || report.version !== plan.version || report.base !== plan.base || !same(report.source, plan.source) ||
         !same(report.requiredChecks, plan.requiredChecks) || !same(report.requiredGroups, plan.requiredGroups) ||
@@ -311,6 +316,7 @@ export function validateIsolatedEnvelope(value, request, { run, jobs, artifact, 
           report.checks.some((check) => check.status === "blocked" || check.collectionStatus === "failed" ||
             !verificationCleanupConfirmed(check)))) fail("failed diagnostics do not establish an executed-check failure.");
   } else {
+    requireSupportedPlatforms(report);
     combineVerification(report, [report]);
     requireIsolatedToolingExecutions(report, report.checks.find((check) => check.id === "workflow-tests"));
   }
@@ -341,6 +347,8 @@ async function inspectIsolatedEvidence(root, request, runId, directory, { api = 
   const before = await inspectWorktree(root);
   if (before.status || before.source.head !== request.candidate || before.identity.branch !== request.branch ||
       await originRepository(root) !== request.execution.repository) fail("local candidate is not clean, current and in the authorized repository.");
+  const plan = await verificationPlan(root, request.base, false, { trustedTooling: true });
+  if (outcome === "success") requireSupportedPlatforms(plan);
   const observed = await liveRun(request, runId, api), { artifact } = observed;
   if (!Number.isSafeInteger(artifact.id) || artifact.id < 1 || artifact.expired ||
       !/^sha256:[a-f0-9]{64}$/.test(artifact.digest ?? "") ||
@@ -358,8 +366,8 @@ async function inspectIsolatedEvidence(root, request, runId, directory, { api = 
     fileURLToPath(new URL("./verification-ci-artifact.ps1", import.meta.url)), "-Archive", archive, "-Sha256", artifact.digest.slice(7)],
   { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 30000 });
   const envelope = validateIsolatedEnvelope(JSON.parse(extracted.stdout), request, observed, outcome);
-  const plan = await verificationPlan(root, request.base, false, { trustedTooling: true });
   if (!same(plan.requiredChecks, envelope.report.requiredChecks) ||
+      Boolean(plan.ciMacos) !== Boolean(envelope.report.ciMacos) ||
       !same(plan.toolingShards ?? null, envelope.report.toolingShards ?? null) || plan.layouts !== envelope.report.layouts ||
       !same(plan.trustedDeviceClasses ?? [], envelope.report.trustedDeviceClasses ?? [])) fail("trusted local acceptance is not covered by the hosted report.");
   const afterRun = await liveRun(request, runId, api), after = await inspectWorktree(root);
@@ -438,6 +446,7 @@ export async function prepareIsolatedExecution(root, scope, candidate, hooks, im
   }
   const request = isolatedRequest({ execution: scope.task.execution, branch: scope.workspace.branch,
     base: scope.base, candidate: candidate.head, requestId: randomUUID() });
+  requireSupportedPlatforms(await verificationPlan(root, scope.base, false, { trustedTooling: true }));
   await requireIsolatedPushTarget(root, request.execution.repository);
   const file = path.join(directory, "native-isolated-request.json");
   const body = JSON.stringify({ root, request, directory, hooks, expected: current, execution: implementation });

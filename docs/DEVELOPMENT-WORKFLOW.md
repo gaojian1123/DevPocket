@@ -119,6 +119,11 @@ high-identity-only DACL; POSIX creation modes do not establish Windows privacy.
 The negative fixture must reject evidence reads as well as overwrite/deletion.
 Only bounded named reports and APKs are staged for upload.
 
+The isolated worker targets are Windows and Ubuntu, not macOS. A plan selecting
+`ciMacos` is blocked during isolated planning, aggregation and qualification until
+an approved isolated Mac worker exists; Windows/Linux reports cannot omit that
+requirement. The ordinary CI workflow still requires its selected macOS lane.
+
 The original hosted Windows runner token reached `CreateProcessAsUserW` and
 failed with native error 1314 while `SeAssignPrimaryTokenPrivilege` was absent
 and quota privilege was enabled. The prepared replacement uses a uniquely named,
@@ -524,6 +529,22 @@ original client or host still need their explicitly authorized local evidence.
 CI releases local CPU/memory but can still queue, spend runner minutes, prepare
 dependencies or time out. Existing deadlines and required coverage are unchanged.
 
+The same plan emits `ciMacos` for relevant shared/native infrastructure, its
+regressions, CI policy and shared dependency changes; `--all` also selects it.
+The ARM64 `macos-15` job depends on that decision and reruns the existing
+`native` tooling shard without provisioning an Android emulator. Its
+`verification-macos-attempt-N` artifact is additional platform evidence, not
+a replacement for the Windows native shard. Collection requires both a
+successful selected Mac upstream and its current-source, Darwin/ARM64 report
+with confirmed command cleanup. The CI envelope retains a bounded Mac report
+projection and its original execution times, source and input-attempt digest.
+Missing, failed, cancelled, unexpectedly skipped or wrong-platform coverage
+cannot qualify; an unselected Mac job may skip. Live qualification also
+preserves any Mac requirement from the original task base when the PR base is
+narrower. Local unsharded verification still covers its current host, not every
+CI platform. Device instrumentation and layouts remain on Ubuntu/KVM; this Mac
+job does not claim the local HVF emulator path has been exercised.
+
 Sealing and collecting CI evidence accepts fork PR heads for eligible checks,
 while retaining the base-repository identity and exact merge-parent checks.
 This lets documentation/tooling-only fork PRs reach their normal gate. It does
@@ -870,11 +891,50 @@ not repository gates.
 Run from the checkout with Node 24 and PowerShell 7. The complete workflow
 regression suite also needs Git with SSH signing support (`ssh-keygen` for
 disposable signing fixtures), Python 3.12 (standard-library checks), the
-root npm dependencies (including TypeScript/tsx), and the existing Windows
+root npm dependencies (including TypeScript/tsx), and, on Windows, the existing
 owned-command compiler support. It uses synthetic toolchains, not an Android
 SDK/JDK or emulator. Operational fixture checks additionally need the pinned
 `deployment\azure\probe\requirements-test.txt` dependencies; use an isolated
 environment rather than changing the machine's Python packages.
+
+On macOS, the native command owner uses Python and Darwin responsibility scopes
+instead of the Windows compiler. Each live scope remains responsible for its
+detached descendants until cleanup; nested scopes register with their parent
+before executing a target and must acknowledge cleanup. Signals use the kernel's
+PID-version check. The supervisor preserves the inherited ownership link
+separately from command-level environment overrides. Unstable process snapshots
+are retried and cannot qualify an empty-tree cleanup acknowledgement.
+Fork/exit and zombie transitions require a new observation; two stable empty
+scans confirm completion. Nested cleanup failures are retained while the
+supervisor attempts to stop all other verifiably owned processes.
+The in-process emulator recovery dependency is included in both the captured
+controller implementation and the verifier execution-policy fingerprint.
+Unsupported native APIs, unbound parents or missing nested
+cleanup remain failures, not plain process-group fallbacks. Control receipts
+are per-command and are not supplied to the target process.
+
+The complete local gate also supports macOS Android builds and native tests.
+Apple Silicon selects the ARM64 API-35 image; Intel Macs select x86_64. Device
+evidence retains macOS, host architecture and usable HVF acceleration, alongside
+the existing source/APK identities, instrumentation cases and cleanup evidence.
+The account-local emulator pool keeps its default single slot. After a native
+controller crash, the surviving verifier can recover exactly that run's lease
+using the in-memory, command-bound cleanup outcome from its native supervisor.
+Recovery also requires a dead lease heartbeat and free ports. Serialized or
+forged outcomes, another command/run and unconfirmed cleanup cannot recover a
+lease. If the verifier itself is lost, missing process/port observations alone
+still leave the lease blocked. macOS registry mutation uses a kernel-released
+file lock whose open description stays with the controller, not a persistent
+helper process. The version-2 registry prevents older socket-only writers from
+mutating it. Migration holds both locks and requires an empty version-1 registry;
+it preserves the configured limit and refuses retained leases/waiters or an
+unknown legacy lock rather than removing them. A crash before migration commits
+may therefore require inspection, while version-2 controller crashes release
+the registry lock without discarding lease records.
+Windows reclamation and the separate hosted
+Linux/KVM path are unchanged. See
+[macOS setup](../README.md#complete-local-verification-on-macos) for prerequisites.
+Local macOS acceptance does not replace Windows/Linux-specific CI coverage.
 
 Before executing changed verification or dependency policy, resolve the
 applicable authority in Step 3 of `.github\skills\devpocket-development\SKILL.md`.

@@ -49,7 +49,7 @@ const rules = [
     matches: (file) => [
       "verification", "verification-execution", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
       "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
-      "bounded-worker-log", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner", "isolated-worker",
+      "bounded-worker-log", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner", "isolated-worker", "macos-host",
     ].some((name) => file === `scripts/tests/${name}.test.mjs`) ||
       ["scripts/tests/fixtures/emulator-lease-peer.mjs", "scripts/tests/fixtures/verification-tools.mjs"].includes(file), checks: tooling },
   { id: "backend-execution", description: "Backend command adaptation, builds and packaging require backend checks, not native execution.",
@@ -58,7 +58,7 @@ const rules = [
       "scripts/tests/fixtures/proof-cli.ps1", "backend/tsconfig.json", "backend/tsconfig.cli-proof.json",
       ".github/workflows/extension-release.yml"].includes(file), checks: backendExecution },
   { id: "android-execution", description: "Native build, device commands, prerequisites and owned device cleanup require build, device and layout evidence.",
-    matches: (file) => ["scripts/verification-android.mjs", "scripts/build-android.ps1", "scripts/prepare-android.ps1",
+    matches: (file) => ["scripts/verification-android.mjs", "scripts/build-android.ps1", "scripts/prepare-android.ps1", "scripts/android-platform.mjs",
       "scripts/test-android.ps1", "scripts/android-runner.mjs", "scripts/android-emulator.mjs", "scripts/android-home.mjs",
       "scripts/device-run.mjs", "scripts/emulator-resources.mjs", "scripts/linux-emulator.mjs", "scripts/linux-runtime.mjs",
       "scripts/manual-emulator.mjs", "scripts/native-startup.mjs", "scripts/platform-diagnostics.mjs",
@@ -76,6 +76,7 @@ const rules = [
       "scripts/windows-supervisor.cs",
       "scripts/verification-ci-artifact.ps1", "scripts/process.mjs", "scripts/owned-command.ps1",
       "scripts/owned-command.cs", "scripts/owned-command-windows.mjs", "scripts/owned-command-linux.py",
+      "scripts/owned-command-darwin.py", "scripts/local-ipc.mjs",
       "scripts/bounded-worker-log.mjs", "scripts/backend-diagnostics.mjs"].includes(file), ...full },
   { id: "operations", description: "Deployment and infrastructure changes, including their dependencies, require backend and operational fixtures.",
     matches: (file) => file.startsWith("deployment/") || file.startsWith("infra/") || file === "azure.yaml",
@@ -103,6 +104,17 @@ const rules = [
 ];
 const allRule = { id: "all-checks", description: "Explicit --all selects every check.", checks: allChecks };
 const ruleFor = (file) => rules.find((rule) => rule.matches(file));
+const macosRules = new Set(["task-routing", "development-tooling", "agent-instructions", "verification-contract",
+  "shared-execution", "verification-infrastructure", "unknown"]);
+const otherPlatformInputs = new Set([
+  "scripts/owned-command.ps1", "scripts/owned-command.cs", "scripts/owned-command-windows.mjs", "scripts/owned-command-linux.py",
+  "scripts/linux-emulator.mjs", "scripts/linux-runtime.mjs", "scripts/tests/linux-process.test.mjs", "scripts/prepare-android.ps1",
+  ".github/actions/prepare-native/action.yml", ".github/workflows/native-startup-diagnostics.yml",
+]);
+const selectsMacos = (file, rule) => !otherPlatformInputs.has(file) && (
+  macosRules.has(rule.id) || rule.id === "android-execution" ||
+  rule.id === "tooling-regression" && /^scripts\/tests\/(?:verification(?:-execution|-diagnostics)?|android-runner|android-build|native-lifecycle|process|emulator-resources|manual-emulator|xcode-mcp|workflow-runner|macos-host)\.test\.mjs$/.test(file) ||
+  file === "scripts/tests/fixtures/emulator-lease-peer.mjs" || file === "scripts/tests/fixtures/verification-tools.mjs");
 const orderedChecks = (ids) => allChecks.filter((id) => ids.includes(id));
 const safePath = (file) => typeof file === "string" && file.length <= 240 &&
   /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/.test(file) && !file.split("/").some((part) => [".", ".."].includes(part));
@@ -116,17 +128,18 @@ function explanation(rule, files) {
 
 export function verificationImpact(changedFiles, all = false) {
   const selected = new Set(), causes = new Map();
-  let layouts = false;
+  let layouts = false, ciMacos = all;
   for (const file of [...new Set(changedFiles)].sort()) {
     const rule = ruleFor(file);
     rule.checks.forEach((id) => selected.add(id));
     if (!causes.has(rule.id)) causes.set(rule.id, []);
     causes.get(rule.id).push(file);
     layouts ||= Boolean(rule.layouts?.(file));
+    ciMacos ||= selectsMacos(file, rule);
   }
   if (all) allChecks.forEach((id) => selected.add(id));
   const requiredChecks = orderedChecks([...selected]);
-  return { requiredChecks, requiredGroups: verificationGroups(requiredChecks), layouts,
+  return { requiredChecks, requiredGroups: verificationGroups(requiredChecks), layouts, ciMacos,
     selectionReasons: [
       ...rules.filter((rule) => causes.has(rule.id)).map((rule) => explanation(rule, causes.get(rule.id))),
       ...(all ? [explanation(allRule, [])] : []),
@@ -143,6 +156,7 @@ export function projectVerificationSelection(report, sourcePaths) {
   return {
     requiredChecks, requiredGroups: [...new Set(selected.map((check) => diagnosticCheckGroup(check, report.version)))],
     layouts: typeof report.layouts === "boolean" ? report.layouts : "unknown",
+    ciMacos: typeof report.ciMacos === "boolean" ? report.ciMacos : "unknown",
     ...([1, 2].includes(report.version) ? { legacyAgentReview: {
       requiresHumanReview: typeof report.requiresHumanReview === "boolean" ? report.requiresHumanReview : "unknown",
       approval: "not-established",

@@ -18,7 +18,7 @@ const pathKey = (value) => process.platform === "win32" ? value.toLowerCase() : 
 
 function binding(plan, group, policy, options, trustedTooling = Boolean(options.trustedToolingRunner)) {
   return { base: plan.base, source: plan.source, version: plan.version,
-    requiredChecks: plan.requiredChecks, requiredGroups: plan.requiredGroups, layouts: plan.layouts,
+    requiredChecks: plan.requiredChecks, requiredGroups: plan.requiredGroups, layouts: plan.layouts, ciMacos: plan.ciMacos ?? false,
     trustedDeviceClasses: plan.trustedDeviceClasses ?? [], group, policy,
     backendDiagnostics: Boolean(options.backendDiagnostics), toolingShard: options.toolingShard ?? null,
     trustedTooling };

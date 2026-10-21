@@ -12,11 +12,11 @@ const executionScripts = new Set([
   "isolated-verification", "development-controller",
   "isolated-worker", "isolated-worker-probe", "isolated-command",
   "windows-supervisor",
-  "owned-command-linux", "device-run", "worker-diagnostics", "device-diagnostics", "diagnostic-errors",
+  "owned-command-linux", "owned-command-darwin", "local-ipc", "device-run", "worker-diagnostics", "device-diagnostics", "diagnostic-errors",
   "bounded-worker-log", "diagnostic-publication", "native-lifecycle", "backend-diagnostics",
   "verification-diagnostics", "android-diagnostics", "platform-diagnostics",
   "bundle-extension", "package-extension", "launch-cli-proof", "export-schema",
-  "build-android", "prepare-android", "test-android", "android-runner", "android-emulator", "android-home",
+  "build-android", "prepare-android", "test-android", "android-runner", "android-emulator", "android-home", "android-platform",
   "emulator-resources", "linux-emulator", "linux-runtime", "manual-emulator", "native-startup",
   "start-test-emulator", "stop-test-emulator", "test-native-layouts", "save-debug-artifact",
 ]);

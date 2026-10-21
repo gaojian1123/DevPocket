@@ -4,10 +4,13 @@ import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
+import path from "node:path";
 import { failureDetails } from "./diagnostic-errors.mjs";
 
 const exec = promisify(execFile);
 const ownedProcesses = new WeakMap();
+const cleanedCommands = new WeakMap();
+const inheritedDarwinScope = process.platform === "darwin" ? process.env.DEVPOCKET_DARWIN_SCOPE : undefined;
 const commandBoundary = new AsyncLocalStorage();
 
 export function withCommandBoundary(boundary, operation) {
@@ -18,7 +21,14 @@ export function withCommandBoundary(boundary, operation) {
   return commandBoundary.run(boundary, operation);
 }
 
-function windowsTargetStderr(bytes, receiptId) {
+const commandIdentity = (file, args, cwd) => JSON.stringify({ file, args, cwd: path.resolve(cwd ?? process.cwd()) });
+
+export function commandCleanupConfirmed(outcome, { file, args, cwd }) {
+  return outcome !== null && typeof outcome === "object" &&
+    cleanedCommands.get(outcome) === commandIdentity(file, args, cwd);
+}
+
+function ownedTargetStderr(bytes, receiptId) {
   const frames = ["active", "tree-stopped", "cancel-accepted", "deadline-expired", "preparation-wait"]
     .map((phase) => Buffer.from(`\u001eDEVPOCKET:${receiptId}:${phase}\u001f`));
   const parts = [];
@@ -37,10 +47,13 @@ function windowsTargetStderr(bytes, receiptId) {
 }
 
 export function ownedCommandLaunch(platform = process.platform, privileged = false, env = process.env) {
-  if (!["win32", "linux"].includes(platform)) throw new Error("Owned command execution requires Windows or Linux.");
+  if (!["win32", "linux", "darwin"].includes(platform)) throw new Error("Owned command execution requires Windows, Linux or macOS.");
   if (privileged && (platform !== "linux" || env.GITHUB_ACTIONS !== "true" ||
       env.RUNNER_ENVIRONMENT !== "github-hosted")) {
     throw new Error("Privileged command ownership requires the configured hosted Linux job.");
+  }
+  if (platform === "darwin") {
+    return { file: "python3", args: ["-B", fileURLToPath(new URL("./owned-command-darwin.py", import.meta.url))] };
   }
   const linux = platform === "linux";
   const launcher = fileURLToPath(new URL(linux ? "./owned-command-linux.py" : "./owned-command-windows.mjs", import.meta.url));
@@ -58,13 +71,19 @@ export function spawnOwnedCommand(file, args, {
   }
   const launch = ownedCommandLaunch(process.platform, privileged, env);
   const receiptId = randomUUID();
+  const supervisorEnvironment = process.platform === "darwin" ? { ...env } : env;
+  if (process.platform === "darwin") {
+    if (inheritedDarwinScope === undefined) delete supervisorEnvironment.DEVPOCKET_DARWIN_SCOPE;
+    else supervisorEnvironment.DEVPOCKET_DARWIN_SCOPE = inheritedDarwinScope;
+  }
   const child = spawn(launch.file, launch.args,
-    { cwd, env, windowsHide: true, stdio: nativeLifecycle ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"] });
+    { cwd, env: supervisorEnvironment, windowsHide: true,
+      stdio: nativeLifecycle ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"] });
   const state = { tail: "", receiptId, graceMs, confirmed: false };
   ownedProcesses.set(child, state);
   child.stderr.on("data", (bytes) => { state.tail = (state.tail + bytes.toString()).slice(-4096); });
   state.done = new Promise((resolve) => child.once("close", () => {
-    state.confirmed = process.platform === "win32"
+    state.confirmed = ["win32", "darwin"].includes(process.platform)
       ? state.tail.endsWith(`\u001eDEVPOCKET:${receiptId}:tree-stopped\u001f`)
       : state.tail.trimEnd().split(/\r?\n/).at(-1) === "DEVPOCKET_OWNED_TREE_STOPPED";
     resolve();
@@ -80,6 +99,13 @@ export function ownedProcessCleanupConfirmed(child) {
 
 export async function ownerProcessFamilyAlive(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Invalid process-family owner.");
+  if (process.platform === "darwin") {
+    const result = await exec("python3", ["-B", fileURLToPath(new URL("./owned-command-darwin.py", import.meta.url)),
+      "--family", String(pid)], { timeout: 20_000 });
+    const status = result.stdout.trim();
+    if (!["alive", "unknown"].includes(status)) throw new Error("macOS process-family liveness is unavailable.");
+    return true; // Both live and unconfirmed families retain their emulator lease.
+  }
   const result = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
     `$ErrorActionPreference='Stop'; $items=@(Get-CimInstance Win32_Process -Filter "ProcessId=${pid} OR ParentProcessId=${pid}"); ` +
     `if($items.Count) { 'alive' } else { 'exited' }`], { timeout: 20_000, windowsHide: true });
@@ -89,7 +115,7 @@ export async function ownerProcessFamilyAlive(pid) {
 }
 
 export async function stopOwnedProcess(child, { force = false } = {}) {
-  const owned = process.platform === "win32" ? ownedProcesses.get(child) : undefined;
+  const owned = ["win32", "darwin"].includes(process.platform) ? ownedProcesses.get(child) : undefined;
   if (owned) {
     if (child.exitCode === null && child.signalCode === null) {
       if (force) child.kill();
@@ -104,10 +130,11 @@ export async function stopOwnedProcess(child, { force = false } = {}) {
     let closeTimer;
     try {
       await Promise.race([owned.done, new Promise((_, reject) => {
-        closeTimer = setTimeout(() => reject(new Error("Owned Windows supervisor did not close after termination.")), 10000);
+        closeTimer = setTimeout(() => reject(new Error("Owned supervisor did not close after termination.")),
+          process.platform === "darwin" ? 20000 : 10000);
       })]);
     } finally { clearTimeout(closeTimer); }
-    if (!owned.confirmed) throw Object.assign(new Error("Owned Windows process-tree cleanup was not confirmed."),
+    if (!owned.confirmed) throw Object.assign(new Error("Owned process-tree cleanup was not confirmed."),
       { diagnosticCode: "cleanup-failed" });
     return;
   }
@@ -121,7 +148,13 @@ export async function stopOwnedProcess(child, { force = false } = {}) {
       `if (Get-Process -Id $ownerId -ErrorAction SilentlyContinue) { Stop-Process -Id $ownerId -Force } }; ` +
       `Stop-OwnedTree ${pid}`], { timeout: 20_000, windowsHide: true });
   } else {
-    child.kill("SIGTERM");
+    if (process.platform !== "darwin") { child.kill("SIGTERM"); return; }
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { child.off("close", closed); reject(new Error("The macOS child did not close.")); }, 20000);
+      const closed = () => { clearTimeout(timer); resolve(); };
+      child.once("close", closed);
+      child.kill("SIGTERM");
+    });
   }
 }
 
@@ -135,6 +168,7 @@ function runOwnedCommand(file, args, {
   cwd, env = process.env, timeoutMs = 30_000, graceMs = 5000, signal, privileged = false,
 } = {}) {
   const deadlineUnixMs = Date.now() + timeoutMs;
+  const identity = commandIdentity(file, args, cwd);
   return new Promise((resolve, reject) => {
     const child = spawnOwnedCommand(file, args, { cwd, env, timeoutMs, graceMs, privileged,
       deadlineUnixMs, cancelled: signal?.aborted ?? false });
@@ -182,9 +216,9 @@ function runOwnedCommand(file, args, {
       stdout += stdoutDecoder.end();
       const stderrBytes = Buffer.concat(stderrChunks);
       const processTreeStopped = ownedProcessCleanupConfirmed(child);
-      if (process.platform === "win32") {
+      if (["win32", "darwin"].includes(process.platform)) {
         const receiptId = ownedProcesses.get(child).receiptId;
-        stderr = windowsTargetStderr(stderrBytes, receiptId);
+        stderr = ownedTargetStderr(stderrBytes, receiptId);
       } else stderr = stderrBytes.toString("utf8").replace(/^DEVPOCKET_(?:OWNERSHIP_ACTIVE|OWNED_TREE_STOPPED)\r?\n/gm, "");
       if (!failure && Date.now() >= deadlineUnixMs) {
         failure = new Error("Command exceeded its total wall-clock deadline.");
@@ -203,8 +237,13 @@ function runOwnedCommand(file, args, {
       if (failure || code !== 0) {
         const error = failure ?? new Error(`${file} exited with ${code}.`);
         Object.assign(error, { code: failure ? failure.code : code, stdout, stderr, processTreeStopped, commandOutcome });
+        if (processTreeStopped && !cleanupFailure) cleanedCommands.set(error, identity);
         reject(error);
-      } else resolve({ stdout, stderr, processTreeStopped, commandOutcome });
+      } else {
+        const result = { stdout, stderr, processTreeStopped, commandOutcome };
+        if (processTreeStopped && !cleanupFailure) cleanedCommands.set(result, identity);
+        resolve(result);
+      }
     });
   });
 }

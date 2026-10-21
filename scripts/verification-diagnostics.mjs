@@ -16,6 +16,23 @@ const states = ["passed", "failed", "blocked", "not_run"];
 const issueOperations = ["private-log", "device-catalogue", "device-report", "backend-catalogue", "controller-cleanup"];
 const exceptions = ["AssertionError", "TypeError", "RangeError", "SyntaxError", "ReferenceError",
   "ModuleNotFoundError", "ImportError", "PermissionError", "FileNotFoundError", "TimeoutError", "ConnectionError"];
+const macosOwnerTypes = ["RuntimeError", "ValueError", "AttributeError", "OSError", "PermissionError",
+  "FileNotFoundError", "TimeoutError", "BrokenPipeError", "BlockingIOError", "ConnectionResetError", "ProcessLookupError"];
+const macosOwnerReasons = new Map([
+  ["macOS process ownership did not stabilize; cleanup is unconfirmed.", "ownership-unstable"],
+  ["Nested macOS cleanup was not confirmed.", "nested-ack-missing"],
+  ["A nested macOS owner exited without confirming cleanup.", "nested-owner-unconfirmed"],
+  ["Invalid nested macOS cleanup acknowledgement.", "nested-ack-invalid"],
+  ["Owned macOS processes did not confirm exit.", "cleanup-deadline"],
+  ["Inherited macOS ownership changed.", "parent-ownership-changed"],
+  ["Unbound nested macOS ownership request.", "nested-owner-unbound"],
+  ["macOS process enumeration failed.", "process-enumeration-failed"],
+  ["macOS process enumeration exceeded its bound.", "process-enumeration-limit"],
+  ["The macOS kernel did not establish an isolated responsibility scope.", "scope-unavailable"],
+  ["The command owner changed before startup.", "owner-changed"],
+  ["The command owner exited before startup.", "owner-exited"],
+  ["The parent did not register this macOS scope.", "registration-failed"],
+]);
 
 function projectedFailure(value) {
   const result = projectFailureDetails(value);
@@ -70,6 +87,22 @@ export function checkLogHints(text, root, sources, check = "unknown") {
     }
     const exception = /^[ \t]*(?:error: )?([A-Za-z]+Error)(?::|\s+\[)/.exec(line);
     if (exception && exceptions.includes(exception[1])) add({ kind: "exception", type: exception[1] });
+    const owner = /^Owned macOS command failed: ([A-Za-z]+Error): (.*)$/.exec(line);
+    if (owner && macosOwnerTypes.includes(owner[1])) {
+      const [, type, message] = owner;
+      let reason = "unclassified";
+      if (type === "RuntimeError") {
+        reason = macosOwnerReasons.get(message) ?? "unclassified";
+        if (/^macOS process identity is incomplete \(result -?\d{1,10}, OS error \d{1,3}\)\.$/.test(message)) {
+          reason = "identity-incomplete";
+        }
+      } else if (["OSError", "PermissionError", "ProcessLookupError"].includes(type) &&
+          /^\[Errno \d{1,3}\] Cannot signal the bound macOS process\.$/.test(message)) reason = "signal-failed";
+      else if (type === "BrokenPipeError") reason = "broken-pipe";
+      else if (type === "BlockingIOError") reason = "would-block";
+      else if (type === "ConnectionResetError") reason = "connection-reset";
+      add({ kind: "macos-owner-failure", type, reason });
+    }
     const frame = /^[ \t]*File "([^"]+)", line (\d{1,6})(?:,|$)/.exec(line);
     if (frame) {
       const source = location(frame[1], Number(frame[2]));

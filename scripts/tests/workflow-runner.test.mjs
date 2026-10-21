@@ -38,7 +38,7 @@ test("the dedicated workflow entry retains the complete explicit suite without d
     "verification", "verification-execution", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
     "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
     "bounded-worker-log", "development-workflow", "process", "emulator-resources", "manual-emulator",
-    "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner", "isolated-worker",
+    "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner", "isolated-worker", "macos-host",
   ].map((name) => `scripts/tests/${name}.test.mjs`));
   assert.equal(new Set(WORKFLOW_TEST_FILES).size, WORKFLOW_TEST_FILES.length);
   assert.deepEqual(WORKFLOW_TEST_SHARDS.flatMap((part) => part.files).sort(), [...WORKFLOW_TEST_FILES].sort());

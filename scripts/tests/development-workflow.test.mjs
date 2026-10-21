@@ -24,7 +24,8 @@ const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
   "verification-android.mjs", "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs",
   "verification-transition.mjs", "test-workflow.mjs", "verification-tooling.mjs",
-  "verification-admission.mjs", "verification-ci.mjs", "verification-ci-artifact.ps1"];
+  "verification-admission.mjs", "verification-ci.mjs", "verification-ci-artifact.ps1",
+  "owned-command-darwin.py", "local-ipc.mjs", "android-platform.mjs", "emulator-resources.mjs"];
 // Top-level tests stay serial; only fresh-workspace cases without shared environment writes use this limit.
 const isolatedCases = { concurrency: 2 };
 
@@ -2365,6 +2366,24 @@ test("candidate implementation capture rejects nested linked input directories",
   finally { await rm(original); await fs.rename(target, original); }
 });
 
+test("cached emulator recovery remains bound to both controller and verifier execution snapshots", async (t) => {
+  const { root } = await workspace(t);
+  const { directory } = await copiedController(root, (directory) =>
+    fs.copyFile(path.resolve("scripts/emulator-resources.mjs"), path.join(directory, "emulator-resources.mjs")));
+  await import(pathToFileURL(path.join(directory, "verification-android.mjs")).href);
+  const verifier = await import(pathToFileURL(path.join(directory, "verification-preflight.mjs")).href);
+  const captured = await captureCandidateImplementation(directory), before = await verifier.verificationExecutionPolicy();
+  const file = path.join(directory, "emulator-resources.mjs");
+  await writeFile(file, (await readFile(file, "utf8")) + "\n// changed in-process recovery policy\n");
+  const controllerRejected = await requireCandidateImplementation(captured).then(() => false, (error) => {
+    assert.match(error.message, /implementation changed/);
+    return true;
+  });
+  assert.deepEqual({
+    controllerRejected, verifierChanged: await verifier.verificationExecutionPolicy() !== before,
+  }, { controllerRejected: true, verifierChanged: true });
+});
+
 test("cold capture only settles byte-identical Windows metadata, never a changed executable input", async (t) => {
   for (const changedBytes of [false, true]) await t.test(changedBytes ? "changed bytes" : "metadata only", async (t) => {
     const { root } = await workspace(t);
@@ -3637,8 +3656,9 @@ function isolationProof(group = "tooling") {
 test("isolated aggregation keeps trusted acceptance independent of candidate reports and actual job failure", async (t) => {
   const { root } = await workspace(t);
   await mkdir(path.join(root, "scripts", "tests"), { recursive: true });
-  await writeFile(path.join(root, "scripts", "tests", "development-workflow.test.mjs"), "// fixture\n");
+  await writeFile(path.join(root, "scripts", "tests", "isolated-worker.test.mjs"), "// fixture\n");
   const plan = await verificationPlan(root, "HEAD", false, { trustedTooling: true }), fixture = hostedFixture(plan);
+  assert.equal(plan.ciMacos, false);
   assert.deepEqual(isolatedMatrix(plan), [{ group: "tooling", os: "windows-latest" }]);
   const report = { ...syntheticReport(plan), group: "tooling", isolation: isolationProof() };
   report.checks[0].toolingExecutions = plan.toolingShards.files.map((file) => ({
@@ -3647,6 +3667,15 @@ test("isolated aggregation keeps trusted acceptance independent of candidate rep
   }));
   const envelope = collectIsolatedReports(plan, fixture.context, [report], "success");
   assert.equal(validateIsolatedEnvelope(envelope, fixture.request, fixture.observed).report.complete, true);
+  const macosPlan = { ...plan, ciMacos: true };
+  assert.throws(() => isolatedMatrix(macosPlan), /macOS coverage.*isolated worker/);
+  assert.throws(() => collectIsolatedReports(macosPlan, fixture.context, [report], "success"),
+    /macOS coverage.*isolated worker/);
+  const macosEnvelope = structuredClone(envelope);
+  macosEnvelope.report.ciMacos = true;
+  macosEnvelope.reportDigest = sha256(JSON.stringify(macosEnvelope.report));
+  assert.throws(() => validateIsolatedEnvelope(macosEnvelope, fixture.request, fixture.observed),
+    /macOS coverage.*isolated worker/);
   assert.deepEqual(envelope.report.checks[0].toolingExecutions, report.checks[0].toolingExecutions);
   assert.notEqual(envelope.report.checks[0].toolingExecutions, report.checks[0].toolingExecutions);
   for (const mutate of [
@@ -3688,6 +3717,27 @@ test("isolated aggregation keeps trusted acceptance independent of candidate rep
     mutate(changed);
     assert.throws(() => validateIsolatedEnvelope(envelope, fixture.request, changed), /identity changed/);
   }
+});
+
+test("isolated dispatch and qualification cannot omit required macOS coverage", async (t) => {
+  const { root } = await workspace(t), base = (await sourceSnapshot(root)).head;
+  await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
+  await mkdir(path.join(root, "scripts"), { recursive: true });
+  await writeFile(path.join(root, "scripts", "process.mjs"), "// macOS-sensitive execution input\n");
+  await git(root, ["add", "--", "scripts/process.mjs"]);
+  await git(root, ["commit", "--quiet", "-m", "Select Mac coverage"]);
+  const plan = await verificationPlan(root, base, false, { trustedTooling: true });
+  assert.equal(plan.ciMacos, true);
+  const { request } = hostedFixture(plan);
+  const before = await inspectWorktree(root), hooks = await activeHookSnapshot(root);
+  const scope = { base, workspace: before.identity, task: { execution: request.execution } };
+  await assert.rejects(executeIsolatedVerification({ session: { rpc: { tools: {
+    getCurrentMetadata: async () => assert.fail("Unsupported coverage must stop before requesting native dispatch."),
+  } } } }, root, scope, before.source, hooks, await captureCandidateImplementation(), path.join(root, ".data", "dispatch")),
+  /macOS coverage.*isolated worker/);
+  await assert.rejects(qualifyIsolatedVerification(root, request, "123", path.join(root, ".data", "qualification"), {
+    api: async () => assert.fail("Unsupported coverage must be rejected before querying an older hosted report."),
+  }), /macOS coverage.*isolated worker/);
 });
 
 test("unattended publication refuses candidate workflow activation and a moved trusted revision", async (t) => {
@@ -3934,9 +3984,10 @@ test("hosted setup failures with no executed checks remain blocked diagnostics",
   await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
   const base = (await sourceSnapshot(root)).head;
   await mkdir(path.join(root, "scripts", "tests"), { recursive: true });
-  await writeFile(path.join(root, "scripts", "tests", "development-workflow.test.mjs"), "// candidate fixture\n");
-  await git(root, ["add", "--", "scripts/tests/development-workflow.test.mjs"]);
+  await writeFile(path.join(root, "scripts", "tests", "isolated-worker.test.mjs"), "// candidate fixture\n");
+  await git(root, ["add", "--", "scripts/tests/isolated-worker.test.mjs"]);
   await git(root, ["commit", "--quiet", "-m", "Candidate check selection fixture"]);
+  assert.equal((await verificationPlan(root, base)).ciMacos, false);
   const before = await inspectWorktree(root), hooks = await activeHookSnapshot(root);
   const scope = { base, workspace: before.identity, task: { execution: {
     kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: base,
@@ -4009,8 +4060,9 @@ test("hosted setup failures with no executed checks remain blocked diagnostics",
 test("hosted failure classification requires source-bound executed-check evidence", async (t) => {
   const { root } = await workspace(t);
   await mkdir(path.join(root, "scripts", "tests"), { recursive: true });
-  await writeFile(path.join(root, "scripts", "tests", "development-workflow.test.mjs"), "// fixture\n");
+  await writeFile(path.join(root, "scripts", "tests", "isolated-worker.test.mjs"), "// fixture\n");
   const plan = await verificationPlan(root, "HEAD"), { context, request, observed } = hostedFixture(plan);
+  assert.equal(plan.ciMacos, false);
   const check = { id: "workflow-tests", status: "failed", exitCode: 1, executionState: "exited",
     execution: syntheticExecution(plan.source),
     failure: { reason: "command-failed", phase: "command", exitCode: 1 },
@@ -4021,6 +4073,8 @@ test("hosted failure classification requires source-bound executed-check evidenc
   assert.equal(failure.kind, "isolated-verification-failure");
   assert.equal(failure.report.status, "failed");
   assert.equal(failure.report.complete, false);
+  assert.equal(diagnoseIsolatedReports({ ...plan, ciMacos: true }, context, [{ ...worker, ciMacos: true }], "failure")
+    .report.status, "blocked");
   assert.deepEqual(failure.report.checks[0].execution, check.execution);
   observed.run.conclusion = "failure";
   observed.jobs.jobs[0].conclusion = "failure";
