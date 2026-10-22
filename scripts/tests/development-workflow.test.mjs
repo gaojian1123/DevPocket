@@ -115,6 +115,9 @@ test("repository routing discovers the development skill without requiring workf
   assert.match(skill, /`ci-inspection` procedure instead of adopting candidate control/);
   assert.match(guide, /It never excuses failed, partial or unavailable evidence/);
   assert.match(reviewer, /underlying live API\/archive\/source records/);
+  assert.match(guide, /It stays local-only, including prepared runs/);
+  assert.match(optional, /controller never pushes, dispatches CI, creates PRs,\s+merges or deploys/);
+  assert.doesNotMatch(guide, /prepared hosted grant adds|hosted route may already have pushed\/dispatched/);
 });
 
 test("the skill freezes an authorized delivery candidate before final verification and review", async () => {

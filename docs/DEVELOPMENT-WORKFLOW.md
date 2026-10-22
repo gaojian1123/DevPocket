@@ -16,16 +16,17 @@ independent review and ready delivery. The task's original base remains unchange
 Working-tree-only work does not acquire upload authority. This ordering does not
 grant publication permission or relax evidence identity. The optional controller below
 also creates a local candidate before final verification and review, through the
-original native tool permissions. Its default local route stops before remote
-publication; a prepared hosted grant adds only the stated candidate push/dispatch.
+original native tool permissions. It stays local-only, including prepared runs.
+Task grants retain authority for subsequent native-tool delivery; they do not
+make the controller publish or dispatch CI.
 
 This route does not require extension loading, the starter tool or Dynamic
 Workflows. It uses the existing verifier and read/search-only
 `devpocket-reviewer`; unavailable required checks or independent review still
 block completion. The skill is agent guidance, not a durable controller or a
 guarantee that an agent cannot skip a step. Verification remains executable;
-appropriately configured protected CI and human review must guard publication
-and changes to the checks. Adding the skill does not configure repository rules.
+required CI and independent review guard normal delivery. Adding the skill does
+not configure repository rules.
 
 An in-conversation task contract is sufficient; the AI task issue template is
 optional. Issue text alone does not start work or authorize privileged operations.
@@ -610,7 +611,8 @@ JavaScript bootstrap, so an unbound startup environment requires explicit handli
 in the original client rather than a mutable-code fallback.
 An on-disk change to the loaded controller snapshot requires approval and an
 explicit reload rather than silent adoption. Candidate tool edits remain separate
-from that snapshot and may be exercised under an applicable hosted grant.
+from that snapshot and may be exercised through the owning-session skill's
+CI-first route under an applicable hosted grant.
 Verification receives a separate deep-frozen plan snapshot; returned evidence is
 copied/frozen and aggregated against the controller's private original plan.
 Neither verifier callbacks nor later observations can rewrite its required checks
@@ -639,10 +641,10 @@ rather than calling the starter recursively.
 The automatic endpoint is **ready for a PR**, with a clean local candidate commit
 and `handoff.json` under `.data\development\<run-id>`. The handoff identifies the
 exact commit, original base, workspace/branch, source fingerprint, verification
-and independent review. An unprepared local route does not push. A prepared
-hosted route may already have pushed/dispatched its explicitly authorized
-candidate; PR creation uses the owning client's native tools afterward. Neither
-route merges or deploys.
+and independent review. The controller never pushes, dispatches CI, creates PRs,
+merges or deploys. Prepared delivery authority is retained for the owning
+client's subsequent native-tool use, not evidence that publication occurred.
+Use the owning-session skill for CI-first delivery.
 Report the actual run/worktree and outcome when dispatched. Say that a workflow
 has started only after an invocation returns its run identity; a proposed plan
 or manually performed equivalent steps are not a registered workflow run.
