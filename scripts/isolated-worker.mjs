@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { createConnection } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -26,6 +27,13 @@ function nativeFailure(value) {
     errorCode: Number.isInteger(value.errorCode) && value.errorCode >= 0 && value.errorCode <= 65535 ? value.errorCode : null,
     assignPrimaryTokenEnabled: typeof value.assignPrimaryTokenEnabled === "boolean" ? value.assignPrimaryTokenEnabled : null,
     increaseQuotaEnabled: typeof value.increaseQuotaEnabled === "boolean" ? value.increaseQuotaEnabled : null };
+}
+
+function matchingExitCode(platform, reported, observed) {
+  if (!Number.isInteger(reported) || !Number.isInteger(observed)) return false;
+  if (platform !== "win32") return reported === observed;
+  const dword = (value) => value >= -2147483648 && value <= 4294967295;
+  return dword(reported) && dword(observed) && (reported >>> 0) === (observed >>> 0);
 }
 
 export function isolatedCandidateEnvironment(configuration, environment) {
@@ -94,6 +102,9 @@ async function configurationFrom(file) {
         digest(await readFile(broker.configuration)) !== broker.sha256) {
       throw new Error("The private Windows service configuration is unavailable or changed.");
     }
+    if (config.mode !== "atomic-launch-probe" && config.desktopProbe !== broker.file) {
+      throw new Error("The fixed Windows desktop capability probe is missing.");
+    }
   }
   return config;
 }
@@ -153,7 +164,7 @@ export function isolatedCommandBoundary(configuration, ownerEnvironment, candida
       typeof receipt.processTreeStopped === "boolean" &&
       (receipt.status === "blocked" && receipt.exitCode === null ||
         receipt.status === "executed" && receipt.started === true && Number.isInteger(receipt.exitCode) &&
-          (!receipt.processTreeStopped || !outerStopped || receipt.exitCode === outcome?.exitCode));
+          (!receipt.processTreeStopped || !outerStopped || matchingExitCode(configuration.platform, receipt.exitCode, outcome?.exitCode)));
     const nativeFacts = consistent
       ? { isolatedAdmission: receipt.admission, nativeFailure: nativeFailure(receipt.native) } : {};
     const stopped = consistent && receipt.processTreeStopped === true && outerStopped;
@@ -186,7 +197,7 @@ export function isolatedCommandBoundary(configuration, ownerEnvironment, candida
       });
     }
     if (!stopped || receipt.status !== "executed" || receipt.started !== true || !Number.isInteger(receipt.exitCode) ||
-        receipt.exitCode !== (result?.commandOutcome ?? failure?.commandOutcome)?.exitCode) {
+        !matchingExitCode(configuration.platform, receipt.exitCode, outcome?.exitCode)) {
       throw Object.assign(verificationFault("cleanup-failed"), { ...nativeFacts, processTreeStopped: false,
         stdout: result?.stdout ?? failure?.stdout ?? "", stderr: result?.stderr ?? failure?.stderr ?? "",
         commandOutcome: { ...(result?.commandOutcome ?? failure?.commandOutcome), reason: "spawn",
@@ -308,6 +319,27 @@ async function proveIsolation(configuration, directory) {
 async function windowsSupervisorChecks(configuration, ownerEnvironment, candidateEnvironment) {
   const broker = configuration.broker, probe = path.join(controlRoot, "scripts", "isolated-worker-probe.mjs");
   const runner = path.join(controlRoot, "scripts", "test-workflow.mjs");
+  const supervisorConfiguration = await readDiagnosticReport(broker.configuration);
+  const bounded = async (promise, message) => {
+    let timer;
+    try {
+      return await Promise.race([promise, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), 15000);
+      })]);
+    } finally { clearTimeout(timer); }
+  };
+  const openPeer = async () => {
+    const socket = createConnection({ path: `\\\\.\\pipe\\${supervisorConfiguration.commandPipe}`, allowHalfOpen: true });
+    let failure;
+    socket.on("error", (error) => { failure = error; });
+    try {
+      await bounded(new Promise((resolve, reject) => {
+        socket.once("connect", resolve);
+        socket.once("error", reject);
+      }), "The diagnostic peer did not connect.");
+      return { socket, failure: () => failure };
+    } catch (error) { socket.destroy(); throw error; }
+  };
   const prepare = async (args) => {
     const id = randomUUID(), file = path.join(configuration.private, `${id}.json`);
     const request = { version: 1, id, file: configuration.tools.node, arguments: args,
@@ -357,11 +389,42 @@ async function windowsSupervisorChecks(configuration, ownerEnvironment, candidat
   assert.equal((await execute(second)).stdout, "SERVICE_COMMAND");
   assert.equal((await receipt(second)).processTreeStopped, true);
   assert.equal(await readFile(counter, "utf8"), "11");
+  bootstrapPhase = "supervisor-held-client";
+  const heldRequest = await prepare(append), peer = await openPeer();
+  try {
+    const completion = new Promise((resolve, reject) => {
+      let text = "";
+      peer.socket.on("data", (bytes) => {
+        if (Buffer.byteLength(text) + bytes.length > 64) {
+          reject(new Error("An oversized supervisor response was received."));
+          peer.socket.destroy();
+          return;
+        }
+        text += bytes.toString("utf8");
+        if (text.endsWith("\n")) resolve(text.trim());
+      });
+      peer.socket.once("end", () => reject(new Error("The supervisor closed before acknowledging the command.")));
+      peer.socket.once("error", reject);
+    });
+    peer.socket.write(JSON.stringify({ id: heldRequest.id, sha256: heldRequest.requestSha256,
+      nonce: supervisorConfiguration.nonce }) + "\n");
+    assert.equal(await bounded(completion, "The held client did not receive completion."), "complete");
+    assert.equal((await receipt(heldRequest)).processTreeStopped, true);
+    assert.equal((await execute(await prepare(append))).stdout, "SERVICE_COMMAND");
+    assert.equal(await readFile(counter, "utf8"), "1111");
+    const failure = peer.failure();
+    if (failure && !["EPIPE", "ECONNRESET"].includes(failure.code)) throw failure;
+  } finally { peer.socket.destroy(); }
+  bootstrapPhase = "supervisor-header-eof";
+  const closedPeer = await openPeer();
+  closedPeer.socket.destroy();
+  assert.equal((await execute(await prepare(append))).stdout, "SERVICE_COMMAND");
+  assert.equal(await readFile(counter, "utf8"), "11111");
   bootstrapPhase = "supervisor-replay";
   const retained = await readFile(`${first.file}.result.json`);
   await assert.rejects(execute(first), (error) => error.processTreeStopped === true && error.commandOutcome?.exitCode !== 0);
   assert.deepEqual(await readFile(`${first.file}.result.json`), retained);
-  assert.equal(await readFile(counter, "utf8"), "11");
+  assert.equal(await readFile(counter, "utf8"), "11111");
   bootstrapPhase = "supervisor-output-limit";
   const noisy = await prepare(["--disable-sigusr1", "-e", "process.stdout.write('x'.repeat(16*1024*1024+8192))"]);
   await assert.rejects(execute(noisy), (error) => error.processTreeStopped === true);
@@ -406,7 +469,6 @@ async function windowsSupervisorChecks(configuration, ownerEnvironment, candidat
   try {
     await waitFor(serviceCounter);
     const service = await readDiagnosticReport(path.join(configuration.private, "service-capabilities.json"));
-    const supervisor = await readDiagnosticReport(broker.configuration);
     assert.ok(Number.isSafeInteger(service.servicePid) && service.servicePid > 0);
     assert.equal(JSON.parse(await readFile(serviceCounter, "utf8")).parentPid, service.servicePid);
     const stopFile = path.join(configuration.private, `stop-service-${randomUUID()}.ps1`);
@@ -426,7 +488,7 @@ async function windowsSupervisorChecks(configuration, ownerEnvironment, candidat
     ].join("\n"), { flag: "wx", mode: 0o600 });
     const terminated = await runCommand(configuration.tools.pwsh,
       ["-NoProfile", "-NonInteractive", "-File", stopFile, "-ServicePid", String(service.servicePid),
-        "-ServiceName", supervisor.service, "-Executable", broker.file],
+        "-ServiceName", supervisorConfiguration.service, "-Executable", broker.file],
       { cwd: controlRoot, env: ownerEnvironment, timeoutMs: 30000 });
     assert.equal(terminated.stdout.trim(), "SERVICE_STOPPED");
     const crashedService = await serviceOutcome;
@@ -440,7 +502,8 @@ async function windowsSupervisorChecks(configuration, ownerEnvironment, candidat
   }
   return {
     version: 1, kind: "windows-supervisor-lifecycle", status: "passed", acceptance: false,
-    checks: ["sequential-commands", "replay-refusal", "bounded-output", "caller-crash-cleanup", "service-crash-job-close"],
+    checks: ["sequential-commands", "retained-client-handle", "pre-header-eof", "replay-refusal",
+      "bounded-output", "caller-crash-cleanup", "service-crash-job-close"],
     serviceCrashReceipt: "missing-as-expected", candidateCleanup: "requires-bootstrap-account-sweep",
   };
 }
@@ -543,20 +606,50 @@ async function main(file) {
           ["--disable-sigusr1", "-e", "process.stdout.write('DEVPOCKET_ISOLATED_LAUNCH')"],
           { cwd: controlRoot, timeoutMs: 30000 });
         assert.equal(launch.stdout, "DEVPOCKET_ISOLATED_LAUNCH");
-        if (configuration.mode === "atomic-launch-probe") {
-          assert.equal(launch.isolatedAdmission, "running");
-          assert.equal(launch.isolatedExecutionObserved, true);
-          assert.equal(launch.processTreeStopped, true);
-          assert.equal(launch.commandOutcome?.reason, "exit");
-          assert.equal(launch.commandOutcome?.exitCode, 0);
-          const capability = { version: 1, kind: "atomic-launch-capability", acceptance: false,
-            status: "available", platform: configuration.platform, admission: launch.isolatedAdmission,
-            exitCode: launch.commandOutcome.exitCode, processTreeStopped: launch.processTreeStopped };
+        assert.equal(launch.isolatedAdmission, "running");
+        assert.equal(launch.isolatedExecutionObserved, true);
+        assert.equal(launch.processTreeStopped, true);
+        assert.equal(launch.commandOutcome?.reason, "exit");
+        assert.equal(launch.commandOutcome?.exitCode, 0);
+        let desktopScope;
+        if (configuration.platform === "win32" && configuration.desktopProbe) {
+          bootstrapPhase = "desktop-scope";
+          const service = (await readDiagnosticReport(path.join(configuration.private, "service-capabilities.json"))).desktopScope;
+          assert.equal(service?.interactive, false);
+          const candidates = [];
+          for (let index = 0; index < 2; index++) {
+            const output = await runCommand(configuration.desktopProbe, ["--desktop-scope"], { cwd: controlRoot, timeoutMs: 30000 });
+            const observed = JSON.parse(output.stdout);
+            assert.equal(observed.version, 1);
+            assert.equal(observed.kind, "windows-desktop-scope");
+            assert.equal(observed.sid, configuration.sid);
+            assert.equal(observed.interactive, false);
+            assert.equal(observed.sessionId, service.sessionId);
+            assert.match(observed.authenticationId, /^[a-f0-9]{16}$/);
+            assert.match(observed.logonSid, /^S-1-5-5-\d+-\d+$/);
+            for (const name of ["windowStation", "desktop"]) {
+              assert.equal(typeof observed[name], "string");
+              assert.ok(observed[name].length > 0 && observed[name].length <= 256 && !/[\\\x00-\x1f]/.test(observed[name]));
+            }
+            for (const previous of [service, ...candidates]) {
+              assert.notEqual(observed.authenticationId, previous.authenticationId);
+              assert.notEqual(observed.logonSid, previous.logonSid);
+              assert.notEqual(observed.windowStation, previous.windowStation);
+            }
+            candidates.push(observed);
+          }
+          desktopScope = { service, candidates };
+        }
+        const capability = { version: 1, kind: "atomic-launch-capability", acceptance: false,
+          status: "available", platform: configuration.platform, admission: launch.isolatedAdmission,
+          exitCode: launch.commandOutcome.exitCode, processTreeStopped: launch.processTreeStopped,
+          ...(desktopScope ? { desktopScope } : {}) };
+        if (configuration.platform === "win32") {
           await immutableJson(path.join(directory, "atomic-launch-capability.json"), capability);
-          console.log(JSON.stringify(capability));
-          return;
+          if (configuration.mode === "atomic-launch-probe") { console.log(JSON.stringify(capability)); return; }
         }
         const proof = await proveIsolation(configuration, directory);
+        if (desktopScope) proof.desktopScope = desktopScope;
         if (configuration.mode === "self-test") { selfTestProof = proof; return; }
         await immutableJson(path.join(directory, "isolation-proof.json"), proof);
         if (!plan.requiredGroups.includes(configuration.group)) throw new Error("The trusted plan did not select this worker.");

@@ -97,7 +97,7 @@ function Set-CandidateDirectory([string]$Path) {
 function Start-IsolatedSupervisor {
     $binaryDirectory = Join-Path $state 'supervisor-bin'
     $null = New-Item -ItemType Directory -Path $binaryDirectory
-    Set-ProtectedDirectory $binaryDirectory $false
+    Set-ProtectedDirectory $binaryDirectory $true
     $supervisor = Join-Path $binaryDirectory 'supervisor.exe'
     $compiler = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
     & $compiler /nologo /target:exe /reference:System.ServiceProcess.dll /reference:System.Web.Extensions.dll "/out:$supervisor" `
@@ -119,13 +119,13 @@ function Start-IsolatedSupervisor {
     Set-ProtectedDirectory $state $true
     Set-ProtectedDirectory $controlCopy $true
     Set-ProtectedDirectory $controlData $false
-    Set-ProtectedDirectory $binaryDirectory $false
+    Set-ProtectedDirectory $binaryDirectory $true
     Set-ProtectedDirectory $private $false 'Modify'
     foreach ($path in @($candidateCopy, $fixture, $candidateHome)) { Set-CandidateDirectory $path }
     $pipeId = [Guid]::NewGuid().ToString('N')
     $ownerPipeName = "devpocket-$pipeId-owner"
     $nonce = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant()
-    $executableRoots = @($controlCopy, $candidateCopy, $fixture, $candidateHome) +
+    $executableRoots = @($controlCopy, $candidateCopy, $fixture, $candidateHome, $binaryDirectory) +
         @($tools.Values | ForEach-Object { Split-Path -Parent $_ })
     if ($env:JAVA_HOME) { $executableRoots += $env:JAVA_HOME }
     $serviceConfiguration = @{
@@ -217,7 +217,7 @@ try {
     $configuration = @{
         version = 1; platform = 'win32'; control = $controlCopy; candidate = $candidateCopy; fixture = $fixture
         private = $private; home = $candidateHome; temporary = $temporary; identity = $identity; sid = $account.SID.Value
-        tools = $tools; group = $Group; mode = $Mode; broker = $broker
+        tools = $tools; group = $Group; mode = $Mode; broker = $broker; desktopProbe = $broker.file
         protectedPaths = @($controlCopy, $controlData, $private, $state, $env:USERPROFILE, $env:RUNNER_TEMP, $broadParent, $broadChild)
         permissionOnlyPaths = @($broadParent, $broadChild)
         protectedReadFiles = @(@('GITHUB_EVENT_PATH', 'GITHUB_ENV', 'GITHUB_OUTPUT', 'GITHUB_PATH', 'GITHUB_STEP_SUMMARY') |

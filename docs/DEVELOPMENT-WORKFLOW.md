@@ -184,6 +184,9 @@ An outer command deadline remains a timeout even when delivering its stop produc
 a native cancellation receipt; both owners must still confirm cleanup. Native
 stdout/stderr share the existing 16 MiB command budget; overflow cancels the
 candidate and remains an output-limit failure rather than success or cancellation.
+Signed C# and unsigned Windows representations of the same 32-bit exit status
+must agree without discarding confirmed cleanup. A nonzero status remains a
+failure; this normalization does not make DLL initialization successful.
 Only target standard I/O handles are inherited; Windows candidate stdin is EOF,
 not the privileged cancellation pipe. The original Store-PowerShell compatibility path is
 unchanged. A service capability result is not source verification or isolation
@@ -197,11 +200,16 @@ SID. The actual suspended child must carry that SID before resume. Ordinary
 read permissions remain separate; private control/evidence and runner channels
 retain explicit read protection.
 
-Each command uses a private desktop in the existing noninteractive service
-window station, with an explicit descriptor and a temporary task-specific
-station rule. It does not create an administrator-only named window station,
-enable cross-account hooks, add privileges or take ownership of system paths.
-Desktop/rule cleanup must complete as well as Job cleanup.
+The first candidate's limited shared-station/desktop grants did not satisfy the
+documented startup contract and its marker exited with `STATUS_DLL_INIT_FAILED`.
+That shared-station mutation is removed. The next candidate uses a non-null empty
+desktop string so Windows applies the fresh logon session's connection rules,
+rather than inheriting the service desktop. Before candidate hooks, two actual
+child probes must show the expected account, noninteractive scope, distinct
+AuthenticationId/logon SID/window stations, and separation from the service.
+An empty string alone is not accepted as proof. No administrator-only station,
+cross-account hooks, broader shared-station grants or additional privileges are
+introduced.
 
 These are candidate changes, not established isolation evidence. Windows CI now
 has to run the real installation/negative-gate/cancellation probes instead of
@@ -209,7 +217,12 @@ stopping after the benign marker. Synthetic Everyone-writable parents require
 actual permission-denied results, runner-channel reads must be denied, and a
 public HTTPS probe exercises network compatibility under the low token. The
 self-test additionally checks sequential commands, replay refusal, bounded
-output and caller/service death; a missing crash receipt stays missing rather
+output, retained client handles, pre-header EOF and caller/service death.
+One first-instance pipe remains owned across bounded disconnect/reconnect cycles;
+pending connection reads finish before reuse. Cancellation before a header must
+claim the same exclusive replay fence, so a previous admission or terminal record
+cannot become a new never-admitted assertion. Executable/CWD scope checks bind
+canonical, non-reparse path components through launch. A missing crash receipt stays missing rather
 than being rewritten as ordinary successful completion. The existing
 `isolation-proof.json` carries these lifecycle diagnostics only after they pass.
 The dispatch route remains disabled until current hosted evidence and independent

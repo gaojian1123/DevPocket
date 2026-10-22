@@ -48,6 +48,16 @@ public static class SupervisorContracts {
         general["arguments"] = new[] { "-e", "candidate code remains a validation-only fixture" };
         general["timeoutMs"] = 900000;
         DevPocketWindowsSupervisor.ValidateCommandRequest(configuration, general);
+        using (DevPocketWindowsSupervisor.BindLaunchPaths(configuration, general)) {
+            bool refused = false;
+            try { File.Move(node, node + ".moved"); } catch (IOException) { refused = true; }
+            if (!refused) throw new Exception("A bound executable could be replaced during launch.");
+        }
+        File.Move(node, node + ".moved");
+        File.Move(node + ".moved", node);
+        var redirected = Request(root, Path.Combine(root, "escape", "outside.exe"));
+        redirected["cwd"] = Path.Combine(root, "escape");
+        Reject(() => DevPocketWindowsSupervisor.ValidateCommandRequest(configuration, redirected));
         foreach (string field in new[] { "cwd", "file" }) {
             var outside = Request(root, node);
             outside[field] = Path.GetFullPath(root + "-outside");
@@ -109,6 +119,25 @@ public static class SupervisorContracts {
         }
         var stop = (System.Threading.Tasks.TaskCompletionSource<string>)captureType.GetField("Stop").GetValue(capture);
         if (!stop.Task.IsCompleted || stop.Task.Result != "cancel") throw new Exception("Output overflow did not cancel the command.");
+        foreach (string existing in new[] { "none", "admitted", "terminal" }) {
+            string id = Guid.NewGuid().ToString(), requestFile = Path.Combine(root, id + ".json"), hash = new string('d', 64);
+            File.WriteAllText(requestFile, "{}");
+            if (existing == "admitted") File.WriteAllText(requestFile + ".admitted", "prior admission");
+            if (existing == "terminal") File.WriteAllText(requestFile + ".result.json", "prior terminal result");
+            bool refused = false;
+            try { DevPocketWindowsSupervisor.RecordUnadmittedCancellation(requestFile, id, hash); }
+            catch (IOException) { refused = true; }
+            if (refused != (existing != "none")) throw new Exception("Cancellation did not respect the shared replay fence.");
+            if (existing == "admitted" && File.Exists(requestFile + ".result.json"))
+                throw new Exception("A prior admission was relabelled as never admitted.");
+            if (existing == "terminal" && File.ReadAllText(requestFile + ".result.json") != "prior terminal result")
+                throw new Exception("Cancellation replaced the original terminal result.");
+            if (existing == "none") {
+                var cancelled = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(requestFile + ".result.json"));
+                if ((string)cancelled["admission"] != "not-admitted" || !File.Exists(requestFile + ".admitted"))
+                    throw new Exception("A no-start outcome did not claim the request before recording it.");
+            }
+        }
         Console.WriteLine("SUPERVISOR_VALIDATION_ONLY");
         return 0;
     }

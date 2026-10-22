@@ -35,6 +35,17 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
     static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint pid);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool GetNamedPipeClientProcessId(SafePipeHandle pipe, out uint pid);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CancelIoEx(SafePipeHandle pipe, IntPtr overlapped);
+    [StructLayout(LayoutKind.Sequential)]
+    struct FileAttributeTag { public uint attributes, tag; }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security,
+        uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetFileInformationByHandleEx(SafeFileHandle file, int kind, out FileAttributeTag information, uint size);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern uint GetFinalPathNameByHandleW(SafeFileHandle file, StringBuilder name, uint size, uint flags);
     [StructLayout(LayoutKind.Sequential)]
     struct ServiceStatusProcess {
         public uint type, state, controls, win32Exit, serviceExit, checkpoint, waitHint, pid, flags;
@@ -161,6 +172,12 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
         throw new InvalidDataException("Supervisor message exceeds its bound.");
     }
 
+    static void WriteLine(Stream pipe, string message) {
+        byte[] bytes = Encoding.UTF8.GetBytes(message + "\n");
+        pipe.Write(bytes, 0, bytes.Length);
+        pipe.Flush();
+    }
+
     static void WriteNew(string file, byte[] bytes) {
         using (var output = new FileStream(file, FileMode.CreateNew, FileAccess.Write, FileShare.Read)) {
             output.Write(bytes, 0, bytes.Length);
@@ -217,31 +234,50 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
                         version = 1, kind = "windows-supervisor-capability", acceptance = false,
                         identity = "LocalService", serviceSid = Text(configuration, "serviceSid"),
                         assignPrimaryTokenEnabled = true, increaseQuotaEnabled = true, privileges = privileges,
-                        servicePid = Process.GetCurrentProcess().Id
+                        servicePid = Process.GetCurrentProcess().Id, desktopScope = DevPocketIsolatedCommand.DescribeDesktopScope()
                     });
                     var security = new PipeSecurity();
                     security.SetAccessRuleProtection(true, false);
                     foreach (string sid in new[] { Text(configuration, "runnerSid"), Text(configuration, "serviceSid"), "S-1-5-18" })
                         security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(sid), PipeAccessRights.FullControl, AccessControlType.Allow));
-                    while (!shutdown.Task.IsCompleted) using (listener = PrivatePipe(Text(configuration, "commandPipe"), security)) {
-                        stage = "command";
-                        var connected = listener.WaitForConnectionAsync();
-                        if (Task.WhenAny(connected, shutdown.Task).GetAwaiter().GetResult() == connected) {
+                    using (listener = PrivatePipe(Text(configuration, "commandPipe"), security)) {
+                        while (!shutdown.Task.IsCompleted) {
+                            stage = "command";
+                            var connected = listener.WaitForConnectionAsync();
+                            if (Task.WhenAny(connected, shutdown.Task).GetAwaiter().GetResult() != connected) break;
                             connected.GetAwaiter().GetResult();
-                            bool admitted = false;
-                            try { HandleCommand(listener, ref admitted); }
-                            catch (Exception error) {
-                                if (admitted || !(error is InvalidDataException || error is IOException)) throw;
-                                using (var response = new StreamWriter(listener, new UTF8Encoding(false), 4096, true) { AutoFlush = true })
-                                    response.WriteLine("rejected");
+                            using (var requestInput = new StreamReader(listener, new UTF8Encoding(false), false, 4096, true)) {
+                                bool admitted = false;
+                                Task<string> pendingRead = null;
+                                try { HandleCommand(listener, requestInput, ref admitted, out pendingRead); }
+                                catch (Exception error) {
+                                    if (admitted || !(error is InvalidDataException || error is IOException)) throw;
+                                    if (!ClosedPipe(error)) {
+                                        try { WriteLine(listener, "rejected"); }
+                                        catch (IOException closed) { if (!ClosedPipe(closed)) throw; }
+                                    }
+                                } finally {
+                                    if (!shutdown.Task.IsCompleted) {
+                                        if (listener.IsConnected) listener.Disconnect();
+                                        if (!CancelIoEx(listener.SafePipeHandle, IntPtr.Zero) && Marshal.GetLastWin32Error() != 1168)
+                                            throw new Win32Exception();
+                                    }
+                                    if (pendingRead != null) {
+                                        if (Task.WhenAny(pendingRead, Task.Delay(5000)).GetAwaiter().GetResult() != pendingRead)
+                                            throw new TimeoutException("The previous pipe reader did not stop.");
+                                        try { pendingRead.GetAwaiter().GetResult(); }
+                                        catch (Exception error) {
+                                            if (!ClosedPipe(error) && !(shutdown.Task.IsCompleted && error is ObjectDisposedException)) throw;
+                                        }
+                                    }
+                                }
                             }
                         }
-                        if (Text(configuration, "mode") == "probe") break;
                     }
                 }
             }
         } catch (Exception error) {
-            if (!shutdown.Task.IsCompleted || !(error is IOException || error is ObjectDisposedException)) {
+            if (!shutdown.Task.IsCompleted || !(error is IOException || error is ObjectDisposedException || error is OperationCanceledException)) {
                 workerFailure = error;
                 ExitCode = 78;
                 WriteJson(Path.Combine(Text(configuration, "privateRoot"), "service-failure.json"), new {
@@ -254,6 +290,28 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
             shutdown.TrySetResult("cancel");
             ThreadPool.QueueUserWorkItem(_ => Stop());
         }
+    }
+
+    static bool ClosedPipe(Exception error) {
+        int code = error.HResult & 0xffff;
+        return error is IOException && (code == 109 || code == 232 || code == 233 || code == 995);
+    }
+
+    static void ClaimRequest(string requestFile, object admission) {
+        if (File.Exists(requestFile + ".result.json")) throw new IOException("The request already has a terminal result.");
+        WriteJson(requestFile + ".admitted", admission);
+    }
+
+    public static void RecordUnadmittedCancellation(string requestFile, string id, string requestSha256) {
+        Guid parsed;
+        if (!Guid.TryParseExact(id, "D", out parsed) || Path.GetFileName(requestFile) != id + ".json" ||
+            !System.Text.RegularExpressions.Regex.IsMatch(requestSha256, "^[a-f0-9]{64}$"))
+            throw new InvalidDataException("Invalid cancellation identity.");
+        ClaimRequest(requestFile, new { id = id, requestSha256 = requestSha256, state = "cancelled-before-header" });
+        WriteJson(requestFile + ".result.json", new {
+            version = 1, id = id, requestSha256 = requestSha256, status = "blocked", admission = "not-admitted",
+            interruption = "cancelled", started = false, processTreeStopped = true, exitCode = (int?)null
+        });
     }
 
     sealed class CapturedOutput {
@@ -279,13 +337,16 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
         }
     }
 
-    void HandleCommand(NamedPipeServerStream pipe, ref bool admitted) {
-        using (var input = new StreamReader(pipe, new UTF8Encoding(false), false, 4096, true))
-        using (var output = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true) { AutoFlush = true }) {
+    void HandleCommand(NamedPipeServerStream pipe, StreamReader input, ref bool admitted, out Task<string> pendingRead) {
+        pendingRead = null;
+        LaunchPaths launch = null;
+        try {
             var headerRead = Task.Run(() => ReadLine(input, 4096));
+            pendingRead = headerRead;
             if (Task.WhenAny(headerRead, shutdown.Task, Task.Delay(30000)).GetAwaiter().GetResult() != headerRead)
                 throw new OperationCanceledException("The supervisor owner did not retain a bounded request.");
             string line = headerRead.GetAwaiter().GetResult();
+            if (line == null) return;
             var header = Serializer().Deserialize<Dictionary<string, object>>(line ?? "");
             Keys(header, "id", "sha256", "nonce");
             string id = Text(header, "id");
@@ -297,13 +358,15 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
             if (Digest(bytes) != Text(header, "sha256")) throw new InvalidDataException("Supervisor request changed.");
             var request = Serializer().Deserialize<Dictionary<string, object>>(Encoding.UTF8.GetString(bytes));
             ValidateCommandRequest(configuration, request);
+            launch = new LaunchPaths(configuration, request);
             if (Text(request, "id") != id) throw new InvalidDataException("The private request identity changed.");
             uint clientPid;
             if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out clientPid) || clientPid == 0)
                 throw new Win32Exception();
-            WriteJson(requestFile + ".admitted", new { requestSha256 = Digest(bytes), clientPid = clientPid });
+            ClaimRequest(requestFile, new { requestSha256 = Digest(bytes), clientPid = clientPid });
             admitted = true;
             var clientControl = Task.Run(() => ReadLine(input, 64));
+            pendingRead = clientControl;
             clientControl.ContinueWith(task => { var observed = task.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
             var capture = new CapturedOutput();
             var cancellation = Task.WhenAny(clientControl, shutdown.Task, capture.Stop.Task).Unwrap();
@@ -357,8 +420,17 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
                 }
                 if (!command.ProcessTreeStopped) throw new InvalidOperationException("The candidate Job cleanup was not confirmed.");
             }
-            output.WriteLine("complete");
-        }
+            WriteLine(pipe, "complete");
+            for (int index = 0; index < 2; index++) {
+                if (Task.WhenAny(pendingRead, Task.Delay(5000)).GetAwaiter().GetResult() != pendingRead) break;
+                string control;
+                try { control = pendingRead.GetAwaiter().GetResult(); }
+                catch (IOException closed) { if (ClosedPipe(closed)) break; throw; }
+                if (control == null) break;
+                if (control.Trim() != "cancel") throw new InvalidDataException("Unsupported final client control message.");
+                pendingRead = Task.Run(() => ReadLine(input, 64));
+            }
+        } finally { if (launch != null) launch.Dispose(); }
     }
 
     public static void ValidateProbeRequest(Dictionary<string, object> configuration, Dictionary<string, object> request) {
@@ -421,6 +493,71 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
         return false;
     }
 
+    sealed class LaunchPaths : IDisposable {
+        readonly List<SafeFileHandle> handles = new List<SafeFileHandle>();
+
+        void Hold(string selected, bool directory) {
+            var handle = CreateFileW(selected, directory ? 0x81u : 0x80000000u, 1, IntPtr.Zero, 3,
+                directory ? 0x02200000u : 0x00200000u, IntPtr.Zero);
+            if (handle.IsInvalid) {
+                int error = Marshal.GetLastWin32Error();
+                handle.Dispose();
+                throw new Win32Exception(error);
+            }
+            handles.Add(handle);
+            FileAttributeTag information;
+            if (!GetFileInformationByHandleEx(handle, 9, out information, (uint)Marshal.SizeOf(typeof(FileAttributeTag))))
+                throw new Win32Exception();
+            if ((information.attributes & (uint)FileAttributes.ReparsePoint) != 0 ||
+                ((information.attributes & (uint)FileAttributes.Directory) != 0) != directory)
+                throw new InvalidDataException("A launch path is redirected or has the wrong type.");
+            var name = new StringBuilder(32768);
+            uint count = GetFinalPathNameByHandleW(handle, name, (uint)name.Capacity, 0);
+            if (count == 0 || count >= name.Capacity) throw new Win32Exception();
+            string resolved = name.ToString();
+            if (resolved.StartsWith(@"\\?\", StringComparison.Ordinal)) resolved = resolved.Substring(4);
+            if (!string.Equals(resolved.TrimEnd(Path.DirectorySeparatorChar),
+                    selected.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("A launch path resolves outside its declared identity.");
+        }
+
+        public static IDisposable BindLaunchPaths(Dictionary<string, object> configuration, Dictionary<string, object> request) {
+            return new LaunchPaths(configuration, request);
+        }
+
+        void Bind(string selected, object roots, bool directory) {
+            string root = null;
+            foreach (string candidate in (System.Collections.IList)roots)
+                if (Within(selected, new[] { candidate }) && (root == null || candidate.Length > root.Length)) root = candidate;
+            if (root == null) throw new InvalidDataException("A launch path has no declared root.");
+            root = root.TrimEnd(Path.DirectorySeparatorChar);
+            if (string.Equals(selected.TrimEnd(Path.DirectorySeparatorChar), root, StringComparison.OrdinalIgnoreCase)) {
+                Hold(root, directory);
+                return;
+            }
+            Hold(root, true);
+            string current = root;
+            string[] parts = selected.Substring(root.Length).TrimStart(Path.DirectorySeparatorChar)
+                .Split(new[] { Path.DirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
+            for (int index = 0; index < parts.Length; index++) {
+                current = Path.Combine(current, parts[index]);
+                Hold(current, index < parts.Length - 1 || directory);
+            }
+        }
+
+        public LaunchPaths(Dictionary<string, object> configuration, Dictionary<string, object> request) {
+            try {
+                Bind(Text(request, "cwd"), configuration["workingRoots"], true);
+                Bind(Text(request, "file"), configuration["executableRoots"], false);
+            } catch { Dispose(); throw; }
+        }
+
+        public void Dispose() {
+            for (int index = handles.Count - 1; index >= 0; index--) handles[index].Dispose();
+            handles.Clear();
+        }
+    }
+
     public static void ValidateCommandRequest(Dictionary<string, object> configuration, Dictionary<string, object> request) {
         if (Text(configuration, "mode") == "probe") { ValidateProbeRequest(configuration, request); return; }
         if (Text(configuration, "mode") != "worker") throw new InvalidDataException("Invalid command mode.");
@@ -429,6 +566,7 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
             !Within(Text(request, "file"), configuration["executableRoots"]) ||
             (File.GetAttributes(Text(request, "file")) & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
             throw new InvalidDataException("The command is outside the task allocation or fixed tools.");
+        using (BindLaunchPaths(configuration, request)) {}
     }
 
     static int Client(Dictionary<string, object> configuration, string requestFile) {
@@ -459,10 +597,7 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
                 if (control.IsCompleted) {
                     string message = control.GetAwaiter().GetResult();
                     if (message != null && message.Trim() != "cancel") throw new InvalidDataException("Unsupported client control message.");
-                    WriteJson(requestFile + ".result.json", new {
-                        version = 1, id = id, requestSha256 = Digest(bytes), status = "blocked", admission = "not-admitted",
-                        interruption = "cancelled", started = false, processTreeStopped = true, exitCode = (int?)null
-                    });
+                    RecordUnadmittedCancellation(requestFile, id, Digest(bytes));
                     return 78;
                 }
                 output.WriteLine(Serializer().Serialize(new { id = id, sha256 = Digest(bytes), nonce = Text(configuration, "nonce") }));
@@ -493,6 +628,10 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
 
     public static int Main(string[] args) {
         try {
+            if (args.Length == 1 && args[0] == "--desktop-scope") {
+                Console.WriteLine(Serializer().Serialize(DevPocketIsolatedCommand.DescribeDesktopScope()));
+                return 0;
+            }
             if (args.Length != 3 && args.Length != 4) throw new InvalidDataException("Invalid supervisor invocation.");
             var configuration = ReadConfiguration(args[1], args[2]);
             if (args[0] == "--client" && args.Length == 4) return Client(configuration, args[3]);

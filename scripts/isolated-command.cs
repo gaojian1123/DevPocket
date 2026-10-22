@@ -3,7 +3,6 @@ using System.ComponentModel;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Threading.Tasks;
@@ -61,20 +60,11 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
     static extern IntPtr GetProcessWindowStation();
     [DllImport("user32.dll", SetLastError = true)]
     static extern IntPtr GetThreadDesktop(uint threadId);
+    [DllImport("user32.dll")]
+    static extern int GetSystemMetrics(int index);
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
-    [DllImport("user32.dll", SetLastError = true)]
-    static extern bool SetThreadDesktop(IntPtr desktop);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    static extern IntPtr CreateDesktopW(string name, IntPtr device, IntPtr mode, uint flags,
-        uint access, ref Security security);
-    [DllImport("user32.dll", SetLastError = true)]
-    static extern bool CloseDesktop(IntPtr desktop);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern bool GetUserObjectInformationW(IntPtr handle, int kind, IntPtr value, int size, out int needed);
-    [DllImport("user32.dll", SetLastError = true)]
-    static extern bool GetUserObjectSecurity(IntPtr handle, ref uint information, byte[] descriptor, int size, out int needed);
-    [DllImport("user32.dll", SetLastError = true)]
-    static extern bool SetUserObjectSecurity(IntPtr handle, ref uint information, byte[] descriptor);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern IntPtr CreateJobObjectW(IntPtr attributes, string name);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -178,97 +168,74 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
         } finally { CloseHandle(token); }
     }
 
-    sealed class CandidateDesktop : IDisposable {
-        const int StationAccess = 0x00020123;
-        const uint DesktopAccess = 0x000200c7;
-        readonly SecurityIdentifier candidate;
-        readonly IntPtr station, originalDesktop;
-        IntPtr desktop;
-        bool granted;
-        public string Name { get; private set; }
-
-        static byte[] Information(IntPtr handle, int kind) {
-            int needed;
-            GetUserObjectInformationW(handle, kind, IntPtr.Zero, 0, out needed);
-            if (needed < 1 || needed > 4096) throw new InvalidDataException("Invalid desktop information.");
-            IntPtr value = Marshal.AllocHGlobal(needed);
-            try {
-                if (!GetUserObjectInformationW(handle, kind, value, needed, out needed)) throw new Win32Exception();
-                var bytes = new byte[needed];
-                Marshal.Copy(value, bytes, 0, needed);
-                return bytes;
-            } finally { Marshal.FreeHGlobal(value); }
-        }
-
-        void StationRule(bool add) {
-            uint information = 4;
-            int needed;
-            GetUserObjectSecurity(station, ref information, null, 0, out needed);
-            if (needed < 20 || needed > 65536) throw new InvalidDataException("Invalid window station DACL.");
+    static byte[] UserObjectInformation(IntPtr handle, int kind) {
+        int needed;
+        GetUserObjectInformationW(handle, kind, IntPtr.Zero, 0, out needed);
+        if (needed < 1 || needed > 4096) throw new InvalidDataException("Invalid desktop information.");
+        IntPtr value = Marshal.AllocHGlobal(needed);
+        try {
+            if (!GetUserObjectInformationW(handle, kind, value, needed, out needed)) throw new Win32Exception();
             var bytes = new byte[needed];
-            if (!GetUserObjectSecurity(station, ref information, bytes, bytes.Length, out needed)) throw new Win32Exception();
-            var raw = new RawSecurityDescriptor(bytes, 0);
-            if (raw.DiscretionaryAcl == null) throw new InvalidDataException("A window station must retain a DACL.");
-            if (add) foreach (GenericAce ace in raw.DiscretionaryAcl) {
-                var known = ace as KnownAce;
-                if (known != null && known.SecurityIdentifier.Equals(candidate))
-                    throw new InvalidOperationException("The task already has window station access.");
-            }
-            var descriptor = new CommonSecurityDescriptor(false, false, raw);
-            if (add) descriptor.DiscretionaryAcl.AddAccess(AccessControlType.Allow, candidate, StationAccess,
-                InheritanceFlags.None, PropagationFlags.None);
-            else descriptor.DiscretionaryAcl.RemoveAccessSpecific(AccessControlType.Allow, candidate, StationAccess,
-                InheritanceFlags.None, PropagationFlags.None);
-            bytes = new byte[descriptor.BinaryLength];
-            descriptor.GetBinaryForm(bytes, 0);
-            if (!SetUserObjectSecurity(station, ref information, bytes)) throw new Win32Exception();
-        }
+            Marshal.Copy(value, bytes, 0, needed);
+            return bytes;
+        } finally { Marshal.FreeHGlobal(value); }
+    }
 
-        public CandidateDesktop(string sid) {
-            candidate = new SecurityIdentifier(sid);
-            station = GetProcessWindowStation();
-            originalDesktop = GetThreadDesktop(GetCurrentThreadId());
-            if (station == IntPtr.Zero || originalDesktop == IntPtr.Zero) throw new Win32Exception();
-            byte[] flags = Information(station, 1);
-            string stationName = Encoding.Unicode.GetString(Information(station, 2)).TrimEnd('\0');
-            if (flags.Length != 12 || (BitConverter.ToUInt32(flags, 8) & 1) != 0 ||
-                stationName.Length == 0 || stationName.Contains("\\") || stationName.IndexOf('\0') >= 0)
-                throw new InvalidOperationException("A candidate requires the noninteractive service window station.");
-            string name = "devpocket_" + Guid.NewGuid().ToString("N");
-            Name = stationName + "\\" + name;
-            try {
-                StationRule(true);
-                granted = true;
-                var descriptor = new RawSecurityDescriptor("D:P(A;;GA;;;SY)(A;;GA;;;LS)(A;;0x000200c7;;;" + candidate.Value + ")");
-                var bytes = new byte[descriptor.BinaryLength];
-                descriptor.GetBinaryForm(bytes, 0);
-                var pinned = GCHandle.Alloc(bytes, GCHandleType.Pinned);
-                try {
-                    var security = new Security { length = Marshal.SizeOf(typeof(Security)), descriptor = pinned.AddrOfPinnedObject() };
-                    desktop = CreateDesktopW(name, IntPtr.Zero, IntPtr.Zero, 0, DesktopAccess, ref security);
-                    if (desktop == IntPtr.Zero) throw new Win32Exception();
-                    if (!SetThreadDesktop(originalDesktop)) throw new Win32Exception();
-                } finally { pinned.Free(); }
-            } catch (Exception error) {
-                try { Dispose(); }
-                catch (Exception cleanup) { throw new AggregateException("Private desktop preparation and cleanup failed.", error, cleanup); }
-                throw;
-            }
-        }
+    static byte[] TokenInformation(IntPtr token, int kind) {
+        int needed;
+        GetTokenInformation(token, kind, IntPtr.Zero, 0, out needed);
+        if (needed < 1 || needed > 65536) throw new InvalidDataException("Invalid token information.");
+        IntPtr value = Marshal.AllocHGlobal(needed);
+        try {
+            if (!GetTokenInformation(token, kind, value, needed, out needed)) throw new Win32Exception();
+            var bytes = new byte[needed];
+            Marshal.Copy(value, bytes, 0, needed);
+            return bytes;
+        } finally { Marshal.FreeHGlobal(value); }
+    }
 
-        public void Dispose() {
-            var failures = new List<Exception>();
-            if (desktop != IntPtr.Zero) {
-                if (!SetThreadDesktop(originalDesktop)) failures.Add(new Win32Exception());
-                if (!CloseDesktop(desktop)) failures.Add(new Win32Exception());
-                else desktop = IntPtr.Zero;
+    static string LogonSid(IntPtr token) {
+        int needed;
+        GetTokenInformation(token, 2, IntPtr.Zero, 0, out needed);
+        if (needed < IntPtr.Size || needed > 65536) throw new InvalidDataException("Invalid token groups.");
+        IntPtr value = Marshal.AllocHGlobal(needed);
+        try {
+            if (!GetTokenInformation(token, 2, value, needed, out needed)) throw new Win32Exception();
+            int count = Marshal.ReadInt32(value), size = Marshal.SizeOf(typeof(SidAndAttributes));
+            if (count < 0 || IntPtr.Size + (long)count * size > needed) throw new InvalidDataException("Invalid token group count.");
+            string result = null;
+            for (int index = 0; index < count; index++) {
+                IntPtr group = IntPtr.Add(value, IntPtr.Size + index * size);
+                if ((unchecked((uint)Marshal.ReadInt32(group, IntPtr.Size)) & 0xc0000000) != 0xc0000000) continue;
+                if (result != null) throw new InvalidDataException("The token has multiple logon SIDs.");
+                result = new SecurityIdentifier(Marshal.ReadIntPtr(group)).Value;
             }
-            if (granted) {
-                try { StationRule(false); granted = false; }
-                catch (Exception error) { failures.Add(error); }
+            return result;
+        } finally { Marshal.FreeHGlobal(value); }
+    }
+
+    public static Dictionary<string, object> DescribeDesktopScope() {
+        // Establish the USER32 connection before querying its station and desktop handles.
+        GetSystemMetrics(0);
+        IntPtr station = GetProcessWindowStation(), desktop = GetThreadDesktop(GetCurrentThreadId()), token;
+        if (station == IntPtr.Zero || desktop == IntPtr.Zero || !OpenProcessToken(GetCurrentProcess(), 8, out token))
+            throw new Win32Exception();
+        try {
+            byte[] flags = UserObjectInformation(station, 1), statistics = TokenInformation(token, 10),
+                session = TokenInformation(token, 12);
+            if (flags.Length != 12 || statistics.Length < 56 || session.Length != 4)
+                throw new InvalidDataException("Incomplete desktop/token scope.");
+            using (var identity = new WindowsIdentity(token)) {
+                return new Dictionary<string, object> {
+                    { "version", 1 }, { "kind", "windows-desktop-scope" }, { "sid", identity.User.Value },
+                    { "authenticationId", BitConverter.ToUInt32(statistics, 12).ToString("x8") + BitConverter.ToUInt32(statistics, 8).ToString("x8") },
+                    { "logonSid", LogonSid(token) }, { "sessionId", BitConverter.ToUInt32(session, 0) },
+                    { "windowStation", Encoding.Unicode.GetString(UserObjectInformation(station, 2)).TrimEnd('\0') },
+                    { "desktop", Encoding.Unicode.GetString(UserObjectInformation(desktop, 2)).TrimEnd('\0') },
+                    { "interactive", (BitConverter.ToUInt32(flags, 8) & 1) != 0 }
+                };
             }
-            if (failures.Count != 0) throw new AggregateException("Private desktop cleanup failed.", failures);
-        }
+        } finally { CloseHandle(token); }
     }
 
     static SafeAccessTokenHandle WriteRestrictedToken(SafeAccessTokenHandle token, string sid) {
@@ -363,7 +330,6 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
         Task<string> cancellation = controlInput ?? Task.Run(() => Console.In.ReadLine());
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         SafeAccessTokenHandle token = null, restricted = null;
-        CandidateDesktop desktop = null;
         IntPtr block = IntPtr.Zero, attributes = IntPtr.Zero, jobValue = IntPtr.Zero,
             handleValues = IntPtr.Zero, targetInput = IntPtr.Zero;
         bool initialized = false;
@@ -385,7 +351,6 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
             if (!LogonUserW(user, ".", password, 2, 0, out token)) throw new Win32Exception();
             restricted = WriteRestrictedToken(token, sid);
             Stage = "attributes";
-            desktop = new CandidateDesktop(sid);
             IntPtr bytes = IntPtr.Zero;
             InitializeProcThreadAttributeList(IntPtr.Zero, 2, 0, ref bytes);
             attributes = Marshal.AllocHGlobal(bytes);
@@ -409,7 +374,8 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
                     new IntPtr(3 * IntPtr.Size), IntPtr.Zero, IntPtr.Zero)) throw new Win32Exception();
             var startup = new StartupEx { startup = new Startup {
                 cb = Marshal.SizeOf(typeof(StartupEx)), flags = 0x100,
-                input = targetInput, output = standardOutput, error = standardError, desktop = desktop.Name
+                // Empty selects the fresh logon session; null would inherit the service desktop.
+                input = targetInput, output = standardOutput, error = standardError, desktop = ""
             }, attributes = attributes };
             ProcessInfo info;
             CheckControl(cancellation, deadline);
@@ -464,10 +430,6 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
             if (block != IntPtr.Zero) Marshal.FreeHGlobal(block);
             var failures = new List<Exception>();
             try { Stop(); } catch (Exception error) { failures.Add(error); }
-            if (desktop != null) {
-                try { desktop.Dispose(); }
-                catch (Exception error) { ProcessTreeStopped = false; FailureStage = "cleanup"; failures.Add(error); }
-            }
             if (failures.Count != 0) {
                 FailureStage = "cleanup";
                 throw new AggregateException("Isolated command cleanup failed.", failures);

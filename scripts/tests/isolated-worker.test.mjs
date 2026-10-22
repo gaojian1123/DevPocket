@@ -132,6 +132,8 @@ test("failed service clients cannot lend native facts or cleanup evidence to an 
 test("LocalService validation rejects arbitrary commands and startup injection without running a service",
   { skip: process.platform !== "win32" }, async (t) => {
     const configuration = await fixture(t), binary = path.join(configuration.private, "contracts.exe");
+    await writeFile(path.join(configuration.candidate, "outside.exe"), "validation must not execute this file");
+    await symlink(configuration.candidate, path.join(configuration.private, "escape"), "junction");
     const compiler = path.join(process.env.SystemRoot, "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe");
     await exec(compiler, ["/nologo", "/target:exe", "/main:SupervisorContracts",
       "/reference:System.ServiceProcess.dll", "/reference:System.Web.Extensions.dll", `/out:${binary}`,
@@ -350,6 +352,46 @@ test("native output limits remain failures and still require both cleanup confir
   }
 });
 
+test("Windows DWORD exit representations preserve real failures without weakening receipt matching", async (t) => {
+  for (const [platform, reported, observed, matches] of [
+    ["win32", -1073741502, 3221225794, true],
+    ["win32", 3221225794, -1073741502, true],
+    ["win32", -1073741502, 3221225795, false],
+    ["win32", -4294967297, 4294967295, false],
+    ["linux", -1073741502, 3221225794, false],
+  ]) {
+    await t.test(`${platform}/${reported}/${observed}`, async (t) => {
+      const configuration = { ...await fixture(t), platform };
+      if (platform === "win32") await fixtureBroker(configuration);
+      const boundary = isolatedCommandBoundary(configuration, {}, environment(configuration));
+      const failure = Object.assign(new Error("The target did not initialize"), successfulCommand(), {
+        commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit",
+          exitCode: observed, cleanupFailure: null },
+      });
+      await assert.rejects(boundary("node", [], {}, async (_file, args) => {
+        const file = args.at(-1), bytes = await readFile(file), request = JSON.parse(bytes);
+        await writeFile(`${file}.result.json`, JSON.stringify({
+          version: 1, id: request.id, requestSha256: createHash("sha256").update(bytes).digest("hex"),
+          status: "executed", admission: "running", started: true, processTreeStopped: true, exitCode: reported,
+        }));
+        throw failure;
+      }), (error) => {
+        if (matches) {
+          assert.equal(error, failure);
+          assert.equal(error.isolatedAdmission, "running");
+          assert.equal(error.isolatedExecutionObserved, true);
+          assert.equal(error.processTreeStopped, true);
+          assert.equal(error.commandOutcome.exitCode, observed);
+        } else {
+          assert.equal(error.diagnosticCode, "cleanup-failed");
+          assert.equal(error.processTreeStopped, false);
+        }
+        return true;
+      });
+    });
+  }
+});
+
 test("atomic launch failures preserve bounded native stage and privilege facts", async (t) => {
   const configuration = { ...await fixture(t), platform: "win32" };
   const boundary = isolatedCommandBoundary(configuration, {}, environment(configuration));
@@ -540,9 +582,9 @@ test("Windows token creation joins its Job atomically and has no weaker credenti
   assert.match(source, /CreateRestrictedToken\(token, 0x9, 0, IntPtr\.Zero, 0, IntPtr\.Zero, 1, sids/);
   assert.match(source, /GetTokenInformation\(token, 11/);
   assert.match(source, /Marshal\.ReadInt32\(restrictions\) != 1/);
-  assert.match(source, /desktop = desktop\.Name/);
-  assert.match(source, /CreateDesktopW\(name, IntPtr\.Zero, IntPtr\.Zero, 0,/);
-  assert.doesNotMatch(source, /CreateWindowStationW|ProtectAncestor/);
+  assert.match(source, /desktop = ""/);
+  assert.match(source, /DescribeDesktopScope/);
+  assert.doesNotMatch(source, /CreateWindowStationW|ProtectAncestor|SetUserObjectSecurity|CreateDesktopW/);
   const bootstrap = await readFile(new URL("../isolated-worker.ps1", import.meta.url), "utf8");
   assert.match(bootstrap, /NT AUTHORITY\\LocalService/);
   assert.match(bootstrap, /SeAssignPrimaryTokenPrivilege\/SeIncreaseQuotaPrivilege/);
@@ -646,17 +688,6 @@ test("Windows bootstrap does not assign the read-only HOME automatic variable", 
   assert.deepEqual(JSON.parse(result.stdout), []);
 });
 
-test("Windows ancestor caller uses the bound helper and working-directory-compatible opens",
-  { skip: process.platform !== "win32" }, async (t) => {
-    const configuration = await fixture(t);
-    const result = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-File",
-      path.resolve("scripts", "tests", "fixtures", "isolated-ancestor-acl.ps1"),
-      "-Bootstrap", path.resolve("scripts", "isolated-worker.ps1"),
-      "-NativeSource", path.resolve("scripts", "isolated-command.cs"), "-WorkingDirectory", configuration.candidate],
-    { timeout: 30000 });
-    assert.deepEqual(JSON.parse(result.stdout), ["C:\\fixture", "C:\\"]);
-  });
-
 test("atomic launch diagnostics stop before candidate preparation and cannot become an isolation proof",
   { skip: process.platform !== "win32" }, async (t) => {
     const configuration = await fixture(t), scripts = path.join(configuration.control, "scripts");
@@ -711,6 +742,7 @@ test("bootstrap command failures retain the actual bounded diagnostic before exi
     assert.equal(await readFile(file, "utf8"), altered, "The isolated fixture must use the failing command implementation.");
     configuration.mode = "self-test";
     await fixtureBroker(configuration);
+    configuration.desktopProbe = configuration.broker.file;
     configuration.tools.git = process.execPath;
     configuration.tools.python = process.execPath;
     configuration.protectedPaths = [configuration.control, configuration.private];
