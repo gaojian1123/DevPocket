@@ -580,9 +580,12 @@ test("Windows token creation joins its Job atomically and has no weaker credenti
   assert.doesNotMatch(source, /Console\.In\.ReadLineAsync|input = GetStdHandle\(-10\)/);
   assert.match(source, /CheckControl\(cancellation, deadline\);\s+if \(ResumeThread/);
   assert.match(source, /input = targetInput/);
-  assert.match(source, /CreateRestrictedToken\(token, 0x9, 0, IntPtr\.Zero, 0, IntPtr\.Zero, 1, sids/);
+  assert.match(source, /var values = new\[\] \{ sid, logonSid \}/);
+  assert.match(source, /CreateRestrictedToken\(token, 0x9, 0, IntPtr\.Zero, 0, IntPtr\.Zero, \(uint\)sids\.Length, sids/);
   assert.match(source, /GetTokenInformation\(token, 11/);
-  assert.match(source, /Marshal\.ReadInt32\(restrictions\) != 1/);
+  assert.match(source, /Marshal\.ReadInt32\(restrictions\) != 2/);
+  assert.match(source, /LogonSid\(token\) != logonSid/);
+  assert.match(source, /actual\.SetEquals\(new\[\] \{ sid, logonSid \}\)/);
   assert.match(source, /desktop = ""/);
   assert.match(source, /DescribeDesktopScope/);
   assert.doesNotMatch(source, /CreateWindowStationW|ProtectAncestor|SetUserObjectSecurity|CreateDesktopW/);

@@ -42,6 +42,7 @@ $account = $null
 $serviceCreated = $false
 $serviceSid = $null
 $ownerPipe = $null
+$cngAccess = $null
 $code = 78
 
 function Set-ProtectedDirectory([string]$Path, [bool]$CandidateRead, [string]$ServiceRights = 'ReadAndExecute') {
@@ -103,6 +104,14 @@ function Start-IsolatedSupervisor {
     & $compiler /nologo /target:exe /reference:System.ServiceProcess.dll /reference:System.Web.Extensions.dll "/out:$supervisor" `
         (Join-Path $Control 'scripts\isolated-command.cs') (Join-Path $Control 'scripts\windows-supervisor.cs') | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'The fixed Windows supervisor did not compile.' }
+    if ($Mode -eq 'self-test') {
+        $accessText = & $supervisor --cng-access
+        if ($LASTEXITCODE -ne 0) { throw 'The read-only CNG diagnostic failed.' }
+        $script:cngAccess = ($accessText -join "`n") | ConvertFrom-Json -Depth 5
+        if ($cngAccess.kind -ne 'DEBUG-cng-access' -or $cngAccess.acceptance -ne $false) {
+            throw 'The read-only CNG diagnostic returned an unexpected shape.'
+        }
+    }
     $script:serviceName = 'dpws_' + [Guid]::NewGuid().ToString('N').Substring(0, 24)
     $script:supervisorConfiguration = Join-Path $private 'supervisor.json'
     $sc = Join-Path $env:SystemRoot 'System32\sc.exe'
@@ -343,6 +352,7 @@ try {
         ownerPipeClosed = $pipeClosed; serviceRemoved = $serviceRemoved; candidateAccountRemoved = $accountRemoved
         issues = @($cleanupIssues.ToArray())
     }
+    if ($cngAccess) { $cleanupReport.cngAccess = $cngAccess }
     $bytes = [Text.Encoding]::UTF8.GetBytes(($cleanupReport | ConvertTo-Json -Depth 5 -Compress) + "`n")
     $output = [IO.File]::Open((Join-Path $cleanupDirectory 'bootstrap-cleanup.json'), [IO.FileMode]::CreateNew)
     try { $output.Write($bytes); $output.Flush($true) } finally { $output.Dispose() }

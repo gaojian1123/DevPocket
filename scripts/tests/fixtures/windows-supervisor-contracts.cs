@@ -10,6 +10,9 @@ using System.Security.Principal;
 using Microsoft.Win32.SafeHandles;
 
 public static class SupervisorContracts {
+    [DllImport("advapi32.dll")]
+    static extern bool IsTokenRestricted(SafeAccessTokenHandle token);
+
     static Dictionary<string, object> Request(string root, string node) {
         return new Dictionary<string, object> {
             { "version", 1 }, { "id", Guid.NewGuid().ToString() }, { "file", node }, { "cwd", root },
@@ -44,19 +47,25 @@ public static class SupervisorContracts {
                 if (logonSid == null || !new SecurityIdentifier(logonSid).IsWellKnown(WellKnownSidType.LogonIdsSid))
                     throw new Exception("The restriction must use the original token's logon SID.");
                 requireRestriction.Invoke(null, new object[] { narrowed.DangerousGetHandle(), identity.User.Value, logonSid });
-                foreach (var values in new[] {
+                var invalid = new List<object[]> {
                     new object[] { narrowed.DangerousGetHandle(), identity.User.Value, "S-1-5-5-1-1" },
                     new object[] { narrowed.DangerousGetHandle(), identity.User.Value, null },
-                    new object[] { narrowed.DangerousGetHandle(), "S-1-1-0", logonSid },
-                    new object[] { identity.AccessToken.DangerousGetHandle(), identity.User.Value, logonSid }
-                }) {
-                    bool refused = false;
-                    try { requireRestriction.Invoke(null, values); }
-                    catch (TargetInvocationException error) {
-                        if (!(error.InnerException is InvalidDataException) && !(error.InnerException is InvalidOperationException)) throw;
-                        refused = true;
+                    new object[] { narrowed.DangerousGetHandle(), "S-1-1-0", logonSid }
+                };
+                if (!IsTokenRestricted(identity.AccessToken))
+                    invalid.Add(new object[] { identity.AccessToken.DangerousGetHandle(), identity.User.Value, logonSid });
+                var missingUserParameters = new object[] { identity.AccessToken, logonSid, null };
+                using (var missingUser = (SafeAccessTokenHandle)narrow.Invoke(null, missingUserParameters)) {
+                    invalid.Add(new object[] { missingUser.DangerousGetHandle(), identity.User.Value, logonSid });
+                    foreach (var values in invalid) {
+                        bool refused = false;
+                        try { requireRestriction.Invoke(null, values); }
+                        catch (TargetInvocationException error) {
+                            if (!(error.InnerException is InvalidDataException) && !(error.InnerException is InvalidOperationException)) throw;
+                            refused = true;
+                        }
+                        if (!refused) throw new Exception("An unbound or unrestricted token passed the exact SID check.");
                     }
-                    if (!refused) throw new Exception("An unbound or unrestricted token passed the exact SID check.");
                 }
             }
         }
