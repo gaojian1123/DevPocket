@@ -177,16 +177,20 @@ export function developmentApprovalDetails(base, policy, files) {
     `--- Proposed ---\n${text(policy.contents, file, "(deleted)")}\n`).join("");
 }
 
+function requireCiTarget(ci, branch) {
+  if (!ci || typeof ci.repository !== "string" ||
+      !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(ci.repository) ||
+      ci.repository.split("/").some((part) => part === "." || part === "..") ||
+      ci.ref !== branch || !/^refs\/heads\/[^\x00-\x20]+$/.test(ci.ref) ||
+      Object.keys(ci).some((key) => !["repository", "ref"].includes(key))) {
+    throw new TypeError("CI execution needs this task's exact repository and branch.");
+  }
+}
+
 export function developmentApprovalRequest(scope, policy, stage, hooks) {
   if (!scope || !scope.sessionId || !scope.runId || !scope.base || !scope.workspace || !scope.task ||
       !["execution", "review"].includes(stage)) throw new TypeError("A task-scoped approval subject is required.");
-  if (scope.ci !== undefined && (!scope.ci || typeof scope.ci.repository !== "string" ||
-      !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(scope.ci.repository) ||
-      scope.ci.repository.split("/").some((part) => part === "." || part === "..") ||
-      scope.ci.ref !== scope.workspace.branch || !/^refs\/heads\/[^\x00-\x20]+$/.test(scope.ci.ref) ||
-      Object.keys(scope.ci).some((key) => !["repository", "ref"].includes(key)))) {
-    throw new TypeError("CI execution needs this task's exact repository and branch.");
-  }
+  if (scope.ci !== undefined) requireCiTarget(scope.ci, scope.workspace.branch);
   const selected = policy.reasons.filter((item) => item.stage === stage);
   const paths = selected.flatMap((item) => item.paths).sort();
   if (!paths.length) return null;
@@ -237,16 +241,23 @@ export function developmentTaskApprovalRequest(scope, hooks, implementation) {
   const delivery = scope.task.delivery ?? "local-commit";
   if (!["working-tree", "local-commit", "pull-request"].includes(delivery)) throw new TypeError("Unknown delivery target.");
   if (execution && delivery === "working-tree") throw new TypeError("Hosted execution requires an authorized published candidate.");
+  const publication = delivery === "pull-request" || Boolean(execution);
+  const ci = scope.ci === undefined && execution
+    ? { repository: execution.repository, ref: scope.workspace.branch } : scope.ci;
+  if (publication || scope.ci !== undefined) requireCiTarget(ci, scope.workspace.branch);
+  if (execution && ci.repository !== execution.repository) throw new TypeError("Ordinary CI and isolated execution must name the same repository.");
   const actions = ["edit", "check", "independent-review", "repair",
     ...(delivery !== "working-tree" ? ["commit"] : []),
-    ...(delivery === "pull-request" || execution ? ["push"] : []),
+    ...(publication ? ["push"] : []),
     ...(delivery === "pull-request" ? ["create-draft-pr", "mark-pr-ready"] : []),
-    ...(execution ? ["isolated-execution"] : [])];
+    ...(execution ? ["isolated-execution"] : []),
+    ...(publication ? ["ordinary-ci"] : [])];
   const effects = [
     `Allow ${actions.join(", ")} for this task and ${scope.workspace.branch}; reuse this scope across ordinary source repairs.`,
     execution
-      ? `Run candidate dependencies, install scripts and tools only on disposable GitHub-hosted workers in ${execution.repository}, using ${execution.trustedRef} at ${execution.trustedSha}. Public network access is permitted.`
-      : "Use existing local checks only. Changed executable inputs still need their exact local execution approval.",
+      ? `Run the isolated stage's candidate dependencies, install scripts and tools on disposable GitHub-hosted workers in ${execution.repository}, using ${execution.trustedRef} at ${execution.trustedSha}. Public network access is permitted.`
+      : `Use existing local checks ${publication ? "for verification" : "only"}. Changed executable inputs still need their exact local execution approval.`,
+    ...(publication ? [`Also authorize automatic repository CI for ${ci.repository} ${ci.ref}, including existing-PR synchronization and PR creation. Ordinary CI runs candidate dependencies, install scripts and tools as its normal runner identity, outside the low-identity worker boundary. These outputs do not replace fixed isolated acceptance or authorize policy adoption.`] : []),
     "Keep the approved controller, review instructions and acceptance rules fixed. Candidate instructions and tools are test subjects, not replacement authority.",
   ];
   const exclusions = [
@@ -296,7 +307,7 @@ export function formatDevelopmentApproval(request, details, summary, snapshot) {
     `Approval requested: ${request.action}`,
     `Why now: ${request.reasons.map((item) => item.why).join(" ")}`,
     `Target: ${request.scope.workspace.root} (${request.scope.workspace.branch}); task ${request.scope.runId}.`,
-    ...(request.scope.ci ? [`CI target: ${request.scope.ci.repository} at ${request.scope.ci.ref}; .github/workflows/ci.yml only.`] : []),
+    ...(request.scope.ci ? [`CI target: ${request.scope.ci.repository} at ${request.scope.ci.ref}; ${request.stage === "task" ? "automatic repository checks" : ".github/workflows/ci.yml only"}.`] : []),
     `Task goal (context, not authority): ${JSON.stringify(request.scope.task.goal)}`,
     ...(summary ? [`Behavior change (implementation description; check against the actual details): ${JSON.stringify(summary)}`] : []),
     request.stage === "task" ? `Requested actions: ${request.actions.join(", ")}`

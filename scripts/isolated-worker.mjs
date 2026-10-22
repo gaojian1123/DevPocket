@@ -155,13 +155,13 @@ export function isolatedCommandBoundary(configuration, ownerEnvironment, candida
     const nativeFacts = consistent
       ? { isolatedAdmission: receipt.admission, nativeFailure: nativeFailure(receipt.native) } : {};
     const stopped = consistent && receipt.processTreeStopped === true && outerStopped;
-    if ((options.signal?.aborted || receipt?.interruption === "cancelled") && stopped) {
+    if (outcome?.reason !== "timeout" && (options.signal?.aborted || receipt?.interruption === "cancelled") && stopped) {
       throw Object.assign(new Error("Isolated command was cancelled.", { cause: options.signal?.reason }),
         { processTreeStopped: true, stdout: failure?.stdout ?? "", stderr: failure?.stderr ?? "",
           isolatedAdmission: receipt.admission,
           commandOutcome: { ...(failure?.commandOutcome ?? result?.commandOutcome), reason: "cancelled", cleanupFailure: null } });
     }
-    if (receipt?.interruption === "timeout" && stopped) {
+    if ((outcome?.reason === "timeout" || receipt?.interruption === "timeout") && stopped) {
       throw Object.assign(verificationFault("command-timeout"), {
         processTreeStopped: true, isolatedAdmission: receipt.admission,
         stdout: failure?.stdout ?? "", stderr: failure?.stderr ?? "",

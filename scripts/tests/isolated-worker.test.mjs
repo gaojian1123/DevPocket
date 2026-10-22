@@ -293,6 +293,33 @@ test("confirmed no-admission cancellation is distinct from an unconfirmed suspen
   }
 });
 
+test("outer command deadlines are not reclassified as native cancellation", async (t) => {
+  for (const platform of ["win32", "linux"]) for (const cleaned of [true, false]) {
+    await t.test(`${platform}/${cleaned ? "stopped" : "unconfirmed"}`, async (t) => {
+      const configuration = { ...await fixture(t), platform };
+      if (platform === "win32") await fixtureBroker(configuration);
+      const boundary = isolatedCommandBoundary(configuration, {}, environment(configuration));
+      await assert.rejects(boundary("node", [], {}, async (_file, args) => {
+        const file = args.at(-1), bytes = await readFile(file), request = JSON.parse(bytes);
+        await writeFile(`${file}.result.json`, JSON.stringify({
+          version: 1, id: request.id, requestSha256: createHash("sha256").update(bytes).digest("hex"),
+          status: "blocked", admission: "running", interruption: "cancelled", started: true,
+          processTreeStopped: cleaned, exitCode: null,
+        }));
+        throw Object.assign(new Error("The outer deadline expired"), successfulCommand(), {
+          commandOutcome: { observedProcess: "owned-command-supervisor", reason: "timeout",
+            exitCode: 78, cleanupFailure: null },
+        });
+      }), (error) => {
+        assert.equal(error.processTreeStopped, cleaned);
+        assert.equal(error.diagnosticCode, cleaned ? "command-timeout" : "cleanup-failed");
+        if (cleaned) assert.equal(error.commandOutcome.reason, "timeout");
+        return true;
+      });
+    });
+  }
+});
+
 test("atomic launch failures preserve bounded native stage and privilege facts", async (t) => {
   const configuration = { ...await fixture(t), platform: "win32" };
   const boundary = isolatedCommandBoundary(configuration, {}, environment(configuration));

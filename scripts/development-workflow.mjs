@@ -8,7 +8,7 @@ import { developmentApprovalDetails, developmentApprovalRequest, developmentAppr
 import { activeHookSnapshot, assertCandidate, assertIdentity, changedPaths, inspectWorktree, prepareCandidate, sameHooks, sameSource,
   sha256, taskPaths, validateCandidateCommit } from "./candidate-commit.mjs";
 import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "./native-candidate.mjs";
-import { executeIsolatedVerification, qualifyIsolatedVerification } from "./isolated-verification.mjs";
+import { executeIsolatedVerification, originRepository, qualifyIsolatedVerification, requireIsolatedPushTarget } from "./isolated-verification.mjs";
 
 const loadedImplementation = await captureCandidateImplementation();
 
@@ -179,6 +179,20 @@ async function record(file, value, onCreated) {
 const blocked = (reason) => ({ status: "blocked", reason });
 const policyEvidence = ({ contents, beforeContents, ...policy }, source) => ({ ...policy, source });
 
+async function publicationTargetStop(root, scope) {
+  if (!scope.task.execution && scope.task.delivery !== "pull-request") return null;
+  const repository = scope.ci?.repository ?? scope.task.execution?.repository;
+  try {
+    if (!repository || await originRepository(root) !== repository) {
+      throw new Error("The current origin differs from the granted repository.");
+    }
+    await requireIsolatedPushTarget(root, repository);
+    return null;
+  } catch (error) {
+    return blocked(`The publication destination does not match this task's authority: ${error.message}`);
+  }
+}
+
 function containsError(error, expected) {
   const pending = [error], seen = new Set();
   while (pending.length) {
@@ -231,6 +245,10 @@ export async function checkDevelopmentReadiness(root, result) {
           !developmentTaskActionAllowed(scope, result.hooks, result.execution, receipts, "commit")) {
       throw new Error("Local development-policy evidence is missing, stale or still requires human review.");
     }
+    if ((scope.task.execution || scope.task.delivery === "pull-request") &&
+        !developmentTaskActionAllowed(scope, result.hooks, result.execution, receipts, "ordinary-ci")) {
+      throw new Error("Publication requires explicit ordinary repository CI authority.");
+    }
     if (plan.base !== result.base || !sameSource(plan.source, result.source) ||
         !result.verification?.complete || result.verification.status !== "passed" ||
         result.review?.verdict !== "pass" || result.review.reviewer !== "devpocket-reviewer" ||
@@ -251,7 +269,7 @@ export async function checkDevelopmentReadiness(root, result) {
       await validateVerificationEvidence(root, plan, [result.verification], { candidateEvidence: true, requireComplete: true });
     }
     await assertCandidate(root, current, result.candidate);
-    return result;
+    return await publicationTargetStop(root, scope) ?? result;
   } catch (error) {
     return blocked(`Readiness is stale or unavailable: ${error.message}`);
   }
@@ -311,8 +329,12 @@ async function prepareTaskAuthorization(ctx, root, task) {
   const prepared = await ctx.step("devpocket-task-scope-v1", async () => {
     const workspace = await inspectWorktree(root), hooks = await activeHookSnapshot(root);
     if (workspace.status) throw new Error("Task authorization requires a clean isolated worktree.");
+    const ci = task.delivery === "pull-request" && !task.execution
+      ? { repository: await originRepository(root), ref: workspace.identity.branch } : undefined;
+    if (ci) await requireIsolatedPushTarget(root, ci.repository);
     return { scope: { sessionId: ctx.session?.sessionId, runId: ctx.runId, base: workspace.source.head,
-      workspace: workspace.identity, task, configuration: workspace.configuration, initialIndex: workspace.index },
+      workspace: workspace.identity, task, configuration: workspace.configuration, initialIndex: workspace.index,
+      ...(ci ? { ci } : {}) },
     hooks, implementation: loadedImplementation, source: workspace.source };
   });
   const { scope, hooks, implementation } = prepared;
@@ -320,6 +342,8 @@ async function prepareTaskAuthorization(ctx, root, task) {
       scope.workspace.root !== root || JSON.stringify(scope.task) !== JSON.stringify(task)) {
     return blocked("Task authorization cannot move to another session, task or workspace.");
   }
+  const targetStop = await publicationTargetStop(root, scope);
+  if (targetStop) return targetStop;
   await requireCandidateImplementation(implementation);
   const { request, snapshot } = developmentTaskApprovalRequest(scope, hooks, implementation);
   const directory = path.join(root, ".data", "development", ctx.runId);
@@ -340,6 +364,8 @@ async function prepareTaskAuthorization(ctx, root, task) {
       await readDevelopmentApprovalDetails(request, details) === null) {
     return blocked("The preauthorized workspace, hooks or baseline changed before execution. Recover this task rather than applying stale authority.");
   }
+  const resumedTargetStop = await publicationTargetStop(root, scope);
+  if (resumedTargetStop) return resumedTargetStop;
   return { ...prepared, receipt: decision.receipt };
 }
 
@@ -445,7 +471,8 @@ async function runAttempt(ctx, root, task, verify, onFinalization, authorization
     }
     const base = workspace.source.head;
     const scope = immutable({ sessionId: ctx.session?.sessionId, runId: ctx.runId, base, workspace: workspace.identity, task,
-      ...(authorization ? { configuration: workspace.configuration, initialIndex: workspace.index } : {}) });
+      ...(authorization ? { configuration: workspace.configuration, initialIndex: workspace.index } : {}),
+      ...(authorization?.scope.ci ? { ci: authorization.scope.ci } : {}) });
     if (authorization && (JSON.stringify(scope) !== JSON.stringify(authorization.scope) ||
         !sameHooks(approvedHooks, authorization.hooks))) return blocked("Task authorization changed before implementation.");
     const receipts = authorization ? [authorization.receipt] : [], policyPaths = new Set();
@@ -704,9 +731,12 @@ async function runAttempt(ctx, root, task, verify, onFinalization, authorization
         if (!developmentTaskActionAllowed(scope, approvedHooks, loadedImplementation, receipts, "isolated-execution")) {
           return await finish({ status: "needs_human", reason: "Hosted execution is not covered by this task's native authorization." });
         }
+        if (!developmentTaskActionAllowed(scope, approvedHooks, loadedImplementation, receipts, "ordinary-ci")) {
+          return await finish({ status: "needs_human", reason: "Candidate publication can trigger ordinary repository CI; its execution needs explicit task authority." });
+        }
         try {
           state.isolatedQualification = await executeIsolatedVerification(ctx, root, scope, plan.source, approvedHooks,
-            loadedImplementation, path.join(root, ".data", "verification", `${ctx.runId}-isolated-${round}`));
+            loadedImplementation, path.join(root, ".data", "verification", `${ctx.runId}-isolated-${round}`), receipts);
           verification = immutable(structuredClone(state.isolatedQualification.report));
         } catch (error) {
           ctx.signal?.throwIfAborted();
@@ -785,7 +815,7 @@ async function runAttempt(ctx, root, task, verify, onFinalization, authorization
           reason: "The exact clean candidate is verified and independently reviewed. Continue only the recorded delivery actions through native tools.",
           authorizedDeliveryActions: authorization
             ? developmentTaskApprovalRequest(scope, approvedHooks, loadedImplementation).request.actions
-              .filter((action) => ["push", "create-draft-pr", "mark-pr-ready"].includes(action))
+              .filter((action) => ["push", "create-draft-pr", "mark-pr-ready", "ordinary-ci"].includes(action))
             : [],
           verification, review, changedFiles: plan.changedFiles, policyReview,
         });

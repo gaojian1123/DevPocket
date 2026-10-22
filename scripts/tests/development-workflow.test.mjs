@@ -18,7 +18,7 @@ import { developmentTaskApprovalRequest, developmentTaskActionAllowed, developme
 import { collectIsolatedReports, isolatedMatrix, isolatedRequest, validateIsolatedEnvelope,
   requireIsolatedPublication, qualifyIsolatedVerification, readIsolatedReports,
   requireIsolatedWorkflowRevision, requireIsolatedPushTarget, isolatedPushArguments,
-  executeIsolatedVerification, diagnoseIsolatedReports } from "../isolated-verification.mjs";
+  executeIsolatedVerification, prepareIsolatedExecution, diagnoseIsolatedReports } from "../isolated-verification.mjs";
 
 const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
@@ -3487,9 +3487,11 @@ test("task grants bind delivery and hosted authority without approving local exe
   const { request, snapshot } = developmentTaskApprovalRequest(scope, hooks, implementation);
   const receipt = { version: 1, requestId: request.id, origin: "original-client", decision: "approved" };
   assert.match(snapshot, /Public network access is permitted/);
+  assert.match(snapshot, /automatic repository CI/);
+  assert.match(snapshot, /outside the low-identity worker boundary/);
   assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [], "push"), false);
   assert.equal(developmentExecutionAuthorization(scope, developmentReviewRequirements([]), hooks, implementation, []).status, "needs_human");
-  for (const action of ["commit", "push", "create-draft-pr", "mark-pr-ready", "isolated-execution"]) {
+  for (const action of ["commit", "push", "create-draft-pr", "mark-pr-ready", "isolated-execution", "ordinary-ci"]) {
     assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [receipt], action), true);
   }
   for (const action of ["merge", "deploy", "local-install", "adopt-policy", "reload"]) {
@@ -3513,12 +3515,50 @@ test("task grants bind delivery and hosted authority without approving local exe
   }
   const local = structuredClone(scope);
   delete local.task.execution;
+  local.ci = { repository: "owner/repo", ref: local.workspace.branch };
   const localRequest = developmentTaskApprovalRequest(local, hooks, implementation).request;
   const localReceipt = { ...receipt, requestId: localRequest.id };
   assert.equal(developmentExecutionAuthorization(local, policy, hooks, implementation, [localReceipt]).status, "needs_human");
   local.task.delivery = "working-tree";
   assert.deepEqual(developmentTaskApprovalRequest(local, hooks, implementation).request.actions,
     ["edit", "check", "independent-review", "repair"]);
+});
+
+test("local-verification PR grants bind ordinary CI authority to the repository and branch", () => {
+  const { scope, hooks } = approvalFixture();
+  scope.task.delivery = "pull-request";
+  scope.ci = { repository: "owner/repo", ref: scope.workspace.branch };
+  const implementation = { version: 2, directory: "trusted-controller",
+    files: [{ name: "development-policy.mjs", sha256: "5".repeat(64) }] };
+  const { request, snapshot } = developmentTaskApprovalRequest(scope, hooks, implementation);
+  const receipt = { version: 1, requestId: request.id, origin: "original-client", decision: "approved" };
+  assert.deepEqual(request.actions, ["edit", "check", "independent-review", "repair", "commit",
+    "push", "create-draft-pr", "mark-pr-ready", "ordinary-ci"]);
+  assert.match(snapshot, /automatic repository CI for owner\/repo refs\/heads\/task/);
+  assert.doesNotMatch(snapshot, /Use existing local checks only/);
+  const question = formatDevelopmentApproval(request, "diagnostic-copy.txt", "", snapshot);
+  assert.match(question, /CI target: owner\/repo at refs\/heads\/task/);
+  assert.doesNotMatch(question, /ci\.yml only/);
+  for (const action of ["push", "create-draft-pr", "mark-pr-ready", "ordinary-ci"]) {
+    assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [receipt], action), true);
+    assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [], action), false);
+    for (const target of [{ repository: "owner/another", ref: "refs/heads/task" },
+      { repository: "owner/repo", ref: "refs/heads/another" }]) {
+      const changed = { ...scope, ci: target, workspace: { ...scope.workspace, branch: target.ref } };
+      assert.equal(developmentTaskActionAllowed(changed, hooks, implementation, [receipt], action), false);
+    }
+  }
+  for (const ci of [undefined, null, { repository: "owner/repo", ref: "refs/heads/another" },
+    { repository: "../repo", ref: scope.workspace.branch }]) {
+    assert.throws(() => developmentTaskApprovalRequest({ ...scope, ci }, hooks, implementation), /CI.*repository and branch/);
+  }
+  for (const delivery of ["working-tree", "local-commit"]) {
+    const local = { ...scope, ci: undefined, task: { ...scope.task, delivery } };
+    const localRequest = developmentTaskApprovalRequest(local, hooks, implementation).request;
+    assert.deepEqual(localRequest.actions, ["edit", "check", "independent-review", "repair",
+      ...(delivery === "local-commit" ? ["commit"] : [])]);
+    assert.match(localRequest.effects.join(" "), /Use existing local checks only/);
+  }
 });
 
 test("autopilot with missing authority returns a retained decision instead of opening a question", async (t) => {
@@ -3647,6 +3687,11 @@ function hostedFixture(plan) {
   return { request, context, observed };
 }
 
+function syntheticTaskGrant(scope, hooks, implementation) {
+  const { request } = developmentTaskApprovalRequest(scope, hooks, implementation);
+  return [{ version: 1, requestId: request.id, origin: "original-client", decision: "approved" }];
+}
+
 function isolationProof(group = "tooling") {
   return { version: 1, kind: "hosted-isolation-proof", status: "passed", platform: group === "device" ? "linux" : "win32",
     checks: ["protected-control", "protected-evidence", "protected-ancestors", "runner-channels", "descendant-cleanup", "failing-fixed-gate"],
@@ -3730,10 +3775,13 @@ test("isolated dispatch and qualification cannot omit required macOS coverage", 
   assert.equal(plan.ciMacos, true);
   const { request } = hostedFixture(plan);
   const before = await inspectWorktree(root), hooks = await activeHookSnapshot(root);
-  const scope = { base, workspace: before.identity, task: { execution: request.execution } };
+  const scope = { sessionId: "fixture-session", runId: "unsupported-macos", base, workspace: before.identity,
+    task: { goal: "Require every selected platform", delivery: "local-commit", execution: request.execution } };
+  const implementation = await captureCandidateImplementation();
+  const receipts = syntheticTaskGrant(scope, hooks, implementation);
   await assert.rejects(executeIsolatedVerification({ session: { rpc: { tools: {
     getCurrentMetadata: async () => assert.fail("Unsupported coverage must stop before requesting native dispatch."),
-  } } } }, root, scope, before.source, hooks, await captureCandidateImplementation(), path.join(root, ".data", "dispatch")),
+  } } } }, root, scope, before.source, hooks, implementation, path.join(root, ".data", "dispatch"), receipts),
   /macOS coverage.*isolated worker/);
   await assert.rejects(qualifyIsolatedVerification(root, request, "123", path.join(root, ".data", "qualification"), {
     api: async () => assert.fail("Unsupported coverage must be rejected before querying an older hosted report."),
@@ -3842,6 +3890,8 @@ test("native isolated dispatch loads only captured modules and refuses changed c
       "export async function runIsolatedRequest(file) { await writeFile(file + '.completed', 'captured input', { flag: 'wx' }); }",
       "export const executeIsolatedVerification = () => { throw new Error('Not a hosted execution fixture'); };",
       "export const qualifyIsolatedVerification = () => { throw new Error('Not acceptance evidence'); };",
+      "export const originRepository = () => { throw new Error('Not a publication fixture'); };",
+      "export const requireIsolatedPushTarget = () => { throw new Error('Not a publication fixture'); };",
     ].join("\n"));
   });
   const implementation = await captureCandidateImplementation(directory);
@@ -3933,12 +3983,16 @@ test("isolated push publishes only the granted branch despite follow-tags and mi
   assert.equal((await git(root, ["config", "--get", "remote.origin.mirror"])).trim(), "true");
 });
 
-test("prepared delivery readiness rejects a changed origin or push destination", isolatedCases, async (t) => {
+test("prepared delivery readiness requires ordinary CI authority and rejects a changed publication target", isolatedCases, async (t) => {
   await Promise.all(["remote.origin.url", "remote.origin.pushurl"].map((key) => t.test(key, async (t) => {
     const { root } = await workspace(t), session = nativeSession();
     await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
     session.capabilities = { ui: { elicitation: true } };
-    session.ui = { elicitation: async () => ({ action: "accept", content: { decision: "approve" } }) };
+    session.ui = { elicitation: async ({ message }) => {
+      assert.match(message, /automatic repository CI for owner\/repo refs\/heads\/task/);
+      assert.match(message, /outside the low-identity worker boundary/);
+      return { action: "accept", content: { decision: "approve" } };
+    } };
     const ctx = documentationTask(root, {
       session, args: { goal: "Explain behavior", acceptance: ["Document the behavior"], prepare: true,
         mode: "autopilot", delivery: "pull-request" },
@@ -3946,11 +4000,135 @@ test("prepared delivery readiness rejects a changed origin or push destination",
     });
     const result = await runDevelopment(ctx, { root });
     assert.equal(result.status, "ready", result.reason);
-    assert.ok(result.authorizedDeliveryActions.includes("push"));
+    assert.deepEqual(result.authorization.scope.ci, { repository: "owner/repo", ref: "refs/heads/task" });
+    assert.deepEqual(result.authorizedDeliveryActions, ["push", "create-draft-pr", "mark-pr-ready", "ordinary-ci"]);
+    for (const mutate of [
+      (value) => { value.authorization.receipts = []; },
+      (value) => {
+        value.authorization.scope.ci.repository = "owner/another";
+        value.authorization.receipts = syntheticTaskGrant(value.authorization.scope, value.hooks, value.execution);
+      },
+    ]) {
+      const changed = structuredClone(result);
+      mutate(changed);
+      assert.equal((await checkDevelopmentReadiness(root, changed)).status, "blocked");
+    }
     await git(root, ["config", key, "https://github.com/another/repo.git"]);
     assert.equal((await checkDevelopmentReadiness(root, result)).status, "blocked",
       "A native grant must not follow a changed publication destination.");
   })));
+});
+
+test("prepared PR authority rejects A-to-B-to-A target discovery and approval races", async (t) => {
+  for (const phase of ["discovery", "approval"]) await t.test(phase, async (t) => {
+    const { root } = await workspace(t), session = nativeSession();
+    const origin = "https://github.com/owner/repo.git", temporary = "https://github.com/owner/another.git";
+    await git(root, ["remote", "add", "origin", origin]);
+    const before = await inspectWorktree(root), original = childProcess.execFile;
+    let changed = false, restored = false, questions = 0;
+    const restore = async () => {
+      await git(root, ["config", "remote.origin.url", origin]);
+      restored = true;
+    };
+    const intercepted = (...args) => original(...args);
+    intercepted[promisify.custom] = async (file, args, options) => {
+      const relevant = file === "git" && options?.cwd === root;
+      if (relevant && !changed && args.slice(-3).join(" ") === "remote get-url origin") {
+        await git(root, ["config", "remote.origin.url", temporary]);
+        changed = true;
+      }
+      const result = await exec(file, args, options);
+      if (relevant && changed && !restored && phase === "discovery" && args.includes("--push")) await restore();
+      return result;
+    };
+    childProcess.execFile = intercepted;
+    syncBuiltinESMExports();
+    try {
+      const { controller } = await copiedController(root);
+      session.capabilities = { ui: { elicitation: true } };
+      session.ui = { elicitation: async ({ message }) => {
+        questions++;
+        assert.match(message, /automatic repository CI for owner\/another refs\/heads\/task/);
+        await restore();
+        return { action: "accept", content: { decision: "approve" } };
+      } };
+      const ctx = documentationTask(root, {
+        session, args: { goal: "Explain behavior", acceptance: ["Document the behavior"],
+          prepare: true, mode: "autopilot", delivery: "pull-request" },
+        pause: async () => {},
+        agent: async () => { assert.fail("A mismatched publication grant must stop before implementation."); },
+      });
+      const result = await controller.runDevelopment(ctx, { root });
+      assert.equal(result.status, "blocked", result.reason);
+      assert.match(result.reason, /publication destination/i);
+      assert.equal(questions, phase === "approval" ? 1 : 0);
+      assert.equal(changed && restored, true);
+      assert.deepEqual(await inspectWorktree(root), before, "Restoring A defeats configuration-hash-only checks.");
+    } finally {
+      childProcess.execFile = original;
+      syncBuiltinESMExports();
+      await restore();
+    }
+  });
+});
+
+test("isolated dispatch requires ordinary CI authority before reaching native publication", async (t) => {
+  const { root } = await workspace(t);
+  await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
+  const before = await inspectWorktree(root), hooks = await activeHookSnapshot(root);
+  const scope = { sessionId: "fixture-session", runId: "ordinary-ci-authority", base: before.source.head,
+    workspace: before.identity, task: { goal: "Inspect automatic CI authority", delivery: "local-commit", execution: {
+      kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: before.source.head,
+    } } };
+  let nativeCalls = 0, failure;
+  try {
+    await executeIsolatedVerification({ session: { rpc: { tools: {
+      getCurrentMetadata: async () => ({ tools: [{ name: "functions.powershell" }] }),
+      execute: async () => { nativeCalls++; return { resultType: "failure" }; },
+    } } } }, root, scope, before.source, hooks, await captureCandidateImplementation(),
+    path.join(root, ".data", "verification", "ordinary-ci-missing"), []);
+  } catch (error) { failure = error; }
+  assert.equal(nativeCalls, 0, "A candidate push can trigger ordinary CI even when isolated workers are disabled.");
+  assert.match(failure?.message ?? "", /ordinary.*CI.*authority/);
+});
+
+test("native isolated publication rechecks the original ordinary CI grant before any external command", async (t) => {
+  const { root } = await workspace(t);
+  await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
+  const before = await inspectWorktree(root), hooks = await activeHookSnapshot(root);
+  const implementation = await captureCandidateImplementation();
+  const scope = { sessionId: "fixture-session", runId: "native-ordinary-ci", base: before.source.head,
+    workspace: before.identity, task: { goal: "Bind automatic CI authority", delivery: "local-commit", execution: {
+      kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: before.source.head,
+    } } };
+  const receipts = syntheticTaskGrant(scope, hooks, implementation);
+  const directory = path.join(root, ".data", "verification", "native-ordinary-ci");
+  const prepared = await prepareIsolatedExecution(root, scope, before.source, hooks, implementation, directory, receipts);
+  const input = JSON.parse(await readFile(prepared.file, "utf8"));
+  assert.deepEqual(input.authorization, { scope, receipts });
+  const original = childProcess.execFile;
+  childProcess.execFile = () => assert.fail("Unapproved publication must not reach Git or GitHub.");
+  syncBuiltinESMExports();
+  try {
+    const native = await import(new URL(`../isolated-verification.mjs?authority=${path.basename(path.dirname(root))}`, import.meta.url).href);
+    for (const mutate of [
+      (value) => { delete value.authorization; },
+      (value) => { value.authorization.receipts = []; },
+      (value) => { value.authorization.receipts[0].origin = "agent"; },
+      (value) => { value.authorization.scope.workspace.branch = "refs/heads/another"; },
+      (value) => { value.authorization.scope.task.execution.repository = "owner/another"; },
+    ]) {
+      const changed = structuredClone(input);
+      mutate(changed);
+      const bytes = JSON.stringify(changed);
+      await writeFile(prepared.file, bytes);
+      await assert.rejects(native.runIsolatedRequest(prepared.file, sha256(bytes)), /ordinary.*CI.*authority/);
+      await assert.rejects(readFile(path.join(directory, "dispatch-intent.json")), { code: "ENOENT" });
+    }
+  } finally {
+    childProcess.execFile = original;
+    syncBuiltinESMExports();
+  }
 });
 
 test("isolated cancellation prevents native execution before or during metadata lookup", isolatedCases, async (t) => {
@@ -3958,9 +4136,12 @@ test("isolated cancellation prevents native execution before or during metadata 
     const { root } = await workspace(t), signal = new AbortController(), cancellation = new Error("Fixture cancellation");
     await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
     const before = await inspectWorktree(root), hooks = await activeHookSnapshot(root);
-    const scope = { base: before.source.head, workspace: before.identity, task: { execution: {
+    const scope = { sessionId: "fixture-session", runId: "cancelled-dispatch", base: before.source.head,
+      workspace: before.identity, task: { goal: "Stop cancelled native publication", delivery: "local-commit", execution: {
       kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: before.source.head,
     } } };
+    const implementation = await captureCandidateImplementation();
+    const receipts = syntheticTaskGrant(scope, hooks, implementation);
     let calls = 0, lookups = 0;
     const ctx = { signal: signal.signal, session: { rpc: { tools: {
       getCurrentMetadata: async () => {
@@ -3972,7 +4153,7 @@ test("isolated cancellation prevents native execution before or during metadata 
     } } } };
     if (phase === "before-preparation") signal.abort(cancellation);
     await assert.rejects(executeIsolatedVerification(ctx, root, scope, before.source, hooks,
-      await captureCandidateImplementation(), path.join(root, ".data", "verification", "cancelled-dispatch")),
+      implementation, path.join(root, ".data", "verification", "cancelled-dispatch"), receipts),
     phase === "not-cancelled" ? /denied, failed or is uncertain/ : (error) => error === cancellation);
     assert.equal(calls, phase === "not-cancelled" ? 1 : 0);
     if (phase === "before-preparation") assert.equal(lookups, 0);
@@ -3989,9 +4170,12 @@ test("hosted setup failures with no executed checks remain blocked diagnostics",
   await git(root, ["commit", "--quiet", "-m", "Candidate check selection fixture"]);
   assert.equal((await verificationPlan(root, base)).ciMacos, false);
   const before = await inspectWorktree(root), hooks = await activeHookSnapshot(root);
-  const scope = { base, workspace: before.identity, task: { execution: {
+  const scope = { sessionId: "fixture-session", runId: "setup-failure", base, workspace: before.identity,
+    task: { goal: "Retain hosted setup failures", delivery: "local-commit", execution: {
     kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: base,
   } } };
+  const implementation = await captureCandidateImplementation();
+  const receipts = syntheticTaskGrant(scope, hooks, implementation);
   const directory = path.join(root, ".data", "verification", "setup-failure");
   let dispatched, artifactLookups = 0;
   const unexpected = [], endpoints = [];
@@ -4042,7 +4226,7 @@ test("hosted setup failures with no executed checks remain blocked diagnostics",
         await writeFile(path.join(directory, "dispatch.json"), JSON.stringify({ status: "submitted", request: dispatched }));
         return { resultType: "success" };
       },
-    } } } }, root, scope, before.source, hooks, await captureCandidateImplementation(), directory);
+    } } } }, root, scope, before.source, hooks, implementation, directory, receipts);
     assert.equal(result.report.status, "blocked");
     assert.equal(result.report.complete, false);
     assert.ok(result.report.checks.every((check) => check.status === "not_run"));

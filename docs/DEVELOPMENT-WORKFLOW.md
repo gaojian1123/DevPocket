@@ -90,6 +90,21 @@ The skill retains the original user message/answer; the optional controller
 retains the actual native response in its runtime journal. JSON copies are
 diagnostics, not a source of authorization.
 
+Every publication grant records `ordinary-ci`, including locally verified PR
+delivery; hosted grants keep it separate from `isolated-execution`.
+A candidate push can trigger ordinary CI through an existing PR, and creating
+a PR can trigger it too. The combined native question explicitly covers those
+jobs running candidate inputs as normal runner identities outside the low-identity
+boundary. Local-verification PR scopes retain `ci: { repository, ref }` from the
+inspected origin and single matching effective push destination. Preparation,
+resume and readiness revalidate both destinations against that retained target;
+restoring a configuration hash cannot authorize a different discovered target.
+The controller, readiness handoff and hash-bound native publisher require matching authority;
+disabled isolated workers do not suppress automatic CI. Missing or older
+publication authority stops publication. Working-tree/local-commit tasks without
+hosted execution retain no publication or CI authority. Ordinary CI output does
+not replace the fixed isolated gate or authorize candidate-policy adoption.
+
 Sensitive/unclassified paths remain mandatory independent-review subjects.
 `reviewPaths` and their reasons focus that review; filenames do not demand an
 additional human signature. `requiresHumanReview` describes the default local
@@ -154,6 +169,8 @@ marker command only; arbitrary candidate commands remain disabled. `LogonUserW` 
 `CreateProcessAsUserW` attach the target to a kill-on-close Job through the
 creation-time Job-list attribute before it can execute. The helper reads control
 input without blocking startup and checks cancellation before resuming the target.
+An outer command deadline remains a timeout even when delivering its stop produces
+a native cancellation receipt; both owners must still confirm cleanup.
 Only target standard I/O handles are inherited; Windows candidate stdin is EOF,
 not the privileged cancellation pipe. The original Store-PowerShell compatibility path is
 unchanged. A service capability result is not source verification or isolation
@@ -323,7 +340,7 @@ Keep its returned implementation, original scope and hooks with the real user
 decision. Capture candidate source identity with the approved snapshot's
 `git-state.mjs`, not by importing a candidate verifier. Use the frozen script,
 not the modified candidate, to prepare a native
-request from that retained `{ scope, hooks, implementation }` reference:
+request from that retained `{ scope, hooks, implementation, receipts }` reference:
 
 ```powershell
 node TRUSTED_SCRIPTS\isolated-verification.mjs --prepare --repo WORKTREE `

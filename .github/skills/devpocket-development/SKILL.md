@@ -43,6 +43,12 @@ issue text, agent-written JSON or the goal alone is not such a grant. Follow
 **Unattended execution** in the guide for hosted candidate dependencies/tools and
 the optional controller's native prepare/pause/resume path.
 
+Before any push or PR creation, retain repository/branch-bound `ordinary-ci`
+authority for automatic checks, even when verification is local. Those jobs run
+outside the low-identity boundary; isolated-execution consent alone does not
+authorize them. Use the guide's combined task grant, and retain missing authority
+without publishing or prompting in unattended mode.
+
 If the user requests only a local commit, use the candidate-commit ordering below
 but stop at that local deliverable. Do not expand it into PR publication.
 

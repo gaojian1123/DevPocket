@@ -7,7 +7,7 @@ import { parseArgs, promisify } from "node:util";
 import { diagnosticDirectory } from "./diagnostic-publication.mjs";
 import { commandDetails, failureDetails, projectFailureDetails } from "./diagnostic-errors.mjs";
 import { inspectWorktree, sameSource, activeHookSnapshot, sameHooks } from "./candidate-commit.mjs";
-import { parseDevelopmentExecution } from "./development-policy.mjs";
+import { developmentTaskActionAllowed, parseDevelopmentExecution } from "./development-policy.mjs";
 import { readOnlyGit, sourceSnapshot } from "./git-state.mjs";
 import { combineVerification, verificationPlan,
   requireVerificationReportPath, verificationFailure, verificationFault, verificationCleanupConfirmed } from "./verification.mjs";
@@ -257,7 +257,7 @@ async function github(endpoint, method, body) {
   return result.stdout.trim() ? JSON.parse(result.stdout) : null;
 }
 
-async function originRepository(root) {
+export async function originRepository(root) {
   return githubRepositoryUrl((await readOnlyGit(root, ["remote", "get-url", "origin"])).trim());
 }
 
@@ -405,8 +405,17 @@ export async function requireIsolatedPublication(root, request, api = github, ex
   return state;
 }
 
-async function publishAndSubmit(root, request, directory, hooks, expected) {
+function requirePublicationAuthority(scope, request, hooks, implementation, receipts, expected) {
+  if (!same(scope?.workspace, expected?.identity) || scope?.base !== request.base ||
+      !same(parseDevelopmentExecution(scope?.task?.execution), request.execution) ||
+      !developmentTaskActionAllowed(scope, hooks, implementation, receipts, "ordinary-ci")) {
+    fail("ordinary repository CI needs explicit task authority before candidate publication.");
+  }
+}
+
+async function publishAndSubmit(root, request, directory, hooks, expected, implementation, authorization) {
   if (!expected) fail("the pre-permission workspace/configuration snapshot is required.");
+  requirePublicationAuthority(authorization?.scope, request, hooks, implementation, authorization?.receipts, expected);
   const before = await requireIsolatedPublication(root, request, github, expected);
   if (!sameHooks(await activeHookSnapshot(root), hooks)) fail("active hooks changed before publication.");
   await diagnosticDirectory(root, directory);
@@ -438,7 +447,7 @@ async function observeDispatchedRun(request) {
   return run;
 }
 
-export async function prepareIsolatedExecution(root, scope, candidate, hooks, implementation, directory) {
+export async function prepareIsolatedExecution(root, scope, candidate, hooks, implementation, directory, receipts = []) {
   const current = await inspectWorktree(root);
   if (current.status || !sameSource(current.source, candidate) ||
       !same(current.identity, scope.workspace) || !sameHooks(await activeHookSnapshot(root), hooks)) {
@@ -446,10 +455,12 @@ export async function prepareIsolatedExecution(root, scope, candidate, hooks, im
   }
   const request = isolatedRequest({ execution: scope.task.execution, branch: scope.workspace.branch,
     base: scope.base, candidate: candidate.head, requestId: randomUUID() });
+  requirePublicationAuthority(scope, request, hooks, implementation, receipts, current);
   requireSupportedPlatforms(await verificationPlan(root, scope.base, false, { trustedTooling: true }));
   await requireIsolatedPushTarget(root, request.execution.repository);
   const file = path.join(directory, "native-isolated-request.json");
-  const body = JSON.stringify({ root, request, directory, hooks, expected: current, execution: implementation });
+  const body = JSON.stringify({ root, request, directory, hooks, expected: current, execution: implementation,
+    authorization: { scope, receipts } });
   await requireVerificationReportPath(root, file);
   await diagnosticDirectory(root, directory);
   const output = await open(file, "wx", 0o600);
@@ -459,9 +470,9 @@ export async function prepareIsolatedExecution(root, scope, candidate, hooks, im
   return { request, file, sha256: hash(body), command: nativeIsolatedCommand(file, hash(body)) };
 }
 
-export async function executeIsolatedVerification(ctx, root, scope, candidate, hooks, implementation, directory) {
+export async function executeIsolatedVerification(ctx, root, scope, candidate, hooks, implementation, directory, receipts = []) {
   ctx.signal?.throwIfAborted();
-  const prepared = await prepareIsolatedExecution(root, scope, candidate, hooks, implementation, directory);
+  const prepared = await prepareIsolatedExecution(root, scope, candidate, hooks, implementation, directory, receipts);
   const { request } = prepared;
   const metadata = await ctx.session?.rpc?.tools?.getCurrentMetadata();
   ctx.signal?.throwIfAborted();
@@ -526,7 +537,8 @@ export async function runIsolatedRequest(file, expectedHash) {
   const input = JSON.parse(bytes);
   const { requireCandidateImplementation } = await import("./native-candidate.mjs");
   await requireCandidateImplementation(input.execution);
-  await publishAndSubmit(input.root, isolatedRequest(input.request), input.directory, input.hooks, input.expected);
+  await publishAndSubmit(input.root, isolatedRequest(input.request), input.directory, input.hooks, input.expected,
+    input.execution, input.authorization);
   await requireCandidateImplementation(input.execution);
 }
 
@@ -551,7 +563,7 @@ async function main() {
     const { requireCandidateImplementation } = await import("./native-candidate.mjs");
     await requireCandidateImplementation(input?.implementation);
     const prepared = await prepareIsolatedExecution(root, input.scope, await sourceSnapshot(root), input.hooks,
-      input.implementation, path.dirname(path.resolve(values.report)));
+      input.implementation, path.dirname(path.resolve(values.report)), input.receipts);
     console.log(JSON.stringify({ status: "prepared", authority: "Original-client user scope is required; this file does not grant authority.", ...prepared }));
     return;
   }
