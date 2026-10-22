@@ -10,13 +10,12 @@ import { test } from "node:test";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationImpact } from "../verification-policy.mjs";
 import { developmentReviewRequirements, isVerificationPolicyPath } from "../development-policy.mjs";
 import { syntheticExecution, verificationTools, windowsNodeLauncher } from "./fixtures/verification-tools.mjs";
-import { combineVerification, executeVerification, verificationPlan, verificationProcessCleanupConfirmed } from "../verification.mjs";
-import { withCommandBoundary } from "../process.mjs";
+import { combineVerification, executeVerification, verificationPlan } from "../verification.mjs";
 import { openVerificationRun, readVerificationRun } from "../verification-run.mjs";
 import { emulatorInputDifference, resolveVerificationExecutable, verificationExecutionPolicy } from "../verification-preflight.mjs";
 import { capturePromotionContext, prepareVerificationTransition } from "../verification-transition.mjs";
 import { WORKFLOW_TEST_FILES } from "../test-workflow.mjs";
-import { committedInputsMatch, committedSourceInputs, commitSourceProjection, sourceInputs, sourceSnapshot } from "../git-state.mjs";
+import { committedInputsMatch, committedSourceInputs, commitSourceProjection, sourceInputs } from "../git-state.mjs";
 import { androidImageArchitecture } from "../android-platform.mjs";
 
 const exec = promisify(execFile);
@@ -122,38 +121,18 @@ test("storage roots accept direct reports without admitting sibling or linked di
     { diagnosticCode: "ownership-mismatch" });
 });
 
-test("trusted tooling manifests round-trip and resume without becoming ordinary local execution", async (t) => {
-  const root = await repository(t), plan = await verificationPlan(root, "HEAD"), policy = await verificationExecutionPolicy();
-  const options = { trustedToolingRunner: path.resolve("scripts", "test-workflow.mjs"),
-    directory: path.join(root, ".data", "verification", "trusted") };
-  const run = await openVerificationRun(root, plan, options, policy);
-  const report = { ...plan, group: "all", status: "passed", complete: true, checks: [] };
-  await run.finish(report, true);
-  const read = await readVerificationRun(root, run.reference.manifest);
-  assert.equal(read.manifest.binding.trustedTooling, true);
-  const resumed = await openVerificationRun(root, plan, { ...options,
-    directory: path.join(root, ".data", "verification", "resumed"), resume: run.reference.manifest }, policy);
-  await resumed.finish(report, true);
-  assert.equal((await readVerificationRun(root, run.reference.manifest)).count, 2);
+test("retired sandbox execution options fail before starting ordinary checks", async (t) => {
+  const root = await repository(t), plan = await verificationPlan(root, "HEAD");
+  for (const option of ["evidenceRoot", "trustedToolingRunner", "isolatedTooling", "deviceDirectory", "deviceCleanup", "operationsPython"]) {
+    const directory = path.join(root, ".data", "verification", option);
+    await assert.rejects(executeVerification(root, plan, { directory, [option]: true }), { diagnosticCode: "configuration" });
+    await assert.rejects(fileSystem.stat(directory), { code: "ENOENT" });
+  }
+  await assert.rejects(verificationPlan(root, "HEAD", false, { trustedTooling: true }), { diagnosticCode: "configuration" });
+  const policy = await verificationExecutionPolicy();
   await assert.rejects(openVerificationRun(root, plan, {
-    directory: path.join(root, ".data", "verification", "wrong-mode"), resume: run.reference.manifest,
-  }, policy));
-});
-
-test("hosted evidence storage stays separate from candidate-owned source and cannot be promoted or resumed", async (t) => {
-  const source = await repository(t), control = await repository(t);
-  await writeFile(path.join(source, "README.md"), "Documentation fixture for separate evidence storage\n");
-  const plan = await verificationPlan(source, "HEAD");
-  const options = { evidenceRoot: control, directory: path.join(control, ".data", "ci", "isolated") };
-  const report = await executeVerification(source, plan, options);
-  assert.equal(report.status, "passed");
-  assert.deepEqual(report.source, plan.source);
-  const stored = await readVerificationRun(control, report.run.manifest);
-  assert.equal(stored.manifest.root, await fileSystem.realpath(control));
-  assert.deepEqual(stored.manifest.plan.source, plan.source);
-  await assert.rejects(readFile(path.join(source, ".data", "verification", "local", "receipt.key")), { code: "ENOENT" });
-  await assert.rejects(executeVerification(source, plan, { ...options, resume: "existing-run.json" }), { diagnosticCode: "configuration" });
-  await assert.rejects(executeVerification(source, plan, { ...options, promote: "existing-run.json" }), { diagnosticCode: "configuration" });
+    directory: path.join(root, ".data", "verification", "retired"), trustedToolingRunner: "retired",
+  }, policy), { diagnosticCode: "configuration" });
 });
 
 test("report destinations cannot occupy private verification control storage", async (t) => {
@@ -890,164 +869,6 @@ test("the native adapter preserves literal parameters, mandatory instrumentation
     assert.match(check.deviceRunId, /^[a-f0-9-]{36}$/);
     assert.equal(device.report.checks.find((item) => item.id === "android-build").status, "not_run");
   });
-});
-
-test("isolated native-only plans reach both native adapters without a tooling catalogue", async (t) => {
-  const root = await repository(t, { native: true }), scripts = path.join(root, "scripts");
-  const environment = isolatedAdmissionEnvironment(root), home = process.platform === "win32" ? "LOCALAPPDATA" : "HOME";
-  const previous = new Map([home, "DEVPOCKET_VERIFIER_ADMISSION"].map((name) => [name, process.env[name]]));
-  process.env[home] = environment[home];
-  delete process.env.DEVPOCKET_VERIFIER_ADMISSION;
-  t.after(() => {
-    for (const [name, value] of previous) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
-  });
-  await mkdir(scripts);
-  for (const name of ["build-android", "test-android"]) {
-    await writeFile(path.join(scripts, `${name}.ps1`), [
-      "param($Jdk,$Sdk,$Image,$RunDirectory,$Owner,[switch]$Lint,[switch]$Instrumentation,[switch]$Layouts)",
-      `Set-Content -LiteralPath '.data/${name}-executed' -Value 'native adapter reached'`,
-      "exit 37", "",
-    ].join("\n"));
-  }
-  await exec("git", ["add", "."], { cwd: root });
-  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
-    "commit", "--quiet", "-m", "Native-only adapter fixtures"], { cwd: root });
-  await writeFile(path.join(root, "android", "fixture.kt"), "// native-only change\n");
-  const plan = await verificationPlan(root, "HEAD"), tools = toolchains.get(root);
-  assert.deepEqual(plan.requiredChecks, ["android-build", "android-device"]);
-  assert.equal(plan.toolingShards, undefined);
-  for (const [group, id, marker] of [
-    ["android", "android-build", "build-android"], ["device", "android-device", "test-android"],
-  ]) {
-    const report = await executeVerification(root, plan, {
-      group, jdk: tools.jdk, sdk: tools.sdk, directory: path.join(root, ".data", "verification", group),
-      isolatedTooling: true, trustedToolingRunner: path.resolve("scripts", "test-workflow.mjs"),
-    });
-    const check = report.checks.find((item) => item.id === id);
-    assert.equal(check.exitCode, 37, JSON.stringify(report));
-    assert.equal(check.executionState, "exited");
-    assert.match(await readFile(path.join(root, ".data", `${marker}-executed`), "utf8"), /native adapter reached/);
-  }
-  const invalidPlan = { ...plan, requiredChecks: ["workflow-tests"], requiredGroups: ["tooling"] };
-  const invalidDirectory = path.join(root, ".data", "verification", "invalid-tooling");
-  await assert.rejects(executeVerification(root, invalidPlan, {
-    directory: invalidDirectory, isolatedTooling: true, trustedToolingRunner: path.resolve("scripts", "test-workflow.mjs"),
-  }), { diagnosticCode: "configuration" });
-  await assert.rejects(fileSystem.stat(invalidDirectory), { code: "ENOENT" });
-});
-
-async function isolatedToolingCheck(t) {
-  const root = await repository(t), directory = path.join(root, ".data", "verification", "isolated-check");
-  await mkdir(directory, { recursive: true });
-  const source = await sourceSnapshot(root), check = { id: "workflow-tests", status: "not_run" };
-  const plan = { source, toolingShards: { files: ["first.test.mjs", "second.test.mjs"] } };
-  const executorFile = path.join(directory, "executor.mjs");
-  const executorSource = (await readFile(new URL("../verification-executor.mjs", import.meta.url), "utf8"))
-    .replace(/from "\.\/([^"]+)"/g, (_, name) => `from ${JSON.stringify(new URL(`../${name}`, import.meta.url).href)}`);
-  await writeFile(executorFile, executorSource + "\nexport { executeCheck };\n");
-  const executor = await import(pathToFileURL(executorFile).href);
-  return { root, check, execute: (options = {}) =>
-    executor.executeCheck(root, plan, check, { directory, isolatedTooling: true, ...options }) };
-}
-
-test("isolated tooling source rejection preserves completed cleanup and bounded output", async (t) => {
-  for (const kind of ["changed", "unavailable"]) await t.test(kind, async (t) => {
-    const { root, check, execute } = await isolatedToolingCheck(t);
-    let calls = 0;
-    const commandOutcome = { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0,
-      capturedBytes: 29, outputTruncated: false, cleanupFailure: null };
-    await withCommandBoundary(async (file, args) => {
-      assert.equal(file, process.execPath);
-      assert.deepEqual(args, ["--disable-sigusr1", "--test", "first.test.mjs"]);
-      calls++;
-      const readme = path.join(root, "README.md");
-      if (kind === "changed") await writeFile(readme, "Changed by the completed command\n");
-      else { await rm(readme); await mkdir(readme); }
-      return { stdout: "completed source-mutating test\n", stderr: "", processTreeStopped: true, commandOutcome };
-    }, () => execute());
-    assert.equal(calls, 1);
-    assert.equal(check.status, "blocked");
-    assert.equal(check.failure.reason, kind === "changed" ? "source-changed" : "source-unavailable");
-    assert.equal(check.failure.phase, "source-validation");
-    assert.equal(check.failure.processTreeStopped, true);
-    assert.equal(check.commandOutcome.cleanupFailure, null);
-    assert.equal(verificationProcessCleanupConfirmed(check), true);
-    assert.match(await readFile(path.join(root, check.log), "utf8"), /completed source-mutating test/);
-    assert.deepEqual(check.toolingExecutions.map(({ file, status }) => ({ file, status })),
-      [{ file: "first.test.mjs", status: "passed" }]);
-  });
-});
-
-test("isolated tooling pre-launch interruption preserves only completed command evidence", async (t) => {
-  for (const kind of ["before-first", "between-cancel", "between-timeout"]) await t.test(kind, async (t) => {
-    const { root, check, execute } = await isolatedToolingCheck(t), controller = new AbortController();
-    const read = fileSystem.readFile, now = Date.now;
-    let calls = 0, expired = false;
-    if (kind === "before-first") controller.abort();
-    if (kind === "between-timeout") {
-      t.mock.method(Date, "now", () => now() + (expired ? 31 * 60_000 : 0));
-      t.mock.method(fileSystem, "readFile", async (file, ...args) => {
-        if (calls && file === path.join(root, "README.md")) expired = true;
-        return read(file, ...args);
-      });
-      syncBuiltinESMExports();
-    }
-    try {
-      await withCommandBoundary(async (_file, args) => {
-        calls++;
-        assert.equal(calls, 1, "No command can start after the interruption.");
-        assert.deepEqual(args, ["--disable-sigusr1", "--test", "first.test.mjs"]);
-        if (kind === "between-cancel") controller.abort();
-        return { stdout: "completed before interruption\n", stderr: "", processTreeStopped: true,
-          commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0, cleanupFailure: null } };
-      }, () => execute({ signal: controller.signal }));
-    } finally {
-      t.mock.restoreAll();
-      syncBuiltinESMExports();
-    }
-    assert.equal(check.status, "blocked");
-    assert.equal(check.failure.reason, kind === "between-timeout" ? "command-timeout" : "command-cancelled");
-    assert.equal(verificationProcessCleanupConfirmed(check), true);
-    if (kind === "before-first") {
-      assert.equal(calls, 0);
-      assert.equal(check.executionState, "not-started");
-      assert.equal(check.execution, undefined);
-      assert.deepEqual(check.toolingExecutions, []);
-      assert.equal(check.commandOutcome.observedProcess, "unknown");
-    } else {
-      assert.equal(calls, 1);
-      assert.equal(check.executionState, "exited");
-      assert.equal(check.failure.processTreeStopped, true);
-      assert.equal(check.commandOutcome.cleanupFailure, null);
-      assert.match(await readFile(path.join(root, check.log), "utf8"), /completed before interruption/);
-      assert.deepEqual(check.toolingExecutions.map(({ file, status }) => ({ file, status })),
-        [{ file: "first.test.mjs", status: "passed" }]);
-    }
-  });
-});
-
-test("isolated tooling cannot lend the prior command's cleanup to a later unconfirmed command", async (t) => {
-  const { check, execute } = await isolatedToolingCheck(t);
-  let calls = 0;
-  await withCommandBoundary(async (_file, args) => {
-    calls++;
-    if (calls === 1) return { stdout: "first completed\n", stderr: "", processTreeStopped: true,
-      commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0, cleanupFailure: null } };
-    assert.equal(calls, 2);
-    assert.deepEqual(args, ["--disable-sigusr1", "--test", "second.test.mjs"]);
-    throw Object.assign(new Error("The second command has no cleanup evidence."), { code: 23, stdout: "", stderr: "" });
-  }, () => execute());
-  assert.equal(calls, 2);
-  assert.equal(check.status, "failed");
-  assert.equal(check.executionState, "exited");
-  assert.equal(check.commandOutcome.observedProcess, "unknown");
-  assert.equal(verificationProcessCleanupConfirmed(check), false);
-  assert.deepEqual(check.toolingExecutions.map(({ file, status }) => ({ file, status })), [
-    { file: "first.test.mjs", status: "passed" }, { file: "second.test.mjs", status: "failed" },
-  ]);
 });
 
 test("backend diagnostics observe the ordered backend entry without running the independent tooling suite", async (t) => {
@@ -3009,9 +2830,7 @@ test("a changed captured execution policy cannot resume an earlier successful ru
   assert.equal(await copiedPolicy.verificationExecutionPolicy(), first.policy, "The copied policy must match before mutation.");
   for (const name of ["test-workflow.mjs", "verification-tooling.mjs", "verification-admission.mjs",
     "verification-ci.mjs", "verification-ci-artifact.ps1", "development-policy.mjs", "emulator-resources.mjs",
-    "isolated-worker.mjs", "isolated-worker.ps1", "isolated-worker.py", "isolated-worker-probe.mjs",
-    "isolated-command.cs", "isolated-command.ps1", "isolated-command.py", "windows-supervisor.cs",
-    "tests/linux-privileged-process.test.mjs", "tests/fixtures/linux-process.mjs"]) await t.test(name, async () => {
+    "development-controller.mjs"]) await t.test(name, async () => {
     const file = path.join(copied, name), original = await readFile(file);
     try {
       await writeFile(file, Buffer.concat([original, Buffer.from("\n")]));

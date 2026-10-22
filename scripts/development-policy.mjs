@@ -9,9 +9,7 @@ const executionScripts = new Set([
   "verification-backend", "verification-android", "process", "owned-command", "owned-command-windows",
   "verification-preflight", "verification-run", "verification-transition",
   "verification-tooling", "verification-admission", "verification-ci", "verification-ci-artifact",
-  "isolated-verification", "development-controller",
-  "isolated-worker", "isolated-worker-probe", "isolated-command",
-  "windows-supervisor",
+  "development-controller",
   "owned-command-linux", "owned-command-darwin", "local-ipc", "device-run", "worker-diagnostics", "device-diagnostics", "diagnostic-errors",
   "bounded-worker-log", "diagnostic-publication", "native-lifecycle", "backend-diagnostics",
   "verification-diagnostics", "android-diagnostics", "platform-diagnostics",
@@ -56,7 +54,6 @@ function classification(file) {
       lower === ".github/copilot-instructions.md" || /^\.github\/instructions\/.*\.instructions\.md$/.test(lower) ||
       /^\.github\/(?:agents|skills)\//.test(lower)) return "instructions";
   if (/^\.github\/(?:workflows|actions|extensions)\//.test(lower) || lower === ".github/codeowners" ||
-      ["scripts/tests/linux-privileged-process.test.mjs", "scripts/tests/fixtures/linux-process.mjs"].includes(lower) ||
       /^scripts\/([^/]+)\.(?:mjs|ps1|cs|py|ts)$/.test(lower) && executionScripts.has(lower.slice(8).replace(/\.[^.]+$/, ""))) {
     return "execution";
   }
@@ -216,53 +213,34 @@ export function developmentApprovalRequest(scope, policy, stage, hooks) {
   return { ...request, id: identity(request) };
 }
 
-export function parseDevelopmentExecution(value) {
-  if (value === undefined) return undefined;
-  if (!value || typeof value !== "object" || Array.isArray(value) ||
-      Object.keys(value).some((key) => !["kind", "repository", "trustedRef", "trustedSha"].includes(key)) ||
-      value.kind !== "github-hosted" || typeof value.repository !== "string" ||
-      !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(value.repository) ||
-      value.repository.split("/").some((part) => [".", ".."].includes(part)) ||
-      typeof value.trustedRef !== "string" || !/^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value.trustedRef) ||
-      /(?:\.\.|\/\/|\/\.|\.lock(?:\/|$)|\/$|\.$)/.test(value.trustedRef) ||
-      !/^[a-f0-9]{40}$/.test(value.trustedSha ?? "")) {
-    throw new TypeError("Isolated execution requires the exact GitHub repository, trusted branch and approved workflow commit.");
-  }
-  return { kind: value.kind, repository: value.repository, trustedRef: value.trustedRef, trustedSha: value.trustedSha };
-}
-
 export function developmentTaskApprovalRequest(scope, hooks, implementation) {
   if (!scope?.sessionId || !scope.runId || !scope.workspace?.root || !scope.workspace.branch ||
       !scope.task?.goal || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(scope.base ?? "") ||
       !hooks?.fingerprint || !implementation?.files?.length) {
     throw new TypeError("Task authorization requires the original session, task, workspace, hooks and trusted implementation.");
   }
-  const execution = parseDevelopmentExecution(scope.task.execution);
+  if (scope.task.execution !== undefined) {
+    throw new TypeError("The former isolated execution scope is retired. Ordinary CI needs its own repository/branch-bound task scope.");
+  }
   const delivery = scope.task.delivery ?? "local-commit";
   if (!["working-tree", "local-commit", "pull-request"].includes(delivery)) throw new TypeError("Unknown delivery target.");
-  if (execution && delivery === "working-tree") throw new TypeError("Hosted execution requires an authorized published candidate.");
-  const publication = delivery === "pull-request" || Boolean(execution);
-  const ci = scope.ci === undefined && execution
-    ? { repository: execution.repository, ref: scope.workspace.branch } : scope.ci;
+  const publication = delivery === "pull-request";
+  const ci = scope.ci;
   if (publication || scope.ci !== undefined) requireCiTarget(ci, scope.workspace.branch);
-  if (execution && ci.repository !== execution.repository) throw new TypeError("Ordinary CI and isolated execution must name the same repository.");
   const actions = ["edit", "check", "independent-review", "repair",
     ...(delivery !== "working-tree" ? ["commit"] : []),
     ...(publication ? ["push"] : []),
     ...(delivery === "pull-request" ? ["create-draft-pr", "mark-pr-ready"] : []),
-    ...(execution ? ["isolated-execution"] : []),
     ...(publication ? ["ordinary-ci"] : [])];
   const effects = [
     `Allow ${actions.join(", ")} for this task and ${scope.workspace.branch}; reuse this scope across ordinary source repairs.`,
-    execution
-      ? `Run the isolated stage's candidate dependencies, install scripts and tools on disposable GitHub-hosted workers in ${execution.repository}, using ${execution.trustedRef} at ${execution.trustedSha}. Public network access is permitted.`
-      : `Use existing local checks ${publication ? "for verification" : "only"}. Changed executable inputs still need their exact local execution approval.`,
-    ...(publication ? [`Also authorize automatic repository CI for ${ci.repository} ${ci.ref}, including existing-PR synchronization and PR creation. Ordinary CI runs candidate dependencies, install scripts and tools as its normal runner identity, outside the low-identity worker boundary. These outputs do not replace fixed isolated acceptance or authorize policy adoption.`] : []),
-    "Keep the approved controller, review instructions and acceptance rules fixed. Candidate instructions and tools are test subjects, not replacement authority.",
+    `Use existing local checks ${publication ? "when their local execution is authorized" : "only"}. Changed executable inputs still need their exact local execution approval.`,
+    ...(publication ? [`Authorize automatic repository CI for ${ci.repository} ${ci.ref}, including existing-PR synchronization and PR creation. Candidate dependencies, install scripts and changed tools run as the ordinary disposable runner identity without per-revision project approval. Public network access is permitted. This is ordinary CI, not an adversarial sandbox or permission to adopt new local control.`] : []),
+    "Retain required checks, independent review and source-bound results. Keep the running local controller unchanged until separately authorized adoption.",
   ];
   const exclusions = [
     "No merge, deployment, release, production secrets, cloud administration, device enrollment, live runtime control, local installation, extension reload or Git hook changes.",
-    "No adoption of candidate workflow/permission policy, cache promotion, native permission bypass, new targets or increased user-selected limits.",
+    "No automatic local controller/instruction/hook adoption, native permission bypass, new targets or increased user-selected limits.",
     ...(delivery === "working-tree" ? ["No commit, push or PR creation."] : []),
   ];
   const snapshot = canonical({ scope, hooks, implementation, actions, effects, exclusions });
@@ -282,9 +260,15 @@ export function developmentTaskActionAllowed(scope, hooks, implementation, recei
   return request.actions.includes(action) && developmentApprovalSatisfied(request, receipts);
 }
 
-export function developmentExecutionAuthorization(scope, policy, hooks, implementation, receipts) {
-  if (scope.task.execution) {
-    return developmentTaskActionAllowed(scope, hooks, implementation, receipts, "isolated-execution")
+export function developmentExecutionAuthorization(scope, policy, hooks, implementation, receipts, target = "local") {
+  if (scope.task.execution !== undefined) throw new TypeError("The former isolated execution scope is retired.");
+  if (!["local", "ci"].includes(target)) throw new TypeError("Choose local execution or ordinary CI explicitly.");
+  if (target === "ci") {
+    if (scope.task.delivery !== "pull-request") {
+      return { status: "needs_human", route: "github-hosted",
+        reason: "Ordinary CI-first execution needs explicit PR delivery scope; no publication was authorized." };
+    }
+    return developmentTaskActionAllowed(scope, hooks, implementation, receipts, "ordinary-ci")
       ? { status: "allowed", route: "github-hosted", subjectPaths: [...policy.protectedPaths], adoption: "not-authorized" }
       : { status: "needs_human", route: "github-hosted",
         request: developmentTaskApprovalRequest(scope, hooks, implementation).request };

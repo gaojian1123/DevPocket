@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { AsyncLocalStorage } from "node:async_hooks";
 import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
 import { lstat, readFile, readlink } from "node:fs/promises";
@@ -9,20 +8,10 @@ import { promisify } from "node:util";
 const exec = promisify(execFile);
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const splitPaths = (value) => value.split("\0").filter(Boolean);
-const fixedGit = new AsyncLocalStorage();
-
-export function withGitExecutable(executable, environment, operation) {
-  if (!path.isAbsolute(executable) || typeof operation !== "function" || fixedGit.getStore()) {
-    throw new Error("An absolute, non-replaceable Git executable is required.");
-  }
-  return fixedGit.run({ executable, environment: { ...environment } }, operation);
-}
 
 export async function git(root, args) {
-  const fixed = fixedGit.getStore();
-  const result = await exec(fixed?.executable ?? "git", ["--no-pager", ...args], {
+  const result = await exec("git", ["--no-pager", ...args], {
     cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 30_000,
-    ...(fixed ? { env: fixed.environment } : {}),
   });
   return result.stdout;
 }
@@ -31,6 +20,26 @@ export const readOnlyGitArgs = (args) => ["--no-optional-locks", "-c", "core.fsm
 
 export async function readOnlyGit(root, args) {
   return git(root, readOnlyGitArgs(args));
+}
+
+function githubRepositoryUrl(url) {
+  const match = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(url);
+  if (!match || match[1].split("/").some((part) => [".", ".."].includes(part))) {
+    throw new Error("The effective Git URL is not a GitHub.com repository URL.");
+  }
+  return match[1];
+}
+
+export async function originRepository(root) {
+  return githubRepositoryUrl((await readOnlyGit(root, ["remote", "get-url", "origin"])).trim());
+}
+
+export async function requirePushTarget(root, repository) {
+  const urls = (await readOnlyGit(root, ["remote", "get-url", "--push", "--all", "origin"])).trim().split(/\r?\n/);
+  if (urls.length !== 1 || githubRepositoryUrl(urls[0]) !== repository) {
+    throw new Error("Every effective push destination must be the single authorized GitHub repository.");
+  }
+  return urls[0];
 }
 
 export async function sourceSnapshot(root) {

@@ -1,6 +1,5 @@
 import { open } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { runCommand } from "./process.mjs";
 import { sourceSnapshot } from "./git-state.mjs";
 import { diagnosticError, failureDetails, commandDetails, contextualFailure } from "./diagnostic-errors.mjs";
@@ -25,10 +24,10 @@ function reportFor(plan, group, checks) {
 }
 
 export async function executeVerification(root, plan, options = {}) {
+  if (["evidenceRoot", "trustedToolingRunner", "isolatedTooling", "deviceDirectory", "deviceCleanup", "operationsPython"]
+    .some((key) => Object.hasOwn(options, key))) throw verificationFault("configuration");
   requirePlanCollection(plan);
   requireCheckPolicy(plan);
-  const evidenceRoot = options.evidenceRoot ?? root;
-  if (evidenceRoot !== root && (options.resume || options.promote)) throw verificationFault("configuration");
   const group = options.group ?? "all";
   if (!["all", ...CHECK_GROUPS].includes(group)) throw verificationFault("configuration");
   if (options.toolingShard && (group !== "tooling" || options.promote)) throw verificationFault("configuration");
@@ -39,13 +38,8 @@ export async function executeVerification(root, plan, options = {}) {
     check.toolingShard = toolingShardDescriptor(plan, options.toolingShard);
   }
   const selected = plan.requiredGroups.filter((item) => group === "all" || item === group);
-  if (options.trustedToolingRunner && path.resolve(options.trustedToolingRunner) !==
-      fileURLToPath(new URL("./test-workflow.mjs", import.meta.url))) throw verificationFault("configuration");
-  if (selected.includes("tooling") && options.isolatedTooling && (!options.trustedToolingRunner || !plan.toolingShards)) {
-    throw verificationFault("configuration");
-  }
-  await requireVerificationOutputDirectory(evidenceRoot, options.directory, [options.resume, options.promote]);
-  const release = await acquireVerificationLock(evidenceRoot);
+  await requireVerificationOutputDirectory(root, options.directory, [options.resume, options.promote]);
+  const release = await acquireVerificationLock(root);
   let run, preflight, report, sourceFailure, policy, transition, qualificationFailed = false,
     policyChanged = false, changed = false, safe = true, processesStopped = true, finished = false;
   const recovery = { reused: [], reusedChecks: [], invalidated: [], executed: [] };
@@ -68,8 +62,8 @@ export async function executeVerification(root, plan, options = {}) {
       policy = await verificationExecutionPolicy();
       transition = options.promote ? await prepareVerificationTransition(root, plan, options)
         : options.resume ? (await readVerificationRun(root, options.resume)).manifest.transition : null;
-      const promotionContext = transition || evidenceRoot !== root ? null : await capturePromotionContext(root, plan);
-      run = await openVerificationRun(evidenceRoot, plan, { ...options, transition }, policy, promotionContext);
+      const promotionContext = transition ? null : await capturePromotionContext(root, plan);
+      run = await openVerificationRun(root, plan, { ...options, transition }, policy, promotionContext);
       const backend = await prepareBackendVerification(root, plan, options);
       preflight = await verificationPreflight(root, plan, { ...options,
         onEmulatorIdentity: (value) => { initialEmulator = value; } });
@@ -245,11 +239,8 @@ export async function executeVerification(root, plan, options = {}) {
 
 async function executeCheck(root, plan, check, options, backend) {
   const definition = CHECKS.find((item) => item.id === check.id);
-  const quote = (value) => `'${value.replaceAll("'", "''")}'`;
   const adapter = definition.group === "tooling" ? {
-    args: ["-NoProfile", "-NonInteractive", "-Command", options.trustedToolingRunner
-      ? `& ${quote(process.execPath)} ${quote(options.trustedToolingRunner)}${check.toolingShard ? ` --workflow-shard ${check.toolingShard.id}` : ""}; exit $LASTEXITCODE`
-      : check.toolingShard
+    args: ["-NoProfile", "-NonInteractive", "-Command", check.toolingShard
       ? `& npm run test:workflow -- --workflow-shard ${check.toolingShard.id}; exit $LASTEXITCODE`
       : "& npm run test:workflow; exit $LASTEXITCODE"],
     timeoutMs: 30 * 60_000, graceMs: 5000,
@@ -294,13 +285,10 @@ async function executeCheck(root, plan, check, options, backend) {
     checkPhase = "command";
     check.executionState = "started";
     check.execution = { source: structuredClone(plan.source), startedAt: new Date().toISOString() };
-    const commandOptions = {
+    output = await runCommand("pwsh", adapter.args, {
       cwd: root, env: options.admissionEnvironment ? { ...(adapter.env ?? process.env), ...options.admissionEnvironment } : adapter.env,
       timeoutMs: adapter.timeoutMs, graceMs: adapter.graceMs, signal: options.signal,
-    };
-    output = definition.group === "tooling" && options.isolatedTooling
-      ? await executeIsolatedTooling(root, plan, check, commandOptions)
-      : await runCommand("pwsh", adapter.args, commandOptions);
+    });
     check.executionState = "exited";
     check.commandOutcome = commandDetails(output.commandOutcome);
     if (!await writeLog(output.stdout + output.stderr)) {
@@ -340,58 +328,4 @@ async function executeCheck(root, plan, check, options, backend) {
   check.durationMs = Date.now() - started;
   if (check.execution) check.execution.completedAt = new Date().toISOString();
   check.log = path.relative(root, log);
-}
-
-async function executeIsolatedTooling(root, plan, check, options) {
-  const files = check.toolingShard ? plan.toolingShards.parts.find((part) => part.id === check.toolingShard.id).files
-    : plan.toolingShards.files;
-  const deadline = Date.now() + options.timeoutMs;
-  check.toolingExecutions = [];
-  let retained = Buffer.alloc(0), last;
-  const append = (value) => { retained = boundedDiagnosticBytes(Buffer.concat([retained, Buffer.from(value)])).bytes; };
-  const completedFailure = (error) => Object.assign(error, {
-    commandOutcome: last?.commandOutcome, processTreeStopped: last?.processTreeStopped,
-    stdout: retained.toString("utf8"), stderr: "",
-  });
-  // Selection stays in the control identity; each file's candidate processes stop before the next file starts.
-  for (const file of files) {
-    let remaining;
-    try {
-      options.signal?.throwIfAborted();
-      remaining = deadline - Date.now();
-      if (remaining <= 0) throw verificationFault("command-timeout", { check: check.id });
-    } catch (error) {
-      if (!last) {
-        check.executionState = "not-started";
-        delete check.execution;
-      }
-      throw completedFailure(contextualFailure(error, options.signal));
-    }
-    const execution = { source: structuredClone(plan.source), startedAt: new Date().toISOString() };
-    try {
-      last = await runCommand(process.execPath, ["--disable-sigusr1", "--test", file], { ...options, timeoutMs: remaining });
-      execution.completedAt = new Date().toISOString();
-      check.toolingExecutions.push({ file, status: "passed", exitCode: 0, execution, commandOutcome: commandDetails(last.commandOutcome) });
-      append(`${file}\n${last.stdout}${last.stderr}`);
-    } catch (error) {
-      execution.completedAt = new Date().toISOString();
-      check.toolingExecutions.push({ file, status: "failed", exitCode: Number.isInteger(error.code) ? error.code : null,
-        execution, commandOutcome: commandDetails(error.commandOutcome) });
-      append(`${file}\n${error.stdout ?? ""}${error.stderr ?? ""}`);
-      error.stdout = retained.toString("utf8");
-      error.stderr = "";
-      throw error;
-    }
-    try {
-      const current = await sourceSnapshot(root);
-      if (current.head !== plan.source.head || current.fingerprint !== plan.source.fingerprint) {
-        throw verificationFault("source-changed", { phase: "source-validation", check: check.id });
-      }
-    } catch (error) {
-      const failure = error.diagnosticCode === "source-changed" ? error
-        : verificationFault("source-unavailable", { phase: "source-validation", check: check.id }, error);
-      throw completedFailure(failure);
-    }
-  }
-  return { ...last, stdout: retained.toString("utf8"), stderr: "" };
 }

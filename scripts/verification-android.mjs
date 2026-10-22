@@ -13,7 +13,7 @@ import { recoverEmulatorLease } from "./emulator-resources.mjs";
 export async function androidVerification(root, check, plan, options) {
   if (!["android-build", "android-device"].includes(check.id)) throw verificationFault("configuration", { check: check.id });
   const device = check.id === "android-device", owner = device ? randomUUID() : undefined;
-  const directory = options.deviceDirectory ?? path.join(options.directory, "device");
+  const directory = path.join(options.directory, "device");
   let catalogue;
   if (device) {
     await requireVerificationOutputDirectory(root, directory);
@@ -77,7 +77,7 @@ export async function androidVerification(root, check, plan, options) {
         `${error.stdout ?? output?.stdout ?? ""}\n${error.stderr ?? output?.stderr ?? ""}`, catalogue, owner);
       if (error.processTreeStopped) {
         try {
-          const cleaned = await (options.deviceCleanup ?? cleanDeviceRun)(root, directory, owner);
+          const cleaned = await cleanDeviceRun(root, directory, owner);
           if (process.platform === "darwin") {
             const command = { file: "pwsh", args, cwd: root };
             const outcome = commandCleanupConfirmed(error, command) ? error : output;

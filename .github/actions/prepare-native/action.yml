@@ -1,23 +1,12 @@
 name: Prepare native verification
 description: Shared hosted Ubuntu SDK, KVM and owned-process prerequisites
-inputs:
-  working-directory:
-    description: Candidate checkout; setup code stays in the trusted action checkout
-    default: .
-  cache:
-    description: Reuse npm cache only for the ordinary CI route
-    default: 'true'
-  prepare-only:
-    description: Prepare trusted platform inputs without loading candidate code
-    default: 'false'
 runs:
   using: composite
   steps:
     - uses: actions/setup-node@v7
       with:
         node-version: 24
-        cache: ${{ inputs.cache == 'true' && 'npm' || '' }}
-        cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+        cache: npm
     - uses: actions/setup-java@v6
       with:
         distribution: temurin
@@ -39,8 +28,6 @@ runs:
         printf 'JAVA_HOME=%s\n' "$jdk" >> "$GITHUB_ENV"
         printf '%s/bin\n' "$jdk" >> "$GITHUB_PATH"
     - shell: bash
-      if: inputs.prepare-only != 'true'
-      working-directory: ${{ inputs.working-directory }}
       run: npm ci --no-audit --no-fund
     - name: Prepare hosted KVM and stable SDK packages without accepting new licenses
       shell: bash
@@ -77,20 +64,16 @@ runs:
         test -s "$ANDROID_HOME/system-images/android-35/google_apis/x86_64/system.img" || { echo "::error title=Native preparation::SYSTEM_IMAGE_MISSING"; exit 78; }
     - name: Verify Linux process, ownership and build entry points
       id: platform_tests
-      if: inputs.prepare-only != 'true'
       shell: bash
-      working-directory: ${{ inputs.working-directory }}
       run: node scripts/platform-diagnostics.mjs --github
     - uses: actions/upload-artifact@v7
       if: always() && steps.platform_tests.outputs.report_ready == 'true'
       with:
         name: native-platform-diagnostics-attempt-${{ github.run_attempt }}
-        path: ${{ inputs.working-directory }}/.data/ci/preparation/platform-diagnostics.json
+        path: .data/ci/preparation/platform-diagnostics.json
         if-no-files-found: error
     - name: Check the emulator loader and resolve only its approved missing runtime dependency
       shell: pwsh
-      env:
-        TRUSTED_ACTION_PATH: ${{ github.action_path }}
       run: |
-        node "$env:TRUSTED_ACTION_PATH/../../../scripts/linux-runtime.mjs"
+        node scripts/linux-runtime.mjs
         exit $LASTEXITCODE

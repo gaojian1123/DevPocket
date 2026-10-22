@@ -9,16 +9,12 @@ import { test } from "node:test";
 import { checkDevelopmentReadiness, parseRepairDiagnosis, parseTask, runDevelopment, taskSchema } from "../development-workflow.mjs";
 import { changedPaths, inspectWorktree, prepareCandidate, sha256, validateCandidateReceiptProof, activeHookSnapshot } from "../candidate-commit.mjs";
 import { executeVerification, git, sourceSnapshot, validateVerificationEvidence, verificationPlan } from "../verification.mjs";
-import { captureCandidateImplementation, nativeCandidateCommand, nativeIsolatedCommand, requireCandidateImplementation } from "../native-candidate.mjs";
+import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "../native-candidate.mjs";
 import { syntheticExecution } from "./fixtures/verification-tools.mjs";
 import { developmentApprovalDetails, developmentApprovalRequest, developmentApprovalSatisfied, developmentReviewRequirements,
   formatDevelopmentApproval, inspectDevelopmentPolicy, isVerificationPolicyPath, obtainDevelopmentApproval } from "../development-policy.mjs";
-import { developmentTaskApprovalRequest, developmentTaskActionAllowed, developmentExecutionAuthorization,
-  parseDevelopmentExecution } from "../development-policy.mjs";
-import { collectIsolatedReports, isolatedMatrix, isolatedRequest, validateIsolatedEnvelope,
-  requireIsolatedPublication, qualifyIsolatedVerification, readIsolatedReports,
-  requireIsolatedWorkflowRevision, requireIsolatedPushTarget, isolatedPushArguments,
-  executeIsolatedVerification, prepareIsolatedExecution, diagnoseIsolatedReports } from "../isolated-verification.mjs";
+import { developmentTaskApprovalRequest, developmentTaskActionAllowed, developmentExecutionAuthorization } from "../development-policy.mjs";
+import { originRepository, requirePushTarget } from "../git-state.mjs";
 
 const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
@@ -116,6 +112,9 @@ test("repository routing discovers the development skill without requiring workf
   assert.match(guide, /There is no additional project-default time, cost or repair-round ceiling/);
   assert.match(reviewer, /For \*\*repair diagnosis\*\*/);
   assert.match(reviewer, /Diagnosis never establishes acceptance, approval or publication readiness/);
+  assert.match(skill, /`ci-inspection` procedure instead of adopting candidate control/);
+  assert.match(guide, /It never excuses failed, partial or unavailable evidence/);
+  assert.match(reviewer, /underlying live API\/archive\/source records/);
 });
 
 test("the skill freezes an authorized delivery candidate before final verification and review", async () => {
@@ -2349,7 +2348,7 @@ test("candidate implementation capture includes every verification adapter and r
     assert.match(captured.files.find((file) => file.name === name)?.sha256 ?? "", /^[a-f0-9]{64}$/);
   }
   await requireCandidateImplementation(captured);
-  for (const name of ["windows-supervisor.cs", "tests/linux-privileged-process.test.mjs", "tests/fixtures/linux-process.mjs"]) {
+  for (const name of ["development-controller.mjs", "owned-command.cs", "verification-ci.mjs"]) {
     assert.ok(captured.files.some((file) => file.name === name));
     assert.equal(isVerificationPolicyPath(`scripts/${name}`), true);
   }
@@ -2357,15 +2356,15 @@ test("candidate implementation capture includes every verification adapter and r
   await assert.rejects(requireCandidateImplementation(legacy), /captured controller\/helper implementation/);
 });
 
-test("candidate implementation capture rejects nested linked input directories", async (t) => {
+test("candidate implementation capture rejects linked execution inputs", async (t) => {
   const { root } = await workspace(t), { directory } = await copiedController(root);
-  const original = path.join(directory, "tests"), target = path.join(directory, "actual-tests");
-  await fs.rename(original, target);
+  const original = path.join(directory, "development-policy.mjs"), saved = original + ".saved", target = path.join(directory, "alias-target");
+  await fs.rename(original, saved);
+  await mkdir(target);
   await symlink(target, original, process.platform === "win32" ? "junction" : "dir");
   try { await assert.rejects(captureCandidateImplementation(directory), /implementation input is unavailable/); }
-  finally { await rm(original); await fs.rename(target, original); }
+  finally { await rm(original); await fs.rename(saved, original); }
 });
-
 test("cached emulator recovery remains bound to both controller and verifier execution snapshots", async (t) => {
   const { root } = await workspace(t);
   const { directory } = await copiedController(root, (directory) =>
@@ -3478,50 +3477,49 @@ test("existing workflow reports remain immutable and cannot become a new ready h
   assert.equal(state.result, undefined);
 });
 
-test("task grants bind delivery and hosted authority without approving local execution or policy adoption", () => {
+test("task grants allow ordinary CI repairs without approving changed local tools", () => {
   const { scope, policy, hooks } = approvalFixture();
-  scope.task = { ...scope.task, mode: "autopilot", prepare: true, delivery: "pull-request", execution: {
-    kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: "4".repeat(40),
-  } };
-  const implementation = { version: 2, directory: "trusted-controller", files: [{ name: "development-policy.mjs", sha256: "5".repeat(64) }] };
+  scope.task = { ...scope.task, mode: "autopilot", prepare: true, delivery: "pull-request" };
+  scope.ci = { repository: "owner/repo", ref: scope.workspace.branch };
+  const implementation = { version: 2, directory: "approved-controller",
+    files: [{ name: "development-policy.mjs", sha256: "5".repeat(64) }] };
   const { request, snapshot } = developmentTaskApprovalRequest(scope, hooks, implementation);
   const receipt = { version: 1, requestId: request.id, origin: "original-client", decision: "approved" };
-  assert.match(snapshot, /Public network access is permitted/);
-  assert.match(snapshot, /automatic repository CI/);
-  assert.match(snapshot, /outside the low-identity worker boundary/);
-  assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [], "push"), false);
-  assert.equal(developmentExecutionAuthorization(scope, developmentReviewRequirements([]), hooks, implementation, []).status, "needs_human");
-  for (const action of ["commit", "push", "create-draft-pr", "mark-pr-ready", "isolated-execution", "ordinary-ci"]) {
+  assert.match(snapshot, /ordinary disposable runner identity without per-revision project approval/);
+  assert.match(snapshot, /ordinary CI, not an adversarial sandbox/);
+  for (const action of ["commit", "push", "create-draft-pr", "mark-pr-ready", "ordinary-ci"]) {
+    assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [], action), false);
     assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [receipt], action), true);
   }
-  for (const action of ["merge", "deploy", "local-install", "adopt-policy", "reload"]) {
+  for (const action of ["merge", "deploy", "local-install", "adopt-policy", "reload", "isolated-execution"]) {
     assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [receipt], action), false);
   }
-  const allowed = developmentExecutionAuthorization(scope, policy, hooks, implementation, [receipt]);
+  assert.equal(developmentExecutionAuthorization(scope, policy, hooks, implementation, [receipt]).status, "needs_human");
+  assert.equal(developmentExecutionAuthorization(scope, policy, hooks, implementation, [], "ci").status, "needs_human");
+  const allowed = developmentExecutionAuthorization(scope, policy, hooks, implementation, [receipt], "ci");
   assert.equal(allowed.route, "github-hosted");
   assert.equal(allowed.adoption, "not-authorized");
   const repaired = { ...policy, inputs: policy.inputs.map((input) => ({ ...input, sha256: "6".repeat(64) })) };
-  assert.equal(developmentExecutionAuthorization(scope, repaired, hooks, implementation, [receipt]).status, "allowed");
+  assert.equal(developmentExecutionAuthorization(scope, repaired, hooks, implementation, [receipt], "ci").status, "allowed");
   for (const mutate of [
     (value) => { value.base = "7".repeat(40); },
     (value) => { value.runId = "another-task"; },
-    (value) => { value.workspace.branch = "refs/heads/another"; },
-    (value) => { value.task.execution.repository = "owner/another"; },
-    (value) => { value.task.execution.trustedSha = "8".repeat(40); },
+    (value) => { value.ci.repository = "owner/another"; },
+    (value) => { value.workspace.branch = value.ci.ref = "refs/heads/another"; },
   ]) {
     const changed = structuredClone(scope);
     mutate(changed);
-    assert.equal(developmentTaskActionAllowed(changed, hooks, implementation, [receipt], "isolated-execution"), false);
+    assert.equal(developmentTaskActionAllowed(changed, hooks, implementation, [receipt], "ordinary-ci"), false);
   }
-  const local = structuredClone(scope);
-  delete local.task.execution;
-  local.ci = { repository: "owner/repo", ref: local.workspace.branch };
-  const localRequest = developmentTaskApprovalRequest(local, hooks, implementation).request;
-  const localReceipt = { ...receipt, requestId: localRequest.id };
-  assert.equal(developmentExecutionAuthorization(local, policy, hooks, implementation, [localReceipt]).status, "needs_human");
-  local.task.delivery = "working-tree";
-  assert.deepEqual(developmentTaskApprovalRequest(local, hooks, implementation).request.actions,
-    ["edit", "check", "independent-review", "repair"]);
+  const legacy = { ...scope, task: { ...scope.task, execution: { kind: "github-hosted",
+    repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: "4".repeat(40) } } };
+  assert.throws(() => developmentTaskApprovalRequest(legacy, hooks, implementation), /retired/);
+  assert.throws(() => parseTask(legacy.task), /Unexpected workflow fields/);
+  assert.throws(() => developmentExecutionAuthorization(scope, policy, hooks, implementation, [receipt], "unknown"),
+    /Choose local execution or ordinary CI explicitly/);
+  const localOnly = { ...scope, task: { ...scope.task, delivery: "local-commit" } };
+  assert.match(developmentExecutionAuthorization(localOnly, policy, hooks, implementation, [receipt], "ci").reason,
+    /explicit PR delivery scope/);
 });
 
 test("local-verification PR grants bind ordinary CI authority to the repository and branch", () => {
@@ -3671,316 +3669,22 @@ test("frozen controller continues to use approved code while candidate tools cha
   await assert.rejects(requireCandidateImplementation(frozen.implementation), /changed/);
 });
 
-function hostedFixture(plan) {
-  const request = isolatedRequest({ base: plan.base, candidate: plan.source.head, branch: "refs/heads/task", requestId: "request-1",
-    execution: { kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: "4".repeat(40) } });
-  const context = { request, runId: "123", attempt: 1, source: plan.source };
-  const run = { id: 123, run_attempt: 1, event: "workflow_dispatch", path: ".github/workflows/isolated-verification.yml",
-    head_sha: request.execution.trustedSha, display_title: "DevPocket isolated verification request-1",
-    status: "completed", conclusion: "success", repository: { id: 42 } };
-  const observed = { run, repository: { id: 42, full_name: "owner/repo" },
-    jobs: { jobs: [{ name: "Isolated Required verification", status: "completed", conclusion: "success" }] },
-    artifact: { id: 10, expired: false, name: "isolated-summary-attempt-1", digest: `sha256:${"a".repeat(64)}`,
-      workflow_run: { id: 123, head_sha: request.execution.trustedSha, repository_id: 42 } },
-    trustedRef: { ref: "refs/heads/main", object: { type: "commit", sha: request.execution.trustedSha } },
-    candidateRef: { ref: "refs/heads/task", object: { type: "commit", sha: request.candidate } } };
-  return { request, context, observed };
-}
-
 function syntheticTaskGrant(scope, hooks, implementation) {
   const { request } = developmentTaskApprovalRequest(scope, hooks, implementation);
   return [{ version: 1, requestId: request.id, origin: "original-client", decision: "approved" }];
 }
 
-function isolationProof(group = "tooling") {
-  return { version: 1, kind: "hosted-isolation-proof", status: "passed", platform: group === "device" ? "linux" : "win32",
-    checks: ["protected-control", "protected-evidence", "protected-ancestors", "runner-channels", "descendant-cleanup", "failing-fixed-gate"],
-    negativeSource: { head: "1".repeat(40), fingerprint: "2".repeat(64) }, negativeReportSha256: "3".repeat(64) };
-}
-
-test("isolated aggregation keeps trusted acceptance independent of candidate reports and actual job failure", async (t) => {
-  const { root } = await workspace(t);
-  await mkdir(path.join(root, "scripts", "tests"), { recursive: true });
-  await writeFile(path.join(root, "scripts", "tests", "isolated-worker.test.mjs"), "// fixture\n");
-  const plan = await verificationPlan(root, "HEAD", false, { trustedTooling: true }), fixture = hostedFixture(plan);
-  assert.equal(plan.ciMacos, false);
-  assert.deepEqual(isolatedMatrix(plan), [{ group: "tooling", os: "windows-latest" }]);
-  const report = { ...syntheticReport(plan), group: "tooling", isolation: isolationProof() };
-  report.checks[0].toolingExecutions = plan.toolingShards.files.map((file) => ({
-    file, status: "passed", exitCode: 0, execution: syntheticExecution(plan.source),
-    commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0, cleanupFailure: null },
-  }));
-  const envelope = collectIsolatedReports(plan, fixture.context, [report], "success");
-  assert.equal(validateIsolatedEnvelope(envelope, fixture.request, fixture.observed).report.complete, true);
-  const macosPlan = { ...plan, ciMacos: true };
-  assert.throws(() => isolatedMatrix(macosPlan), /macOS coverage.*isolated worker/);
-  assert.throws(() => collectIsolatedReports(macosPlan, fixture.context, [report], "success"),
-    /macOS coverage.*isolated worker/);
-  const macosEnvelope = structuredClone(envelope);
-  macosEnvelope.report.ciMacos = true;
-  macosEnvelope.reportDigest = sha256(JSON.stringify(macosEnvelope.report));
-  assert.throws(() => validateIsolatedEnvelope(macosEnvelope, fixture.request, fixture.observed),
-    /macOS coverage.*isolated worker/);
-  assert.deepEqual(envelope.report.checks[0].toolingExecutions, report.checks[0].toolingExecutions);
-  assert.notEqual(envelope.report.checks[0].toolingExecutions, report.checks[0].toolingExecutions);
-  for (const mutate of [
-    (value) => { delete value.report.checks[0].toolingExecutions; },
-    (value) => { value.report.checks[0].toolingExecutions.pop(); },
-    (value) => { value.report.checks[0].toolingExecutions[0].execution.source.head = "f".repeat(40); },
-  ]) {
-    const invalid = structuredClone(envelope);
-    mutate(invalid);
-    invalid.reportDigest = sha256(JSON.stringify(invalid.report));
-    assert.throws(() => validateIsolatedEnvelope(invalid, fixture.request, fixture.observed), /per-file execution evidence/);
-  }
-  assert.throws(() => collectIsolatedReports(plan, fixture.context, [], "success"), /missing/);
-  assert.throws(() => collectIsolatedReports(plan, fixture.context, [report], "failure"), /worker failed/);
-  assert.throws(() => collectIsolatedReports(plan, fixture.context, [report, report], "success"), /duplicated/);
-  for (const isolation of [undefined, { ...isolationProof(), status: "failed" }, { ...isolationProof(), platform: "linux" },
-    { ...isolationProof(), checks: [] }]) {
-    assert.throws(() => collectIsolatedReports(plan, fixture.context, [{ ...report, isolation }], "success"), /isolation evidence/);
-  }
-  for (const entries of [undefined, report.checks[0].toolingExecutions.slice(1)]) {
-    const incomplete = structuredClone(report);
-    incomplete.checks[0].toolingExecutions = entries;
-    assert.throws(() => collectIsolatedReports(plan, fixture.context, [incomplete], "success"), /per-file execution evidence/);
-  }
-  assert.throws(() => collectIsolatedReports(plan, fixture.context, [{ ...report, checks: [] }], "success"), { diagnosticCode: "shard-missing" });
-  assert.throws(() => collectIsolatedReports(plan, fixture.context, [{ ...report, requiredChecks: [] }], "success"), /policy|Policy/);
-  for (const mutate of [
-    (value) => { value.run.path = ".github/workflows/ci.yml"; },
-    (value) => { value.run.head_sha = fixture.request.candidate; },
-    (value) => { value.run.run_attempt++; },
-    (value) => { value.run.conclusion = "failure"; },
-    (value) => { value.trustedRef.object.sha = "5".repeat(40); },
-    (value) => { value.candidateRef.object.sha = "6".repeat(40); },
-    (value) => { value.artifact.expired = true; },
-    (value) => { value.jobs.jobs[0].conclusion = "skipped"; },
-    (value) => { value.jobs.jobs.push(value.jobs.jobs[0]); },
-  ]) {
-    const changed = structuredClone(fixture.observed);
-    mutate(changed);
-    assert.throws(() => validateIsolatedEnvelope(envelope, fixture.request, changed), /identity changed/);
-  }
-});
-
-test("isolated dispatch and qualification cannot omit required macOS coverage", async (t) => {
-  const { root } = await workspace(t), base = (await sourceSnapshot(root)).head;
-  await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
-  await mkdir(path.join(root, "scripts"), { recursive: true });
-  await writeFile(path.join(root, "scripts", "process.mjs"), "// macOS-sensitive execution input\n");
-  await git(root, ["add", "--", "scripts/process.mjs"]);
-  await git(root, ["commit", "--quiet", "-m", "Select Mac coverage"]);
-  const plan = await verificationPlan(root, base, false, { trustedTooling: true });
-  assert.equal(plan.ciMacos, true);
-  const { request } = hostedFixture(plan);
-  const before = await inspectWorktree(root), hooks = await activeHookSnapshot(root);
-  const scope = { sessionId: "fixture-session", runId: "unsupported-macos", base, workspace: before.identity,
-    task: { goal: "Require every selected platform", delivery: "local-commit", execution: request.execution } };
-  const implementation = await captureCandidateImplementation();
-  const receipts = syntheticTaskGrant(scope, hooks, implementation);
-  await assert.rejects(executeIsolatedVerification({ session: { rpc: { tools: {
-    getCurrentMetadata: async () => assert.fail("Unsupported coverage must stop before requesting native dispatch."),
-  } } } }, root, scope, before.source, hooks, implementation, path.join(root, ".data", "dispatch"), receipts),
-  /macOS coverage.*isolated worker/);
-  await assert.rejects(qualifyIsolatedVerification(root, request, "123", path.join(root, ".data", "qualification"), {
-    api: async () => assert.fail("Unsupported coverage must be rejected before querying an older hosted report."),
-  }), /macOS coverage.*isolated worker/);
-});
-
-test("unattended publication refuses candidate workflow activation and a moved trusted revision", async (t) => {
+test("publication scope checks the actual origin and every effective push destination", async (t) => {
   const { root } = await workspace(t);
   await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
-  const original = await sourceSnapshot(root);
-  const request = isolatedRequest({ base: original.head, candidate: original.head, branch: "refs/heads/task", requestId: "publication",
-    execution: { kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: original.head } });
-  const api = async () => ({ ref: "refs/heads/main", object: { type: "commit", sha: original.head } });
-  await requireIsolatedPublication(root, request, api);
-  await assert.rejects(requireIsolatedPublication(root, request, async () =>
-    ({ ref: "refs/heads/main", object: { type: "commit", sha: "9".repeat(40) } })), /trusted execution branch changed/);
-  await mkdir(path.join(root, ".github", "workflows"), { recursive: true });
-  await writeFile(path.join(root, ".github", "workflows", "candidate.yml"), "permissions: write-all\n");
-  await git(root, ["add", "--", ".github/workflows/candidate.yml"]);
-  await git(root, ["commit", "--quiet", "-m", "Candidate workflow fixture"]);
-  await assert.rejects(requireIsolatedPublication(root, { ...request, candidate: (await sourceSnapshot(root)).head }, api),
-    /workflow\/action changes cannot be activated/);
-});
-
-test("hosted workflow has fixed control, disposable workers and a non-executing clean gate", async () => {
-  const workflow = await readFile(new URL("../../.github/workflows/isolated-verification.yml", import.meta.url), "utf8");
-  assert.match(workflow, /workflow_dispatch:/);
-  assert.doesNotMatch(workflow, /pull_request_target:|workflow_run:|self-hosted|secrets\.|secrets: inherit|id-token: write|contents: write/);
-  assert.equal((workflow.match(/ref: \$\{\{ github\.workflow_sha \}\}/g) ?? []).length, 3);
-  assert.equal((workflow.match(/persist-credentials: false/g) ?? []).length, 6);
-  assert.match(workflow, /cache: 'false'/);
-  assert.match(workflow, /prepare-only: 'true'/);
-  assert.match(workflow, /isolated-worker\.ps1 -Control/);
-  assert.match(workflow, /isolated-worker\.py/);
-  assert.doesNotMatch(workflow, /npm ci|pip install|isolated-verification\.mjs --run/);
-  assert.doesNotMatch(workflow, /actions\/cache|cache: npm/);
-  const gate = workflow.slice(workflow.indexOf("\n  gate:"));
-  assert.doesNotMatch(gate, /npm ci|pip install|--run|uses: \.\/candidate/);
-  assert.match(gate, /control\/scripts\/isolated-verification\.mjs --collect/);
-  assert.match(gate, /path: control\/\.data\/ci\/isolated\/inputs/);
-  assert.doesNotMatch(gate, /path: candidate\/\.data/);
-  assert.match(workflow, /CONTROL|control\/scripts\/isolated-verification\.mjs --plan/);
-  assert.equal((workflow.match(/^    if:.*github\.workflow_sha == inputs\.trusted_sha/gm) ?? []).length, 3);
-  assert.match(gate, /if: always\(\) && github\.workflow_sha == inputs\.trusted_sha/);
-  assert.match(workflow, /Resolve-Path \.\.\/control\/\.tools\/android-sdk/);
-  assert.match(workflow, /"ANDROID_HOME=\$sdk" >> \$env:GITHUB_ENV/);
-  assert.match(workflow, /workers:[\s\S]*?if: false && github\.workflow_sha == inputs\.trusted_sha/);
-  assert.throws(() => parseDevelopmentExecution({ kind: "github-hosted", repository: "owner/repo",
-    trustedRef: "refs/heads/main\nrun", trustedSha: "a".repeat(40) }), /exact GitHub/);
-  assert.throws(() => isolatedRequest({ execution: { kind: "github-hosted", repository: "owner/repo",
-    trustedRef: "refs/heads/main", trustedSha: "a".repeat(40) }, base: "HEAD", candidate: "main",
-    branch: "refs/heads/task", requestId: "fixture" }), /complete, scoped/);
-});
-
-test("isolated qualification authenticates the archive and rechecks live bindings without rewriting source evidence", async (t) => {
-  const { root } = await workspace(t);
-  await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
-  const plan = await verificationPlan(root, "HEAD"), { request, context, observed } = hostedFixture(plan);
-  const envelope = collectIsolatedReports(plan, context, [], "skipped");
-  const archiveDirectory = path.join(root, ".data", "fixture-archive");
-  await mkdir(archiveDirectory, { recursive: true });
-  await writeFile(path.join(archiveDirectory, "gate.json"), JSON.stringify(envelope.report));
-  await writeFile(path.join(archiveDirectory, "ci-report.json"), JSON.stringify(envelope));
-  const archive = path.join(root, ".data", "evidence.zip");
-  const quote = (value) => `'${value.replaceAll("'", "''")}'`;
-  await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
-    `Compress-Archive -LiteralPath ${quote(path.join(archiveDirectory, "gate.json"))},${quote(path.join(archiveDirectory, "ci-report.json"))} -DestinationPath ${quote(archive)}`]);
-  const bytes = await readFile(archive);
-  observed.artifact.digest = `sha256:${sha256(bytes)}`;
-  observed.artifact.size_in_bytes = bytes.length;
-  let lookups = 0;
-  const api = async (endpoint) => {
-    lookups++;
-    if (endpoint === "repos/owner/repo") return structuredClone(observed.repository);
-    if (endpoint === "repos/owner/repo/git/ref/heads/main") return structuredClone(observed.trustedRef);
-    if (endpoint === "repos/owner/repo/git/ref/heads/task") return structuredClone(observed.candidateRef);
-    if (endpoint === "repos/owner/repo/actions/runs/123") return structuredClone(observed.run);
-    if (endpoint.includes("/jobs?")) return { ...structuredClone(observed.jobs), total_count: 1 };
-    if (endpoint.includes("/artifacts?")) return { total_count: 1, artifacts: [structuredClone(observed.artifact)] };
-    assert.fail(`Unexpected remote operation: ${endpoint}`);
-  };
-  const result = await qualifyIsolatedVerification(root, request, "123", path.join(root, ".data", "verification", "qualified"),
-    { api, download: async () => bytes });
-  assert.equal(result.status, "verified");
-  assert.equal(result.kind, "isolated-qualification");
-  assert.deepEqual(result.report, envelope.report);
-  assert.deepEqual(result.tested, envelope.report.source);
-  assert.deepEqual(result.candidate, plan.source);
-  assert.equal(lookups, 12, "Both ends of qualification must query the current run, refs and artifact.");
-  await assert.rejects(qualifyIsolatedVerification(root, request, "123", path.join(root, ".data", "verification", "tampered"),
-    { api, download: async () => Buffer.from("Not the authenticated artifact") }));
-  let currentReads = 0;
-  await assert.rejects(qualifyIsolatedVerification(root, request, "123", path.join(root, ".data", "verification", "moved"),
-    { api: async (endpoint) => {
-      const value = await api(endpoint);
-      if (endpoint === "repos/owner/repo/git/ref/heads/main" && ++currentReads > 1) value.object.sha = "8".repeat(40);
-      return value;
-    }, download: async () => bytes }), /identity changed/);
-});
-
-test("native isolated dispatch loads only captured modules and refuses changed code before mutation", async (t) => {
-  const { root } = await workspace(t);
-  const { directory } = await copiedController(root, async (directory) => {
-    await writeFile(path.join(directory, "isolated-verification.mjs"), [
-      "import { writeFile } from 'node:fs/promises';",
-      "export async function runIsolatedRequest(file) { await writeFile(file + '.completed', 'captured input', { flag: 'wx' }); }",
-      "export const executeIsolatedVerification = () => { throw new Error('Not a hosted execution fixture'); };",
-      "export const qualifyIsolatedVerification = () => { throw new Error('Not acceptance evidence'); };",
-      "export const originRepository = () => { throw new Error('Not a publication fixture'); };",
-      "export const requireIsolatedPushTarget = () => { throw new Error('Not a publication fixture'); };",
-    ].join("\n"));
-  });
-  const implementation = await captureCandidateImplementation(directory);
-  const file = path.join(root, ".data", "native-isolated.json"), bytes = JSON.stringify({ execution: implementation });
-  await writeFile(file, bytes);
-  const command = nativeIsolatedCommand(file, sha256(bytes));
-  await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", command], { timeout: 60000 });
-  assert.equal(await readFile(`${file}.completed`, "utf8"), "captured input");
-  await writeFile(path.join(directory, "isolated-verification.mjs"), "throw new Error('Unapproved code ran');\n");
-  await assert.rejects(exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", command], { timeout: 60000 }),
-    (error) => /inputs changed/.test(error.stderr) && !/Unapproved code ran/.test(error.stderr));
-  assert.equal(JSON.parse(await readFile(`${file}.result.json`, "utf8")).failure, "execution-inputs-changed");
-});
-
-test("isolated artifact collection accepts flat single downloads and rejects mixed or linked layouts", async (t) => {
-  const { root } = await workspace(t), directory = path.join(root, ".data", "ci", "inputs");
-  await mkdir(directory, { recursive: true });
-  const report = { group: "tooling" }, plan = { requiredGroups: ["tooling"] }, context = { attempt: 1 };
-  await writeFile(path.join(directory, "report.json"), JSON.stringify(report));
-  assert.deepEqual(await readIsolatedReports(root, directory, plan, context), [report]);
-  await assert.rejects(readIsolatedReports(root, directory, { requiredGroups: ["tooling", "backend"] }, context), /exactly one/);
-  const nested = path.join(directory, "isolated-verification-tooling-attempt-1");
-  await mkdir(nested);
-  await assert.rejects(readIsolatedReports(root, directory, plan, context), /unexpected worker artifacts/);
-  await fs.rename(path.join(directory, "report.json"), path.join(nested, "report.json"));
-  assert.deepEqual(await readIsolatedReports(root, directory, plan, context), [report]);
-  await writeFile(path.join(nested, "extra.json"), "{}");
-  await assert.rejects(readIsolatedReports(root, directory, plan, context), /unexpected content/);
-  await rm(path.join(nested, "extra.json"));
-  await rm(path.join(nested, "report.json"));
-  await rm(nested, { recursive: true });
-  const target = path.join(root, ".data", "ci", "outside");
-  await mkdir(target);
-  await writeFile(path.join(target, "report.json"), JSON.stringify(report));
-  await symlink(target, path.join(directory, "report.json"), process.platform === "win32" ? "junction" : "dir");
-  await assert.rejects(readIsolatedReports(root, directory, plan, context), /regular report/);
-});
-
-test("expected workflow revision is independent of the observed branch tip", () => {
-  const approved = "a".repeat(40), moved = "b".repeat(40);
-  assert.equal(requireIsolatedWorkflowRevision({ GITHUB_WORKFLOW_SHA: approved, GITHUB_SHA: approved },
-    { trusted_sha: approved }), approved);
-  for (const inputs of [{}, { trusted_sha: "main" }, { trusted_sha: moved }]) {
-    assert.throws(() => requireIsolatedWorkflowRevision({ GITHUB_WORKFLOW_SHA: approved, GITHUB_SHA: approved }, inputs), /execution is forbidden/);
-  }
-  assert.throws(() => requireIsolatedWorkflowRevision({ GITHUB_WORKFLOW_SHA: moved, GITHUB_SHA: moved },
-    { trusted_sha: approved }), /execution is forbidden/);
-});
-
-test("isolated publication binds effective push URLs and the pre-permission configuration", async (t) => {
-  const { root } = await workspace(t);
-  await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
-  const source = await sourceSnapshot(root), request = isolatedRequest({
-    base: source.head, candidate: source.head, branch: "refs/heads/task", requestId: "push-scope",
-    execution: { kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: source.head },
-  });
-  assert.equal(await requireIsolatedPushTarget(root, "owner/repo"), "https://github.com/owner/repo.git");
-  await git(root, ["config", "remote.origin.pushurl", "https://github.com/another/repo.git"]);
-  await assert.rejects(requireIsolatedPushTarget(root, "owner/repo"), /push destination/);
+  assert.equal(await originRepository(root), "owner/repo");
+  assert.equal(await requirePushTarget(root, "owner/repo"), "https://github.com/owner/repo.git");
+  await git(root, ["config", "remote.origin.pushurl", "https://github.com/other/repo.git"]);
+  await assert.rejects(requirePushTarget(root, "owner/repo"), /single authorized GitHub repository/);
   await git(root, ["config", "--unset-all", "remote.origin.pushurl"]);
-  await git(root, ["config", "url.https://github.com/another/.pushInsteadOf", "https://github.com/owner/"]);
-  await assert.rejects(requireIsolatedPushTarget(root, "owner/repo"), /push destination/);
-  await git(root, ["config", "--unset-all", "url.https://github.com/another/.pushInsteadOf"]);
   await git(root, ["config", "--add", "remote.origin.pushurl", "https://github.com/owner/repo.git"]);
-  await git(root, ["config", "--add", "remote.origin.pushurl", "git@github.com:owner/repo.git"]);
-  await assert.rejects(requireIsolatedPushTarget(root, "owner/repo"), /single authorized/);
-  await git(root, ["config", "--unset-all", "remote.origin.pushurl"]);
-  const expected = await inspectWorktree(root);
-  await git(root, ["config", "core.sshCommand", "fixture-not-authorized"]);
-  await assert.rejects(requireIsolatedPublication(root, request,
-    async () => { assert.fail("A changed configuration must fail before remote work."); }, expected), /permission boundary/);
-});
-
-test("isolated push publishes only the granted branch despite follow-tags and mirror configuration", async (t) => {
-  const { root, main } = await workspace(t), remote = path.join(main, ".data", "remote.git");
-  await mkdir(path.dirname(remote), { recursive: true });
-  await exec("git", ["init", "--quiet", "--bare", remote]);
-  await git(root, ["remote", "add", "origin", remote]);
-  await git(root, ["config", "push.followTags", "true"]);
-  await git(root, ["config", "remote.origin.mirror", "true"]);
-  await git(root, ["tag", "-a", "extension-vfixture", "-m", "Never publish this fixture tag"]);
-  const source = await sourceSnapshot(root);
-  const request = isolatedRequest({ base: source.head, candidate: source.head, branch: "refs/heads/task", requestId: "exact-refs",
-    execution: { kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: source.head } });
-  await exec("git", isolatedPushArguments(request), { cwd: root });
-  const refs = (await exec("git", ["--git-dir", remote, "for-each-ref", "--format=%(refname)"])).stdout.trim();
-  assert.equal(refs, "refs/heads/task");
-  assert.equal((await git(root, ["config", "--get", "push.followTags"])).trim(), "true");
-  assert.equal((await git(root, ["config", "--get", "remote.origin.mirror"])).trim(), "true");
+  await git(root, ["config", "--add", "remote.origin.pushurl", "https://github.com/other/repo.git"]);
+  await assert.rejects(requirePushTarget(root, "owner/repo"), /single authorized GitHub repository/);
 });
 
 test("prepared delivery readiness requires ordinary CI authority and rejects a changed publication target", isolatedCases, async (t) => {
@@ -3990,7 +3694,7 @@ test("prepared delivery readiness requires ordinary CI authority and rejects a c
     session.capabilities = { ui: { elicitation: true } };
     session.ui = { elicitation: async ({ message }) => {
       assert.match(message, /automatic repository CI for owner\/repo refs\/heads\/task/);
-      assert.match(message, /outside the low-identity worker boundary/);
+      assert.match(message, /ordinary disposable runner identity/);
       return { action: "accept", content: { decision: "approve" } };
     } };
     const ctx = documentationTask(root, {
@@ -4070,266 +3774,4 @@ test("prepared PR authority rejects A-to-B-to-A target discovery and approval ra
       await restore();
     }
   });
-});
-
-test("isolated dispatch requires ordinary CI authority before reaching native publication", async (t) => {
-  const { root } = await workspace(t);
-  await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
-  const before = await inspectWorktree(root), hooks = await activeHookSnapshot(root);
-  const scope = { sessionId: "fixture-session", runId: "ordinary-ci-authority", base: before.source.head,
-    workspace: before.identity, task: { goal: "Inspect automatic CI authority", delivery: "local-commit", execution: {
-      kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: before.source.head,
-    } } };
-  let nativeCalls = 0, failure;
-  try {
-    await executeIsolatedVerification({ session: { rpc: { tools: {
-      getCurrentMetadata: async () => ({ tools: [{ name: "functions.powershell" }] }),
-      execute: async () => { nativeCalls++; return { resultType: "failure" }; },
-    } } } }, root, scope, before.source, hooks, await captureCandidateImplementation(),
-    path.join(root, ".data", "verification", "ordinary-ci-missing"), []);
-  } catch (error) { failure = error; }
-  assert.equal(nativeCalls, 0, "A candidate push can trigger ordinary CI even when isolated workers are disabled.");
-  assert.match(failure?.message ?? "", /ordinary.*CI.*authority/);
-});
-
-test("native isolated publication rechecks the original ordinary CI grant before any external command", async (t) => {
-  const { root } = await workspace(t);
-  await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
-  const before = await inspectWorktree(root), hooks = await activeHookSnapshot(root);
-  const implementation = await captureCandidateImplementation();
-  const scope = { sessionId: "fixture-session", runId: "native-ordinary-ci", base: before.source.head,
-    workspace: before.identity, task: { goal: "Bind automatic CI authority", delivery: "local-commit", execution: {
-      kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: before.source.head,
-    } } };
-  const receipts = syntheticTaskGrant(scope, hooks, implementation);
-  const directory = path.join(root, ".data", "verification", "native-ordinary-ci");
-  const prepared = await prepareIsolatedExecution(root, scope, before.source, hooks, implementation, directory, receipts);
-  const input = JSON.parse(await readFile(prepared.file, "utf8"));
-  assert.deepEqual(input.authorization, { scope, receipts });
-  const original = childProcess.execFile;
-  childProcess.execFile = () => assert.fail("Unapproved publication must not reach Git or GitHub.");
-  syncBuiltinESMExports();
-  try {
-    const native = await import(new URL(`../isolated-verification.mjs?authority=${path.basename(path.dirname(root))}`, import.meta.url).href);
-    for (const mutate of [
-      (value) => { delete value.authorization; },
-      (value) => { value.authorization.receipts = []; },
-      (value) => { value.authorization.receipts[0].origin = "agent"; },
-      (value) => { value.authorization.scope.workspace.branch = "refs/heads/another"; },
-      (value) => { value.authorization.scope.task.execution.repository = "owner/another"; },
-    ]) {
-      const changed = structuredClone(input);
-      mutate(changed);
-      const bytes = JSON.stringify(changed);
-      await writeFile(prepared.file, bytes);
-      await assert.rejects(native.runIsolatedRequest(prepared.file, sha256(bytes)), /ordinary.*CI.*authority/);
-      await assert.rejects(readFile(path.join(directory, "dispatch-intent.json")), { code: "ENOENT" });
-    }
-  } finally {
-    childProcess.execFile = original;
-    syncBuiltinESMExports();
-  }
-});
-
-test("isolated cancellation prevents native execution before or during metadata lookup", isolatedCases, async (t) => {
-  await Promise.all(["before-preparation", "during-metadata", "not-cancelled"].map((phase) => t.test(phase, async (t) => {
-    const { root } = await workspace(t), signal = new AbortController(), cancellation = new Error("Fixture cancellation");
-    await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
-    const before = await inspectWorktree(root), hooks = await activeHookSnapshot(root);
-    const scope = { sessionId: "fixture-session", runId: "cancelled-dispatch", base: before.source.head,
-      workspace: before.identity, task: { goal: "Stop cancelled native publication", delivery: "local-commit", execution: {
-      kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: before.source.head,
-    } } };
-    const implementation = await captureCandidateImplementation();
-    const receipts = syntheticTaskGrant(scope, hooks, implementation);
-    let calls = 0, lookups = 0;
-    const ctx = { signal: signal.signal, session: { rpc: { tools: {
-      getCurrentMetadata: async () => {
-        lookups++;
-        if (phase === "during-metadata") signal.abort(cancellation);
-        return { tools: [{ name: "functions.powershell" }] };
-      },
-      execute: async () => { calls++; return { resultType: "failure" }; },
-    } } } };
-    if (phase === "before-preparation") signal.abort(cancellation);
-    await assert.rejects(executeIsolatedVerification(ctx, root, scope, before.source, hooks,
-      implementation, path.join(root, ".data", "verification", "cancelled-dispatch"), receipts),
-    phase === "not-cancelled" ? /denied, failed or is uncertain/ : (error) => error === cancellation);
-    assert.equal(calls, phase === "not-cancelled" ? 1 : 0);
-    if (phase === "before-preparation") assert.equal(lookups, 0);
-  })));
-});
-
-test("hosted setup failures with no executed checks remain blocked diagnostics", async (t) => {
-  const { root } = await workspace(t);
-  await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
-  const base = (await sourceSnapshot(root)).head;
-  await mkdir(path.join(root, "scripts", "tests"), { recursive: true });
-  await writeFile(path.join(root, "scripts", "tests", "isolated-worker.test.mjs"), "// candidate fixture\n");
-  await git(root, ["add", "--", "scripts/tests/isolated-worker.test.mjs"]);
-  await git(root, ["commit", "--quiet", "-m", "Candidate check selection fixture"]);
-  assert.equal((await verificationPlan(root, base)).ciMacos, false);
-  const before = await inspectWorktree(root), hooks = await activeHookSnapshot(root);
-  const scope = { sessionId: "fixture-session", runId: "setup-failure", base, workspace: before.identity,
-    task: { goal: "Retain hosted setup failures", delivery: "local-commit", execution: {
-    kind: "github-hosted", repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: base,
-  } } };
-  const implementation = await captureCandidateImplementation();
-  const receipts = syntheticTaskGrant(scope, hooks, implementation);
-  const directory = path.join(root, ".data", "verification", "setup-failure");
-  let dispatched, artifactLookups = 0;
-  const unexpected = [], endpoints = [];
-  const original = childProcess.execFile, fallback = promisify(original);
-  const stub = (...args) => original(...args);
-  stub[promisify.custom] = async (file, args, options) => {
-    if (file !== "gh") return fallback(file, args, options);
-    const run = { id: 123, run_attempt: 1, status: "completed", conclusion: "failure", event: "workflow_dispatch",
-      path: ".github/workflows/isolated-verification.yml", head_sha: base,
-      display_title: `DevPocket isolated verification ${dispatched.requestId}`,
-      repository: { id: 42, full_name: "owner/repo" } };
-    if (args[0] === "run" && args[1] === "watch") throw Object.assign(new Error("Hosted setup failed"), { code: 1 });
-    if (args[0] === "run" && args[1] === "view") return { stdout: "SDK setup failed before verification.", stderr: "" };
-    const endpoint = args.at(-1);
-    endpoints.push(endpoint);
-    if (endpoint.includes("/workflows/") && endpoint.includes("/runs?")) return { stdout: JSON.stringify({ workflow_runs: [run] }), stderr: "" };
-    if (endpoint.endsWith("/actions/runs/123")) return { stdout: JSON.stringify(run), stderr: "" };
-    if (endpoint === "repos/owner/repo") return { stdout: JSON.stringify({ id: 42, full_name: "owner/repo" }), stderr: "" };
-    if (endpoint === "repos/owner/repo/git/ref/heads/main") {
-      return { stdout: JSON.stringify({ ref: "refs/heads/main", object: { type: "commit", sha: base } }), stderr: "" };
-    }
-    if (endpoint === "repos/owner/repo/git/ref/heads/task") {
-      return { stdout: JSON.stringify({ ref: "refs/heads/task", object: { type: "commit", sha: before.source.head } }), stderr: "" };
-    }
-    if (endpoint.includes("/jobs?")) return { stdout: JSON.stringify({ total_count: 2, jobs: [
-      { name: "Isolated tooling", status: "completed", conclusion: "failure", steps: [
-        { name: "Install candidate dependencies only on this disposable worker", conclusion: "failure" },
-        { name: "Run the fixed acceptance checks against the candidate", conclusion: "skipped" },
-      ] },
-      { name: "Isolated Required verification", status: "completed", conclusion: "failure", steps: [] },
-    ] }), stderr: "" };
-    if (endpoint.includes("/artifacts?")) {
-      artifactLookups++;
-      return { stdout: JSON.stringify({ total_count: 0, artifacts: [] }), stderr: "" };
-    }
-    unexpected.push(args);
-    throw new Error("Unexpected GitHub operation in setup-failure fixture.");
-  };
-  childProcess.execFile = stub;
-  syncBuiltinESMExports();
-  try {
-    const isolated = await import(new URL(`../isolated-verification.mjs?setup-failure=${path.basename(path.dirname(root))}`, import.meta.url).href);
-    const result = await isolated.executeIsolatedVerification({ session: { rpc: { tools: {
-      getCurrentMetadata: async () => ({ tools: [{ name: "functions.powershell" }] }),
-      execute: async () => {
-        const input = JSON.parse(await readFile(path.join(directory, "native-isolated-request.json"), "utf8"));
-        dispatched = input.request;
-        await writeFile(path.join(directory, "dispatch.json"), JSON.stringify({ status: "submitted", request: dispatched }));
-        return { resultType: "success" };
-      },
-    } } } }, root, scope, before.source, hooks, implementation, directory, receipts);
-    assert.equal(result.report.status, "blocked");
-    assert.equal(result.report.complete, false);
-    assert.ok(result.report.checks.every((check) => check.status === "not_run"));
-    assert.equal(artifactLookups, 1, "The fixture must reach the intended missing-summary lookup.");
-    for (const endpoint of ["repos/owner/repo", "repos/owner/repo/git/ref/heads/main", "repos/owner/repo/git/ref/heads/task"]) {
-      assert.ok(endpoints.includes(endpoint), `Missing identity lookup: ${endpoint}`);
-    }
-    assert.deepEqual(unexpected, [], "An incomplete API mock must not masquerade as a blocked setup result.");
-  } finally {
-    childProcess.execFile = original;
-    syncBuiltinESMExports();
-  }
-});
-
-test("hosted failure classification requires source-bound executed-check evidence", async (t) => {
-  const { root } = await workspace(t);
-  await mkdir(path.join(root, "scripts", "tests"), { recursive: true });
-  await writeFile(path.join(root, "scripts", "tests", "isolated-worker.test.mjs"), "// fixture\n");
-  const plan = await verificationPlan(root, "HEAD"), { context, request, observed } = hostedFixture(plan);
-  assert.equal(plan.ciMacos, false);
-  const check = { id: "workflow-tests", status: "failed", exitCode: 1, executionState: "exited",
-    execution: syntheticExecution(plan.source),
-    failure: { reason: "command-failed", phase: "command", exitCode: 1 },
-    commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 1, cleanupFailure: null } };
-  const worker = { ...plan, group: "tooling", status: "failed", complete: false, isolation: isolationProof(),
-    preflight: { status: "passed" }, checks: [check] };
-  const failure = diagnoseIsolatedReports(plan, context, [worker], "failure");
-  assert.equal(failure.kind, "isolated-verification-failure");
-  assert.equal(failure.report.status, "failed");
-  assert.equal(failure.report.complete, false);
-  assert.equal(diagnoseIsolatedReports({ ...plan, ciMacos: true }, context, [{ ...worker, ciMacos: true }], "failure")
-    .report.status, "blocked");
-  assert.deepEqual(failure.report.checks[0].execution, check.execution);
-  observed.run.conclusion = "failure";
-  observed.jobs.jobs[0].conclusion = "failure";
-  assert.equal(validateIsolatedEnvelope(failure, request, observed, "failure"), failure);
-  assert.throws(() => validateIsolatedEnvelope(failure, request, observed), /identity changed/);
-  for (const mutate of [
-    (value) => { value.status = "blocked"; },
-    (value) => { value.preflight.status = "blocked"; },
-    (value) => { value.checks[0].executionState = "not-started"; },
-    (value) => { delete value.checks[0].execution; },
-    (value) => { delete value.checks[0].commandOutcome.cleanupFailure; },
-    (value) => { value.checks[0].failure.phase = "preflight"; },
-    (value) => { value.source = { ...plan.source, head: "9".repeat(40) }; },
-    (value) => { delete value.isolation; },
-  ]) {
-    const input = structuredClone(worker);
-    mutate(input);
-    assert.equal(diagnoseIsolatedReports(plan, context, [input], "failure").report.status, "blocked");
-  }
-  assert.equal(diagnoseIsolatedReports(plan, context, [], "failure").report.status, "blocked");
-  assert.equal(diagnoseIsolatedReports(plan, context, [worker], "skipped").report.status, "blocked");
-  for (const [reason, phase] of [
-    ["source-changed", "source-validation"], ["policy-mismatch", "preflight"],
-    ["environment-changed", "preflight"], ["collector-failed", "log"],
-  ]) {
-    const invalidated = { ...worker, failure: { reason, phase } };
-    const result = diagnoseIsolatedReports(plan, context, [invalidated], "failure");
-    assert.equal(result.report.status, "blocked");
-    assert.equal(result.report.failure.reason, reason);
-    assert.equal(result.report.failure.phase, phase);
-  }
-  const unavailable = { ...worker, sourceValidation: { status: "failed",
-    failure: { reason: "source-unavailable", phase: "source-validation" } } };
-  const unavailableResult = diagnoseIsolatedReports(plan, context, [unavailable], "failure");
-  assert.equal(unavailableResult.report.status, "blocked");
-  assert.equal(unavailableResult.report.failure.reason, "source-unavailable");
-  assert.equal(unavailableResult.report.failure.phase, "source-validation");
-  const unknownSource = diagnoseIsolatedReports(plan, context, [{ ...worker, sourceValidation: { status: "failed" } }], "failure");
-  assert.equal(unknownSource.report.status, "blocked");
-  assert.equal(unknownSource.report.failure.reason, "source-unavailable");
-});
-
-test("hosted device failure requires confirmed owned-data cleanup as well as process exit", async (t) => {
-  const { root } = await workspace(t);
-  await mkdir(path.join(root, "android", "app", "src", "main", "java"), { recursive: true });
-  await writeFile(path.join(root, "android", "app", "src", "main", "java", "Fixture.kt"), "class Fixture\n");
-  const plan = await verificationPlan(root, "HEAD"), { context } = hostedFixture(plan);
-  const sourceCheck = (id, exitCode) => ({
-    id, status: exitCode ? "failed" : "passed", exitCode, executionState: "exited",
-    execution: syntheticExecution(plan.source),
-    commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode, cleanupFailure: null },
-    ...(exitCode ? { failure: { reason: "command-failed", phase: "command", exitCode }, cleanup: "completed" } : {}),
-  });
-  const build = { ...plan, group: "android", status: "partial", complete: false, isolation: isolationProof("android"), preflight: { status: "passed" },
-    checks: plan.requiredChecks.map((id) => id === "android-build" ? sourceCheck(id, 0) : { id, status: "not_run" }) };
-  const device = { ...plan, group: "device", status: "failed", complete: false, isolation: isolationProof("device"), preflight: { status: "passed" },
-    checks: plan.requiredChecks.map((id) => id === "android-device" ? sourceCheck(id, 1) : { id, status: "not_run" }) };
-  assert.equal(diagnoseIsolatedReports(plan, context, [build, device], "failure").report.status, "failed");
-  for (const mutate of [
-    (check) => { check.cleanup = "failed"; },
-    (check) => { delete check.cleanup; },
-    (check) => { check.diagnosticIssues = [{ operation: "controller-cleanup" }]; },
-    (check) => { check.diagnosticIssues = null; },
-    (check) => { delete check.cleanup; check.deviceEvidence = { cleanup: "failed" }; },
-  ]) {
-    const input = structuredClone(device);
-    mutate(input.checks.find((check) => check.id === "android-device"));
-    assert.equal(diagnoseIsolatedReports(plan, context, [build, input], "failure").report.status, "blocked");
-  }
-  const fallback = structuredClone(device), check = fallback.checks.find((check) => check.id === "android-device");
-  delete check.cleanup;
-  check.deviceEvidence = { cleanup: "completed" };
-  assert.equal(diagnoseIsolatedReports(plan, context, [build, fallback], "failure").report.status, "failed");
 });

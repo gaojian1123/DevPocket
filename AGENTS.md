@@ -23,12 +23,11 @@ do not start an implementation pipeline. Both routes retain required verificatio
 independent review and scoped authorization; self-review is not independent review.
 
 For unattended development, follow **Unattended execution** in
-`docs\DEVELOPMENT-WORKFLOW.md`: reuse explicit task-scoped authority, keep trusted
-control separate from candidate execution, and retain a specific blocker instead
-of opening a question when authority is missing. Autopilot is an interaction mode,
-not permission. Sensitive filenames require independent review, not blanket human
-approval. Candidate dependencies/tools may run in the authorized hosted environment;
-adopting new control policy, active hooks or wider effects remains separate.
+`docs\DEVELOPMENT-WORKFLOW.md`: use ordinary hosted CI within explicit task-scoped
+authority, retaining tests, independent review and process cleanup. This workflow
+does not require an adversarial sandbox or tamper-proof test execution. Keep local
+control adoption and publication authority separate; retain missing scope instead
+of opening unattended questions. Product security requirements below are unchanged.
 
 ## Terminology
 

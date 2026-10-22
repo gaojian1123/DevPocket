@@ -11,12 +11,10 @@ const outputLimit = 16384;
 const privateLogLimit = 1024 * 1024;
 const prefix = "DEVPOCKET_BACKEND_DIAGNOSTIC ";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
-export const LINUX_CANDIDATE_PLATFORM_TESTS = Object.freeze([
+export const LINUX_PLATFORM_TESTS = Object.freeze([
   "scripts/tests/linux-emulator.test.mjs", "scripts/tests/linux-process.test.mjs", "scripts/tests/linux-runtime.test.mjs",
   "scripts/tests/worker-diagnostics.test.mjs", "scripts/tests/native-lifecycle.test.mjs", "scripts/tests/bounded-worker-log.test.mjs",
 ]);
-export const LINUX_PRIVILEGED_PLATFORM_TESTS = Object.freeze(["scripts/tests/linux-privileged-process.test.mjs"]);
-export const LINUX_PLATFORM_TESTS = Object.freeze([...LINUX_CANDIDATE_PLATFORM_TESTS, ...LINUX_PRIVILEGED_PLATFORM_TESTS]);
 const failureTypes = ["testCodeFailure", "subtestsFailed", "testTimeoutFailure", "cancelledByParent",
   "parentAlreadyFinished", "uncaughtException", "unhandledRejection", "hookFailed", "testAborted"];
 const categories = ["assertion", "test-timeout", "cancelled", "subtest-failure", "unhandled-error",

@@ -65,7 +65,7 @@ export async function registerDevelopmentExtension({ defineWorkflow, joinSession
   const workflow = defineWorkflow({
     meta: {
       name: "devpocket-development",
-      description: "Optional controller-managed DevPocket development, only when explicitly selected. Normal work uses the skill. prepare:true obtains one task-scoped native decision and pauses; resume the same run for unattended execution with mode:autopilot. A recorded hosted grant allows native candidate push and fixed disposable CI; no candidate policy adoption, merge, deployment or permission bypass. Independent review and live readiness remain required. Native PR tools finish only explicitly authorized delivery.",
+      description: "Optional controller-managed local DevPocket verification, only when explicitly selected. Normal CI-first work uses the owning-session skill. prepare:true obtains one task-scoped native decision and pauses; resume the same run with mode:autopilot. Independent review, source-bound readiness and native permissions remain required. The controller does not publish, merge or deploy; native PR tools finish only explicitly authorized delivery.",
       argsSchema: taskSchema,
       phases: [{ title: "Authorize" }, { title: "Implement" }, { title: "Candidate" }, { title: "Verify" }, { title: "Review" }, { title: "Diagnose" }],
     },

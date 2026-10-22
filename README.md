@@ -226,9 +226,9 @@ The controller records separate read-only progress diagnoses, not acceptance
 approvals. See **Task-scoped autonomy** in `docs\DEVELOPMENT-WORKFLOW.md`.
 Its read-only readiness check reuses durable evidence for an unchanged candidate
 without repeating local final verification. Source, HEAD, branch or index changes
-invalidate readiness. Its unprepared local route does not publish. An explicitly
-prepared hosted route may push the scoped candidate and dispatch isolated checks;
-native PR tools finish only the recorded delivery scope. Neither route merges or deploys.
+invalidate readiness. The optional controller verifies locally and does not
+dispatch hosted jobs; use the default skill for ordinary CI-first delivery.
+Native PR tools finish only the recorded delivery scope. Neither route merges or deploys.
 Extension activation and App run approvals remain explicit. Both routes
 retain the same verification requirements and scoped authorization; a skill is
 guidance, not a replacement for programmatic evidence checks or protected CI.
@@ -238,18 +238,15 @@ requesting approval at every phase. Sensitive/unclassified filenames focus
 independent review, not mandatory human sign-off. Autopilot never supplies
 missing authority: it retains a concrete blocker without opening a question.
 Candidate dependencies, installation scripts and modified tools can execute on
-authorized disposable GitHub-hosted workers while trusted control and acceptance
-remain fixed. Public internet is allowed; this protects the developer machine,
-not source confidentiality against malicious packages. No production secrets,
-repository write token or persistent caches are supplied to those workers.
-See **Unattended execution** in `docs\DEVELOPMENT-WORKFLOW.md` for one-time
-task preparation, frozen control, native dispatch and live qualification.
-Hosted worker activation is currently blocked. A candidate OS-identity bootstrap,
-separate protected evidence storage and real hosted negative tests are prepared,
-but have not established an approved, verified boundary. Windows token-creation
-capabilities are a fail-closed prerequisite, not assumed from administrator status.
-The dispatch worker remains disabled; existing CI results do not validate these
-new inputs or authorize their privileged hosted setup.
+authorized disposable GitHub-hosted runners with their normal execution identity.
+Public internet and ordinary CI caches are allowed. This protects the developer
+machine and keeps production credentials/publication permissions outside candidate
+execution; it does not promise that hostile code cannot influence tests.
+No restricted-token worker, temporary supervisor service or adversarial sandbox
+is required or reserved as a future mode. Normal platform checks, independent
+review, deadlines and cleanup remain mandatory, as does DevPocket's product security.
+See **Unattended execution** in `docs\DEVELOPMENT-WORKFLOW.md` for task-scoped
+ordinary CI authority and separate local controller adoption.
 
 Verification classifies changed paths centrally and derives CI lanes from the
 selected check definitions, independently of local Agent trust requirements.
@@ -303,13 +300,9 @@ Local execution trust and human-review requirements belong to
 controller. Ordinary code/test changes and same-scope repairs reuse the task's
 local-development authorization; entire script/backend directories are not
 automatic human-review gates. Protected local execution/adoption retains exact
-approval; an actual hosted task grant permits candidate execution only in its
-named isolated workers. Sensitive/unclassified product changes retain independent
+approval; an ordinary-CI task grant permits candidate execution in its named
+repository/ref without per-revision project approval. Sensitive/unclassified product changes retain independent
 inspection, independently of CI impact.
-The Windows isolated route remains disabled while its CI-only LocalService
-supervisor is being qualified. The ordinary candidate identity is not elevated;
-temporary service operations require their own exact-input authorization.
-Capability-only diagnostics do not satisfy the complete verification gate.
 Requests describe the action, reason, target, effects, exclusions and validity,
 with actual changes available as details. The optional controller consumes only
 native decisions journaled for the same task and trusted input versions;

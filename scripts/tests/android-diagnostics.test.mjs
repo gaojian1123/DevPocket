@@ -195,7 +195,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   const normalWorkflow = workflow;
   assert.doesNotMatch(workflow, /startup_diagnostic|startup_variant|STARTUP_ONLY|\n  startup:/);
   assert.deepEqual([...workflow.split("\njobs:\n")[1].matchAll(/^  ([A-Za-z_][\w-]*):[ \t]*$/gm)]
-    .map((match) => match[1]), ["plan", "tooling", "macos", "backend", "android", "device", "isolated-boundary", "gate"]);
+    .map((match) => match[1]), ["plan", "tooling", "macos", "backend", "android", "device", "gate"]);
   const expandedNormal = `${normalWorkflow}\n${preparation}`;
   const actions = [...expandedNormal.matchAll(/^\s+- uses: (actions\/[^\s]+)$/gm)].map((match) => match[1]);
   const counts = {};
@@ -221,7 +221,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(backend, /\$env:DEVPOCKET_PROBE_PYTHON = \(Get-Command python -CommandType Application -ErrorAction Stop \| Select-Object -First 1\)\.Source\n\s+node scripts\\verify\.mjs/);
   const android = workflow.split("\n  android:")[1].split("\n  device:")[0];
   assert.match(android, /--jdk \$env:JAVA_HOME --sdk \.tools\\android-sdk --report \.data\\ci\\android\\report\.json/);
-  const device = workflow.split("\n  device:")[1].split("\n  isolated-boundary:")[0];
+  const device = workflow.split("\n  device:")[1].split("\n  gate:")[0];
   assert.match(device, /needs: \[plan, android\]/);
   assert.match(device, /needs\.plan\.outputs\.device == 'true' &&/);
   assert.ok(device.includes("(github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)"));
@@ -237,12 +237,11 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.doesNotMatch(preparation, /yes\s*\||--licenses|chmod\s+666/);
   assert.match(device, /scripts\/verify\.ps1 -Base \$env:BASE_SHA -Group device -Jdk \$env:JAVA_HOME -Sdk \$env:ANDROID_HOME/);
   assert.match(device, /-Image system-images\/android-35\/google_apis\/x86_64 -Report \.data\/ci\/device\/report\.json/);
-  assert.match(preparation, /node "\$env:TRUSTED_ACTION_PATH\/\.\.\/\.\.\/\.\.\/scripts\/linux-runtime\.mjs"\n\s+exit \$LASTEXITCODE/);
+  assert.match(preparation, /node scripts\/linux-runtime\.mjs\n\s+exit \$LASTEXITCODE/);
   assert.match(preparation, /node scripts\/platform-diagnostics\.mjs --github/);
   assert.deepEqual(LINUX_PLATFORM_TESTS, [
     "scripts/tests/linux-emulator.test.mjs", "scripts/tests/linux-process.test.mjs", "scripts/tests/linux-runtime.test.mjs",
     "scripts/tests/worker-diagnostics.test.mjs", "scripts/tests/native-lifecycle.test.mjs", "scripts/tests/bounded-worker-log.test.mjs",
-    "scripts/tests/linux-privileged-process.test.mjs",
   ]);
   assert.match(device, /name: Export bounded owned-worker diagnostics\n\s+id: worker_diagnostics\n\s+if: always\(\)/);
   assert.match(device, /node scripts\/worker-diagnostics\.mjs --directory \.data\/ci\/device --github\n\s+exit \$LASTEXITCODE/);
@@ -258,7 +257,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(device, /steps\.device_diagnostics\.outputs\.report_ready == 'true'/);
 
   const gate = workflow.split("\n  gate:")[1];
-  assert.match(gate, /needs: \[plan, tooling, macos, backend, android, device, isolated-boundary\]\n\s+if: always\(\)/);
+  assert.match(gate, /needs: \[plan, tooling, macos, backend, android, device\]\n\s+if: always\(\)/);
   assert.match(gate, /\$env:ISOLATION_REQUIRED -eq 'true' -and \$env:ISOLATION_RESULT -ne 'success'/);
   assert.match(gate, /- uses: actions\/download-artifact@v8\n\s+with:\n\s+pattern: verification-\*\n\s+path: \.data\\ci\\inputs/);
   assert.ok(gate.includes("'scripts\\verification-ci.mjs', '--base', $env:BASE_SHA, '--collect'"));
@@ -291,7 +290,7 @@ test("the independent tooling CI job runs the complete workflow suite without ap
   assert.match(tooling, /name: check-diagnostics-tooling-\$\{\{ matrix\.part \}\}-attempt-\$\{\{ github\.run_attempt \}\}\n\s+path: \.data\/ci\/tooling\/verification-diagnostics\.json/);
   assert.doesNotMatch(tooling, /setup-java|prepare-native|prepare-android|npm run build|npm --prefix|pip install|--(?:sdk|jdk|image)|continue-on-error/);
   const gate = workflow.split("\n  gate:")[1];
-  assert.match(gate, /name: Required verification\n\s+needs: \[plan, tooling, macos, backend, android, device, isolated-boundary\]\n\s+if: always\(\)/);
+  assert.match(gate, /name: Required verification\n\s+needs: \[plan, tooling, macos, backend, android, device\]\n\s+if: always\(\)/);
   assert.ok(gate.includes("TOOLING_RESULT: ${{ needs.tooling.result }}"));
   assert.match(gate, /pattern: verification-\*/);
   const manifest = JSON.parse(await readFile("package.json", "utf8"));

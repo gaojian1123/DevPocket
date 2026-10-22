@@ -49,7 +49,7 @@ const rules = [
     matches: (file) => [
       "verification", "verification-execution", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
       "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
-      "bounded-worker-log", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner", "isolated-worker", "macos-host",
+      "bounded-worker-log", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner", "macos-host",
     ].some((name) => file === `scripts/tests/${name}.test.mjs`) ||
       ["scripts/tests/fixtures/emulator-lease-peer.mjs", "scripts/tests/fixtures/verification-tools.mjs"].includes(file), checks: tooling },
   { id: "backend-execution", description: "Backend command adaptation, builds and packaging require backend checks, not native execution.",
@@ -64,16 +64,12 @@ const rules = [
       "scripts/manual-emulator.mjs", "scripts/native-startup.mjs", "scripts/platform-diagnostics.mjs",
       "scripts/start-test-emulator.ps1", "scripts/stop-test-emulator.ps1", "scripts/test-native-layouts.ps1",
       "scripts/save-debug-artifact.ps1", "scripts/tests/linux-process.test.mjs",
-      "scripts/tests/linux-privileged-process.test.mjs", "scripts/tests/fixtures/linux-process.mjs",
       ".github/actions/prepare-native/action.yml", ".github/workflows/native-startup-diagnostics.yml"].includes(file) ||
       /^(?:android\/gradle\/|android\/gradlew(?:\.bat)?$)/.test(file) ||
       /^android\/.*(?:\.gradle(?:\.kts)?|gradle\.properties)$/.test(file), ...nativeExecution },
   { id: "shared-execution", description: "The shared executor, process ownership, bounded logs and shared backend/native preflight require all downstream checks.",
     matches: (file) => ["scripts/verification-executor.mjs", "scripts/verification-preflight.mjs", "scripts/verification-run.mjs",
-      "scripts/verification-transition.mjs", "scripts/verification-admission.mjs", "scripts/verification-ci.mjs", "scripts/isolated-verification.mjs",
-      "scripts/isolated-worker.mjs", "scripts/isolated-worker.ps1", "scripts/isolated-worker.py", "scripts/isolated-worker-probe.mjs",
-      "scripts/isolated-command.cs", "scripts/isolated-command.ps1", "scripts/isolated-command.py",
-      "scripts/windows-supervisor.cs",
+      "scripts/verification-transition.mjs", "scripts/verification-admission.mjs", "scripts/verification-ci.mjs",
       "scripts/verification-ci-artifact.ps1", "scripts/process.mjs", "scripts/owned-command.ps1",
       "scripts/owned-command.cs", "scripts/owned-command-windows.mjs", "scripts/owned-command-linux.py",
       "scripts/owned-command-darwin.py", "scripts/local-ipc.mjs",
@@ -82,7 +78,7 @@ const rules = [
     matches: (file) => file.startsWith("deployment/") || file.startsWith("infra/") || file === "azure.yaml",
     checks: [...backend, "setup", "azure-tests", "operations-tests"] },
   { id: "verification-infrastructure", description: "Cross-lane CI and shared or unclassified dependency inputs require all downstream checks.",
-    matches: (file) => [".github/workflows/ci.yml", ".github/workflows/isolated-verification.yml", ".github/CODEOWNERS"].includes(file) ||
+    matches: (file) => [".github/workflows/ci.yml", ".github/CODEOWNERS"].includes(file) ||
       /(?:^|\/)(?:\.npmrc|package(?:-lock)?\.json|npm-shrinkwrap\.json|tsconfig(?:\.[^/]+)?\.json|requirements[^/]*\.txt)$/i.test(file), ...full },
   { id: "android", description: "Android changes require native build and device evidence.",
     matches: (file) => file.startsWith("android/"), checks: android,

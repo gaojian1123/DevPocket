@@ -66,358 +66,59 @@ round, owner takeover or lock removal.
 
 ## Unattended execution
 
-Autopilot selects interaction behavior, not authority. A clear task delegates
-ordinary implementation, verification, independent review and repairs. Reuse
-established conventions for reversible details; preserve genuinely unresolved
-behavior or scope as a concrete `needs_human` result. In unattended mode, retain
-the decision and stop rather than opening a question, manufacturing consent,
-repeatedly asking, or reporting the task as completed.
+Use ordinary GitHub-hosted CI for this personal-development workflow. Each
+candidate runs in the normal disposable runner environment. Dependencies,
+install scripts and modified tools may execute there within the named task's
+CI authority, without a new project question for every revision. Public network
+access is permitted. This is engineering verification, not an adversarial sandbox:
+commit identities and artifact digests identify results; they do not prove that
+hostile code could not influence tests on the runner.
 
-Prepare delivery/execution authority once before unattended work. A single
-original-client user decision may cover the task's local commits, push to its
-named branch, Draft PR, selected CI and transition to ready after acceptance.
-Keep these actions individually recorded; separate records are not separate
-questions. Working-tree implementation still grants no publication. Merge,
-deployment, production access, host installation, control-policy adoption,
-hook changes and extension reload are outside this scope. Existing native
-permissions, GitHub rules and user-selected limits remain in force.
+The development scope does not include restricted-token workers, temporary
+supervisor services, ancestor-ACL isolation, tamper-proof acceptance or optional
+future sandbox modes. Ordinary Windows, macOS, Linux, backend, Android/device
+checks, independent review, deadlines and process/data cleanup remain required.
+Product authorization, session ownership and credential protection are unchanged.
 
-`developmentTaskApprovalRequest` describes that scope and its immutable native
-question. `developmentTaskActionAllowed` checks a requested action, and
-`developmentExecutionAuthorization` selects the applicable local/hosted route.
-Use these shared decisions in skill-led work, the controller, review and readiness.
-The skill retains the original user message/answer; the optional controller
-retains the actual native response in its runtime journal. JSON copies are
-diagnostics, not a source of authorization.
+Autopilot selects interaction behavior, not authority. Prepare delivery scope
+once: local commits, the named task-branch push, Draft PR, ordinary CI and ready
+delivery after acceptance can share one original-client decision. Merge,
+deployment, production access, local installation and extension activation remain
+separate. A missing scope is retained as a specific blocker without opening a
+question in unattended mode. Native permissions and user-selected limits remain.
 
-When improving the development machinery itself, keep the previously approved
-controller fixed for the whole task. Validate new controller/bootstrap versions
-as candidate code only in the explicitly authorized disposable CI environment;
-do not adopt or refreeze each revision locally merely to run its tests. Candidate
-trial results do not grant the candidate control over acceptance. A task-scoped
-CI grant can cover same-scope repairs, while local adoption, a changed execution
-target or expanded effects remain separate. In unattended work, retain a concrete
-missing-scope/native-permission blocker instead of repeatedly opening approval
-questions. Delivery of reviewed source is separate from activating that source.
+Keep production credentials and publication permissions out of candidate
+execution. CI uses read-only repository permissions and checkouts without
+persistent credentials. Treat reports, logs and build artifacts as data; do not
+execute downloaded scripts in the original client or a privileged publishing job.
+Do not claim that a separate collector job makes candidate-produced results
+unforgeable. Cache use is ordinary CI behavior, not an authority or release proof.
 
-Every publication grant records `ordinary-ci`, including locally verified PR
-delivery; hosted grants keep it separate from `isolated-execution`.
-A candidate push can trigger ordinary CI through an existing PR, and creating
-a PR can trigger it too. The combined native question explicitly covers those
-jobs running candidate inputs as normal runner identities outside the low-identity
-boundary. Local-verification PR scopes retain `ci: { repository, ref }` from the
-inspected origin and single matching effective push destination. Preparation,
-resume and readiness revalidate both destinations against that retained target;
-restoring a configuration hash cannot authorize a different discovered target.
-The controller, readiness handoff and hash-bound native publisher require matching authority;
-disabled isolated workers do not suppress automatic CI. Missing or older
-publication authority stops publication. Working-tree/local-commit tasks without
-hosted execution retain no publication or CI authority. Ordinary CI output does
-not replace the fixed isolated gate or authorize candidate-policy adoption.
+Prefer the owning-session skill's **CI-first delivery and live qualification**
+route below. Reuse the existing pipeline rather than creating another dispatcher
+or execution framework. Required check selection, actual job outcomes, source
+identity and independent review still determine readiness.
 
-Sensitive/unclassified paths remain mandatory independent-review subjects.
-`reviewPaths` and their reasons focus that review; filenames do not demand an
-additional human signature. `requiresHumanReview` describes the default local
-execution requirement for protected inputs, not a pending decision after an
-applicable grant has satisfied it. Neither a risk label nor an AI review can
-grant additional execution effects.
+`developmentTaskApprovalRequest` records task actions. Before push/PR creation,
+require `ordinary-ci` for the actual repository/ref, checking both origin and
+every effective push destination. `developmentExecutionAuthorization` checks
+local execution by default; pass target `ci` to check the same grant's ordinary
+hosted execution scope. A CI grant does not approve changed tools locally.
+Sensitive/unclassified paths focus independent review rather than blanket human
+sign-off. Legacy isolated-execution requests are rejected rather than reinterpreted.
 
-### Disposable hosted execution
-
-**Activation blocked:** the worker job remains disabled. The candidate bootstrap
-and adversarial checks require current evidence from the authorized disposable
-environment before they establish an isolation boundary. Candidate trial authority
-does not authorize local control adoption. Sibling checkouts owned by the same
-account are not sufficient. Do not enable the job merely by removing its false
-condition or substitute the old candidate's CI for the new bootstrap's validation.
-
-The proposed `isolated-worker.ps1`/`isolated-worker.py` bootstrap creates a temporary
-unprivileged account only in the named disposable hosted VM. Trusted supervision,
-Git inspection, fixed test selection and receipt production retain the control
-identity. The command owner has a protected working directory, home/temp and tool
-environment; candidate CWD and allowlisted environment apply only after the
-identity transition. Candidate installation hooks, probes, build/test payloads
-and device cleanup run under the unprivileged identity. Authoritative reports and
-ledger keys are stored under control, separately from candidate-owned raw device
-output. Windows explicitly protects the control checkout's `.data` with a
-high-identity-only DACL; POSIX creation modes do not establish Windows privacy.
-The negative fixture must reject evidence reads as well as overwrite/deletion.
-Only bounded named reports and APKs are staged for upload.
-
-The isolated worker targets are Windows and Ubuntu, not macOS. A plan selecting
-`ciMacos` is blocked during isolated planning, aggregation and qualification until
-an approved isolated Mac worker exists; Windows/Linux reports cannot omit that
-requirement. The ordinary CI workflow still requires its selected macOS lane.
-
-The original hosted Windows runner token reached `CreateProcessAsUserW` and
-failed with native error 1314 while `SeAssignPrimaryTokenPrivilege` was absent
-and quota privilege was enabled. The prepared replacement uses a uniquely named,
-demand-start, own-process `LocalService` SCM module, not `LocalSystem` and not an
-elevated candidate. This adds a separately authorized CI-only service lifecycle:
-create/configure/start/stop/delete. It does not change account-level user rights.
-The SCM required-privilege list retains only the existing assign-primary-token
-and quota privileges (plus the platform's unavoidable traverse privilege).
-The actual service SID, identity and privilege availability are checked at startup.
-
-The branch diagnostic for `92c193d` confirmed that minimal service token and
-created a suspended candidate, but its identity-stage token inspection failed
-with native error 5; process and service cleanup were confirmed. The prepared
-helper uses the explicit-credential logon token only to open the actual child
-token under the candidate identity, then restores the supervisor before identity
-validation and privilege removal. This
-[documented impersonation route](https://learn.microsoft.com/windows/win32/api/securitybaseapi/nf-securitybaseapi-impersonateloggedonuser)
-does not add `SeDebugPrivilege` or `SeImpersonatePrivilege`. It still requires
-fresh hosted evidence; opening the original logon token is not a substitute for
-checking the actual suspended child.
-
-The trusted Node controller retains the original runner identity. Its owned
-command runner invokes a hash-bound service client; only the service calls the
-existing low-token launcher. A private owner pipe, task nonce and authenticated
-SCM/pipe process identity bind the service to that invocation. Neither pipe is
-inherited by the candidate. The candidate service accepts sequential commands
-only from the bound controller, within its named working/executable roots and
-environment projection. Exclusive admission records reject replay. `LogonUserW` and
-`CreateProcessAsUserW` attach the target to a kill-on-close Job through the
-creation-time Job-list attribute before it can execute. The helper reads control
-input without blocking startup and checks cancellation before resuming the target.
-An outer command deadline remains a timeout even when delivering its stop produces
-a native cancellation receipt; both owners must still confirm cleanup. Native
-stdout/stderr share the existing 16 MiB command budget; overflow cancels the
-candidate and remains an output-limit failure rather than success or cancellation.
-Signed C# and unsigned Windows representations of the same 32-bit exit status
-must agree without discarding confirmed cleanup. A nonzero status remains a
-failure; this normalization does not make DLL initialization successful.
-Only target standard I/O handles are inherited; Windows candidate stdin is EOF,
-not the privileged cancellation pipe. The original Store-PowerShell compatibility path is
-unchanged. A service capability result is not source verification or isolation
-acceptance. Service operations never run on the developer's machine.
-The rejected Windows ancestor-ACL strategy is removed. Its share-zero metadata
-handle did not establish exclusive directory access, and changing system-ancestor
-DACLs also failed with native error 5. The replacement candidate uses
-[`CreateRestrictedToken`](https://learn.microsoft.com/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken)
-with `WRITE_RESTRICTED | DISABLE_MAX_PRIVILEGE` and only the task user's SID plus
-the originating token's fresh logon SID. The actual suspended child must carry
-exactly those two restricting SIDs and the same logon identity before resume.
-No Users, Everyone, Authenticated Users or Restricted Code SID is added to the
-restricting list. Ordinary token identity/groups and privilege policy remain
-unchanged; private control/evidence and runner channels retain explicit read protection.
-
-The user-SID-only trial ran the Node marker but PowerShell failed during
-`BCrypt.dll` initialization (`0x8007045A`); adding the actual logon SID alone did
-not fix it. Read-only hosted inspection found that CNG/KsecDD device DACLs grant
-Restricted Code read/execute access, but the subsequent RC trial still failed
-with the same initialization error. That ineffective expansion and the temporary
-descriptor/debug instrumentation are removed; the authenticated failure history
-remains separate from acceptance.
-
-Windows currently stops after its fixed benign compatibility probes, before
-candidate hooks, the negative execution fixture or an isolation proof. Even
-successful startup cannot qualify the allocation yet. Required next evidence
-includes live effective mutation rights on all protected ancestors and shared
-trust inputs, including each relevant delete-child, delete, ACL/owner-change and
-redirection right. An unheld mutation-granting RC parent must cause allocation
-rejection or genuine permission denial. The Everyone-only fixture and sharing or
-nonempty-directory failures do not establish this stronger condition. Do not
-replace it with system-ancestor ACL mutation or a weaker-token fallback.
-
-The first candidate's limited shared-station/desktop grants did not satisfy the
-documented startup contract and its marker exited with `STATUS_DLL_INIT_FAILED`.
-That shared-station mutation is removed. The next candidate uses a non-null empty
-desktop string so Windows applies the fresh logon session's connection rules,
-rather than inheriting the service desktop. Before candidate hooks, two actual
-child probes must show the expected account, noninteractive scope, distinct
-AuthenticationId/logon SID/window stations, and separation from the service.
-An empty string alone is not accepted as proof. No administrator-only station,
-cross-account hooks, broader shared-station grants or additional privileges are
-introduced.
-
-These are candidate changes, not established isolation evidence. Once allocation
-qualification exists, Windows CI must run the real installation, negative-gate
-and cancellation probes rather than treating benign startup as acceptance.
-Synthetic Everyone-writable parents require
-actual permission-denied results, runner-channel reads must be denied, and a
-public HTTPS probe exercises network compatibility under the low token. The
-self-test additionally checks sequential commands, replay refusal, bounded
-output, retained client handles, pre-header EOF and caller/service death.
-One first-instance pipe remains owned across bounded disconnect/reconnect cycles;
-pending connection reads finish before reuse. Cancellation before a header must
-claim the same exclusive replay fence, so a previous admission or terminal record
-cannot become a new never-admitted assertion. Executable/CWD scope checks bind
-canonical, non-reparse path components through launch. A missing crash receipt stays missing rather
-than being rewritten as ordinary successful completion. The existing
-`isolation-proof.json` carries these lifecycle diagnostics only after they pass.
-The dispatch route remains disabled until current hosted evidence and independent
-review establish the boundary. Earlier marker-only capability records retain
-`acceptance: false` and cannot validate this replacement.
-The service must stop and disappear before the temporary candidate account or
-private credentials are removed. Cleanup stages still attempt service removal
-and bounded diagnostic publication after an owner-pipe failure.
-`bootstrap-cleanup.json` records each failed stage; any cleanup failure blocks
-acceptance reports and build artifacts, without hiding capability/failure
-diagnostics. Missing completion, a mismatched request, unknown cleanup or a
-surviving service remains a failure. The client never reconnects and replays a
-possibly admitted command.
-
-Linux keeps the root process owner outside `setpriv`, drops the target's groups
-and capabilities and sets `no_new_privs`. It consumes queued cancellation/EOF and
-checks its deadline before target admission, then reconciles control again before
-accepting exit. Private receipts distinguish confirmed no-start interruption from
-an admitted process requiring descendant cleanup. Control and ancestors are root-owned;
-runner channels remain outside the candidate identity. The disposable VM's
-ptrace policy also denies candidate debugger attachment. Existing approved
-JDK/SDK/KVM preparation runs before candidate code; it is not replaced with
-candidate setup scripts. Public network access remains allowed.
-The root supervisor uses a private umask and explicitly allocates every evidence-directory
-ancestor and its Python bytecode cache, enforcing root-only modes rather than
-relying on recursive creation or an inherited default ACL. A private file
-mode alone does not prevent deletion through a writable parent. Only the named
-publication directories and outputs are handed back to the original runner.
-Bootstrap failures retain a bounded stage; private-directory rejection also
-identifies the fixed relative path and observed UID/mode without logging credentials.
-Backend installation, Python preflight and operational commands select the same
-candidate-owned venv. Its PATH prefix applies only to low-identity commands, never
-to the privileged owner; ambient `NODE_OPTIONS` remains unset so native startup
-binding is preserved.
-Linux platform checks are partitioned without dropping the ordinary CI suite:
-the fixed control checkout runs the privilege-dependent lifecycle checks before
-the candidate command scope is installed; candidate-safe files run under the
-low identity. `trusted-platform-preparation.json` retains the controller source
-separately and is not candidate verification. A skipped check is not a passing
-preparation result, and the candidate is never given sudo to make a test pass.
-
-The real bootstrap's negative test installs a fixture whose lifecycle hook tries
-to replace control, evidence, ancestors and runner channels and leaves a detached
-descendant. It checks cleanup and cancellation, then runs a deliberately failing
-required test through the actual verifier. The gate must reject that result.
-The hosted tooling selector runs in the control process and executes fixed files
-one at a time, with cleanup and source checks between files; ordinary local/CI
-tooling keeps its existing concurrency. Passing hosted reports also need the
-exact fixed file list and each file's execution outcome, retained in the
-authenticated aggregate and revalidated during live qualification. The catalogue
-requirement applies only to selected tooling checks; a native-only plan still runs
-its required build and device checks without inventing a tooling selection.
-CI includes separate
-Windows/Linux bootstrap jobs, but authorizing this CI change is not authorization
-to activate the disabled dispatch route, change local OS policy, or install tools
-on the developer's machine.
-
-The following describes the intended execution contract after that blocker is
-resolved, not evidence that the isolation boundary already exists.
-
-The approved `.github\workflows\isolated-verification.yml` runs only through
-explicit dispatch at a named trusted branch and exact approved commit. It uses
-GitHub-hosted Windows/Ubuntu VMs, read-only repository permissions, no production
-secrets/OIDC identity, no persistent checkout credentials and no npm cache reuse.
-The setup and test commands may install candidate dependencies and run candidate
-install scripts/tools in those workers. Public internet access is intentionally
-permitted: this isolates the developer's machine, not source confidentiality
-against a malicious dependency. No local runtime/credential directories are sent.
-
-The hash-bound dispatch transmits `trusted_sha` independently of the observed
-branch tip. Every job checks it against the workflow revision before execution;
-context validation also checks `GITHUB_SHA` and the control checkout. A moved
-branch therefore cannot install or execute the candidate through a dispatcher
-that retains these guards, and an all-skipped run cannot qualify. Protect adoption
-and rollback of the dispatcher itself: guards cannot defend against an administrator
-replacing the policy that enforces them.
-
-The plan, workers and final gate have separate fresh VMs and checkouts. Plan and
-gate load only the trusted `control` checkout, inspect candidate source as data,
-and store/download evidence under the control checkout rather than a candidate
-path that could redirect writes. Only workers execute candidate programs. The
-tooling check uses the fixed control runner's test catalogue in the trusted
-supervisor, not a replacement candidate runner or npm lifecycle hook. Other candidate commands remain subjects
-for independent review; isolated execution is not proof of arbitrary code's
-honesty. Required checks, device evidence and per-check origins remain mandatory.
-The clean gate rejects missing/duplicate/failed worker reports and actual failed
-jobs, even if candidate output claims success.
-The collector accepts both per-artifact directories and the downloader's flat
-single-artifact layout. A flat input is valid only for one required group and
-one regular report; mixed layouts and extra files remain invalid.
-
-The trusted workflow must already be installed at the approved revision.
-Publication preparation checks the actual origin, clean candidate, branch,
-baseline and unchanged trusted ref. An unattended push refuses changes to
-`.github\workflows` or `.github\actions` relative to that trusted revision:
-otherwise a candidate could activate a second, more privileged execution path.
-Such changes can be inspected/tested as data, but activating them needs separate
-adoption authority. Do not silently relax this check or use `pull_request_target`
-to execute a candidate with privileged credentials. A dedicated execution
-repository can be provisioned separately if the source repository cannot retain
-this separation; that is not automatically created by these tools.
-
-Local native mutation receives a hash-bound request through the original
-PowerShell permission pipeline. Its builtins-only bootstrap binds all loaded
-controller inputs and the pre-permission Git configuration/index/source snapshot.
-It validates the single effective push URL, including push-specific URL rewriting,
-then pushes only the exact candidate branch: follow-tags, mirror, force, automatic
-upstream changes and submodule pushes are excluded for this command without
-rewriting persistent configuration or disabling hooks. It dispatches the fixed
-workflow once. A dispatch intent is written before either effect.
-Denied, interrupted or uncertain operations are inspected through their retained
-intent/run, never blindly resubmitted. The automatic waiter reads the same run;
-failed-run logs are diagnostic input for same-task repair, never acceptance.
-Only an authenticated failed-check report with an actual execution origin may
-start an implementation repair. Setup, admission, missing/invalid collection and
-preflight outcomes remain `blocked`; a failed GitHub run alone is not evidence
-that candidate code failed. Failed summaries retain their separate diagnostic
-kind and cannot qualify as successful verification. Structured worker reports
-are persisted before printing log tails; the reader accepts the producer's
-1 MiB retained-log bound while printing at most the final 16 KiB.
-Workflow-command interpretation is suspended while untrusted failure tails are printed.
-Bootstrap failures also retain a separate, non-acceptance diagnostic report.
-Only output from an observed candidate command is printed; private native launch
-failures expose allowlisted stage, error code and privilege-presence facts instead.
-Stop/resume markers and their bounded tail use one stream so their ordering is preserved.
-Cancellation stops local waiting, but an already-submitted hosted run may continue
-to its CI timeout; inspect that exact run before a separately scoped cancellation.
-
-Only named reports, bounded failure logs and candidate APKs are collected. Output
-is untrusted data: no downloaded scripts are executed locally, no evidence ZIP
-is extracted into the workspace, and no candidate cache is promoted to release.
-The qualifier authenticates the archive digest against GitHub, checks the actual
-successful gate/run/attempt, current trusted branch, candidate branch and local
-clean source, and rechecks them after collection. It retains `kind:
-isolated-qualification`, the untouched hosted report and the separate local
-candidate identity. A candidate-branch run does not impersonate PR merge-ref
-evidence; required GitHub PR checks still apply.
-
-For skill-led work, freeze the approved controller before editing with
-`freezeDevelopmentController(root)` from `scripts\development-controller.mjs`.
-Keep its returned implementation, original scope and hooks with the real user
-decision. Capture candidate source identity with the approved snapshot's
-`git-state.mjs`, not by importing a candidate verifier. Use the frozen script,
-not the modified candidate, to prepare a native
-request from that retained `{ scope, hooks, implementation, receipts }` reference:
-
-```powershell
-node TRUSTED_SCRIPTS\isolated-verification.mjs --prepare --repo WORKTREE `
-  --request RETAINED_SCOPE_JSON `
-  --report WORKTREE\.data\verification\NEW_ID\native-isolated-request.json
-```
-
-The result supplies the native command; execute it only through the original
-client's normal tool with the matching actual grant. Preparation itself grants
-nothing and does not push. Observe the unique request ID in the fixed workflow's
-run name, wait for that run, then qualify it automatically:
-
-```powershell
-node TRUSTED_SCRIPTS\isolated-verification.mjs --qualify --repo WORKTREE `
-  --request WORKTREE\.data\verification\NEW_ID\dispatch.json --run-id RUN_ID `
-  --report WORKTREE\.data\verification\FRESH_ID\qualification.json
-```
-
-Use another fresh destination after independent review and before publication.
-Require the same candidate, trusted revision, run attempt, report and artifact
-digests. Qualification is read-only on GitHub and cannot authorize publication.
-The fixed grant permits candidate revisions, not replacement of the trusted
-controller, review instructions or acceptance policy. Those versions are updated
-through a separate reviewed adoption; they cannot approve their own replacement.
+When changing development machinery, keep the approved local controller stable.
+Use `freezeDevelopmentController(root)` from `scripts\development-controller.mjs`
+before edits when a captured copy is needed, and use its `git-state.mjs` for
+read-only source capture. Candidate revisions can be tested in the authorized CI
+environment without adopting each revision locally. Snapshot hashes guard local
+execution identity, not against a hostile process with the same OS permissions.
+Local control/instruction/hook adoption still needs its applicable explicit scope.
 
 ### Optional controller preparation
 
 For an explicitly selected registered workflow, add `prepare: true` and the
-requested delivery/execution scope to its normal task arguments. For example:
+requested delivery scope to its normal task arguments. For example:
 
 ```json
 {
@@ -425,13 +126,7 @@ requested delivery/execution scope to its normal task arguments. For example:
   "acceptance": ["The specified behavior works without regressions"],
   "mode": "autopilot",
   "prepare": true,
-  "delivery": "pull-request",
-  "execution": {
-    "kind": "github-hosted",
-    "repository": "OWNER/REPO",
-    "trustedRef": "refs/heads/APPROVED_BRANCH",
-    "trustedSha": "EXACT_APPROVED_40_CHARACTER_COMMIT"
-  }
+  "delivery": "pull-request"
 }
 ```
 
@@ -440,7 +135,7 @@ then `ctx.pause` before implementation. Resume that **same run ID**, retaining
 its journal, baseline and budget. Replayed grants do not need an available UI.
 The run rechecks source, Git configuration/index, hooks and trusted implementation
 before continuing. Missing or rejected scope is not retried or auto-approved.
-An unprepared `mode: autopilot`, hosted target or PR delivery returns a specific
+An unprepared `mode: autopilot` or PR delivery returns a specific
 `needs_human` result before implementation. The starter propagates an explicitly
 chosen mode to an isolated child rather than forcing `interactive`.
 
@@ -448,8 +143,10 @@ The extension freezes approved controller modules in a native-journaled setup
 step under ignored `.data\development-controllers`. Resume reads that same snapshot
 instead of freezing modified candidate code. Candidate source edits do not replace those
 modules. Changed snapshot bytes still stop the run; reload/adoption is explicit.
-The controller can push/dispatch only its recorded hosted scope. It returns the
-actual `authorizedDeliveryActions` after verification and independent review;
+The optional controller verifies locally and does not dispatch hosted jobs.
+Use the owning-session skill for ordinary CI-first work instead of starting this
+optional route for a hosted-only task. It returns the actual
+`authorizedDeliveryActions` after local verification and independent review;
 the owning original client completes any authorized PR work using native tools.
 A `ready` candidate is not a claim that a PR already exists.
 Prepared delivery readiness also checks the approved Git configuration. Changing
@@ -666,10 +363,28 @@ SHA or LF checkout fingerprint is never rewritten to look like execution on the
 local branch/CRLF checkout. The referenced envelope and ZIP remain evidence
 records; an editable qualification JSON is not an offline readiness credential.
 
-Give the configured independent reviewer the actual live result, CI envelope,
+When the qualifier's own execution inputs or test catalogue changed, keep the
+approved local controller fixed. The owning-session skill may instead inspect
+the same live GitHub facts with the original client's read-only Git/GitHub/archive
+tools, without executing candidate policy locally. Retain a `ci-inspection`
+record with the actual API responses, bounded authenticated archive, complete
+report and local source/index/configuration snapshot. Check every relationship
+above, including live base/merge parents, workflow and protected-input identity,
+run attempt, successful gate, artifact digest and coverage from the original
+task base. Inspect every required check's origin and selected platform/device
+result; a successful gate label alone is insufficient.
+
+This is an agent inspection, not a machine `ci-qualification` or a controller
+readiness receipt. It never excuses failed, partial or unavailable evidence.
+The independent reviewer must inspect those underlying records, not accept the
+implementer's verdict. Repeat the same live read-only checks after review;
+an unchecked or changed binding remains pending. This alternative is limited to
+skill-led ordinary CI and does not add an executor or activate candidate control.
+
+Give the configured independent reviewer the actual live qualification or inspection, CI envelope,
 artifact digest, original task base, candidate/tested refs, actual PR diff and
 scoped policy decisions. After its passing conclusion, repeat live qualification
-into a new directory, without rerunning checks merely to compare identities.
+or inspection into a new directory, without rerunning checks merely to compare identities.
 Require the same source/ref/attempt bindings covered by the review before marking
 the existing draft ready within the user's delivery authorization. Changed,
 missing or incomplete evidence remains pending; do not create a duplicate PR or
@@ -772,9 +487,10 @@ The controller follows **implement → local candidate commit → final verifica
    exact `sourceSnapshot` observed after its last edit/check. There is no mandatory
    full acceptance pass before committing.
 2. The controller checks ownership, source, index, branch and Git configuration.
-   Protected execution/dependency/instruction changes use the recorded hosted
-   grant as isolated test subjects, or request exact local execution approval
-   **before** executing the modified local policy.
+   This optional controller verifies locally. Protected execution, dependency
+   and instruction changes require their exact local execution approval before
+   use. The default owning-session skill handles ordinary CI-first delivery when
+   candidate tools are authorized only in the hosted environment.
    An accepted native, input-bound decision continues this phase; missing or
    rejected consent stops with the specific request. Ordinary code/test paths
    no longer trigger this decision solely because of their directory.
@@ -849,7 +565,7 @@ Hooks may invoke programs outside that directory; these snapshots do not parse
 arbitrary hook dependencies or replace the original native permission policy.
 Candidate requests retain version 4 to bind hook, executable-input and prepared
 reference-transaction evidence. Controller journals/results use version 8 for
-unattended task grants, independent risk review, isolated qualification and
+unattended task grants, independent risk review and
 cancellation-safe completion. Older
 requests/results require inspected recovery; they are not replayed as approval
 for the new controller.
@@ -1003,9 +719,9 @@ Local macOS acceptance does not replace Windows/Linux-specific CI coverage.
 
 Before executing changed verification or dependency policy, resolve the
 applicable authority in Step 3 of `.github\skills\devpocket-development\SKILL.md`.
-Local execution/adoption needs exact-input approval; isolated execution uses the
-recorded hosted task grant and fixed trusted gate. Active hooks and changes to
-trusted control still require separate approval. Self-review or AI review cannot
+Local execution/adoption needs exact-input approval; ordinary CI uses the
+recorded repository/branch-bound task grant. Active hooks and local control
+adoption still require their applicable authority. Self-review or AI review cannot
 create authority; the standalone verifier checks evidence, not consent.
 
 ```powershell

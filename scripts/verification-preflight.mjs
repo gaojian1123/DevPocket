@@ -20,11 +20,7 @@ const policyInputs = [
   "verify.mjs", "verify.ps1", "verification.mjs", "verification-policy.mjs", "verification-executor.mjs", "verification-preflight.mjs",
   "verification-run.mjs", "verification-transition.mjs", "verification-backend.mjs", "verification-android.mjs",
   "test-workflow.mjs", "verification-tooling.mjs", "verification-admission.mjs", "verification-ci.mjs",
-  "verification-ci-artifact.ps1", "development-policy.mjs", "development-controller.mjs", "isolated-verification.mjs",
-  "isolated-worker.mjs", "isolated-worker.ps1", "isolated-worker.py", "isolated-worker-probe.mjs",
-  "isolated-command.cs", "isolated-command.ps1", "isolated-command.py",
-  "windows-supervisor.cs",
-  "tests/linux-privileged-process.test.mjs", "tests/fixtures/linux-process.mjs",
+  "verification-ci-artifact.ps1", "development-policy.mjs", "development-controller.mjs",
   "candidate-commit.mjs", "native-candidate.mjs", "git-state.mjs", "process.mjs",
   "owned-command-windows.mjs", "owned-command.cs", "owned-command.ps1", "owned-command-linux.py", "owned-command-darwin.py", "local-ipc.mjs",
   "backend-diagnostics.mjs", "diagnostic-errors.mjs", "diagnostic-publication.mjs", "bounded-worker-log.mjs",
@@ -554,7 +550,7 @@ export async function verificationPreflight(root, plan, options = {}) {
     }));
     await check("command-ownership", owner);
     if (!issues.length) await check("powershell", powershell);
-    await check("output-directory", () => writable(options.evidenceRoot ?? root, options.directory), "preflight-path");
+    await check("output-directory", () => writable(root, options.directory), "preflight-path");
     const usesNpm = ["tooling", "backend", "device"].includes(group);
     if (usesNpm) {
       await check("root-dependencies", () => once("root-dependencies", () => dependencies(root)), "preflight-dependencies");
@@ -601,7 +597,7 @@ export async function verificationPreflight(root, plan, options = {}) {
       }
     }
     if (group === "tooling" || has("setup") || has("operations-tests")) {
-      if (!issues.length) await check("python", () => python(options.operationsPython ?? "python"));
+      if (!issues.length) await check("python", () => python("python"));
       identities.push(["python-environment", environment(/^(?:PYTHON.*|VIRTUAL_ENV)$/i)]);
     }
     if (has("azure-tests")) {
@@ -622,7 +618,7 @@ export async function verificationPreflight(root, plan, options = {}) {
         const requirements = await readFile(path.join(root, "deployment", "azure", "probe", "requirements-test.txt"), "utf8");
         const match = requirements.trim().match(/^cryptography==(\d+\.\d+\.\d+)$/);
         if (!match) throw diagnosticError("preflight-dependencies");
-        return python(options.operationsPython ?? "python", match[1]);
+        return python("python", match[1]);
       }, "preflight-dependencies");
     }
     if (["android", "device"].includes(group)) {
@@ -631,7 +627,7 @@ export async function verificationPreflight(root, plan, options = {}) {
       const jdk = path.resolve(root, options.jdk ?? (device ? process.env.DEVPOCKET_JDK : undefined) ?? path.join(".tools", "jdk-21"));
       const sdk = path.resolve(root, options.sdk ?? (device ? process.env.DEVPOCKET_ANDROID_SDK : undefined) ?? path.join(".tools", "android-sdk"));
       const cacheDirectory = device && process.platform === "linux" && process.env.GITHUB_ACTIONS === "true" &&
-        process.env.RUNNER_ENVIRONMENT === "github-hosted" ? path.join(options.deviceDirectory ?? path.join(options.directory, "device"), "gradle-cache")
+        process.env.RUNNER_ENVIRONMENT === "github-hosted" ? path.join(options.directory, "device", "gradle-cache")
         : path.join(root, ".tools", "gradle-cache");
       const executableName = (name) => process.platform === "win32" ? `${name}.exe` : name;
       await check("jdk", () => once(`jdk:${jdk}`, async () => {
