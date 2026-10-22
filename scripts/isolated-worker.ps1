@@ -60,14 +60,6 @@ function Set-ProtectedDirectory([string]$Path, [bool]$CandidateRead, [string]$Se
     Set-Acl -LiteralPath $Path -AclObject $acl
 }
 
-function Protect-Ancestors([string]$Path) {
-    $current = [IO.DirectoryInfo]::new($Path).Parent
-    while ($null -ne $current) {
-        [DevPocketIsolatedCommand]::ProtectAncestor($current.FullName, $account.SID, $mutation)
-        $current = $current.Parent
-    }
-}
-
 function Protect-Existing([string]$Path, [bool]$Readable) {
     $acl = Get-Acl -LiteralPath $Path
     $rights = if ($Readable) { $mutation } else { [Security.AccessControl.FileSystemRights]::FullControl }
@@ -76,40 +68,6 @@ function Protect-Existing([string]$Path, [bool]$Readable) {
         $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($account.SID, 'ReadAndExecute', $inherit, $none, $allow))
     }
     Set-Acl -LiteralPath $Path -AclObject $acl
-    Protect-Ancestors $Path
-}
-
-function Assert-AncestorProtection([string]$Path) {
-    $child = Join-Path $Path 'child'
-    $null = New-Item -ItemType Directory -Path $child -Force
-    $sections = [Security.AccessControl.AccessControlSections]'Access, Owner, Group'
-    $expected = Get-Acl -LiteralPath $Path
-    $childBefore = (Get-Acl -LiteralPath $child).GetSecurityDescriptorSddlForm($sections)
-    $expected.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($account.SID, $mutation, $deny))
-    $previousDirectory = [Environment]::CurrentDirectory
-    try {
-        [Environment]::CurrentDirectory = $Path
-        [DevPocketIsolatedCommand]::ProtectAncestor($Path, $account.SID, $mutation)
-    } finally {
-        [Environment]::CurrentDirectory = $previousDirectory
-    }
-    if ((Get-Acl -LiteralPath $Path).GetSecurityDescriptorSddlForm($sections) -ne $expected.GetSecurityDescriptorSddlForm($sections)) {
-        throw 'Ancestor protection changed more than the intended non-inheriting deny.'
-    }
-    $junction = Join-Path $Path 'junction'
-    $null = New-Item -ItemType Junction -Path $junction -Value $child
-    try {
-        [DevPocketIsolatedCommand]::ProtectAncestor($junction, $account.SID, $mutation)
-        throw 'Ancestor protection accepted a reparse object.'
-    } catch {
-        $failure = $_.Exception
-        while ($failure.InnerException) { $failure = $failure.InnerException }
-        if ($failure -isnot [InvalidOperationException] -or $failure.Message -ne 'The opened ancestor is not a regular directory.') { throw }
-    }
-    if ((Get-Acl -LiteralPath $child).GetSecurityDescriptorSddlForm($sections) -ne $childBefore) {
-        throw 'Ancestor protection changed a child DACL or followed a reparse object.'
-    }
-    Write-Host 'Ancestor ACL probe passed without descendant changes.'
 }
 
 function Copy-Checkout([string]$Source, [string]$Destination) {
@@ -136,63 +94,53 @@ function Set-CandidateDirectory([string]$Path) {
     Set-ProtectedDirectory $metadata $true
 }
 
-function Invoke-AtomicLaunchProbe {
-    $probePrivate = Join-Path $state 'launch-private'
-    $null = New-Item -ItemType Directory -Path $probePrivate
-    Set-ProtectedDirectory $probePrivate $false
-    $script:controlCopy = Join-Path $state 'launch-control'
-    Copy-Checkout $Control $controlCopy
-    Set-ProtectedDirectory $controlCopy $true
-    $data = Join-Path $controlCopy '.data'
-    $null = New-Item -ItemType Directory -Path $data
-    Set-ProtectedDirectory $data $false
-    $probeHome = Join-Path $state 'launch-home'
-    $null = New-Item -ItemType Directory -Path $probeHome
-    Set-ProtectedDirectory $probeHome $true
-    $temporary = Join-Path $probeHome 'tmp'
-    $null = New-Item -ItemType Directory -Path $temporary
-    $script:identity = Join-Path $probePrivate 'identity.json'
-    [IO.File]::WriteAllText($identity, (@{ user = $name; password = $password; sid = $account.SID.Value } | ConvertTo-Json -Compress))
+function Start-IsolatedSupervisor {
     $binaryDirectory = Join-Path $state 'supervisor-bin'
     $null = New-Item -ItemType Directory -Path $binaryDirectory
     Set-ProtectedDirectory $binaryDirectory $false
     $supervisor = Join-Path $binaryDirectory 'supervisor.exe'
     $compiler = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
     & $compiler /nologo /target:exe /reference:System.ServiceProcess.dll /reference:System.Web.Extensions.dll "/out:$supervisor" `
-        (Join-Path $Control 'scripts\isolated-command.cs') (Join-Path $Control 'scripts\windows-supervisor.cs')
+        (Join-Path $Control 'scripts\isolated-command.cs') (Join-Path $Control 'scripts\windows-supervisor.cs') | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'The fixed Windows supervisor did not compile.' }
     $script:serviceName = 'dpws_' + [Guid]::NewGuid().ToString('N').Substring(0, 24)
-    $script:supervisorConfiguration = Join-Path $probePrivate 'supervisor.json'
+    $script:supervisorConfiguration = Join-Path $private 'supervisor.json'
     $sc = Join-Path $env:SystemRoot 'System32\sc.exe'
-    & $sc create $serviceName 'type=' own 'start=' demand 'obj=' 'NT AUTHORITY\LocalService' 'binPath=' "`"$supervisor`""
+    & $sc create $serviceName 'type=' own 'start=' demand 'obj=' 'NT AUTHORITY\LocalService' 'binPath=' "`"$supervisor`"" | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'The task-scoped LocalService registration failed.' }
     $script:serviceCreated = $true
-    & $sc sidtype $serviceName unrestricted
+    & $sc sidtype $serviceName unrestricted | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'The supervisor service SID could not be configured.' }
-    & $sc privs $serviceName 'SeAssignPrimaryTokenPrivilege/SeIncreaseQuotaPrivilege'
+    & $sc privs $serviceName 'SeAssignPrimaryTokenPrivilege/SeIncreaseQuotaPrivilege' | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'The supervisor privilege list could not be restricted.' }
-    & $sc sdset $serviceName "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;$($runner.User.Value))"
+    & $sc sdset $serviceName "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;$($runner.User.Value))" | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'The supervisor control ACL could not be restricted.' }
     $script:serviceSid = ([Security.Principal.NTAccount]::new("NT SERVICE\$serviceName")).Translate([Security.Principal.SecurityIdentifier])
     Set-ProtectedDirectory $state $true
     Set-ProtectedDirectory $controlCopy $true
-    Set-ProtectedDirectory $data $false
+    Set-ProtectedDirectory $controlData $false
     Set-ProtectedDirectory $binaryDirectory $false
-    Set-ProtectedDirectory $probePrivate $false 'Modify'
+    Set-ProtectedDirectory $private $false 'Modify'
+    foreach ($path in @($candidateCopy, $fixture, $candidateHome)) { Set-CandidateDirectory $path }
     $pipeId = [Guid]::NewGuid().ToString('N')
     $ownerPipeName = "devpocket-$pipeId-owner"
     $nonce = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant()
+    $executableRoots = @($controlCopy, $candidateCopy, $fixture, $candidateHome) +
+        @($tools.Values | ForEach-Object { Split-Path -Parent $_ })
+    if ($env:JAVA_HOME) { $executableRoots += $env:JAVA_HOME }
     $serviceConfiguration = @{
         version = 1; service = $serviceName; serviceSid = $serviceSid.Value; runnerSid = $runner.User.Value; ownerPid = $PID
         ownerPipe = $ownerPipeName; commandPipe = "devpocket-$pipeId-command"; nonce = $nonce
-        privateRoot = $probePrivate; identity = $identity
+        privateRoot = $private; identity = $identity; mode = 'worker'
         executableSha256 = (Get-FileHash -LiteralPath $supervisor -Algorithm SHA256).Hash.ToLowerInvariant()
         probeNode = $tools.node; probeNodeSha256 = (Get-FileHash -LiteralPath $tools.node -Algorithm SHA256).Hash.ToLowerInvariant()
         probeCwd = $controlCopy
+        workingRoots = @($controlCopy, $candidateCopy, $fixture, $candidateHome)
+        executableRoots = @($executableRoots | Sort-Object -Unique)
     }
     [IO.File]::WriteAllText($supervisorConfiguration, ($serviceConfiguration | ConvertTo-Json -Depth 8 -Compress))
     $supervisorHash = (Get-FileHash -LiteralPath $supervisorConfiguration -Algorithm SHA256).Hash.ToLowerInvariant()
-    & $sc config $serviceName 'binPath=' "`"$supervisor`" --service `"$supervisorConfiguration`" $supervisorHash"
+    & $sc config $serviceName 'binPath=' "`"$supervisor`" --service `"$supervisorConfiguration`" $supervisorHash" | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'The immutable supervisor invocation could not be bound.' }
     $pipeSecurity = [IO.Pipes.PipeSecurity]::new()
     $pipeSecurity.SetAccessRuleProtection($true, $false)
@@ -208,33 +156,7 @@ function Invoke-AtomicLaunchProbe {
     $hello = [Text.Encoding]::UTF8.GetBytes($nonce + "`n")
     $ownerPipe.Write($hello, 0, $hello.Length)
     $ownerPipe.Flush()
-    $configuration = @{
-        version = 1; platform = 'win32'; mode = 'atomic-launch-probe'; group = 'tooling'
-        control = $controlCopy; candidate = $probeHome; fixture = $probeHome; private = $probePrivate
-        home = $probeHome; temporary = $temporary; identity = $identity; sid = $account.SID.Value
-        tools = $tools; protectedPaths = @()
-        broker = @{ file = $supervisor; configuration = $supervisorConfiguration; sha256 = $supervisorHash }
-    }
-    $script:file = Join-Path $probePrivate 'configuration.json'
-    [IO.File]::WriteAllText($file, ($configuration | ConvertTo-Json -Depth 8 -Compress))
-    $ownerTemp = Join-Path $probePrivate 'owner-temp'
-    $null = New-Item -ItemType Directory -Path $ownerTemp
-    $env:TEMP = $ownerTemp
-    $env:TMP = $ownerTemp
-    $env:NODE_OPTIONS = $null
-    $env:NODE_PATH = $null
-    Push-Location $controlCopy
-    try {
-        & $tools.node --disable-sigusr1 (Join-Path $controlCopy 'scripts\isolated-worker.mjs') --configuration $file
-        $script:code = $LASTEXITCODE
-    } finally { Pop-Location }
-    if ($code -ne 0) {
-        Write-Host 'The atomic launch capability probe did not succeed; full isolation has not started.'
-    } else {
-        Write-Host '[DEBUG-iso-launch-capability] Atomic launch capability is available; Windows ancestor protection remains blocked.'
-    }
-    $script:code = 78
-    exit 78
+    return @{ file = $supervisor; configuration = $supervisorConfiguration; sha256 = $supervisorHash }
 }
 
 try {
@@ -243,10 +165,7 @@ try {
     Add-LocalGroupMember -SID ([Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')) -Member $account
     $null = New-Item -ItemType Directory -Path $state
     Set-ProtectedDirectory $state $true
-    Invoke-AtomicLaunchProbe
-    Assert-AncestorProtection (Join-Path $state 'ancestor-probe')
-    Protect-Ancestors $state
-    $private = Join-Path $state 'private'
+    $private = Join-Path $state 'launch-private'
     $null = New-Item -ItemType Directory -Path $private
     Set-ProtectedDirectory $private $false
     $controlCopy = Join-Path $state 'control'
@@ -266,6 +185,16 @@ try {
     Set-CandidateDirectory $candidateHome
     $temporary = Join-Path $candidateHome 'tmp'
     $null = New-Item -ItemType Directory -Path $temporary
+    $broadParent = Join-Path $state 'broad-write-probe'
+    $null = New-Item -ItemType Directory -Path $broadParent
+    Set-ProtectedDirectory $broadParent $true
+    $acl = Get-Acl -LiteralPath $broadParent
+    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+        [Security.Principal.SecurityIdentifier]::new('S-1-1-0'), 'FullControl', $allow))
+    Set-Acl -LiteralPath $broadParent -AclObject $acl
+    $broadChild = Join-Path $broadParent 'protected-child'
+    $null = New-Item -ItemType Directory -Path $broadChild
+    Set-ProtectedDirectory $broadChild $true
     foreach ($path in @($env:USERPROFILE, $env:RUNNER_TEMP, $env:GITHUB_WORKSPACE) | Select-Object -Unique) {
         Protect-Existing $path $false
     }
@@ -284,11 +213,16 @@ try {
     $identity = Join-Path $private 'identity.json'
     [IO.File]::WriteAllText($identity, (@{ user = $name; password = $password; sid = $account.SID.Value } | ConvertTo-Json -Compress))
     $password = $null
+    $broker = Start-IsolatedSupervisor
     $configuration = @{
         version = 1; platform = 'win32'; control = $controlCopy; candidate = $candidateCopy; fixture = $fixture
         private = $private; home = $candidateHome; temporary = $temporary; identity = $identity; sid = $account.SID.Value
-        tools = $tools; group = $Group; mode = $Mode
-        protectedPaths = @($controlCopy, $controlData, $private, $state, $env:USERPROFILE, $env:RUNNER_TEMP)
+        tools = $tools; group = $Group; mode = $Mode; broker = $broker
+        protectedPaths = @($controlCopy, $controlData, $private, $state, $env:USERPROFILE, $env:RUNNER_TEMP, $broadParent, $broadChild)
+        permissionOnlyPaths = @($broadParent, $broadChild)
+        protectedReadFiles = @(@('GITHUB_EVENT_PATH', 'GITHUB_ENV', 'GITHUB_OUTPUT', 'GITHUB_PATH', 'GITHUB_STEP_SUMMARY') |
+            ForEach-Object { [Environment]::GetEnvironmentVariable($_) } |
+            Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Sort-Object -Unique)
     }
     $file = Join-Path $private 'configuration.json'
     [IO.File]::WriteAllText($file, ($configuration | ConvertTo-Json -Depth 8 -Compress))

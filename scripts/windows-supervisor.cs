@@ -18,7 +18,7 @@ using TimeoutException = System.TimeoutException;
 
 public sealed class DevPocketWindowsSupervisor : ServiceBase {
     const int JsonLimit = 65536;
-    const int OutputLimit = 1024 * 1024;
+    const int OutputLimit = 16 * 1024 * 1024;
     readonly Dictionary<string, object> configuration;
     readonly TaskCompletionSource<string> shutdown = new TaskCompletionSource<string>();
     Thread worker;
@@ -33,6 +33,8 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
         uint outputSize, uint inputSize, uint timeout, ref PipeAttributes attributes);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint pid);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetNamedPipeClientProcessId(SafePipeHandle pipe, out uint pid);
     [StructLayout(LayoutKind.Sequential)]
     struct ServiceStatusProcess {
         public uint type, state, controls, win32Exit, serviceExit, checkpoint, waitHint, pid, flags;
@@ -107,7 +109,8 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
         if (Digest(bytes) != digest) throw new InvalidDataException("Supervisor configuration changed.");
         var value = Serializer().Deserialize<Dictionary<string, object>>(Encoding.UTF8.GetString(bytes));
         Keys(value, "version", "service", "serviceSid", "runnerSid", "ownerPid", "ownerPipe", "commandPipe", "nonce",
-            "privateRoot", "identity", "executableSha256", "probeNode", "probeNodeSha256", "probeCwd");
+            "privateRoot", "identity", "executableSha256", "probeNode", "probeNodeSha256", "probeCwd",
+            "mode", "workingRoots", "executableRoots");
         if (Number(value, "version") != 1 || !System.Text.RegularExpressions.Regex.IsMatch(Text(value, "service"), @"^dpws_[a-f0-9]{24}$") ||
             !System.Text.RegularExpressions.Regex.IsMatch(Text(value, "nonce"), @"^[a-f0-9]{64}$"))
             throw new InvalidDataException("Invalid supervisor identity.");
@@ -124,12 +127,25 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
         foreach (string key in new[] { "executableSha256", "probeNodeSha256" })
             if (!System.Text.RegularExpressions.Regex.IsMatch(Text(value, key), @"^[a-f0-9]{64}$"))
                 throw new InvalidDataException("Invalid supervisor executable binding.");
+        if (Text(value, "mode") != "probe" && Text(value, "mode") != "worker")
+            throw new InvalidDataException("Invalid supervisor command mode.");
+        foreach (string key in new[] { "workingRoots", "executableRoots" }) {
+            var roots = value[key] as System.Collections.IList;
+            if (roots == null || roots.Count < 1 || roots.Count > 16) throw new InvalidDataException("Invalid supervisor path scope.");
+            foreach (object item in roots) {
+                string selected = item as string;
+                if (string.IsNullOrEmpty(selected) || !Path.IsPathRooted(selected) ||
+                    !string.Equals(Path.GetFullPath(selected), selected, StringComparison.OrdinalIgnoreCase) ||
+                    selected.TrimEnd(Path.DirectorySeparatorChar) == Path.GetPathRoot(selected).TrimEnd(Path.DirectorySeparatorChar))
+                    throw new InvalidDataException("Supervisor path scopes must be bounded absolute directories.");
+            }
+        }
         string root = Path.GetFullPath(Text(value, "privateRoot"));
         if (Path.GetFullPath(file) != Path.Combine(root, "supervisor.json") ||
             Text(value, "identity") != Path.Combine(root, "identity.json") ||
             (File.GetAttributes(root) & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != FileAttributes.Directory)
             throw new InvalidDataException("Supervisor allocation changed.");
-        if (Digest(ReadFile(Process.GetCurrentProcess().MainModule.FileName, OutputLimit)) != Text(value, "executableSha256"))
+        if (Digest(ReadFile(Process.GetCurrentProcess().MainModule.FileName, 1024 * 1024)) != Text(value, "executableSha256"))
             throw new InvalidDataException("Supervisor executable changed.");
         return value;
     }
@@ -153,7 +169,11 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
     }
 
     static void WriteJson(string file, object value) {
-        WriteNew(file, Encoding.UTF8.GetBytes(Serializer().Serialize(value) + "\n"));
+        string temporary = file + ".pending-" + Guid.NewGuid().ToString("N");
+        try {
+            WriteNew(temporary, Encoding.UTF8.GetBytes(Serializer().Serialize(value) + "\n"));
+            File.Move(temporary, file);
+        } finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
     protected override void OnStart(string[] args) {
@@ -196,19 +216,27 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
                     WriteJson(Path.Combine(Text(configuration, "privateRoot"), "service-capabilities.json"), new {
                         version = 1, kind = "windows-supervisor-capability", acceptance = false,
                         identity = "LocalService", serviceSid = Text(configuration, "serviceSid"),
-                        assignPrimaryTokenEnabled = true, increaseQuotaEnabled = true, privileges = privileges
+                        assignPrimaryTokenEnabled = true, increaseQuotaEnabled = true, privileges = privileges,
+                        servicePid = Process.GetCurrentProcess().Id
                     });
                     var security = new PipeSecurity();
                     security.SetAccessRuleProtection(true, false);
                     foreach (string sid in new[] { Text(configuration, "runnerSid"), Text(configuration, "serviceSid"), "S-1-5-18" })
                         security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(sid), PipeAccessRights.FullControl, AccessControlType.Allow));
-                    using (listener = PrivatePipe(Text(configuration, "commandPipe"), security)) {
+                    while (!shutdown.Task.IsCompleted) using (listener = PrivatePipe(Text(configuration, "commandPipe"), security)) {
                         stage = "command";
                         var connected = listener.WaitForConnectionAsync();
                         if (Task.WhenAny(connected, shutdown.Task).GetAwaiter().GetResult() == connected) {
                             connected.GetAwaiter().GetResult();
-                            HandleCommand(listener);
+                            bool admitted = false;
+                            try { HandleCommand(listener, ref admitted); }
+                            catch (Exception error) {
+                                if (admitted || !(error is InvalidDataException || error is IOException)) throw;
+                                using (var response = new StreamWriter(listener, new UTF8Encoding(false), 4096, true) { AutoFlush = true })
+                                    response.WriteLine("rejected");
+                            }
                         }
+                        if (Text(configuration, "mode") == "probe") break;
                     }
                 }
             }
@@ -228,7 +256,30 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
         }
     }
 
-    void HandleCommand(NamedPipeServerStream pipe) {
+    sealed class CapturedOutput {
+        readonly object gate = new object();
+        int total;
+        public readonly TaskCompletionSource<string> Stop = new TaskCompletionSource<string>();
+        public bool Truncated { get; private set; }
+
+        public byte[] Read(Stream input) {
+            using (var output = new MemoryStream()) {
+                var buffer = new byte[8192];
+                int count;
+                while ((count = input.Read(buffer, 0, buffer.Length)) != 0) {
+                    lock (gate) {
+                        int retained = Math.Min(count, OutputLimit - total);
+                        output.Write(buffer, 0, retained);
+                        total += retained;
+                        if (retained != count) { Truncated = true; Stop.TrySetResult("cancel"); }
+                    }
+                }
+                return output.ToArray();
+            }
+        }
+    }
+
+    void HandleCommand(NamedPipeServerStream pipe, ref bool admitted) {
         using (var input = new StreamReader(pipe, new UTF8Encoding(false), false, 4096, true))
         using (var output = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true) { AutoFlush = true }) {
             var headerRead = Task.Run(() => ReadLine(input, 4096));
@@ -245,11 +296,17 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
             byte[] bytes = ReadFile(requestFile, JsonLimit);
             if (Digest(bytes) != Text(header, "sha256")) throw new InvalidDataException("Supervisor request changed.");
             var request = Serializer().Deserialize<Dictionary<string, object>>(Encoding.UTF8.GetString(bytes));
-            ValidateProbeRequest(configuration, request);
+            ValidateCommandRequest(configuration, request);
             if (Text(request, "id") != id) throw new InvalidDataException("The private request identity changed.");
-            WriteNew(requestFile + ".admitted", Encoding.UTF8.GetBytes(Text(header, "sha256")));
+            uint clientPid;
+            if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out clientPid) || clientPid == 0)
+                throw new Win32Exception();
+            WriteJson(requestFile + ".admitted", new { requestSha256 = Digest(bytes), clientPid = clientPid });
+            admitted = true;
             var clientControl = Task.Run(() => ReadLine(input, 64));
-            var cancellation = Task.WhenAny(clientControl, shutdown.Task).Unwrap();
+            clientControl.ContinueWith(task => { var observed = task.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
+            var capture = new CapturedOutput();
+            var cancellation = Task.WhenAny(clientControl, shutdown.Task, capture.Stop.Task).Unwrap();
             var identity = Serializer().Deserialize<Dictionary<string, object>>(
                 Encoding.UTF8.GetString(ReadFile(Text(configuration, "identity"), JsonLimit)));
             Keys(identity, "user", "password", "sid");
@@ -261,54 +318,80 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
             var receipt = new Dictionary<string, object> {
                 { "version", 1 }, { "id", id }, { "status", "blocked" }, { "requestSha256", Digest(bytes) }
             };
-            // This stage accepts only the fixed benign marker; arbitrary candidate commands remain disabled.
-            using (var stdout = new FileStream(requestFile + ".stdout", FileMode.CreateNew, FileAccess.Write, FileShare.Read))
-            using (var stderr = new FileStream(requestFile + ".stderr", FileMode.CreateNew, FileAccess.Write, FileShare.Read))
+            using (var stdout = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.None))
+            using (var stderr = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.None))
             using (var command = new DevPocketIsolatedCommand(cancellation)) {
+                var outputRead = Task.Run(() => capture.Read(stdout));
+                var errorRead = Task.Run(() => capture.Read(stderr));
+                bool drained = false;
                 try {
                     command.Run(Text(identity, "user"), Text(identity, "password"), Text(identity, "sid"),
                         Text(request, "file"), arguments.ToArray(), environment.ToArray(), Text(request, "cwd"),
-                        Number(request, "timeoutMs"), stdout.SafeFileHandle.DangerousGetHandle(), stderr.SafeFileHandle.DangerousGetHandle());
-                    receipt["status"] = "executed";
+                        Number(request, "timeoutMs"), stdout.ClientSafePipeHandle.DangerousGetHandle(), stderr.ClientSafePipeHandle.DangerousGetHandle());
                 } catch (Exception error) {
                     if (!(error is Win32Exception) && !(error is OperationCanceledException) && !(error is TimeoutException) &&
                         !(error is InvalidOperationException) && !(error is InvalidDataException)) throw;
                 } finally {
-                    receipt["started"] = command.Started;
-                    receipt["status"] = command.ExitCode.HasValue ? "executed" : "blocked";
-                    receipt["admission"] = command.Admission;
-                    receipt["interruption"] = command.Interruption;
-                    receipt["processTreeStopped"] = command.ProcessTreeStopped;
-                    receipt["exitCode"] = command.ExitCode;
-                    receipt["native"] = new {
-                        stage = command.FailureStage, errorCode = command.NativeErrorCode,
-                        assignPrimaryTokenEnabled = command.AssignPrimaryTokenEnabled, increaseQuotaEnabled = command.IncreaseQuotaEnabled
-                    };
-                    stdout.Flush(true);
-                    stderr.Flush(true);
-                    WriteJson(requestFile + ".result.json", receipt);
+                    stdout.DisposeLocalCopyOfClientHandle();
+                    stderr.DisposeLocalCopyOfClientHandle();
+                    try {
+                        if (!Task.WaitAll(new Task[] { outputRead, errorRead }, 10000))
+                            throw new TimeoutException("The candidate output pipes did not close.");
+                        WriteNew(requestFile + ".stdout", outputRead.Result);
+                        WriteNew(requestFile + ".stderr", errorRead.Result);
+                        drained = true;
+                    } finally {
+                        receipt["started"] = command.Started;
+                        receipt["status"] = command.ExitCode.HasValue && !capture.Truncated ? "executed" : "blocked";
+                        receipt["admission"] = command.Admission;
+                        receipt["interruption"] = command.Interruption;
+                        receipt["processTreeStopped"] = command.ProcessTreeStopped && drained;
+                        receipt["exitCode"] = capture.Truncated ? null : command.ExitCode;
+                        receipt["outputTruncated"] = capture.Truncated;
+                        receipt["native"] = new {
+                            stage = command.FailureStage, errorCode = command.NativeErrorCode,
+                            assignPrimaryTokenEnabled = command.AssignPrimaryTokenEnabled, increaseQuotaEnabled = command.IncreaseQuotaEnabled
+                        };
+                        WriteJson(requestFile + ".result.json", receipt);
+                    }
                 }
+                if (!command.ProcessTreeStopped) throw new InvalidOperationException("The candidate Job cleanup was not confirmed.");
             }
             output.WriteLine("complete");
         }
     }
 
     public static void ValidateProbeRequest(Dictionary<string, object> configuration, Dictionary<string, object> request) {
-        Keys(request, "version", "id", "file", "arguments", "cwd", "timeoutMs", "environment", "identity");
-        Guid id;
-        if (!Guid.TryParseExact(Text(request, "id"), "D", out id)) throw new InvalidDataException("Invalid probe identity.");
-        if (Number(request, "version") != 1 || Number(request, "timeoutMs") < 1 || Number(request, "timeoutMs") > 30000 ||
-            Text(request, "file") != Text(configuration, "probeNode") || Text(request, "cwd") != Text(configuration, "probeCwd") ||
-            Text(request, "identity") != Text(configuration, "identity"))
+        ValidateRequestShape(configuration, request);
+        if (Number(request, "timeoutMs") > 30000 ||
+            Text(request, "file") != Text(configuration, "probeNode") || Text(request, "cwd") != Text(configuration, "probeCwd"))
             throw new InvalidDataException("Only the fixed supervisor capability probe is enabled.");
         if (Digest(ReadFile(Text(request, "file"), 128 * 1024 * 1024)) != Text(configuration, "probeNodeSha256"))
             throw new InvalidDataException("The trusted probe executable changed.");
         string[] expected = { "--disable-sigusr1", "-e", "process.stdout.write('DEVPOCKET_ISOLATED_LAUNCH')" };
-        var arguments = request["arguments"] as System.Collections.IList;
-        if (arguments == null || arguments.Count != expected.Length) throw new InvalidDataException("Invalid probe arguments.");
+        var arguments = (System.Collections.IList)request["arguments"];
+        if (arguments.Count != expected.Length) throw new InvalidDataException("Invalid probe arguments.");
         for (int index = 0; index < expected.Length; index++)
-            if (!(arguments[index] is string) || (string)arguments[index] != expected[index])
+            if ((string)arguments[index] != expected[index])
                 throw new InvalidDataException("Candidate code cannot run through the capability probe.");
+    }
+
+    static void ValidateRequestShape(Dictionary<string, object> configuration, Dictionary<string, object> request) {
+        Keys(request, "version", "id", "file", "arguments", "cwd", "timeoutMs", "environment", "identity");
+        Guid id;
+        if (!Guid.TryParseExact(Text(request, "id"), "D", out id)) throw new InvalidDataException("Invalid probe identity.");
+        if (Number(request, "version") != 1 || Number(request, "timeoutMs") < 1 ||
+            Text(request, "identity") != Text(configuration, "identity"))
+            throw new InvalidDataException("Invalid isolated command scope.");
+        foreach (string key in new[] { "file", "cwd" }) {
+            string selected = Text(request, key);
+            if (!Path.IsPathRooted(selected) || !string.Equals(Path.GetFullPath(selected), selected, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Isolated commands require absolute normalized paths.");
+        }
+        var arguments = request["arguments"] as System.Collections.IList;
+        if (arguments == null || arguments.Count > 4096) throw new InvalidDataException("Invalid command arguments.");
+        foreach (object argument in arguments)
+            if (!(argument is string) || ((string)argument).IndexOf('\0') >= 0) throw new InvalidDataException("Invalid command argument.");
         var environment = request["environment"] as Dictionary<string, object>;
         if (environment == null || environment.Count > 64) throw new InvalidDataException("Invalid probe environment.");
         var allowed = new HashSet<string>(new[] {
@@ -316,7 +399,8 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
             "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1",
             "GIT_CONFIG_KEY_2", "GIT_CONFIG_VALUE_2", "npm_config_cache", "JAVA_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT",
             "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "SystemRoot", "WINDIR", "ComSpec", "PATHEXT", "USERPROFILE", "APPDATA",
-            "LOCALAPPDATA", "NoDefaultCurrentDirectoryInExePath", "DEVPOCKET_BACKEND_DIAGNOSTIC_ID", "DEVPOCKET_TEST_DIAGNOSTIC_SCOPE"
+            "LOCALAPPDATA", "NoDefaultCurrentDirectoryInExePath", "DEVPOCKET_BACKEND_DIAGNOSTIC_ID",
+            "DEVPOCKET_TEST_DIAGNOSTIC_SCOPE", "DEVPOCKET_PROBE_PYTHON"
         }, StringComparer.OrdinalIgnoreCase);
         foreach (var item in environment) {
             if (!allowed.Contains(item.Key) || !(item.Value is string) || ((string)item.Value).IndexOf('\0') >= 0)
@@ -324,10 +408,33 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
         }
     }
 
+    static bool Within(string selected, object roots) {
+        var directories = roots as System.Collections.IList;
+        if (directories == null) throw new InvalidDataException("Missing command directory scope.");
+        foreach (object value in directories) {
+            string root = value as string;
+            if (root == null) throw new InvalidDataException("Invalid command directory scope.");
+            if (selected.Equals(root, StringComparison.OrdinalIgnoreCase) ||
+                selected.StartsWith(root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    public static void ValidateCommandRequest(Dictionary<string, object> configuration, Dictionary<string, object> request) {
+        if (Text(configuration, "mode") == "probe") { ValidateProbeRequest(configuration, request); return; }
+        if (Text(configuration, "mode") != "worker") throw new InvalidDataException("Invalid command mode.");
+        ValidateRequestShape(configuration, request);
+        if (!Within(Text(request, "cwd"), configuration["workingRoots"]) ||
+            !Within(Text(request, "file"), configuration["executableRoots"]) ||
+            (File.GetAttributes(Text(request, "file")) & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+            throw new InvalidDataException("The command is outside the task allocation or fixed tools.");
+    }
+
     static int Client(Dictionary<string, object> configuration, string requestFile) {
         byte[] bytes = ReadFile(requestFile, JsonLimit);
         var request = Serializer().Deserialize<Dictionary<string, object>>(Encoding.UTF8.GetString(bytes));
-        ValidateProbeRequest(configuration, request);
+        ValidateCommandRequest(configuration, request);
         string id = Text(request, "id");
         Guid parsed;
         if (!Guid.TryParseExact(id, "D", out parsed)) throw new InvalidDataException("Invalid command identity.");

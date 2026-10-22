@@ -24,7 +24,7 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
     [StructLayout(LayoutKind.Sequential)]
     struct Security { public int length; public IntPtr descriptor; public int inherit; }
     [StructLayout(LayoutKind.Sequential)]
-    struct FileAttributeTag { public uint attributes, tag; }
+    struct SidAndAttributes { public IntPtr sid; public uint attributes; }
     [StructLayout(LayoutKind.Sequential)]
     struct BasicLimits {
         public long processTime, jobTime; public uint flags; public UIntPtr minWork, maxWork;
@@ -44,6 +44,10 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
         IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint creationFlags,
         IntPtr environment, string cwd, ref StartupEx startup, out ProcessInfo process);
     [DllImport("advapi32.dll", SetLastError = true)]
+    static extern bool CreateRestrictedToken(SafeAccessTokenHandle token, uint flags, uint disabledCount,
+        IntPtr disabled, uint privilegeCount, IntPtr privileges, uint restrictedCount,
+        [In] SidAndAttributes[] restricted, out SafeAccessTokenHandle result);
+    [DllImport("advapi32.dll", SetLastError = true)]
     static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError = true)]
     static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr data, int length, out int needed);
@@ -53,22 +57,29 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
     static extern bool LookupPrivilegeNameW(string system, IntPtr luid, StringBuilder name, ref int length);
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern bool LookupPrivilegeValueW(string system, string name, IntPtr luid);
-    [DllImport("advapi32.dll")]
-    static extern uint SetSecurityInfo(IntPtr handle, int objectType, uint information,
-        IntPtr owner, IntPtr group, [In] byte[] dacl, IntPtr sacl);
-    [DllImport("advapi32.dll")]
-    static extern uint GetSecurityInfo(IntPtr handle, int objectType, uint information,
-        IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl, out IntPtr descriptor);
-    [DllImport("advapi32.dll")]
-    static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern IntPtr GetProcessWindowStation();
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern IntPtr GetThreadDesktop(uint threadId);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern bool SetThreadDesktop(IntPtr desktop);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern IntPtr CreateDesktopW(string name, IntPtr device, IntPtr mode, uint flags,
+        uint access, ref Security security);
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern bool CloseDesktop(IntPtr desktop);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool GetUserObjectInformationW(IntPtr handle, int kind, IntPtr value, int size, out int needed);
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern bool GetUserObjectSecurity(IntPtr handle, ref uint information, byte[] descriptor, int size, out int needed);
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern bool SetUserObjectSecurity(IntPtr handle, ref uint information, byte[] descriptor);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern IntPtr CreateJobObjectW(IntPtr attributes, string name);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern IntPtr CreateFileW(string name, uint access, uint share, ref Security security,
         uint disposition, uint flags, IntPtr template);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool GetFileInformationByHandleEx(IntPtr file, int kind, out FileAttributeTag information, uint size);
-    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool SetInformationJobObject(IntPtr job, int kind, ref ExtendedLimits value, int size);
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -167,44 +178,115 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
         } finally { CloseHandle(token); }
     }
 
-    public static void ProtectAncestor(string path, SecurityIdentifier candidate, FileSystemRights mutation) {
-        if (!Path.IsPathRooted(path) || !string.Equals(Path.GetFullPath(path), path, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("An ancestor must be an absolute directory.");
-        var security = new Security { length = Marshal.SizeOf(typeof(Security)) };
-        // Exclusive metadata access prevents propagation without requesting DELETE on an in-use directory.
-        IntPtr directory = CreateFileW(path, 0x00060080, 0, ref security, 3, 0x02200000, IntPtr.Zero);
-        if (directory == new IntPtr(-1)) {
-            int error = Marshal.GetLastWin32Error();
-            throw new Win32Exception(error, "Cannot open ancestor " + path + " for metadata protection (native error " + error + ").");
+    sealed class CandidateDesktop : IDisposable {
+        const int StationAccess = 0x00020123;
+        const uint DesktopAccess = 0x000200c7;
+        readonly SecurityIdentifier candidate;
+        readonly IntPtr station, originalDesktop;
+        IntPtr desktop;
+        bool granted;
+        public string Name { get; private set; }
+
+        static byte[] Information(IntPtr handle, int kind) {
+            int needed;
+            GetUserObjectInformationW(handle, kind, IntPtr.Zero, 0, out needed);
+            if (needed < 1 || needed > 4096) throw new InvalidDataException("Invalid desktop information.");
+            IntPtr value = Marshal.AllocHGlobal(needed);
+            try {
+                if (!GetUserObjectInformationW(handle, kind, value, needed, out needed)) throw new Win32Exception();
+                var bytes = new byte[needed];
+                Marshal.Copy(value, bytes, 0, needed);
+                return bytes;
+            } finally { Marshal.FreeHGlobal(value); }
         }
-        IntPtr descriptor = IntPtr.Zero;
+
+        void StationRule(bool add) {
+            uint information = 4;
+            int needed;
+            GetUserObjectSecurity(station, ref information, null, 0, out needed);
+            if (needed < 20 || needed > 65536) throw new InvalidDataException("Invalid window station DACL.");
+            var bytes = new byte[needed];
+            if (!GetUserObjectSecurity(station, ref information, bytes, bytes.Length, out needed)) throw new Win32Exception();
+            var raw = new RawSecurityDescriptor(bytes, 0);
+            if (raw.DiscretionaryAcl == null) throw new InvalidDataException("A window station must retain a DACL.");
+            if (add) foreach (GenericAce ace in raw.DiscretionaryAcl) {
+                var known = ace as KnownAce;
+                if (known != null && known.SecurityIdentifier.Equals(candidate))
+                    throw new InvalidOperationException("The task already has window station access.");
+            }
+            var descriptor = new CommonSecurityDescriptor(false, false, raw);
+            if (add) descriptor.DiscretionaryAcl.AddAccess(AccessControlType.Allow, candidate, StationAccess,
+                InheritanceFlags.None, PropagationFlags.None);
+            else descriptor.DiscretionaryAcl.RemoveAccessSpecific(AccessControlType.Allow, candidate, StationAccess,
+                InheritanceFlags.None, PropagationFlags.None);
+            bytes = new byte[descriptor.BinaryLength];
+            descriptor.GetBinaryForm(bytes, 0);
+            if (!SetUserObjectSecurity(station, ref information, bytes)) throw new Win32Exception();
+        }
+
+        public CandidateDesktop(string sid) {
+            candidate = new SecurityIdentifier(sid);
+            station = GetProcessWindowStation();
+            originalDesktop = GetThreadDesktop(GetCurrentThreadId());
+            if (station == IntPtr.Zero || originalDesktop == IntPtr.Zero) throw new Win32Exception();
+            byte[] flags = Information(station, 1);
+            string stationName = Encoding.Unicode.GetString(Information(station, 2)).TrimEnd('\0');
+            if (flags.Length != 12 || (BitConverter.ToUInt32(flags, 8) & 1) != 0 ||
+                stationName.Length == 0 || stationName.Contains("\\") || stationName.IndexOf('\0') >= 0)
+                throw new InvalidOperationException("A candidate requires the noninteractive service window station.");
+            string name = "devpocket_" + Guid.NewGuid().ToString("N");
+            Name = stationName + "\\" + name;
+            try {
+                StationRule(true);
+                granted = true;
+                var descriptor = new RawSecurityDescriptor("D:P(A;;GA;;;SY)(A;;GA;;;LS)(A;;0x000200c7;;;" + candidate.Value + ")");
+                var bytes = new byte[descriptor.BinaryLength];
+                descriptor.GetBinaryForm(bytes, 0);
+                var pinned = GCHandle.Alloc(bytes, GCHandleType.Pinned);
+                try {
+                    var security = new Security { length = Marshal.SizeOf(typeof(Security)), descriptor = pinned.AddrOfPinnedObject() };
+                    desktop = CreateDesktopW(name, IntPtr.Zero, IntPtr.Zero, 0, DesktopAccess, ref security);
+                    if (desktop == IntPtr.Zero) throw new Win32Exception();
+                    if (!SetThreadDesktop(originalDesktop)) throw new Win32Exception();
+                } finally { pinned.Free(); }
+            } catch (Exception error) {
+                try { Dispose(); }
+                catch (Exception cleanup) { throw new AggregateException("Private desktop preparation and cleanup failed.", error, cleanup); }
+                throw;
+            }
+        }
+
+        public void Dispose() {
+            var failures = new List<Exception>();
+            if (desktop != IntPtr.Zero) {
+                if (!SetThreadDesktop(originalDesktop)) failures.Add(new Win32Exception());
+                if (!CloseDesktop(desktop)) failures.Add(new Win32Exception());
+                else desktop = IntPtr.Zero;
+            }
+            if (granted) {
+                try { StationRule(false); granted = false; }
+                catch (Exception error) { failures.Add(error); }
+            }
+            if (failures.Count != 0) throw new AggregateException("Private desktop cleanup failed.", failures);
+        }
+    }
+
+    static SafeAccessTokenHandle WriteRestrictedToken(SafeAccessTokenHandle token, string sid) {
+        var identity = new SecurityIdentifier(sid);
+        var bytes = new byte[identity.BinaryLength];
+        identity.GetBinaryForm(bytes, 0);
+        var pinned = GCHandle.Alloc(bytes, GCHandleType.Pinned);
         try {
-            FileAttributeTag attributes;
-            if (!GetFileInformationByHandleEx(directory, 9, out attributes, (uint)Marshal.SizeOf(typeof(FileAttributeTag))))
-                throw new Win32Exception();
-            if ((attributes.attributes & (uint)(FileAttributes.Directory | FileAttributes.ReparsePoint)) != (uint)FileAttributes.Directory)
-                throw new InvalidOperationException("The opened ancestor is not a regular directory.");
-            uint error = GetSecurityInfo(directory, 1, 4, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out descriptor);
-            if (error != 0) throw new Win32Exception((int)error);
-            if (descriptor == IntPtr.Zero) throw new InvalidOperationException("The ancestor security descriptor is unavailable.");
-            uint length = GetSecurityDescriptorLength(descriptor);
-            if (length < 20 || length > 1024 * 1024) throw new InvalidOperationException("The ancestor security descriptor is invalid.");
-            var bytes = new byte[length];
-            Marshal.Copy(descriptor, bytes, 0, bytes.Length);
-            if (new RawSecurityDescriptor(bytes, 0).DiscretionaryAcl == null)
-                throw new InvalidOperationException("An ancestor must retain a non-null DACL.");
-            var acl = new DirectorySecurity();
-            acl.SetSecurityDescriptorBinaryForm(bytes, AccessControlSections.Access);
-            acl.AddAccessRule(new FileSystemAccessRule(candidate, mutation, AccessControlType.Deny));
-            var raw = new RawSecurityDescriptor(acl.GetSecurityDescriptorBinaryForm(), 0).DiscretionaryAcl;
-            var dacl = new byte[raw.BinaryLength];
-            raw.GetBinaryForm(dacl, 0);
-            error = SetSecurityInfo(directory, 1, 4, IntPtr.Zero, IntPtr.Zero, dacl, IntPtr.Zero);
-            if (error != 0) throw new Win32Exception((int)error);
-        } finally {
-            if (descriptor != IntPtr.Zero) LocalFree(descriptor);
-            CloseHandle(directory);
-        }
+            SafeAccessTokenHandle restricted;
+            var sids = new[] { new SidAndAttributes { sid = pinned.AddrOfPinnedObject(), attributes = 0 } };
+            // The second write-access check must grant this task's SID, not a broad Users/Everyone group.
+            if (!CreateRestrictedToken(token, 0x9, 0, IntPtr.Zero, 0, IntPtr.Zero, 1, sids, out restricted)) {
+                int error = Marshal.GetLastWin32Error();
+                if (restricted != null) restricted.Dispose();
+                throw new Win32Exception(error);
+            }
+            return restricted;
+        } finally { pinned.Free(); }
     }
 
     static string Quote(string value) {
@@ -241,6 +323,16 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
                     throw new InvalidOperationException("The candidate token is not the separate unprivileged identity.");
             }
             int needed;
+            GetTokenInformation(token, 11, IntPtr.Zero, 0, out needed);
+            if (needed < IntPtr.Size + Marshal.SizeOf(typeof(SidAndAttributes)) || needed > 65536)
+                throw new InvalidDataException("The child write-restriction buffer is invalid.");
+            IntPtr restrictions = Marshal.AllocHGlobal(needed);
+            try {
+                if (!GetTokenInformation(token, 11, restrictions, needed, out needed)) throw new Win32Exception();
+                if (Marshal.ReadInt32(restrictions) != 1 ||
+                    new SecurityIdentifier(Marshal.ReadIntPtr(restrictions, IntPtr.Size)).Value != sid)
+                    throw new InvalidOperationException("The actual child token lacks the task-specific write restriction.");
+            } finally { Marshal.FreeHGlobal(restrictions); }
             GetTokenInformation(token, 3, IntPtr.Zero, 0, out needed);
             if (needed <= 0 || needed > 65536) throw new Win32Exception();
             IntPtr privileges = Marshal.AllocHGlobal(needed);
@@ -270,7 +362,8 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
         string[] environment, string cwd, int timeoutMs, IntPtr standardOutput, IntPtr standardError) {
         Task<string> cancellation = controlInput ?? Task.Run(() => Console.In.ReadLine());
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-        SafeAccessTokenHandle token = null;
+        SafeAccessTokenHandle token = null, restricted = null;
+        CandidateDesktop desktop = null;
         IntPtr block = IntPtr.Zero, attributes = IntPtr.Zero, jobValue = IntPtr.Zero,
             handleValues = IntPtr.Zero, targetInput = IntPtr.Zero;
         bool initialized = false;
@@ -290,7 +383,9 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
             block = Marshal.StringToHGlobalUni(string.Join("\0", environment) + "\0\0");
             Stage = "logon";
             if (!LogonUserW(user, ".", password, 2, 0, out token)) throw new Win32Exception();
+            restricted = WriteRestrictedToken(token, sid);
             Stage = "attributes";
+            desktop = new CandidateDesktop(sid);
             IntPtr bytes = IntPtr.Zero;
             InitializeProcThreadAttributeList(IntPtr.Zero, 2, 0, ref bytes);
             attributes = Marshal.AllocHGlobal(bytes);
@@ -314,14 +409,14 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
                     new IntPtr(3 * IntPtr.Size), IntPtr.Zero, IntPtr.Zero)) throw new Win32Exception();
             var startup = new StartupEx { startup = new Startup {
                 cb = Marshal.SizeOf(typeof(StartupEx)), flags = 0x100,
-                input = targetInput, output = standardOutput, error = standardError
+                input = targetInput, output = standardOutput, error = standardError, desktop = desktop.Name
             }, attributes = attributes };
             ProcessInfo info;
             CheckControl(cancellation, deadline);
             Admission = "creation-attempted";
             ProcessTreeStopped = false;
             Stage = "create";
-            if (!CreateProcessAsUserW(token, file, command, IntPtr.Zero, IntPtr.Zero, true, 0x08080404,
+            if (!CreateProcessAsUserW(restricted, file, command, IntPtr.Zero, IntPtr.Zero, true, 0x08080404,
                     block, cwd, ref startup, out info)) throw new Win32Exception();
             process = info.process; thread = info.thread;
             Admission = "created";
@@ -364,9 +459,19 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
             if (jobValue != IntPtr.Zero) Marshal.FreeHGlobal(jobValue);
             if (handleValues != IntPtr.Zero) Marshal.FreeHGlobal(handleValues);
             if (targetInput != IntPtr.Zero) CloseHandle(targetInput);
+            if (restricted != null) restricted.Dispose();
             if (token != null) token.Dispose();
             if (block != IntPtr.Zero) Marshal.FreeHGlobal(block);
-            Stop();
+            var failures = new List<Exception>();
+            try { Stop(); } catch (Exception error) { failures.Add(error); }
+            if (desktop != null) {
+                try { desktop.Dispose(); }
+                catch (Exception error) { ProcessTreeStopped = false; FailureStage = "cleanup"; failures.Add(error); }
+            }
+            if (failures.Count != 0) {
+                FailureStage = "cleanup";
+                throw new AggregateException("Isolated command cleanup failed.", failures);
+            }
         }
     }
 

@@ -5,7 +5,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { runCommand, withCommandBoundary } from "./process.mjs";
+import { runCommand, spawnOwnedCommand, stopOwnedProcess, withCommandBoundary } from "./process.mjs";
 import { git, sourceSnapshot, withGitExecutable } from "./git-state.mjs";
 import { executeVerification, verificationPlan, combineVerification, verificationFault, verificationFailure } from "./verification.mjs";
 import { isolatedContext } from "./isolated-verification.mjs";
@@ -148,6 +148,8 @@ export function isolatedCommandBoundary(configuration, ownerEnvironment, candida
     const outerStopped = (result?.processTreeStopped ?? failure?.processTreeStopped) === true;
     const consistent = receipt?.version === 1 && receipt.id === id &&
       (!broker || receipt.requestSha256 === requestSha256) && admissionKnown && interruptionKnown &&
+      (receipt.outputTruncated === undefined || typeof receipt.outputTruncated === "boolean") &&
+      (receipt.outputTruncated !== true || receipt.status === "blocked" && receipt.started === true) &&
       typeof receipt.processTreeStopped === "boolean" &&
       (receipt.status === "blocked" && receipt.exitCode === null ||
         receipt.status === "executed" && receipt.started === true && Number.isInteger(receipt.exitCode) &&
@@ -155,6 +157,14 @@ export function isolatedCommandBoundary(configuration, ownerEnvironment, candida
     const nativeFacts = consistent
       ? { isolatedAdmission: receipt.admission, nativeFailure: nativeFailure(receipt.native) } : {};
     const stopped = consistent && receipt.processTreeStopped === true && outerStopped;
+    if (outcome?.reason !== "timeout" && stopped &&
+        (outcome?.reason === "output-limit" || receipt.outputTruncated === true)) {
+      throw Object.assign(verificationFault("output-limit"), {
+        processTreeStopped: true, isolatedAdmission: receipt.admission,
+        stdout: result?.stdout ?? failure?.stdout ?? "", stderr: result?.stderr ?? failure?.stderr ?? "",
+        commandOutcome: { ...outcome, reason: "output-limit", outputTruncated: true, cleanupFailure: null },
+      });
+    }
     if (outcome?.reason !== "timeout" && (options.signal?.aborted || receipt?.interruption === "cancelled") && stopped) {
       throw Object.assign(new Error("Isolated command was cancelled.", { cause: options.signal?.reason }),
         { processTreeStopped: true, stdout: failure?.stdout ?? "", stderr: failure?.stderr ?? "",
@@ -219,8 +229,23 @@ async function proveIsolation(configuration, directory) {
   const marker = `denied-${randomUUID()}`, evidence = path.join(directory, "protected-evidence.json");
   await immutableJson(evidence, { marker, status: "not-candidate-evidence" });
   const runnerBytes = await readFile(runner), evidenceBytes = await readFile(evidence);
+  if (configuration.platform === "win32") {
+    assert.equal(configuration.permissionOnlyPaths?.length, 2);
+    assert.ok(configuration.permissionOnlyPaths.every((item) => configuration.protectedPaths.includes(item)));
+  }
   const input = { fixture, runner, evidence, marker, supervisorPid: process.pid, files: WORKFLOW_TEST_FILES,
-    probe: path.join(controlRoot, "scripts", "isolated-worker-probe.mjs"), protectedPaths: configuration.protectedPaths };
+    probe: path.join(controlRoot, "scripts", "isolated-worker-probe.mjs"), protectedPaths: configuration.protectedPaths,
+    permissionOnlyPaths: configuration.permissionOnlyPaths ?? [], protectedReadFiles: configuration.protectedReadFiles ?? [] };
+  if (configuration.platform === "win32") {
+    bootstrapPhase = "public-network";
+    const network = await runCommand(configuration.tools.node, ["--disable-sigusr1", "-e",
+      "const request=require('node:https').get('https://registry.npmjs.org/-/ping',response=>{" +
+      "response.resume();response.on('end',()=>{if(response.statusCode===200)process.stdout.write('DEVPOCKET_ISOLATED_NETWORK');" +
+      "else process.exitCode=1;});});request.setTimeout(15000,()=>request.destroy(new Error('Network deadline')));" +
+      "request.on('error',error=>{console.error(error.code??'NETWORK_CHECK_FAILED');process.exitCode=1;});"],
+    { cwd: fixture, timeoutMs: 30000 });
+    assert.equal(network.stdout, "DEVPOCKET_ISOLATED_NETWORK");
+  }
   bootstrapPhase = "fixture-create";
   await runCommand(configuration.tools.node, [input.probe, "fixture", JSON.stringify(input)], { cwd: fixture, timeoutMs: 30000 });
   bootstrapPhase = "fixture-git";
@@ -236,7 +261,7 @@ async function proveIsolation(configuration, directory) {
   assert.deepEqual(await readFile(runner), runnerBytes, "A candidate installation replaced trusted selection code.");
   assert.deepEqual(await readFile(evidence), evidenceBytes, "A candidate installation replaced trusted evidence.");
   const attacks = await readDiagnosticReport(path.join(fixture, ".data", "attacks.json"), { maximum: 16384 });
-  assert.equal(attacks.length, configuration.protectedPaths.length * 4 + 5);
+  assert.equal(attacks.length, configuration.protectedPaths.length * 4 + input.protectedReadFiles.length + 5);
   assert.deepEqual(attacks.filter((item) => item.name === "evidence-read"), [{ name: "evidence-read", denied: true }]);
   assert.ok(attacks.every((item) => item.denied === true));
   const descendant = path.join(fixture, ".data", "descendant.json"), stopped = await readFile(descendant);
@@ -278,6 +303,146 @@ async function proveIsolation(configuration, directory) {
   return { version: 1, kind: "hosted-isolation-proof", status: "passed", platform: process.platform,
     checks: ["protected-control", "protected-evidence", "protected-ancestors", "runner-channels", "descendant-cleanup", "failing-fixed-gate"],
     negativeSource: plan.source, negativeReportSha256: digest(JSON.stringify(report)) };
+}
+
+async function windowsSupervisorChecks(configuration, ownerEnvironment, candidateEnvironment) {
+  const broker = configuration.broker, probe = path.join(controlRoot, "scripts", "isolated-worker-probe.mjs");
+  const runner = path.join(controlRoot, "scripts", "test-workflow.mjs");
+  const prepare = async (args) => {
+    const id = randomUUID(), file = path.join(configuration.private, `${id}.json`);
+    const request = { version: 1, id, file: configuration.tools.node, arguments: args,
+      cwd: configuration.fixture, timeoutMs: 30000, environment: candidateEnvironment, identity: configuration.identity };
+    const requestSha256 = await immutableJson(file, request, 65536);
+    return { id, file, requestSha256, arguments: ["--client", broker.configuration, broker.sha256, file] };
+  };
+  const execute = (request, signal) => runCommand(broker.file, request.arguments,
+    { cwd: controlRoot, env: ownerEnvironment, timeoutMs: 35000, signal });
+  const waitFor = async (file) => {
+    const deadline = Date.now() + 15000;
+    while (true) {
+      try { await lstat(file); return; }
+      catch (error) { if (error.code !== "ENOENT" || Date.now() >= deadline) throw error; }
+      await delay(20);
+    }
+  };
+  const receipt = async (request) => {
+    await waitFor(`${request.file}.result.json`);
+    const value = await readDiagnosticReport(`${request.file}.result.json`, { maximum: 4096 });
+    assert.equal(value.version, 1);
+    assert.equal(value.id, request.id);
+    assert.equal(value.requestSha256, request.requestSha256);
+    assert.equal(value.started, true);
+    assert.equal(value.admission, "running");
+    assert.equal(typeof value.processTreeStopped, "boolean");
+    assert.ok(value.status === "blocked" && value.exitCode === null ||
+      value.status === "executed" && Number.isInteger(value.exitCode));
+    return value;
+  };
+  const stableCounter = async (counter) => {
+    const bytes = await readFile(counter);
+    assert.equal(JSON.parse(bytes).denied, true);
+    await delay(300);
+    assert.deepEqual(await readFile(counter), bytes);
+  };
+  const counter = path.join(configuration.fixture, ".data", `service-operations-${randomUUID()}`);
+  const append = ["--disable-sigusr1", "-e",
+    `require('node:fs').appendFileSync(${JSON.stringify(counter)},'1');process.stdout.write('SERVICE_COMMAND')`];
+  bootstrapPhase = "supervisor-sequential-commands";
+  const first = await prepare(append);
+  assert.equal((await execute(first)).stdout, "SERVICE_COMMAND");
+  const firstReceipt = await receipt(first);
+  assert.equal(firstReceipt.processTreeStopped, true);
+  assert.equal(firstReceipt.status, "executed");
+  const second = await prepare(append);
+  assert.equal((await execute(second)).stdout, "SERVICE_COMMAND");
+  assert.equal((await receipt(second)).processTreeStopped, true);
+  assert.equal(await readFile(counter, "utf8"), "11");
+  bootstrapPhase = "supervisor-replay";
+  const retained = await readFile(`${first.file}.result.json`);
+  await assert.rejects(execute(first), (error) => error.processTreeStopped === true && error.commandOutcome?.exitCode !== 0);
+  assert.deepEqual(await readFile(`${first.file}.result.json`), retained);
+  assert.equal(await readFile(counter, "utf8"), "11");
+  bootstrapPhase = "supervisor-output-limit";
+  const noisy = await prepare(["--disable-sigusr1", "-e", "process.stdout.write('x'.repeat(16*1024*1024+8192))"]);
+  await assert.rejects(execute(noisy), (error) => error.processTreeStopped === true);
+  const limited = await receipt(noisy);
+  assert.equal(limited.outputTruncated, true);
+  assert.equal(limited.processTreeStopped, true);
+  assert.equal(limited.status, "blocked");
+  assert.ok((await lstat(`${noisy.file}.stdout`)).size + (await lstat(`${noisy.file}.stderr`)).size <= 16 * 1024 * 1024);
+  bootstrapPhase = "supervisor-caller-crash";
+  const callerCounter = path.join(configuration.fixture, ".data", `caller-crash-${randomUUID()}.json`);
+  const caller = await prepare([probe, "descendant", JSON.stringify({ counter: callerCounter, runner })]);
+  const child = spawnOwnedCommand(broker.file, caller.arguments,
+    { cwd: controlRoot, env: ownerEnvironment, timeoutMs: 35000 });
+  child.stdout.resume();
+  child.stderr.resume();
+  let inputFailure;
+  child.stdin.on("error", (error) => { if (error.code !== "EPIPE") inputFailure = error; });
+  const closed = new Promise((resolve) => { child.once("close", () => resolve(null)); child.once("error", resolve); });
+  let crashed = false, timer;
+  try {
+    await waitFor(callerCounter);
+    crashed = child.kill();
+    assert.equal(crashed, true);
+    const closedError = await Promise.race([closed, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("The crashed caller retained its output handles.")), 15000);
+    })]);
+    if (closedError) throw closedError;
+    if (inputFailure) throw inputFailure;
+    const stopped = await receipt(caller);
+    assert.equal(stopped.status, "blocked");
+    assert.equal(stopped.processTreeStopped, true);
+    await stableCounter(callerCounter);
+  } finally {
+    clearTimeout(timer);
+    if (!crashed && child.exitCode === null && child.signalCode === null) await stopOwnedProcess(child);
+  }
+  bootstrapPhase = "supervisor-crash";
+  const serviceCounter = path.join(configuration.fixture, ".data", `service-crash-${randomUUID()}.json`);
+  const serviceRequest = await prepare([probe, "descendant", JSON.stringify({ counter: serviceCounter, runner })]);
+  const serviceCancellation = new AbortController();
+  const serviceOutcome = execute(serviceRequest, serviceCancellation.signal).then(() => ({ unexpectedSuccess: true }), (error) => error);
+  try {
+    await waitFor(serviceCounter);
+    const service = await readDiagnosticReport(path.join(configuration.private, "service-capabilities.json"));
+    const supervisor = await readDiagnosticReport(broker.configuration);
+    assert.ok(Number.isSafeInteger(service.servicePid) && service.servicePid > 0);
+    assert.equal(JSON.parse(await readFile(serviceCounter, "utf8")).parentPid, service.servicePid);
+    const stopFile = path.join(configuration.private, `stop-service-${randomUUID()}.ps1`);
+    await writeFile(stopFile, [
+      "param([int]$ServicePid, [string]$ServiceName, [string]$Executable)",
+      "$ErrorActionPreference = 'Stop'",
+      "if ($ServiceName -notmatch '^dpws_[a-f0-9]{24}$') { throw 'Invalid task service' }",
+      "$target = Get-Process -Id $ServicePid",
+      "try {",
+      "  $null = $target.Handle",
+      "  $service = @(Get-CimInstance Win32_Service -Filter \"Name='$ServiceName'\")",
+      "  if ($service.Count -ne 1 -or $service[0].ProcessId -ne $target.Id -or $target.Path -ne $Executable) { throw 'Service identity changed' }",
+      "  Stop-Process -Id $target.Id -Force",
+      "  if (!$target.WaitForExit(10000)) { throw 'The task service did not exit' }",
+      "} finally { $target.Dispose() }",
+      "'SERVICE_STOPPED'",
+    ].join("\n"), { flag: "wx", mode: 0o600 });
+    const terminated = await runCommand(configuration.tools.pwsh,
+      ["-NoProfile", "-NonInteractive", "-File", stopFile, "-ServicePid", String(service.servicePid),
+        "-ServiceName", supervisor.service, "-Executable", broker.file],
+      { cwd: controlRoot, env: ownerEnvironment, timeoutMs: 30000 });
+    assert.equal(terminated.stdout.trim(), "SERVICE_STOPPED");
+    const crashedService = await serviceOutcome;
+    assert.equal(crashedService.unexpectedSuccess, undefined);
+    assert.equal(crashedService.processTreeStopped, true, "The client owner still needs its own cleanup confirmation.");
+    await assert.rejects(readFile(`${serviceRequest.file}.result.json`), { code: "ENOENT" });
+    await stableCounter(serviceCounter);
+  } finally {
+    serviceCancellation.abort();
+    await serviceOutcome;
+  }
+  return {
+    version: 1, kind: "windows-supervisor-lifecycle", status: "passed", acceptance: false,
+    checks: ["sequential-commands", "replay-refusal", "bounded-output", "caller-crash-cleanup", "service-crash-job-close"],
+    serviceCrashReceipt: "missing-as-expected", candidateCleanup: "requires-bootstrap-account-sweep",
+  };
 }
 
 async function stageCandidateApks(configuration, directory) {
@@ -369,6 +534,7 @@ async function main(file) {
           controllerSource: preparation.source, checks: preparation.checks,
         });
       }
+      let selfTestProof;
       await withCommandBoundary((file, args, options, execute) =>
         boundary(file, args,
           { ...options, signal: options.signal ?? cancellation.signal }, execute), async () => {
@@ -391,8 +557,8 @@ async function main(file) {
           return;
         }
         const proof = await proveIsolation(configuration, directory);
+        if (configuration.mode === "self-test") { selfTestProof = proof; return; }
         await immutableJson(path.join(directory, "isolation-proof.json"), proof);
-        if (configuration.mode === "self-test") return;
         if (!plan.requiredGroups.includes(configuration.group)) throw new Error("The trusted plan did not select this worker.");
         let result;
         try {
@@ -414,6 +580,12 @@ async function main(file) {
               return JSON.parse(output.stdout);
             },
           });
+          if (selfTestProof) {
+            if (configuration.platform === "win32") {
+              selfTestProof.supervisorLifecycle = await windowsSupervisorChecks(configuration, ownerEnvironment, candidateEnvironment);
+            }
+            await immutableJson(path.join(directory, "isolation-proof.json"), selfTestProof);
+          }
           if (["passed", "partial"].includes(result.status)) await stageCandidateApks(configuration, directory);
         } catch (error) {
           result = { ...(result ?? plan), group: configuration.group, status: "blocked", complete: false,

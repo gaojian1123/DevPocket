@@ -29,7 +29,9 @@ public static class SupervisorContracts {
         var tokenType = typeof(Microsoft.Win32.SafeHandles.SafeAccessTokenHandle);
         var logon = typeof(DevPocketIsolatedCommand).GetMethod("LogonUserW", BindingFlags.Static | BindingFlags.NonPublic);
         var create = typeof(DevPocketIsolatedCommand).GetMethod("CreateProcessAsUserW", BindingFlags.Static | BindingFlags.NonPublic);
-        if (logon.GetParameters()[5].ParameterType != tokenType.MakeByRefType() || create.GetParameters()[0].ParameterType != tokenType)
+        var restrict = typeof(DevPocketIsolatedCommand).GetMethod("CreateRestrictedToken", BindingFlags.Static | BindingFlags.NonPublic);
+        if (logon.GetParameters()[5].ParameterType != tokenType.MakeByRefType() || create.GetParameters()[0].ParameterType != tokenType ||
+            restrict.GetParameters()[0].ParameterType != tokenType || restrict.GetParameters()[8].ParameterType != tokenType.MakeByRefType())
             throw new Exception("The logon token must remain owned across creation and scoped impersonation.");
         string root = Path.GetFullPath(args[0]), node = Path.Combine(root, "synthetic-node.exe");
         byte[] bytes = Encoding.UTF8.GetBytes("not an executable; validation must never launch it");
@@ -39,6 +41,23 @@ public static class SupervisorContracts {
             { "probeCwd", root }, { "identity", Path.Combine(root, "identity.json") }
         };
         DevPocketWindowsSupervisor.ValidateProbeRequest(configuration, Request(root, node));
+        configuration["mode"] = "worker";
+        configuration["workingRoots"] = new[] { root };
+        configuration["executableRoots"] = new[] { root };
+        var general = Request(root, node);
+        general["arguments"] = new[] { "-e", "candidate code remains a validation-only fixture" };
+        general["timeoutMs"] = 900000;
+        DevPocketWindowsSupervisor.ValidateCommandRequest(configuration, general);
+        foreach (string field in new[] { "cwd", "file" }) {
+            var outside = Request(root, node);
+            outside[field] = Path.GetFullPath(root + "-outside");
+            Reject(() => DevPocketWindowsSupervisor.ValidateCommandRequest(configuration, outside));
+        }
+        foreach (object arguments in new object[] { null, new object[] { null }, new[] { "bad\0argument" } }) {
+            var invalid = Request(root, node);
+            invalid["arguments"] = arguments;
+            Reject(() => DevPocketWindowsSupervisor.ValidateCommandRequest(configuration, invalid));
+        }
         foreach (string field in new[] { "version", "id", "file", "cwd", "identity", "timeoutMs", "arguments", "environment", "extra" }) {
             var request = Request(root, node);
             switch (field) {
@@ -64,7 +83,8 @@ public static class SupervisorContracts {
             { "commandPipe", "devpocket-" + new string('b', 32) + "-command" }, { "nonce", new string('c', 64) },
             { "privateRoot", root }, { "identity", Path.Combine(root, "identity.json") },
             { "executableSha256", DevPocketWindowsSupervisor.Digest(File.ReadAllBytes(Process.GetCurrentProcess().MainModule.FileName)) },
-            { "probeNode", node }, { "probeNodeSha256", DevPocketWindowsSupervisor.Digest(bytes) }, { "probeCwd", root }
+            { "probeNode", node }, { "probeNodeSha256", DevPocketWindowsSupervisor.Digest(bytes) }, { "probeCwd", root },
+            { "mode", "worker" }, { "workingRoots", new[] { root } }, { "executableRoots", new[] { root } }
         };
         string file = Path.Combine(root, "supervisor.json");
         byte[] encoded = Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(complete));
@@ -75,6 +95,20 @@ public static class SupervisorContracts {
         encoded = Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(complete));
         File.WriteAllBytes(file, encoded);
         Reject(() => DevPocketWindowsSupervisor.ReadConfiguration(file, DevPocketWindowsSupervisor.Digest(encoded)));
+        var captureType = typeof(DevPocketWindowsSupervisor).GetNestedType("CapturedOutput", BindingFlags.NonPublic);
+        var capture = Activator.CreateInstance(captureType, true);
+        var read = captureType.GetMethod("Read");
+        using (var input = new MemoryStream(new byte[16 * 1024 * 1024 + 1])) {
+            var retained = (byte[])read.Invoke(capture, new object[] { input });
+            if (retained.Length != 16 * 1024 * 1024 || !(bool)captureType.GetProperty("Truncated").GetValue(capture, null))
+                throw new Exception("Candidate output did not stop at its shared byte limit.");
+        }
+        using (var input = new MemoryStream(new byte[32])) {
+            if (((byte[])read.Invoke(capture, new object[] { input })).Length != 0)
+                throw new Exception("The second output channel received another budget.");
+        }
+        var stop = (System.Threading.Tasks.TaskCompletionSource<string>)captureType.GetField("Stop").GetValue(capture);
+        if (!stop.Task.IsCompleted || stop.Task.Result != "cancel") throw new Exception("Output overflow did not cancel the command.");
         Console.WriteLine("SUPERVISOR_VALIDATION_ONLY");
         return 0;
     }

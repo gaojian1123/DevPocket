@@ -90,6 +90,16 @@ The skill retains the original user message/answer; the optional controller
 retains the actual native response in its runtime journal. JSON copies are
 diagnostics, not a source of authorization.
 
+When improving the development machinery itself, keep the previously approved
+controller fixed for the whole task. Validate new controller/bootstrap versions
+as candidate code only in the explicitly authorized disposable CI environment;
+do not adopt or refreeze each revision locally merely to run its tests. Candidate
+trial results do not grant the candidate control over acceptance. A task-scoped
+CI grant can cover same-scope repairs, while local adoption, a changed execution
+target or expanded effects remain separate. In unattended work, retain a concrete
+missing-scope/native-permission blocker instead of repeatedly opening approval
+questions. Delivery of reviewed source is separate from activating that source.
+
 Every publication grant records `ordinary-ci`, including locally verified PR
 delivery; hosted grants keep it separate from `isolated-execution`.
 A candidate push can trigger ordinary CI through an existing PR, and creating
@@ -115,11 +125,11 @@ grant additional execution effects.
 ### Disposable hosted execution
 
 **Activation blocked:** the worker job remains disabled. The candidate bootstrap
-and its adversarial checks are source changes awaiting execution/adoption approval
-and actual hosted evidence, not an established isolation boundary. Sibling
-checkouts owned by the same account are not sufficient. Do not enable the job
-merely by removing its false condition or substitute the old candidate's CI for
-the new bootstrap's validation.
+and adversarial checks require current evidence from the authorized disposable
+environment before they establish an isolation boundary. Candidate trial authority
+does not authorize local control adoption. Sibling checkouts owned by the same
+account are not sufficient. Do not enable the job merely by removing its false
+condition or substitute the old candidate's CI for the new bootstrap's validation.
 
 The proposed `isolated-worker.ps1`/`isolated-worker.py` bootstrap creates a temporary
 unprivileged account only in the named disposable hosted VM. Trusted supervision,
@@ -164,43 +174,47 @@ The trusted Node controller retains the original runner identity. Its owned
 command runner invokes a hash-bound service client; only the service calls the
 existing low-token launcher. A private owner pipe, task nonce and authenticated
 SCM/pipe process identity bind the service to that invocation. Neither pipe is
-inherited by the candidate. The current service accepts one fixed benign Node
-marker command only; arbitrary candidate commands remain disabled. `LogonUserW` and
+inherited by the candidate. The candidate service accepts sequential commands
+only from the bound controller, within its named working/executable roots and
+environment projection. Exclusive admission records reject replay. `LogonUserW` and
 `CreateProcessAsUserW` attach the target to a kill-on-close Job through the
 creation-time Job-list attribute before it can execute. The helper reads control
 input without blocking startup and checks cancellation before resuming the target.
 An outer command deadline remains a timeout even when delivering its stop produces
-a native cancellation receipt; both owners must still confirm cleanup.
+a native cancellation receipt; both owners must still confirm cleanup. Native
+stdout/stderr share the existing 16 MiB command budget; overflow cancels the
+candidate and remains an output-limit failure rather than success or cancellation.
 Only target standard I/O handles are inherited; Windows candidate stdin is EOF,
 not the privileged cancellation pipe. The original Store-PowerShell compatibility path is
 unchanged. A service capability result is not source verification or isolation
 acceptance. Service operations never run on the developer's machine.
-Windows ancestor handling remains blocked. Attribute checks and DACL
-read-modify-write are bound to the same opened non-reparse object, but neither
-attempted opening mode has established the required non-propagating update.
-`MAXIMUM_ALLOWED` conflicts with an existing working-directory handle. The
-metadata-only `READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES` handle avoids
-that conflict, but a second directory reader can still open while its share mode
-is zero: it does not establish the exclusive-directory condition documented by
-[`SetSecurityInfo`](https://learn.microsoft.com/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo).
-The hosted attempt also failed opening `C:\Program Files` for `WRITE_DAC`
-(native error 5), before reaching the process-creation probe.
+The rejected Windows ancestor-ACL strategy is removed. Its share-zero metadata
+handle did not establish exclusive directory access, and changing system-ancestor
+DACLs also failed with native error 5. The replacement candidate uses
+[`CreateRestrictedToken`](https://learn.microsoft.com/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken)
+with `WRITE_RESTRICTED | DISABLE_MAX_PRIVILEGE` and only the task user's restricting
+SID. The actual suspended child must carry that SID before resume. Ordinary
+read permissions remain separate; private control/evidence and runner channels
+retain explicit read protection.
 
-The hosted parent/child ACL and junction checks passed, but unchanged child
-security does not by itself prove that no traversal occurred. Do not claim
-ancestor isolation from those checks, enlarge timeouts, take ownership, grant
-additional rights, or substitute a weaker launcher to hide these blockers.
-The dispatch route stays disabled until a supported ancestor strategy and the
-actual cross-account process-creation capability are established.
-The current Windows diagnostic path allocates only owned scratch, a trusted
-control copy and private credentials, then runs the fixed benign Node launch
-through the owned runner, LocalService client and atomic isolated-command module
-before broad ACL setup.
-It loads no candidate code. `atomic-launch-capability.json` records only that
-capability with `acceptance: false`; the bootstrap deliberately exits nonzero
-even when the probe succeeds. It cannot produce an isolation proof or qualify
-the required gate. This diagnostic stop must be removed only after the remaining
-ancestor protection is implemented and verified.
+Each command uses a private desktop in the existing noninteractive service
+window station, with an explicit descriptor and a temporary task-specific
+station rule. It does not create an administrator-only named window station,
+enable cross-account hooks, add privileges or take ownership of system paths.
+Desktop/rule cleanup must complete as well as Job cleanup.
+
+These are candidate changes, not established isolation evidence. Windows CI now
+has to run the real installation/negative-gate/cancellation probes instead of
+stopping after the benign marker. Synthetic Everyone-writable parents require
+actual permission-denied results, runner-channel reads must be denied, and a
+public HTTPS probe exercises network compatibility under the low token. The
+self-test additionally checks sequential commands, replay refusal, bounded
+output and caller/service death; a missing crash receipt stays missing rather
+than being rewritten as ordinary successful completion. The existing
+`isolation-proof.json` carries these lifecycle diagnostics only after they pass.
+The dispatch route remains disabled until current hosted evidence and independent
+review establish the boundary. Earlier marker-only capability records retain
+`acceptance: false` and cannot validate this replacement.
 The service must stop and disappear before the temporary candidate account or
 private credentials are removed. Cleanup stages still attempt service removal
 and bounded diagnostic publication after an owner-pipe failure.

@@ -320,6 +320,36 @@ test("outer command deadlines are not reclassified as native cancellation", asyn
   }
 });
 
+test("native output limits remain failures and still require both cleanup confirmations", async (t) => {
+  for (const cause of ["native", "outer"]) for (const cleaned of [true, false]) {
+    await t.test(`${cause}/${cleaned}`, async (t) => {
+      const configuration = { ...await fixture(t), platform: "win32" };
+      await fixtureBroker(configuration);
+      const boundary = isolatedCommandBoundary(configuration, {}, environment(configuration));
+      await assert.rejects(boundary("node", [], {}, async (_file, args) => {
+        const file = args.at(-1), bytes = await readFile(file), request = JSON.parse(bytes);
+        await writeFile(`${file}.result.json`, JSON.stringify({
+          version: 1, id: request.id, requestSha256: createHash("sha256").update(bytes).digest("hex"),
+          status: "blocked", admission: "running", interruption: "cancelled", started: true,
+          processTreeStopped: cleaned, exitCode: null, outputTruncated: cause === "native",
+        }));
+        throw Object.assign(new Error("Private output exceeded its budget"), successfulCommand(), {
+          commandOutcome: { observedProcess: "owned-command-supervisor",
+            reason: cause === "outer" ? "output-limit" : "exit", exitCode: 78, cleanupFailure: null },
+        });
+      }), (error) => {
+        assert.equal(error.processTreeStopped, cleaned);
+        assert.equal(error.diagnosticCode, cleaned ? "output-limit" : "cleanup-failed");
+        if (cleaned) {
+          assert.equal(error.commandOutcome.reason, "output-limit");
+          assert.equal(error.commandOutcome.outputTruncated, true);
+        }
+        return true;
+      });
+    });
+  }
+});
+
 test("atomic launch failures preserve bounded native stage and privilege facts", async (t) => {
   const configuration = { ...await fixture(t), platform: "win32" };
   const boundary = isolatedCommandBoundary(configuration, {}, environment(configuration));
@@ -507,10 +537,23 @@ test("Windows token creation joins its Job atomically and has no weaker credenti
   assert.doesNotMatch(source, /Console\.In\.ReadLineAsync|input = GetStdHandle\(-10\)/);
   assert.match(source, /CheckControl\(cancellation, deadline\);\s+if \(ResumeThread/);
   assert.match(source, /input = targetInput/);
+  assert.match(source, /CreateRestrictedToken\(token, 0x9, 0, IntPtr\.Zero, 0, IntPtr\.Zero, 1, sids/);
+  assert.match(source, /GetTokenInformation\(token, 11/);
+  assert.match(source, /Marshal\.ReadInt32\(restrictions\) != 1/);
+  assert.match(source, /desktop = desktop\.Name/);
+  assert.match(source, /CreateDesktopW\(name, IntPtr\.Zero, IntPtr\.Zero, 0,/);
+  assert.doesNotMatch(source, /CreateWindowStationW|ProtectAncestor/);
   const bootstrap = await readFile(new URL("../isolated-worker.ps1", import.meta.url), "utf8");
   assert.match(bootstrap, /NT AUTHORITY\\LocalService/);
   assert.match(bootstrap, /SeAssignPrimaryTokenPrivilege\/SeIncreaseQuotaPrivilege/);
   assert.doesNotMatch(bootstrap, /\[DevPocketIsolatedCommand\]::PrepareCreationPrivileges\(\)/);
+  assert.doesNotMatch(bootstrap, /Protect-Ancestors|Assert-AncestorProtection|Invoke-AtomicLaunchProbe/);
+  assert.match(bootstrap, /permissionOnlyPaths = @\(\$broadParent, \$broadChild\)/);
+  const service = await readFile(new URL("../windows-supervisor.cs", import.meta.url), "utf8");
+  assert.match(service, /while \(!shutdown\.Task\.IsCompleted\)/);
+  assert.match(service, /OutputLimit = 16 \* 1024 \* 1024/);
+  assert.match(service, /AnonymousPipeServerStream\(PipeDirection\.In, HandleInheritability\.None\)/);
+  assert.match(service, /File\.Move\(temporary, file\)/);
 });
 
 test("Linux drops every candidate capability and never places its root owner below setpriv", async () => {

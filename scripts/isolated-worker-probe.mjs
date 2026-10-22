@@ -33,12 +33,15 @@ if (mode === "fixture") {
     }
   };
   for (const [index, directory] of input.protectedPaths.entries()) {
-    denied(`write-${index}`, () => writeFileSync(path.join(directory, input.marker), "candidate overwrite", { flag: "wx" }));
-    denied(`rename-${index}`, () => renameSync(directory, directory + "-candidate-replaced"));
-    denied(`chmod-${index}`, () => chmodSync(directory, 0o777));
+    const codes = input.permissionOnlyPaths?.includes(directory) ? ["EACCES", "EPERM"] : undefined;
+    denied(`write-${index}`, () => writeFileSync(path.join(directory, input.marker), "candidate overwrite", { flag: "wx" }), codes);
+    denied(`rename-${index}`, () => renameSync(directory, directory + "-candidate-replaced"), codes);
+    denied(`chmod-${index}`, () => chmodSync(directory, 0o777), codes);
     denied(`redirect-${index}`, () => symlinkSync(input.fixture, path.join(directory, input.marker + "-link"),
-      process.platform === "win32" ? "junction" : "dir"));
+      process.platform === "win32" ? "junction" : "dir"), codes);
   }
+  for (const [index, file] of (input.protectedReadFiles ?? []).entries())
+    denied(`runner-file-read-${index}`, () => readFileSync(file), ["EACCES", "EPERM"]);
   denied("supervisor-termination", () => process.kill(input.supervisorPid));
   denied("runner-substitution", () => writeFileSync(input.runner,
     "export const WORKFLOW_TEST_FILES=[];export const WORKFLOW_TEST_SHARDS=[];\n"));
@@ -63,7 +66,7 @@ if (mode === "fixture") {
     let denied = false;
     try { writeFileSync(input.runner, "process.exit(0);\n"); }
     catch (error) { if (["EACCES", "EPERM"].includes(error.code)) denied = true; else throw error; }
-    writeFileSync(input.counter + ".next", JSON.stringify({ pid: process.pid, attempts: ++attempts, denied }));
+    writeFileSync(input.counter + ".next", JSON.stringify({ pid: process.pid, parentPid: process.ppid, attempts: ++attempts, denied }));
     renameSync(input.counter + ".next", input.counter);
   }, 20);
 } else {
