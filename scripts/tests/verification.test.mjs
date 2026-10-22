@@ -10,12 +10,13 @@ import { test } from "node:test";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationImpact } from "../verification-policy.mjs";
 import { developmentReviewRequirements, isVerificationPolicyPath } from "../development-policy.mjs";
 import { syntheticExecution, verificationTools, windowsNodeLauncher } from "./fixtures/verification-tools.mjs";
-import { combineVerification, executeVerification, verificationPlan } from "../verification.mjs";
+import { combineVerification, executeVerification, verificationPlan, verificationProcessCleanupConfirmed } from "../verification.mjs";
+import { withCommandBoundary } from "../process.mjs";
 import { openVerificationRun, readVerificationRun } from "../verification-run.mjs";
 import { emulatorInputDifference, resolveVerificationExecutable, verificationExecutionPolicy } from "../verification-preflight.mjs";
 import { capturePromotionContext, prepareVerificationTransition } from "../verification-transition.mjs";
 import { WORKFLOW_TEST_FILES } from "../test-workflow.mjs";
-import { committedInputsMatch, committedSourceInputs, commitSourceProjection, sourceInputs } from "../git-state.mjs";
+import { committedInputsMatch, committedSourceInputs, commitSourceProjection, sourceInputs, sourceSnapshot } from "../git-state.mjs";
 import { androidImageArchitecture } from "../android-platform.mjs";
 
 const exec = promisify(execFile);
@@ -936,6 +937,42 @@ test("isolated native-only plans reach both native adapters without a tooling ca
     directory: invalidDirectory, isolatedTooling: true, trustedToolingRunner: path.resolve("scripts", "test-workflow.mjs"),
   }), { diagnosticCode: "configuration" });
   await assert.rejects(fileSystem.stat(invalidDirectory), { code: "ENOENT" });
+});
+
+test("isolated tooling source rejection preserves completed cleanup and bounded output", async (t) => {
+  for (const kind of ["changed", "unavailable"]) await t.test(kind, async (t) => {
+    const root = await repository(t), directory = path.join(root, ".data", "verification", "source-rejection");
+    await mkdir(directory, { recursive: true });
+    const source = await sourceSnapshot(root), check = { id: "workflow-tests", status: "not_run" };
+    const plan = { source, toolingShards: { files: ["first.test.mjs", "must-not-run.test.mjs"] } };
+    const executorFile = path.join(directory, "executor.mjs");
+    const executorSource = (await readFile(new URL("../verification-executor.mjs", import.meta.url), "utf8"))
+      .replace(/from "\.\/([^"]+)"/g, (_, name) => `from ${JSON.stringify(new URL(`../${name}`, import.meta.url).href)}`);
+    await writeFile(executorFile, executorSource + "\nexport { executeCheck };\n");
+    const executor = await import(pathToFileURL(executorFile).href);
+    let calls = 0;
+    const commandOutcome = { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0,
+      capturedBytes: 29, outputTruncated: false, cleanupFailure: null };
+    await withCommandBoundary(async (file, args) => {
+      assert.equal(file, process.execPath);
+      assert.deepEqual(args, ["--disable-sigusr1", "--test", "first.test.mjs"]);
+      calls++;
+      const readme = path.join(root, "README.md");
+      if (kind === "changed") await writeFile(readme, "Changed by the completed command\n");
+      else { await rm(readme); await mkdir(readme); }
+      return { stdout: "completed source-mutating test\n", stderr: "", processTreeStopped: true, commandOutcome };
+    }, () => executor.executeCheck(root, plan, check, { directory, isolatedTooling: true }));
+    assert.equal(calls, 1);
+    assert.equal(check.status, "blocked");
+    assert.equal(check.failure.reason, kind === "changed" ? "source-changed" : "source-unavailable");
+    assert.equal(check.failure.phase, "source-validation");
+    assert.equal(check.failure.processTreeStopped, true);
+    assert.equal(check.commandOutcome.cleanupFailure, null);
+    assert.equal(verificationProcessCleanupConfirmed(check), true);
+    assert.match(await readFile(path.join(root, check.log), "utf8"), /completed source-mutating test/);
+    assert.deepEqual(check.toolingExecutions.map(({ file, status }) => ({ file, status })),
+      [{ file: "first.test.mjs", status: "passed" }]);
+  });
 });
 
 test("backend diagnostics observe the ordered backend entry without running the independent tooling suite", async (t) => {

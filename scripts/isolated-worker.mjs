@@ -65,12 +65,24 @@ export function isolatedCandidateEnvironment(configuration, environment) {
   return result;
 }
 
-async function immutableJson(file, value, maximum = 1024 * 1024) {
+async function immutableJson(file, value, maximum = 1024 * 1024, signal) {
   const bytes = JSON.stringify(value) + "\n";
   if (Buffer.byteLength(bytes) > maximum) throw new Error("Isolated worker evidence exceeded its bound.");
+  signal?.throwIfAborted();
   const output = await open(file, "wx", 0o600);
+  let failure;
   try { await output.writeFile(bytes); await output.sync(); }
-  finally { await output.close(); }
+  catch (error) { failure = error; }
+  try { await output.close(); }
+  catch (error) { failure = failure ? new AggregateError([failure, error], "Isolated worker evidence could not be closed.") : error; }
+  if (signal?.aborted) {
+    failure = failure ? new AggregateError([failure, signal.reason], "Isolated worker evidence publication was cancelled.") : signal.reason;
+  }
+  if (failure) {
+    try { await unlink(file); }
+    catch (error) { throw new AggregateError([failure, error], "Failed isolated worker evidence could not be invalidated."); }
+    throw failure;
+  }
   return digest(bytes);
 }
 
@@ -316,20 +328,28 @@ async function proveIsolation(configuration, directory) {
     negativeSource: plan.source, negativeReportSha256: digest(JSON.stringify(report)) };
 }
 
-async function windowsSupervisorChecks(configuration, ownerEnvironment, candidateEnvironment) {
+async function windowsSupervisorChecks(configuration, ownerEnvironment, candidateEnvironment, signal) {
+  signal?.throwIfAborted();
   const broker = configuration.broker, probe = path.join(controlRoot, "scripts", "isolated-worker-probe.mjs");
   const runner = path.join(controlRoot, "scripts", "test-workflow.mjs");
   const supervisorConfiguration = await readDiagnosticReport(broker.configuration);
-  const bounded = async (promise, message) => {
-    let timer;
+  const bounded = async (promise, message, operationSignal = signal) => {
+    let timer, abort;
     try {
+      operationSignal?.throwIfAborted();
       return await Promise.race([promise, new Promise((_, reject) => {
         timer = setTimeout(() => reject(new Error(message)), 15000);
+        abort = () => reject(operationSignal.reason);
+        operationSignal?.addEventListener("abort", abort, { once: true });
       })]);
-    } finally { clearTimeout(timer); }
+    } finally {
+      clearTimeout(timer);
+      if (abort) operationSignal?.removeEventListener("abort", abort);
+    }
   };
   const openPeer = async () => {
-    const socket = createConnection({ path: `\\\\.\\pipe\\${supervisorConfiguration.commandPipe}`, allowHalfOpen: true });
+    signal?.throwIfAborted();
+    const socket = createConnection({ path: `\\\\.\\pipe\\${supervisorConfiguration.commandPipe}`, allowHalfOpen: true, signal });
     let failure;
     socket.on("error", (error) => { failure = error; });
     try {
@@ -341,20 +361,24 @@ async function windowsSupervisorChecks(configuration, ownerEnvironment, candidat
     } catch (error) { socket.destroy(); throw error; }
   };
   const prepare = async (args) => {
+    signal?.throwIfAborted();
     const id = randomUUID(), file = path.join(configuration.private, `${id}.json`);
     const request = { version: 1, id, file: configuration.tools.node, arguments: args,
       cwd: configuration.fixture, timeoutMs: 30000, environment: candidateEnvironment, identity: configuration.identity };
     const requestSha256 = await immutableJson(file, request, 65536);
     return { id, file, requestSha256, arguments: ["--client", broker.configuration, broker.sha256, file] };
   };
-  const execute = (request, signal) => runCommand(broker.file, request.arguments,
-    { cwd: controlRoot, env: ownerEnvironment, timeoutMs: 35000, signal });
+  const execute = (request, commandSignal = signal) => {
+    signal?.throwIfAborted();
+    return runCommand(broker.file, request.arguments, { cwd: controlRoot, env: ownerEnvironment, timeoutMs: 35000, signal: commandSignal });
+  };
   const waitFor = async (file) => {
     const deadline = Date.now() + 15000;
     while (true) {
-      try { await lstat(file); return; }
+      signal?.throwIfAborted();
+      try { await lstat(file); signal?.throwIfAborted(); return; }
       catch (error) { if (error.code !== "ENOENT" || Date.now() >= deadline) throw error; }
-      await delay(20);
+      await delay(20, undefined, { signal });
     }
   };
   const receipt = async (request) => {
@@ -371,9 +395,10 @@ async function windowsSupervisorChecks(configuration, ownerEnvironment, candidat
     return value;
   };
   const stableCounter = async (counter) => {
+    signal?.throwIfAborted();
     const bytes = await readFile(counter);
     assert.equal(JSON.parse(bytes).denied, true);
-    await delay(300);
+    await delay(300, undefined, { signal });
     assert.deepEqual(await readFile(counter), bytes);
   };
   const counter = path.join(configuration.fixture, ".data", `service-operations-${randomUUID()}`);
@@ -406,6 +431,7 @@ async function windowsSupervisorChecks(configuration, ownerEnvironment, candidat
       peer.socket.once("end", () => reject(new Error("The supervisor closed before acknowledging the command.")));
       peer.socket.once("error", reject);
     });
+    signal?.throwIfAborted();
     peer.socket.write(JSON.stringify({ id: heldRequest.id, sha256: heldRequest.requestSha256,
       nonce: supervisorConfiguration.nonce }) + "\n");
     assert.equal(await bounded(completion, "The held client did not receive completion."), "complete");
@@ -425,6 +451,22 @@ async function windowsSupervisorChecks(configuration, ownerEnvironment, candidat
   await assert.rejects(execute(first), (error) => error.processTreeStopped === true && error.commandOutcome?.exitCode !== 0);
   assert.deepEqual(await readFile(`${first.file}.result.json`), retained);
   assert.equal(await readFile(counter, "utf8"), "11111");
+  bootstrapPhase = "supervisor-admitted-peer-eof";
+  const eofCounter = path.join(configuration.fixture, ".data", `peer-eof-${randomUUID()}.json`);
+  const eofRequest = await prepare([probe, "descendant", JSON.stringify({ counter: eofCounter, runner })]);
+  const eofPeer = await openPeer();
+  try {
+    signal?.throwIfAborted();
+    eofPeer.socket.write(JSON.stringify({ id: eofRequest.id, sha256: eofRequest.requestSha256,
+      nonce: supervisorConfiguration.nonce }) + "\n");
+    await waitFor(eofCounter);
+  } finally { eofPeer.socket.destroy(); }
+  const eofResult = await receipt(eofRequest);
+  assert.equal(eofResult.status, "blocked");
+  assert.equal(eofResult.interruption, "cancelled");
+  assert.equal(eofResult.processTreeStopped, true);
+  await stableCounter(eofCounter);
+  assert.equal((await execute(await prepare(append))).stdout, "SERVICE_COMMAND");
   bootstrapPhase = "supervisor-output-limit";
   const noisy = await prepare(["--disable-sigusr1", "-e", "process.stdout.write('x'.repeat(16*1024*1024+8192))"]);
   await assert.rejects(execute(noisy), (error) => error.processTreeStopped === true);
@@ -436,21 +478,21 @@ async function windowsSupervisorChecks(configuration, ownerEnvironment, candidat
   bootstrapPhase = "supervisor-caller-crash";
   const callerCounter = path.join(configuration.fixture, ".data", `caller-crash-${randomUUID()}.json`);
   const caller = await prepare([probe, "descendant", JSON.stringify({ counter: callerCounter, runner })]);
+  signal?.throwIfAborted();
   const child = spawnOwnedCommand(broker.file, caller.arguments,
-    { cwd: controlRoot, env: ownerEnvironment, timeoutMs: 35000 });
+    { cwd: controlRoot, env: ownerEnvironment, timeoutMs: 35000, cancelled: signal?.aborted ?? false });
   child.stdout.resume();
   child.stderr.resume();
   let inputFailure;
   child.stdin.on("error", (error) => { if (error.code !== "EPIPE") inputFailure = error; });
   const closed = new Promise((resolve) => { child.once("close", () => resolve(null)); child.once("error", resolve); });
-  let crashed = false, timer;
+  let crashed = false;
   try {
     await waitFor(callerCounter);
+    signal?.throwIfAborted();
     crashed = child.kill();
     assert.equal(crashed, true);
-    const closedError = await Promise.race([closed, new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error("The crashed caller retained its output handles.")), 15000);
-    })]);
+    const closedError = await bounded(closed, "The crashed caller retained its output handles.");
     if (closedError) throw closedError;
     if (inputFailure) throw inputFailure;
     const stopped = await receipt(caller);
@@ -458,14 +500,18 @@ async function windowsSupervisorChecks(configuration, ownerEnvironment, candidat
     assert.equal(stopped.processTreeStopped, true);
     await stableCounter(callerCounter);
   } finally {
-    clearTimeout(timer);
     if (!crashed && child.exitCode === null && child.signalCode === null) await stopOwnedProcess(child);
+    if (crashed) {
+      const cleanupError = await bounded(closed, "The crashed caller did not release its handles during cleanup.", null);
+      if (cleanupError) throw cleanupError;
+    }
   }
   bootstrapPhase = "supervisor-crash";
   const serviceCounter = path.join(configuration.fixture, ".data", `service-crash-${randomUUID()}.json`);
   const serviceRequest = await prepare([probe, "descendant", JSON.stringify({ counter: serviceCounter, runner })]);
   const serviceCancellation = new AbortController();
-  const serviceOutcome = execute(serviceRequest, serviceCancellation.signal).then(() => ({ unexpectedSuccess: true }), (error) => error);
+  const serviceSignal = signal ? AbortSignal.any([signal, serviceCancellation.signal]) : serviceCancellation.signal;
+  const serviceOutcome = execute(serviceRequest, serviceSignal).then(() => ({ unexpectedSuccess: true }), (error) => error);
   try {
     await waitFor(serviceCounter);
     const service = await readDiagnosticReport(path.join(configuration.private, "service-capabilities.json"));
@@ -486,10 +532,11 @@ async function windowsSupervisorChecks(configuration, ownerEnvironment, candidat
       "} finally { $target.Dispose() }",
       "'SERVICE_STOPPED'",
     ].join("\n"), { flag: "wx", mode: 0o600 });
+    signal?.throwIfAborted();
     const terminated = await runCommand(configuration.tools.pwsh,
       ["-NoProfile", "-NonInteractive", "-File", stopFile, "-ServicePid", String(service.servicePid),
         "-ServiceName", supervisorConfiguration.service, "-Executable", broker.file],
-      { cwd: controlRoot, env: ownerEnvironment, timeoutMs: 30000 });
+      { cwd: controlRoot, env: ownerEnvironment, timeoutMs: 30000, signal });
     assert.equal(terminated.stdout.trim(), "SERVICE_STOPPED");
     const crashedService = await serviceOutcome;
     assert.equal(crashedService.unexpectedSuccess, undefined);
@@ -500,9 +547,10 @@ async function windowsSupervisorChecks(configuration, ownerEnvironment, candidat
     serviceCancellation.abort();
     await serviceOutcome;
   }
+  signal?.throwIfAborted();
   return {
     version: 1, kind: "windows-supervisor-lifecycle", status: "passed", acceptance: false,
-    checks: ["sequential-commands", "retained-client-handle", "pre-header-eof", "replay-refusal",
+    checks: ["sequential-commands", "retained-client-handle", "pre-header-eof", "admitted-peer-eof", "replay-refusal",
       "bounded-output", "caller-crash-cleanup", "service-crash-job-close"],
     serviceCrashReceipt: "missing-as-expected", candidateCleanup: "requires-bootstrap-account-sweep",
   };
@@ -613,6 +661,9 @@ async function main(file) {
         assert.equal(launch.commandOutcome?.exitCode, 0);
         let desktopScope;
         if (configuration.platform === "win32" && configuration.desktopProbe) {
+          bootstrapPhase = "shell-startup";
+          const shell = await runCommand(configuration.tools.pwsh, ["--version"], { cwd: controlRoot, timeoutMs: 30000 });
+          assert.match(shell.stdout.trim(), /^PowerShell \d+\.\d+/);
           bootstrapPhase = "desktop-scope";
           const service = (await readDiagnosticReport(path.join(configuration.private, "service-capabilities.json"))).desktopScope;
           assert.equal(service?.interactive, false);
@@ -651,7 +702,7 @@ async function main(file) {
         const proof = await proveIsolation(configuration, directory);
         if (desktopScope) proof.desktopScope = desktopScope;
         if (configuration.mode === "self-test") { selfTestProof = proof; return; }
-        await immutableJson(path.join(directory, "isolation-proof.json"), proof);
+        await immutableJson(path.join(directory, "isolation-proof.json"), proof, undefined, cancellation.signal);
         if (!plan.requiredGroups.includes(configuration.group)) throw new Error("The trusted plan did not select this worker.");
         let result;
         try {
@@ -673,12 +724,6 @@ async function main(file) {
               return JSON.parse(output.stdout);
             },
           });
-          if (selfTestProof) {
-            if (configuration.platform === "win32") {
-              selfTestProof.supervisorLifecycle = await windowsSupervisorChecks(configuration, ownerEnvironment, candidateEnvironment);
-            }
-            await immutableJson(path.join(directory, "isolation-proof.json"), selfTestProof);
-          }
           if (["passed", "partial"].includes(result.status)) await stageCandidateApks(configuration, directory);
         } catch (error) {
           result = { ...(result ?? plan), group: configuration.group, status: "blocked", complete: false,
@@ -697,6 +742,21 @@ async function main(file) {
           }
         }
       });
+      if (configuration.mode === "self-test") {
+        cancellation.signal.throwIfAborted();
+        if (!selfTestProof) throw new Error("The isolated self-test did not complete its boundary proof.");
+        if (configuration.platform === "win32") {
+          selfTestProof.supervisorLifecycle = await windowsSupervisorChecks(configuration, ownerEnvironment, candidateEnvironment, cancellation.signal);
+        }
+        cancellation.signal.throwIfAborted();
+        const proofFile = path.join(directory, "isolation-proof.json");
+        await immutableJson(proofFile, selfTestProof, undefined, cancellation.signal);
+        if (cancellation.signal.aborted) {
+          try { await unlink(proofFile); }
+          catch (error) { throw new AggregateError([cancellation.signal.reason, error], "Cancelled self-test proof could not be invalidated."); }
+          cancellation.signal.throwIfAborted();
+        }
+      }
     });
   } finally {
     process.off("SIGINT", cancel);

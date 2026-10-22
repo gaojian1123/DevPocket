@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { isolatedCandidateEnvironment, isolatedCommandBoundary, runIsolatedPlatformChecks } from "../isolated-worker.mjs";
@@ -723,6 +724,170 @@ test("atomic launch diagnostics stop before candidate preparation and cannot bec
     assert.deepEqual(await readdir(configuration.candidate), []);
     assert.deepEqual(await readdir(configuration.fixture), []);
   });
+
+test("self-test completes uncancelled owner-side lifecycle checks before publishing its proof",
+  { skip: process.platform !== "win32" }, async (t) => {
+    for (const outcome of ["passed", "failed", "aborted", "abort-sync", "abort-close", "missing"]) await t.test(outcome, async (t) => {
+      const configuration = await fixture(t), scripts = path.join(configuration.control, "scripts");
+      await cp(path.resolve("scripts"), scripts, { recursive: true });
+      await fixtureBroker(configuration);
+      configuration.mode = "self-test";
+      configuration.sid = "S-1-5-21-1-2-3-1001";
+      configuration.desktopProbe = configuration.broker.file;
+      configuration.tools.git = process.execPath;
+      configuration.tools.python = process.execPath;
+      await writeFile(path.join(configuration.private, "service-capabilities.json"), JSON.stringify({
+        desktopScope: { sid: "S-1-5-19", interactive: false, sessionId: 0,
+          authenticationId: "0000000000000000", logonSid: "S-1-5-5-0-0", windowStation: "service-owner" },
+      }));
+      const processFile = path.join(scripts, "process.mjs");
+      let processSource = await readFile(processFile, "utf8");
+      const body = processSource.indexOf("  const deadlineUnixMs = Date.now() + timeoutMs;", processSource.indexOf("function runOwnedCommand("));
+      assert.ok(body > 0);
+      processSource = "import {readFile as fixtureRead,writeFile as fixtureWrite} from 'node:fs/promises';\n" +
+        "import {createHash as fixtureHash} from 'node:crypto';\nlet fixtureDesktop = 0;\n" +
+        processSource.slice(0, body) + `
+  return (async () => {
+    if (file === 'fixture-owner-only') {
+      await fixtureWrite(${JSON.stringify(path.join(configuration.private, "owner-admitted"))}, 'owner');
+      return {stdout:'OWNER_CONTEXT'};
+    }
+    if (args[0] !== '--client') throw new Error('Target work escaped the command boundary');
+    const requestFile = args.at(-1), bytes = await fixtureRead(requestFile), request = JSON.parse(bytes);
+    let stdout;
+    if (request.arguments.includes('--desktop-scope')) {
+      const serial = ++fixtureDesktop;
+      stdout = JSON.stringify({version:1,kind:'windows-desktop-scope',sid:${JSON.stringify(configuration.sid)},
+        interactive:false,sessionId:0,authenticationId:String(serial).padStart(16,'0'),
+        logonSid:'S-1-5-5-0-'+serial,windowStation:'candidate-'+serial,desktop:'Default'});
+    } else if (request.arguments.includes('--version')) stdout = 'PowerShell 7.6.7';
+    else if (request.arguments.includes('--fixture-target')) stdout = 'TARGET_CONTEXT';
+    else if (request.arguments.includes("process.stdout.write('DEVPOCKET_ISOLATED_LAUNCH')")) stdout = 'DEVPOCKET_ISOLATED_LAUNCH';
+    else throw new Error('Unexpected fixture target');
+    await fixtureWrite(requestFile+'.result.json',JSON.stringify({version:1,id:request.id,
+      requestSha256:fixtureHash('sha256').update(bytes).digest('hex'),status:'executed',admission:'running',
+      started:true,processTreeStopped:true,exitCode:0}));
+    return {stdout,stderr:'',processTreeStopped:true,
+      commandOutcome:{observedProcess:'owned-command-supervisor',reason:'exit',exitCode:0,cleanupFailure:null}};
+  })();
+` + processSource.slice(body);
+      await writeFile(processFile, processSource);
+      const workerFile = path.join(scripts, "isolated-worker.mjs"), original = await readFile(workerFile, "utf8");
+      const proofEntry = "async function proveIsolation(configuration, directory) {";
+      const lifecycleEntry = "async function windowsSupervisorChecks(configuration, ownerEnvironment, candidateEnvironment, signal) {";
+      assert.ok(original.includes(proofEntry) && original.includes(lifecycleEntry));
+      let altered = original.replace(proofEntry, `${proofEntry}
+  { const probe = await runCommand(configuration.tools.node, ['--fixture-target']);
+    assert.equal(probe.stdout, 'TARGET_CONTEXT');
+    return ${outcome === "missing" ? "undefined" : "{version:1,kind:'fixture-isolation-proof',status:'passed'}"}; }
+`).replace(lifecycleEntry, `${lifecycleEntry}
+  { ${outcome === "aborted" ? `
+    assert.ok(signal);
+    process.emit('SIGINT');
+    assert.equal(signal.aborted, true);
+    await writeFile(path.join(configuration.private, 'lifecycle-called'), 'aborted');
+    return {status:'passed'};
+    ` : ""}
+    const owner = await runCommand('fixture-owner-only', []);
+    assert.equal(owner.stdout, 'OWNER_CONTEXT');
+    await writeFile(path.join(configuration.private, 'lifecycle-called'), 'owner');
+    ${outcome === "failed" ? "throw new Error('FIXTURE_LIFECYCLE_FAILED');" : "return {status:'passed'};"} }
+`);
+      if (outcome.startsWith("abort-")) {
+        const method = outcome.slice("abort-".length), opened = 'const output = await open(file, "wx", 0o600);';
+        assert.ok(altered.includes(opened));
+        altered = altered.replace(opened, `${opened}
+  if (path.basename(file) === 'isolation-proof.json') {
+    const original = output.${method}.bind(output);
+    output.${method} = async () => {
+      await original();
+      assert.equal(JSON.parse(await readFile(file, 'utf8')).status, 'passed');
+      await writeFile(path.join(path.dirname(file), 'proof-written'), '${method}');
+      process.emit('SIGINT');
+      throw new Error('FIXTURE_PROOF_${method.toUpperCase()}_FAILED');
+    };
+  }
+`);
+      }
+      assert.notEqual(altered, original);
+      await writeFile(workerFile, altered);
+      const input = path.join(configuration.private, "configuration.json");
+      await writeFile(input, JSON.stringify(configuration));
+      const run = exec(process.execPath, [workerFile, "--configuration", input], {
+        cwd: configuration.control, timeout: 30000,
+        env: { ...process.env, GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted" },
+      });
+      const proof = path.join(configuration.control, ".data", "ci", "isolated", "isolation-proof.json");
+      if (outcome !== "passed") {
+        await assert.rejects(run, (error) => error.code === 78);
+        await assert.rejects(readFile(proof), { code: "ENOENT" });
+      } else {
+        await run;
+        const recorded = JSON.parse(await readFile(proof, "utf8"));
+        assert.equal(recorded.kind, "fixture-isolation-proof");
+        assert.deepEqual(recorded.supervisorLifecycle, { status: "passed" });
+      }
+      if (outcome === "missing") {
+        await assert.rejects(readFile(path.join(configuration.private, "lifecycle-called")), { code: "ENOENT" });
+      } else {
+        assert.equal(await readFile(path.join(configuration.private, "lifecycle-called"), "utf8"), outcome === "aborted" ? "aborted" : "owner");
+      }
+      if (["aborted", "missing"].includes(outcome)) {
+        await assert.rejects(readFile(path.join(configuration.private, "owner-admitted")), { code: "ENOENT" });
+      }
+      if (outcome.startsWith("abort-")) {
+        assert.equal(await readFile(path.join(path.dirname(proof), "proof-written"), "utf8"), outcome.slice("abort-".length));
+      }
+    });
+  });
+
+test("cancelled evidence publication preserves an existing file and reports owned invalidation failure", async (t) => {
+  const configuration = await fixture(t), scripts = path.join(configuration.control, "scripts");
+  await cp(path.resolve("scripts"), scripts, { recursive: true });
+  const file = path.join(scripts, "isolated-worker.mjs");
+  const original = await readFile(file, "utf8"), opened = 'const output = await open(file, "wx", 0o600);';
+  assert.ok(original.includes(opened));
+  const altered = original.replace(opened, `
+  const fixtureCancellation = new AbortController();
+  signal = fixtureCancellation.signal;
+  if (file.endsWith('existing.json')) fixtureCancellation.abort(new Error('FIXTURE_CANCELLED'));
+  ${opened}
+  const fixtureSync = output.sync.bind(output);
+  output.sync = async () => {
+    await fixtureSync();
+    fixtureCancellation.abort(new Error('FIXTURE_CANCELLED'));
+    throw new Error('FIXTURE_SYNC_FAILED');
+  };
+`).replace("await unlink(file);", "throw new Error('FIXTURE_INVALIDATION_FAILED');");
+  assert.notEqual(altered, original);
+  await writeFile(file, altered + "\nexport { immutableJson };\n");
+  const worker = await import(pathToFileURL(file).href);
+  const existing = path.join(configuration.private, "existing.json"), retained = '{"existing":true}\n';
+  await writeFile(existing, retained);
+  await assert.rejects(worker.immutableJson(existing, { status: "passed" }), { code: "EEXIST" });
+  assert.equal(await readFile(existing, "utf8"), retained);
+  const owned = path.join(configuration.private, "owned.json");
+  await assert.rejects(worker.immutableJson(owned, { status: "passed" }), (error) => {
+    assert.ok(error instanceof AggregateError);
+    assert.match(error.message, /could not be invalidated/);
+    assert.equal(error.errors.at(-1).message, "FIXTURE_INVALIDATION_FAILED");
+    assert.ok(error.errors[0] instanceof AggregateError);
+    assert.deepEqual(error.errors[0].errors.map((item) => item.message), ["FIXTURE_SYNC_FAILED", "FIXTURE_CANCELLED"]);
+    return true;
+  });
+  assert.equal(JSON.parse(await readFile(owned, "utf8")).status, "passed");
+});
+
+test("already-aborted supervisor lifecycle cannot inspect configuration or admit work", async (t) => {
+  const configuration = await fixture(t), scripts = path.join(configuration.control, "scripts");
+  await cp(path.resolve("scripts"), scripts, { recursive: true });
+  const file = path.join(scripts, "isolated-worker.mjs");
+  await writeFile(file, await readFile(file, "utf8") + "\nexport { windowsSupervisorChecks };\n");
+  const worker = await import(pathToFileURL(file).href);
+  const cancellation = new AbortController(), reason = new Error("Fixture task stopped");
+  cancellation.abort(reason);
+  await assert.rejects(worker.windowsSupervisorChecks(null, null, null, cancellation.signal), (error) => error === reason);
+});
 
 test("bootstrap command failures retain the actual bounded diagnostic before exiting",
   { skip: process.platform !== "win32" }, async (t) => {

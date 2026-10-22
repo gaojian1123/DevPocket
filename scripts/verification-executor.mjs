@@ -369,9 +369,16 @@ async function executeIsolatedTooling(root, plan, check, options) {
       error.stderr = "";
       throw error;
     }
-    const current = await sourceSnapshot(root);
-    if (current.head !== plan.source.head || current.fingerprint !== plan.source.fingerprint) {
-      throw verificationFault("source-changed", { phase: "source-validation", check: check.id });
+    try {
+      const current = await sourceSnapshot(root);
+      if (current.head !== plan.source.head || current.fingerprint !== plan.source.fingerprint) {
+        throw verificationFault("source-changed", { phase: "source-validation", check: check.id });
+      }
+    } catch (error) {
+      const failure = error.diagnosticCode === "source-changed" ? error
+        : verificationFault("source-unavailable", { phase: "source-validation", check: check.id }, error);
+      throw Object.assign(failure, { commandOutcome: last.commandOutcome, processTreeStopped: last.processTreeStopped,
+        stdout: retained.toString("utf8"), stderr: "" });
     }
   }
   return { ...last, stdout: retained.toString("utf8"), stderr: "" };

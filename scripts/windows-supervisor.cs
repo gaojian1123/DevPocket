@@ -246,6 +246,7 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
                             var connected = listener.WaitForConnectionAsync();
                             if (Task.WhenAny(connected, shutdown.Task).GetAwaiter().GetResult() != connected) break;
                             connected.GetAwaiter().GetResult();
+                            bool connectionEstablished = true;
                             using (var requestInput = new StreamReader(listener, new UTF8Encoding(false), false, 4096, true)) {
                                 bool admitted = false;
                                 Task<string> pendingRead = null;
@@ -257,8 +258,9 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
                                         catch (IOException closed) { if (!ClosedPipe(closed)) throw; }
                                     }
                                 } finally {
-                                    if (!shutdown.Task.IsCompleted) {
-                                        if (listener.IsConnected) listener.Disconnect();
+                                    if (!shutdown.Task.IsCompleted && connectionEstablished) {
+                                        listener.Disconnect();
+                                        connectionEstablished = false;
                                         if (!CancelIoEx(listener.SafePipeHandle, IntPtr.Zero) && Marshal.GetLastWin32Error() != 1168)
                                             throw new Win32Exception();
                                     }
@@ -295,6 +297,15 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
     static bool ClosedPipe(Exception error) {
         int code = error.HResult & 0xffff;
         return error is IOException && (code == 109 || code == 232 || code == 233 || code == 995);
+    }
+
+    static string ReadConnectionLine(NamedPipeServerStream pipe, StreamReader input, int maximum) {
+        try { return ReadLine(input, maximum); }
+        catch (IOException error) { if (ClosedPipe(error) || !pipe.IsConnected) return null; throw; }
+    }
+
+    static bool PeerEnded(NamedPipeServerStream pipe, Task<string> read) {
+        return !pipe.IsConnected || read != null && read.Status == TaskStatus.RanToCompletion && read.Result == null;
     }
 
     static void ClaimRequest(string requestFile, object admission) {
@@ -341,7 +352,7 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
         pendingRead = null;
         LaunchPaths launch = null;
         try {
-            var headerRead = Task.Run(() => ReadLine(input, 4096));
+            var headerRead = Task.Run(() => ReadConnectionLine(pipe, input, 4096));
             pendingRead = headerRead;
             if (Task.WhenAny(headerRead, shutdown.Task, Task.Delay(30000)).GetAwaiter().GetResult() != headerRead)
                 throw new OperationCanceledException("The supervisor owner did not retain a bounded request.");
@@ -365,7 +376,7 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
                 throw new Win32Exception();
             ClaimRequest(requestFile, new { requestSha256 = Digest(bytes), clientPid = clientPid });
             admitted = true;
-            var clientControl = Task.Run(() => ReadLine(input, 64));
+            var clientControl = Task.Run(() => ReadConnectionLine(pipe, input, 64));
             pendingRead = clientControl;
             clientControl.ContinueWith(task => { var observed = task.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
             var capture = new CapturedOutput();
@@ -420,7 +431,12 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
                 }
                 if (!command.ProcessTreeStopped) throw new InvalidOperationException("The candidate Job cleanup was not confirmed.");
             }
-            WriteLine(pipe, "complete");
+            if ((bool)receipt["processTreeStopped"] && PeerEnded(pipe, pendingRead)) return;
+            try { WriteLine(pipe, "complete"); }
+            catch (IOException error) {
+                if (!(bool)receipt["processTreeStopped"] || !(ClosedPipe(error) || PeerEnded(pipe, pendingRead))) throw;
+                return;
+            }
             for (int index = 0; index < 2; index++) {
                 if (Task.WhenAny(pendingRead, Task.Delay(5000)).GetAwaiter().GetResult() != pendingRead) break;
                 string control;
@@ -428,7 +444,7 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
                 catch (IOException closed) { if (ClosedPipe(closed)) break; throw; }
                 if (control == null) break;
                 if (control.Trim() != "cancel") throw new InvalidDataException("Unsupported final client control message.");
-                pendingRead = Task.Run(() => ReadLine(input, 64));
+                pendingRead = Task.Run(() => ReadConnectionLine(pipe, input, 64));
             }
         } finally { if (launch != null) launch.Dispose(); }
     }
@@ -629,6 +645,7 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
     public static int Main(string[] args) {
         try {
             if (args.Length == 1 && args[0] == "--desktop-scope") {
+                Console.Error.WriteLine("[DEBUG-desktop-startup] entered managed scope probe");
                 Console.WriteLine(Serializer().Serialize(DevPocketIsolatedCommand.DescribeDesktopScope()));
                 return 0;
             }
