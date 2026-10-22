@@ -1235,7 +1235,9 @@ test("extension registration is inert and the starter isolates a clean primary c
   assert.equal(dispatched, undefined);
   assert.equal(registration.workflows[0].meta.name, "devpocket-development");
   assert.deepEqual(registration.workflows[0].meta.phases.map((phase) => phase.title), ["Authorize", "Implement", "Candidate", "Verify", "Review", "Diagnose"]);
-  assert.match(registration.workflows[0].meta.description, /recorded hosted grant allows native candidate push/);
+  assert.match(registration.workflows[0].meta.description, /controller-managed local DevPocket verification/);
+  assert.match(registration.workflows[0].meta.description, /Normal CI-first work uses the owning-session skill/);
+  assert.match(registration.workflows[0].meta.description, /controller does not publish, merge or deploy/);
   assert.match(registration.workflows[0].meta.description, /only when explicitly selected/);
   assert.equal(registration.workflows[0].meta.limits, undefined, "AI credit limits are chosen at invocation, not guessed.");
   assert.match(registration.tools[0].description, /only when the user explicitly selects the workflow/);
