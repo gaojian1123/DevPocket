@@ -580,13 +580,12 @@ test("Windows token creation joins its Job atomically and has no weaker credenti
   assert.doesNotMatch(source, /Console\.In\.ReadLineAsync|input = GetStdHandle\(-10\)/);
   assert.match(source, /CheckControl\(cancellation, deadline\);\s+if \(ResumeThread/);
   assert.match(source, /input = targetInput/);
-  assert.match(source, /RestrictedCodeSid = new SecurityIdentifier\(WellKnownSidType\.RestrictedCodeSid, null\)\.Value/);
-  assert.match(source, /var values = new\[\] \{ sid, logonSid, RestrictedCodeSid \}/);
+  assert.match(source, /var values = new\[\] \{ sid, logonSid \}/);
   assert.match(source, /CreateRestrictedToken\(token, 0x9, 0, IntPtr\.Zero, 0, IntPtr\.Zero, \(uint\)sids\.Length, sids/);
   assert.match(source, /GetTokenInformation\(token, 11/);
-  assert.match(source, /Marshal\.ReadInt32\(restrictions\) != 3/);
+  assert.match(source, /Marshal\.ReadInt32\(restrictions\) != 2/);
   assert.match(source, /LogonSid\(token\) != logonSid/);
-  assert.match(source, /actual\.Count != 3 \|\| !actual\.SetEquals\(new\[\] \{ sid, logonSid, RestrictedCodeSid \}\)/);
+  assert.match(source, /actual\.Count != 2 \|\| !actual\.SetEquals\(new\[\] \{ sid, logonSid \}\)/);
   assert.match(source, /desktop = ""/);
   assert.match(source, /DescribeDesktopScope/);
   assert.doesNotMatch(source, /CreateWindowStationW|ProtectAncestor|SetUserObjectSecurity|CreateDesktopW/);
@@ -595,8 +594,10 @@ test("Windows token creation joins its Job atomically and has no weaker credenti
   assert.match(bootstrap, /SeAssignPrimaryTokenPrivilege\/SeIncreaseQuotaPrivilege/);
   assert.doesNotMatch(bootstrap, /\[DevPocketIsolatedCommand\]::PrepareCreationPrivileges\(\)/);
   assert.doesNotMatch(bootstrap, /Protect-Ancestors|Assert-AncestorProtection|Invoke-AtomicLaunchProbe/);
+  assert.doesNotMatch(bootstrap, /--cng-access|cngAccess/);
   assert.match(bootstrap, /permissionOnlyPaths = @\(\$broadParent, \$broadChild\)/);
   const service = await readFile(new URL("../windows-supervisor.cs", import.meta.url), "utf8");
+  assert.doesNotMatch(service, /\[DEBUG-|--cng-access/);
   assert.match(service, /while \(!shutdown\.Task\.IsCompleted\)/);
   assert.match(service, /OutputLimit = 16 \* 1024 \* 1024/);
   assert.match(service, /AnonymousPipeServerStream\(PipeDirection\.In, HandleInheritability\.None\)/);
@@ -731,7 +732,7 @@ test("atomic launch diagnostics stop before candidate preparation and cannot bec
 
 test("self-test completes uncancelled owner-side lifecycle checks before publishing its proof",
   { skip: process.platform !== "win32" }, async (t) => {
-    for (const outcome of ["passed", "failed", "aborted", "abort-sync", "abort-close", "missing"]) await t.test(outcome, async (t) => {
+    for (const outcome of ["passed", "failed", "aborted", "abort-sync", "abort-close", "missing", "unqualified"]) await t.test(outcome, async (t) => {
       const configuration = await fixture(t), scripts = path.join(configuration.control, "scripts");
       await cp(path.resolve("scripts"), scripts, { recursive: true });
       await fixtureBroker(configuration);
@@ -765,7 +766,10 @@ test("self-test completes uncancelled owner-side lifecycle checks before publish
         interactive:false,sessionId:0,authenticationId:String(serial).padStart(16,'0'),
         logonSid:'S-1-5-5-0-'+serial,windowStation:'candidate-'+serial,desktop:'Default'});
     } else if (request.arguments.includes('--version')) stdout = 'PowerShell 7.6.7';
-    else if (request.arguments.includes('--fixture-target')) stdout = 'TARGET_CONTEXT';
+    else if (request.arguments.includes('--fixture-target')) {
+      await fixtureWrite(${JSON.stringify(path.join(configuration.private, "target-admitted"))}, 'target');
+      stdout = 'TARGET_CONTEXT';
+    }
     else if (request.arguments.includes("process.stdout.write('DEVPOCKET_ISOLATED_LAUNCH')")) stdout = 'DEVPOCKET_ISOLATED_LAUNCH';
     else throw new Error('Unexpected fixture target');
     await fixtureWrite(requestFile+'.result.json',JSON.stringify({version:1,id:request.id,
@@ -779,7 +783,8 @@ test("self-test completes uncancelled owner-side lifecycle checks before publish
       const workerFile = path.join(scripts, "isolated-worker.mjs"), original = await readFile(workerFile, "utf8");
       const proofEntry = "async function proveIsolation(configuration, directory) {";
       const lifecycleEntry = "async function windowsSupervisorChecks(configuration, ownerEnvironment, candidateEnvironment, signal) {";
-      assert.ok(original.includes(proofEntry) && original.includes(lifecycleEntry));
+      const allocationGuard = 'throw verificationFault("ownership-mismatch", { phase: "protected-ancestors" });';
+      assert.ok(original.includes(proofEntry) && original.includes(lifecycleEntry) && original.includes(allocationGuard));
       let altered = original.replace(proofEntry, `${proofEntry}
   { const probe = await runCommand(configuration.tools.node, ['--fixture-target']);
     assert.equal(probe.stdout, 'TARGET_CONTEXT');
@@ -797,6 +802,8 @@ test("self-test completes uncancelled owner-side lifecycle checks before publish
     await writeFile(path.join(configuration.private, 'lifecycle-called'), 'owner');
     ${outcome === "failed" ? "throw new Error('FIXTURE_LIFECYCLE_FAILED');" : "return {status:'passed'};"} }
 `);
+      // Caller-flow fixtures substitute allocation; the unqualified case keeps the production refusal.
+      if (outcome !== "unqualified") altered = altered.replace(allocationGuard, "");
       if (outcome.startsWith("abort-")) {
         const method = outcome.slice("abort-".length), opened = 'const output = await open(file, "wx", 0o600);';
         assert.ok(altered.includes(opened));
@@ -831,16 +838,23 @@ test("self-test completes uncancelled owner-side lifecycle checks before publish
         assert.equal(recorded.kind, "fixture-isolation-proof");
         assert.deepEqual(recorded.supervisorLifecycle, { status: "passed" });
       }
-      if (outcome === "missing") {
+      if (["missing", "unqualified"].includes(outcome)) {
         await assert.rejects(readFile(path.join(configuration.private, "lifecycle-called")), { code: "ENOENT" });
       } else {
         assert.equal(await readFile(path.join(configuration.private, "lifecycle-called"), "utf8"), outcome === "aborted" ? "aborted" : "owner");
       }
-      if (["aborted", "missing"].includes(outcome)) {
+      if (["aborted", "missing", "unqualified"].includes(outcome)) {
         await assert.rejects(readFile(path.join(configuration.private, "owner-admitted")), { code: "ENOENT" });
       }
       if (outcome.startsWith("abort-")) {
         assert.equal(await readFile(path.join(path.dirname(proof), "proof-written"), "utf8"), outcome.slice("abort-".length));
+      }
+      if (outcome === "unqualified") {
+        await assert.rejects(readFile(path.join(configuration.private, "target-admitted")), { code: "ENOENT" });
+        const failure = JSON.parse(await readFile(path.join(path.dirname(proof), "bootstrap-failure.json"), "utf8"));
+        assert.equal(failure.phase, "protected-ancestors");
+        assert.equal(failure.failure.reason, "ownership-mismatch");
+        assert.equal(failure.acceptance, false);
       }
     });
   });

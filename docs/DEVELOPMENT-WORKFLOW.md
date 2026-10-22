@@ -195,24 +195,30 @@ The rejected Windows ancestor-ACL strategy is removed. Its share-zero metadata
 handle did not establish exclusive directory access, and changing system-ancestor
 DACLs also failed with native error 5. The replacement candidate uses
 [`CreateRestrictedToken`](https://learn.microsoft.com/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken)
-with `WRITE_RESTRICTED | DISABLE_MAX_PRIVILEGE` and the task user's SID, the
-originating token's fresh logon SID and the standard Restricted Code SID. The
-actual suspended child must carry exactly those three restricting SIDs and the
-same logon identity before resume. No Users, Everyone or Authenticated Users SID
-is added to the restricting list. Ordinary token identity/groups and privilege
-policy remain unchanged; private control/evidence and runner channels retain
-explicit read protection.
+with `WRITE_RESTRICTED | DISABLE_MAX_PRIVILEGE` and only the task user's SID plus
+the originating token's fresh logon SID. The actual suspended child must carry
+exactly those two restricting SIDs and the same logon identity before resume.
+No Users, Everyone, Authenticated Users or Restricted Code SID is added to the
+restricting list. Ordinary token identity/groups and privilege policy remain
+unchanged; private control/evidence and runner channels retain explicit read protection.
 
 The user-SID-only trial ran the Node marker but PowerShell failed during
 `BCrypt.dll` initialization (`0x8007045A`); adding the actual logon SID alone did
 not fix it. Read-only hosted inspection found that CNG/KsecDD device DACLs grant
-Restricted Code read/execute access, but grant neither task nor logon SID access.
-The next trial adds that standard restricting SID without modifying object ACLs
-or granting privileges. This can affect any object with a matching Restricted Code
-ACE, not only cryptographic devices. Its compatibility and protected-ancestor,
-filesystem, desktop and lifecycle boundaries must all be established by the same
-negative checks; the descriptor alone is not proof of the failing BCrypt object
-or successful isolation.
+Restricted Code read/execute access, but the subsequent RC trial still failed
+with the same initialization error. That ineffective expansion and the temporary
+descriptor/debug instrumentation are removed; the authenticated failure history
+remains separate from acceptance.
+
+Windows currently stops after its fixed benign compatibility probes, before
+candidate hooks, the negative execution fixture or an isolation proof. Even
+successful startup cannot qualify the allocation yet. Required next evidence
+includes live effective mutation rights on all protected ancestors and shared
+trust inputs, including each relevant delete-child, delete, ACL/owner-change and
+redirection right. An unheld mutation-granting RC parent must cause allocation
+rejection or genuine permission denial. The Everyone-only fixture and sharing or
+nonempty-directory failures do not establish this stronger condition. Do not
+replace it with system-ancestor ACL mutation or a weaker-token fallback.
 
 The first candidate's limited shared-station/desktop grants did not satisfy the
 documented startup contract and its marker exited with `STATUS_DLL_INIT_FAILED`.
@@ -225,9 +231,10 @@ An empty string alone is not accepted as proof. No administrator-only station,
 cross-account hooks, broader shared-station grants or additional privileges are
 introduced.
 
-These are candidate changes, not established isolation evidence. Windows CI now
-has to run the real installation/negative-gate/cancellation probes instead of
-stopping after the benign marker. Synthetic Everyone-writable parents require
+These are candidate changes, not established isolation evidence. Once allocation
+qualification exists, Windows CI must run the real installation, negative-gate
+and cancellation probes rather than treating benign startup as acceptance.
+Synthetic Everyone-writable parents require
 actual permission-denied results, runner-channel reads must be denied, and a
 public HTTPS probe exercises network compatibility under the low token. The
 self-test additionally checks sequential commands, replay refusal, bounded

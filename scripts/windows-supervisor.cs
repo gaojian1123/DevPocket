@@ -46,13 +46,6 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
     static extern bool GetFileInformationByHandleEx(SafeFileHandle file, int kind, out FileAttributeTag information, uint size);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern uint GetFinalPathNameByHandleW(SafeFileHandle file, StringBuilder name, uint size, uint flags);
-    [DllImport("advapi32.dll")]
-    static extern uint GetSecurityInfo(SafeFileHandle handle, int kind, uint information, out IntPtr owner,
-        out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
-    [DllImport("advapi32.dll")]
-    static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
-    [DllImport("kernel32.dll")]
-    static extern IntPtr LocalFree(IntPtr value);
     [StructLayout(LayoutKind.Sequential)]
     struct ServiceStatusProcess {
         public uint type, state, controls, win32Exit, serviceExit, checkpoint, waitHint, pid, flags;
@@ -649,44 +642,9 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
         return Text(receipt, "status") == "executed" ? Number(receipt, "exitCode") : 78;
     }
 
-    static object DescribeCngAccess() {
-        var entries = new List<object>();
-        foreach (string name in new[] { "CNG", "KsecDD" }) {
-            try {
-                using (var handle = CreateFileW(@"\\?\GLOBALROOT\Device\" + name, 0x20000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero)) {
-                    if (handle.IsInvalid) throw new Win32Exception();
-                    IntPtr owner, group, dacl, sacl, descriptor = IntPtr.Zero;
-                    try {
-                        uint result = GetSecurityInfo(handle, 1, 7, out owner, out group, out dacl, out sacl, out descriptor);
-                        if (result != 0) throw new Win32Exception((int)result);
-                        if (descriptor == IntPtr.Zero) throw new InvalidDataException("Missing CNG descriptor.");
-                        uint size = GetSecurityDescriptorLength(descriptor);
-                        if (size < 20 || size > 8192) throw new InvalidDataException("Unexpected CNG descriptor size.");
-                        var bytes = new byte[(int)size];
-                        Marshal.Copy(descriptor, bytes, 0, bytes.Length);
-                        string text = new RawSecurityDescriptor(bytes, 0).GetSddlForm(
-                            AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group);
-                        entries.Add(new { name = name, status = "available", descriptor = text });
-                    } finally {
-                        if (descriptor != IntPtr.Zero && LocalFree(descriptor) != IntPtr.Zero)
-                            throw new InvalidOperationException("CNG diagnostic memory cleanup failed.");
-                    }
-                }
-            } catch (Win32Exception error) {
-                entries.Add(new { name = name, status = "unavailable", nativeError = error.NativeErrorCode });
-            }
-        }
-        return new { kind = "DEBUG-cng-access", acceptance = false, objects = entries };
-    }
-
     public static int Main(string[] args) {
         try {
-            if (args.Length == 1 && args[0] == "--cng-access") {
-                Console.WriteLine(Serializer().Serialize(DescribeCngAccess()));
-                return 0;
-            }
             if (args.Length == 1 && args[0] == "--desktop-scope") {
-                Console.Error.WriteLine("[DEBUG-desktop-startup] entered managed scope probe");
                 Console.WriteLine(Serializer().Serialize(DevPocketIsolatedCommand.DescribeDesktopScope()));
                 return 0;
             }

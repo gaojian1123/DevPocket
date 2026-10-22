@@ -349,11 +349,24 @@ async function executeIsolatedTooling(root, plan, check, options) {
   check.toolingExecutions = [];
   let retained = Buffer.alloc(0), last;
   const append = (value) => { retained = boundedDiagnosticBytes(Buffer.concat([retained, Buffer.from(value)])).bytes; };
+  const completedFailure = (error) => Object.assign(error, {
+    commandOutcome: last?.commandOutcome, processTreeStopped: last?.processTreeStopped,
+    stdout: retained.toString("utf8"), stderr: "",
+  });
   // Selection stays in the control identity; each file's candidate processes stop before the next file starts.
   for (const file of files) {
-    options.signal?.throwIfAborted();
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw verificationFault("command-timeout", { check: check.id });
+    let remaining;
+    try {
+      options.signal?.throwIfAborted();
+      remaining = deadline - Date.now();
+      if (remaining <= 0) throw verificationFault("command-timeout", { check: check.id });
+    } catch (error) {
+      if (!last) {
+        check.executionState = "not-started";
+        delete check.execution;
+      }
+      throw completedFailure(contextualFailure(error, options.signal));
+    }
     const execution = { source: structuredClone(plan.source), startedAt: new Date().toISOString() };
     try {
       last = await runCommand(process.execPath, ["--disable-sigusr1", "--test", file], { ...options, timeoutMs: remaining });
@@ -377,8 +390,7 @@ async function executeIsolatedTooling(root, plan, check, options) {
     } catch (error) {
       const failure = error.diagnosticCode === "source-changed" ? error
         : verificationFault("source-unavailable", { phase: "source-validation", check: check.id }, error);
-      throw Object.assign(failure, { commandOutcome: last.commandOutcome, processTreeStopped: last.processTreeStopped,
-        stdout: retained.toString("utf8"), stderr: "" });
+      throw completedFailure(failure);
     }
   }
   return { ...last, stdout: retained.toString("utf8"), stderr: "" };

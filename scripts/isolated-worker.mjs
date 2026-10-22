@@ -698,6 +698,8 @@ async function main(file) {
         if (configuration.platform === "win32") {
           await immutableJson(path.join(directory, "atomic-launch-capability.json"), capability);
           if (configuration.mode === "atomic-launch-probe") { console.log(JSON.stringify(capability)); return; }
+          bootstrapPhase = "protected-ancestors";
+          throw verificationFault("ownership-mismatch", { phase: "protected-ancestors" });
         }
         const proof = await proveIsolation(configuration, directory);
         if (desktopScope) proof.desktopScope = desktopScope;

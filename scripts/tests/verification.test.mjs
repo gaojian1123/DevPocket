@@ -939,17 +939,23 @@ test("isolated native-only plans reach both native adapters without a tooling ca
   await assert.rejects(fileSystem.stat(invalidDirectory), { code: "ENOENT" });
 });
 
+async function isolatedToolingCheck(t) {
+  const root = await repository(t), directory = path.join(root, ".data", "verification", "isolated-check");
+  await mkdir(directory, { recursive: true });
+  const source = await sourceSnapshot(root), check = { id: "workflow-tests", status: "not_run" };
+  const plan = { source, toolingShards: { files: ["first.test.mjs", "second.test.mjs"] } };
+  const executorFile = path.join(directory, "executor.mjs");
+  const executorSource = (await readFile(new URL("../verification-executor.mjs", import.meta.url), "utf8"))
+    .replace(/from "\.\/([^"]+)"/g, (_, name) => `from ${JSON.stringify(new URL(`../${name}`, import.meta.url).href)}`);
+  await writeFile(executorFile, executorSource + "\nexport { executeCheck };\n");
+  const executor = await import(pathToFileURL(executorFile).href);
+  return { root, check, execute: (options = {}) =>
+    executor.executeCheck(root, plan, check, { directory, isolatedTooling: true, ...options }) };
+}
+
 test("isolated tooling source rejection preserves completed cleanup and bounded output", async (t) => {
   for (const kind of ["changed", "unavailable"]) await t.test(kind, async (t) => {
-    const root = await repository(t), directory = path.join(root, ".data", "verification", "source-rejection");
-    await mkdir(directory, { recursive: true });
-    const source = await sourceSnapshot(root), check = { id: "workflow-tests", status: "not_run" };
-    const plan = { source, toolingShards: { files: ["first.test.mjs", "must-not-run.test.mjs"] } };
-    const executorFile = path.join(directory, "executor.mjs");
-    const executorSource = (await readFile(new URL("../verification-executor.mjs", import.meta.url), "utf8"))
-      .replace(/from "\.\/([^"]+)"/g, (_, name) => `from ${JSON.stringify(new URL(`../${name}`, import.meta.url).href)}`);
-    await writeFile(executorFile, executorSource + "\nexport { executeCheck };\n");
-    const executor = await import(pathToFileURL(executorFile).href);
+    const { root, check, execute } = await isolatedToolingCheck(t);
     let calls = 0;
     const commandOutcome = { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0,
       capturedBytes: 29, outputTruncated: false, cleanupFailure: null };
@@ -961,7 +967,7 @@ test("isolated tooling source rejection preserves completed cleanup and bounded 
       if (kind === "changed") await writeFile(readme, "Changed by the completed command\n");
       else { await rm(readme); await mkdir(readme); }
       return { stdout: "completed source-mutating test\n", stderr: "", processTreeStopped: true, commandOutcome };
-    }, () => executor.executeCheck(root, plan, check, { directory, isolatedTooling: true }));
+    }, () => execute());
     assert.equal(calls, 1);
     assert.equal(check.status, "blocked");
     assert.equal(check.failure.reason, kind === "changed" ? "source-changed" : "source-unavailable");
@@ -973,6 +979,75 @@ test("isolated tooling source rejection preserves completed cleanup and bounded 
     assert.deepEqual(check.toolingExecutions.map(({ file, status }) => ({ file, status })),
       [{ file: "first.test.mjs", status: "passed" }]);
   });
+});
+
+test("isolated tooling pre-launch interruption preserves only completed command evidence", async (t) => {
+  for (const kind of ["before-first", "between-cancel", "between-timeout"]) await t.test(kind, async (t) => {
+    const { root, check, execute } = await isolatedToolingCheck(t), controller = new AbortController();
+    const read = fileSystem.readFile, now = Date.now;
+    let calls = 0, expired = false;
+    if (kind === "before-first") controller.abort();
+    if (kind === "between-timeout") {
+      t.mock.method(Date, "now", () => now() + (expired ? 31 * 60_000 : 0));
+      t.mock.method(fileSystem, "readFile", async (file, ...args) => {
+        if (calls && file === path.join(root, "README.md")) expired = true;
+        return read(file, ...args);
+      });
+      syncBuiltinESMExports();
+    }
+    try {
+      await withCommandBoundary(async (_file, args) => {
+        calls++;
+        assert.equal(calls, 1, "No command can start after the interruption.");
+        assert.deepEqual(args, ["--disable-sigusr1", "--test", "first.test.mjs"]);
+        if (kind === "between-cancel") controller.abort();
+        return { stdout: "completed before interruption\n", stderr: "", processTreeStopped: true,
+          commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0, cleanupFailure: null } };
+      }, () => execute({ signal: controller.signal }));
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+    assert.equal(check.status, "blocked");
+    assert.equal(check.failure.reason, kind === "between-timeout" ? "command-timeout" : "command-cancelled");
+    assert.equal(verificationProcessCleanupConfirmed(check), true);
+    if (kind === "before-first") {
+      assert.equal(calls, 0);
+      assert.equal(check.executionState, "not-started");
+      assert.equal(check.execution, undefined);
+      assert.deepEqual(check.toolingExecutions, []);
+      assert.equal(check.commandOutcome.observedProcess, "unknown");
+    } else {
+      assert.equal(calls, 1);
+      assert.equal(check.executionState, "exited");
+      assert.equal(check.failure.processTreeStopped, true);
+      assert.equal(check.commandOutcome.cleanupFailure, null);
+      assert.match(await readFile(path.join(root, check.log), "utf8"), /completed before interruption/);
+      assert.deepEqual(check.toolingExecutions.map(({ file, status }) => ({ file, status })),
+        [{ file: "first.test.mjs", status: "passed" }]);
+    }
+  });
+});
+
+test("isolated tooling cannot lend the prior command's cleanup to a later unconfirmed command", async (t) => {
+  const { check, execute } = await isolatedToolingCheck(t);
+  let calls = 0;
+  await withCommandBoundary(async (_file, args) => {
+    calls++;
+    if (calls === 1) return { stdout: "first completed\n", stderr: "", processTreeStopped: true,
+      commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0, cleanupFailure: null } };
+    assert.equal(calls, 2);
+    assert.deepEqual(args, ["--disable-sigusr1", "--test", "second.test.mjs"]);
+    throw Object.assign(new Error("The second command has no cleanup evidence."), { code: 23, stdout: "", stderr: "" });
+  }, () => execute());
+  assert.equal(calls, 2);
+  assert.equal(check.status, "failed");
+  assert.equal(check.executionState, "exited");
+  assert.equal(check.commandOutcome.observedProcess, "unknown");
+  assert.equal(verificationProcessCleanupConfirmed(check), false);
+  assert.deepEqual(check.toolingExecutions.map(({ file, status }) => ({ file, status })), [
+    { file: "first.test.mjs", status: "passed" }, { file: "second.test.mjs", status: "failed" },
+  ]);
 });
 
 test("backend diagnostics observe the ordered backend entry without running the independent tooling suite", async (t) => {
