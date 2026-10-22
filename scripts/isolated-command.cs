@@ -238,22 +238,56 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
         } finally { CloseHandle(token); }
     }
 
-    static SafeAccessTokenHandle WriteRestrictedToken(SafeAccessTokenHandle token, string sid) {
-        var identity = new SecurityIdentifier(sid);
-        var bytes = new byte[identity.BinaryLength];
-        identity.GetBinaryForm(bytes, 0);
-        var pinned = GCHandle.Alloc(bytes, GCHandleType.Pinned);
+    static SafeAccessTokenHandle WriteRestrictedToken(SafeAccessTokenHandle token, string sid, out string logonSid) {
+        bool retained = false;
         try {
+            token.DangerousAddRef(ref retained);
+            logonSid = LogonSid(token.DangerousGetHandle());
+        } finally { if (retained) token.DangerousRelease(); }
+        if (logonSid == null || !new SecurityIdentifier(logonSid).IsWellKnown(WellKnownSidType.LogonIdsSid))
+            throw new InvalidDataException("The originating token has no unambiguous logon SID.");
+        var values = new[] { sid, logonSid };
+        var pinned = new GCHandle[values.Length];
+        try {
+            var sids = new SidAndAttributes[values.Length];
+            for (int index = 0; index < values.Length; index++) {
+                var identity = new SecurityIdentifier(values[index]);
+                var bytes = new byte[identity.BinaryLength];
+                identity.GetBinaryForm(bytes, 0);
+                pinned[index] = GCHandle.Alloc(bytes, GCHandleType.Pinned);
+                sids[index] = new SidAndAttributes { sid = pinned[index].AddrOfPinnedObject(), attributes = 0 };
+            }
             SafeAccessTokenHandle restricted;
-            var sids = new[] { new SidAndAttributes { sid = pinned.AddrOfPinnedObject(), attributes = 0 } };
-            // The second write-access check must grant this task's SID, not a broad Users/Everyone group.
-            if (!CreateRestrictedToken(token, 0x9, 0, IntPtr.Zero, 0, IntPtr.Zero, 1, sids, out restricted)) {
+            // Permit only task-owned and fresh-logon objects, never broad Users/Everyone grants.
+            if (!CreateRestrictedToken(token, 0x9, 0, IntPtr.Zero, 0, IntPtr.Zero, (uint)sids.Length, sids, out restricted)) {
                 int error = Marshal.GetLastWin32Error();
                 if (restricted != null) restricted.Dispose();
                 throw new Win32Exception(error);
             }
             return restricted;
-        } finally { pinned.Free(); }
+        } finally {
+            foreach (var handle in pinned) if (handle.IsAllocated) handle.Free();
+        }
+    }
+
+    static void RequireWriteRestriction(IntPtr token, string sid, string logonSid) {
+        if (logonSid == null || LogonSid(token) != logonSid)
+            throw new InvalidOperationException("The actual child token has a different logon identity.");
+        int needed, size = Marshal.SizeOf(typeof(SidAndAttributes));
+        GetTokenInformation(token, 11, IntPtr.Zero, 0, out needed);
+        if (needed < IntPtr.Size + 2 * size || needed > 65536)
+            throw new InvalidDataException("The child write-restriction buffer is invalid.");
+        IntPtr restrictions = Marshal.AllocHGlobal(needed);
+        try {
+            if (!GetTokenInformation(token, 11, restrictions, needed, out needed)) throw new Win32Exception();
+            if (Marshal.ReadInt32(restrictions) != 2)
+                throw new InvalidOperationException("The actual child token has an unexpected restriction count.");
+            var actual = new HashSet<string>(StringComparer.Ordinal);
+            for (int index = 0; index < 2; index++)
+                actual.Add(new SecurityIdentifier(Marshal.ReadIntPtr(restrictions, IntPtr.Size + index * size)).Value);
+            if (actual.Count != 2 || !actual.SetEquals(new[] { sid, logonSid }))
+                throw new InvalidOperationException("The actual child token lacks the task-specific write restriction.");
+        } finally { Marshal.FreeHGlobal(restrictions); }
     }
 
     static string Quote(string value) {
@@ -277,7 +311,7 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
         if (DateTime.UtcNow >= deadline) throw new TimeoutException("Isolated command deadline expired.");
     }
 
-    void RestrictToken(string sid, SafeAccessTokenHandle logonToken) {
+    void RestrictToken(string sid, string logonSid, SafeAccessTokenHandle logonToken) {
         IntPtr token = IntPtr.Zero;
         try {
             // Acquire the candidate's handle without giving LocalService cross-account debug access.
@@ -289,17 +323,8 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
                     identity.Groups.Contains(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null)))
                     throw new InvalidOperationException("The candidate token is not the separate unprivileged identity.");
             }
+            RequireWriteRestriction(token, sid, logonSid);
             int needed;
-            GetTokenInformation(token, 11, IntPtr.Zero, 0, out needed);
-            if (needed < IntPtr.Size + Marshal.SizeOf(typeof(SidAndAttributes)) || needed > 65536)
-                throw new InvalidDataException("The child write-restriction buffer is invalid.");
-            IntPtr restrictions = Marshal.AllocHGlobal(needed);
-            try {
-                if (!GetTokenInformation(token, 11, restrictions, needed, out needed)) throw new Win32Exception();
-                if (Marshal.ReadInt32(restrictions) != 1 ||
-                    new SecurityIdentifier(Marshal.ReadIntPtr(restrictions, IntPtr.Size)).Value != sid)
-                    throw new InvalidOperationException("The actual child token lacks the task-specific write restriction.");
-            } finally { Marshal.FreeHGlobal(restrictions); }
             GetTokenInformation(token, 3, IntPtr.Zero, 0, out needed);
             if (needed <= 0 || needed > 65536) throw new Win32Exception();
             IntPtr privileges = Marshal.AllocHGlobal(needed);
@@ -349,7 +374,8 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
             block = Marshal.StringToHGlobalUni(string.Join("\0", environment) + "\0\0");
             Stage = "logon";
             if (!LogonUserW(user, ".", password, 2, 0, out token)) throw new Win32Exception();
-            restricted = WriteRestrictedToken(token, sid);
+            string logonSid;
+            restricted = WriteRestrictedToken(token, sid, out logonSid);
             Stage = "attributes";
             IntPtr bytes = IntPtr.Zero;
             InitializeProcThreadAttributeList(IntPtr.Zero, 2, 0, ref bytes);
@@ -390,7 +416,7 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
             bool member;
             if (!IsProcessInJob(process, job, out member) || !member)
                 throw new InvalidOperationException("The candidate did not join the isolated Job.");
-            RestrictToken(sid, token);
+            RestrictToken(sid, logonSid, token);
             Stage = "resume";
             CheckControl(cancellation, deadline);
             if (ResumeThread(thread) == 0xffffffff) throw new Win32Exception();

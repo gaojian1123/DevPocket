@@ -153,7 +153,7 @@ test("Windows token inspection borrows the candidate identity only to open its a
     "if (!OpenProcessToken(process, 0x28, out token)) throw new Win32Exception();");
   assert.ok(restriction.indexOf("using (var identity") > borrowed.index + borrowed[0].length,
     "Identity comparison and privilege restriction run after restoring the supervisor identity.");
-  assert.match(source, /RestrictToken\(sid, token\);\s+Stage = "resume";/);
+  assert.match(source, /RestrictToken\(sid, logonSid, token\);\s+Stage = "resume";/);
 });
 
 test("Windows cleanup attempts service removal and publication even after a broken owner pipe",

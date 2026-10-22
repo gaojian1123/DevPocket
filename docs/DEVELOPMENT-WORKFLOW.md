@@ -195,10 +195,18 @@ The rejected Windows ancestor-ACL strategy is removed. Its share-zero metadata
 handle did not establish exclusive directory access, and changing system-ancestor
 DACLs also failed with native error 5. The replacement candidate uses
 [`CreateRestrictedToken`](https://learn.microsoft.com/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken)
-with `WRITE_RESTRICTED | DISABLE_MAX_PRIVILEGE` and only the task user's restricting
-SID. The actual suspended child must carry that SID before resume. Ordinary
-read permissions remain separate; private control/evidence and runner channels
-retain explicit read protection.
+with `WRITE_RESTRICTED | DISABLE_MAX_PRIVILEGE` and only the task user's SID plus
+the originating token's fresh logon SID. The actual suspended child must carry
+exactly those two restricting SIDs and the same logon identity before resume.
+No broad Users, Everyone, Authenticated Users or Restricted Code SID is added.
+Ordinary read permissions remain separate; private control/evidence and runner
+channels retain explicit read protection.
+
+The user-SID-only trial ran the Node marker but PowerShell failed during
+`BCrypt.dll` initialization (`0x8007045A`). Adding the actual logon SID follows
+the restricted-token pattern for per-logon named objects; it is a candidate
+compatibility repair, not proof of which BCrypt object failed or of successful
+isolation. The same shell, desktop, filesystem and lifecycle checks remain required.
 
 The first candidate's limited shared-station/desktop grants did not satisfy the
 documented startup contract and its marker exited with `STATUS_DLL_INIT_FAILED`.

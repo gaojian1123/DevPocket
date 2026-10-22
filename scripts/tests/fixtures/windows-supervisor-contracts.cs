@@ -6,6 +6,8 @@ using System.Diagnostics;
 using System.Web.Script.Serialization;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
+using Microsoft.Win32.SafeHandles;
 
 public static class SupervisorContracts {
     static Dictionary<string, object> Request(string root, string node) {
@@ -33,6 +35,31 @@ public static class SupervisorContracts {
         if (logon.GetParameters()[5].ParameterType != tokenType.MakeByRefType() || create.GetParameters()[0].ParameterType != tokenType ||
             restrict.GetParameters()[0].ParameterType != tokenType || restrict.GetParameters()[8].ParameterType != tokenType.MakeByRefType())
             throw new Exception("The logon token must remain owned across creation and scoped impersonation.");
+        var narrow = typeof(DevPocketIsolatedCommand).GetMethod("WriteRestrictedToken", BindingFlags.Static | BindingFlags.NonPublic);
+        var requireRestriction = typeof(DevPocketIsolatedCommand).GetMethod("RequireWriteRestriction", BindingFlags.Static | BindingFlags.NonPublic);
+        using (var identity = WindowsIdentity.GetCurrent(TokenAccessLevels.Query | TokenAccessLevels.Duplicate)) {
+            var parameters = new object[] { identity.AccessToken, identity.User.Value, null };
+            using (var narrowed = (SafeAccessTokenHandle)narrow.Invoke(null, parameters)) {
+                string logonSid = (string)parameters[2];
+                if (logonSid == null || !new SecurityIdentifier(logonSid).IsWellKnown(WellKnownSidType.LogonIdsSid))
+                    throw new Exception("The restriction must use the original token's logon SID.");
+                requireRestriction.Invoke(null, new object[] { narrowed.DangerousGetHandle(), identity.User.Value, logonSid });
+                foreach (var values in new[] {
+                    new object[] { narrowed.DangerousGetHandle(), identity.User.Value, "S-1-5-5-1-1" },
+                    new object[] { narrowed.DangerousGetHandle(), identity.User.Value, null },
+                    new object[] { narrowed.DangerousGetHandle(), "S-1-1-0", logonSid },
+                    new object[] { identity.AccessToken.DangerousGetHandle(), identity.User.Value, logonSid }
+                }) {
+                    bool refused = false;
+                    try { requireRestriction.Invoke(null, values); }
+                    catch (TargetInvocationException error) {
+                        if (!(error.InnerException is InvalidDataException) && !(error.InnerException is InvalidOperationException)) throw;
+                        refused = true;
+                    }
+                    if (!refused) throw new Exception("An unbound or unrestricted token passed the exact SID check.");
+                }
+            }
+        }
         string root = Path.GetFullPath(args[0]), node = Path.Combine(root, "synthetic-node.exe");
         byte[] bytes = Encoding.UTF8.GetBytes("not an executable; validation must never launch it");
         File.WriteAllBytes(node, bytes);
