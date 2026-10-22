@@ -1250,6 +1250,13 @@ test("extension registration is inert and the starter isolates a clean primary c
     throw snapshotStop;
   } }), (error) => error === snapshotStop);
   assert.deepEqual(snapshot.implementation.files, (await captureCandidateImplementation()).files);
+  const alias = path.join(root, ".data", "snapshot-alias");
+  await symlink(snapshot.directory, alias, process.platform === "win32" ? "junction" : "dir");
+  const cancelled = new AbortController();
+  cancelled.abort(snapshotStop);
+  await assert.rejects(registration.workflows[0].run({ session, signal: cancelled.signal,
+    step: async () => ({ ...snapshot, directory: alias }),
+  }), (error) => error === snapshotStop);
   assert.match(registration.tools[0].description, /only when the user explicitly selects the workflow/);
   assert.match(registration.tools[0].description, /clean linked worktree in the current session/);
   assert.match(registration.tools[0].description, /isolate a clean primary checkout/);

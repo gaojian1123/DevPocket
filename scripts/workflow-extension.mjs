@@ -75,13 +75,13 @@ export async function registerDevelopmentExtension({ defineWorkflow, joinSession
         const implementation = await requireDevelopmentImplementation();
         return freezeDevelopmentController(root, implementation);
       });
-      if (!snapshot || snapshot.directory !== snapshot.implementation?.directory ||
-          snapshot.implementation?.version !== loadedImplementation.version ||
+      if (!snapshot || snapshot.implementation?.version !== loadedImplementation.version ||
           JSON.stringify(snapshot.implementation.files) !== JSON.stringify(loadedImplementation.files)) {
         throw new Error("The recorded development controller does not match the loaded approved implementation.");
       }
-      await requireCandidateImplementation(snapshot.implementation);
-      const controller = await import(pathToFileURL(path.join(snapshot.directory, "development-workflow.mjs")).href);
+      const implementation = { ...loadedImplementation, directory: snapshot.implementation.directory };
+      await requireCandidateImplementation(implementation);
+      const controller = await import(pathToFileURL(path.join(implementation.directory, "development-workflow.mjs")).href);
       return controller.runDevelopment(ctx, { root });
     },
   });
