@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 
 public sealed class DevPocketIsolatedCommand : IDisposable {
+    static readonly string RestrictedCodeSid = new SecurityIdentifier(WellKnownSidType.RestrictedCodeSid, null).Value;
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     struct Startup {
         public int cb; public string reserved, desktop, title;
@@ -246,7 +247,7 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
         } finally { if (retained) token.DangerousRelease(); }
         if (logonSid == null || !new SecurityIdentifier(logonSid).IsWellKnown(WellKnownSidType.LogonIdsSid))
             throw new InvalidDataException("The originating token has no unambiguous logon SID.");
-        var values = new[] { sid, logonSid };
+        var values = new[] { sid, logonSid, RestrictedCodeSid };
         var pinned = new GCHandle[values.Length];
         try {
             var sids = new SidAndAttributes[values.Length];
@@ -258,7 +259,7 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
                 sids[index] = new SidAndAttributes { sid = pinned[index].AddrOfPinnedObject(), attributes = 0 };
             }
             SafeAccessTokenHandle restricted;
-            // Permit only task-owned and fresh-logon objects, never broad Users/Everyone grants.
+            // Standard restricted-code OS resources are distinct from broad Users/Everyone grants.
             if (!CreateRestrictedToken(token, 0x9, 0, IntPtr.Zero, 0, IntPtr.Zero, (uint)sids.Length, sids, out restricted)) {
                 int error = Marshal.GetLastWin32Error();
                 if (restricted != null) restricted.Dispose();
@@ -275,17 +276,17 @@ public sealed class DevPocketIsolatedCommand : IDisposable {
             throw new InvalidOperationException("The actual child token has a different logon identity.");
         int needed, size = Marshal.SizeOf(typeof(SidAndAttributes));
         GetTokenInformation(token, 11, IntPtr.Zero, 0, out needed);
-        if (needed < IntPtr.Size + 2 * size || needed > 65536)
+        if (needed < IntPtr.Size + 3 * size || needed > 65536)
             throw new InvalidDataException("The child write-restriction buffer is invalid.");
         IntPtr restrictions = Marshal.AllocHGlobal(needed);
         try {
             if (!GetTokenInformation(token, 11, restrictions, needed, out needed)) throw new Win32Exception();
-            if (Marshal.ReadInt32(restrictions) != 2)
+            if (Marshal.ReadInt32(restrictions) != 3)
                 throw new InvalidOperationException("The actual child token has an unexpected restriction count.");
             var actual = new HashSet<string>(StringComparer.Ordinal);
-            for (int index = 0; index < 2; index++)
+            for (int index = 0; index < 3; index++)
                 actual.Add(new SecurityIdentifier(Marshal.ReadIntPtr(restrictions, IntPtr.Size + index * size)).Value);
-            if (actual.Count != 2 || !actual.SetEquals(new[] { sid, logonSid }))
+            if (actual.Count != 3 || !actual.SetEquals(new[] { sid, logonSid, RestrictedCodeSid }))
                 throw new InvalidOperationException("The actual child token lacks the task-specific write restriction.");
         } finally { Marshal.FreeHGlobal(restrictions); }
     }

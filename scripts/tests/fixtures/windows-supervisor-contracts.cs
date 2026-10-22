@@ -47,6 +47,14 @@ public static class SupervisorContracts {
                 if (logonSid == null || !new SecurityIdentifier(logonSid).IsWellKnown(WellKnownSidType.LogonIdsSid))
                     throw new Exception("The restriction must use the original token's logon SID.");
                 requireRestriction.Invoke(null, new object[] { narrowed.DangerousGetHandle(), identity.User.Value, logonSid });
+                using (var actual = new WindowsIdentity(narrowed.DangerousGetHandle())) {
+                    var before = new HashSet<string>(StringComparer.Ordinal);
+                    var after = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (IdentityReference group in identity.Groups) before.Add(group.Value);
+                    foreach (IdentityReference group in actual.Groups) after.Add(group.Value);
+                    if (!actual.User.Equals(identity.User) || !before.SetEquals(after))
+                        throw new Exception("Restricting SIDs changed the ordinary user or group identities.");
+                }
                 var invalid = new List<object[]> {
                     new object[] { narrowed.DangerousGetHandle(), identity.User.Value, "S-1-5-5-1-1" },
                     new object[] { narrowed.DangerousGetHandle(), identity.User.Value, null },

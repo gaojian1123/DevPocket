@@ -195,18 +195,24 @@ The rejected Windows ancestor-ACL strategy is removed. Its share-zero metadata
 handle did not establish exclusive directory access, and changing system-ancestor
 DACLs also failed with native error 5. The replacement candidate uses
 [`CreateRestrictedToken`](https://learn.microsoft.com/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken)
-with `WRITE_RESTRICTED | DISABLE_MAX_PRIVILEGE` and only the task user's SID plus
-the originating token's fresh logon SID. The actual suspended child must carry
-exactly those two restricting SIDs and the same logon identity before resume.
-No broad Users, Everyone, Authenticated Users or Restricted Code SID is added.
-Ordinary read permissions remain separate; private control/evidence and runner
-channels retain explicit read protection.
+with `WRITE_RESTRICTED | DISABLE_MAX_PRIVILEGE` and the task user's SID, the
+originating token's fresh logon SID and the standard Restricted Code SID. The
+actual suspended child must carry exactly those three restricting SIDs and the
+same logon identity before resume. No Users, Everyone or Authenticated Users SID
+is added to the restricting list. Ordinary token identity/groups and privilege
+policy remain unchanged; private control/evidence and runner channels retain
+explicit read protection.
 
 The user-SID-only trial ran the Node marker but PowerShell failed during
-`BCrypt.dll` initialization (`0x8007045A`). Adding the actual logon SID follows
-the restricted-token pattern for per-logon named objects; it is a candidate
-compatibility repair, not proof of which BCrypt object failed or of successful
-isolation. The same shell, desktop, filesystem and lifecycle checks remain required.
+`BCrypt.dll` initialization (`0x8007045A`); adding the actual logon SID alone did
+not fix it. Read-only hosted inspection found that CNG/KsecDD device DACLs grant
+Restricted Code read/execute access, but grant neither task nor logon SID access.
+The next trial adds that standard restricting SID without modifying object ACLs
+or granting privileges. This can affect any object with a matching Restricted Code
+ACE, not only cryptographic devices. Its compatibility and protected-ancestor,
+filesystem, desktop and lifecycle boundaries must all be established by the same
+negative checks; the descriptor alone is not proof of the failing BCrypt object
+or successful isolation.
 
 The first candidate's limited shared-station/desktop grants did not satisfy the
 documented startup contract and its marker exited with `STATUS_DLL_INIT_FAILED`.
