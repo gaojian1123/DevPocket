@@ -2,8 +2,8 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { captureCandidateImplementation, requireCandidateImplementation } from "./native-candidate.mjs";
 
-export async function freezeDevelopmentController(root) {
-  const original = await captureCandidateImplementation(path.join(root, "scripts"));
+export async function freezeDevelopmentController(root, original) {
+  await requireCandidateImplementation(original);
   const parent = path.join(root, ".data", "development-controllers");
   await mkdir(parent, { recursive: true });
   const directory = await mkdtemp(path.join(parent, "approved-"));

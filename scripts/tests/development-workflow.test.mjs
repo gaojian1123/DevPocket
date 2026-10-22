@@ -47,9 +47,8 @@ async function implemented(root, summary = "Changed") {
   return { status: "implemented", summary, source, ownedFiles: await changedPaths(root, source.head) };
 }
 
-async function copiedController(root, beforeLoad) {
+async function copiedController(root, beforeLoad, directory = path.join(root, ".data", "implementation")) {
   const inputs = await captureCandidateImplementation();
-  const directory = path.join(root, ".data", "implementation");
   await mkdir(directory, { recursive: true });
   for (const input of inputs.files) {
     const bytes = await readFile(path.join(inputs.directory, input.name));
@@ -1243,6 +1242,14 @@ test("extension registration is inert and the starter isolates a clean primary c
   assert.match(registration.workflows[0].meta.description, /controller does not publish, merge or deploy/);
   assert.match(registration.workflows[0].meta.description, /only when explicitly selected/);
   assert.equal(registration.workflows[0].meta.limits, undefined, "AI credit limits are chosen at invocation, not guessed.");
+  const snapshotStop = new Error("Stop after the registered snapshot step.");
+  let snapshot;
+  await assert.rejects(registration.workflows[0].run({ session, step: async (key, prepare) => {
+    assert.equal(key, "devpocket-controller-snapshot-v1");
+    snapshot = await prepare();
+    throw snapshotStop;
+  } }), (error) => error === snapshotStop);
+  assert.deepEqual(snapshot.implementation.files, (await captureCandidateImplementation()).files);
   assert.match(registration.tools[0].description, /only when the user explicitly selects the workflow/);
   assert.match(registration.tools[0].description, /clean linked worktree in the current session/);
   assert.match(registration.tools[0].description, /isolate a clean primary checkout/);
@@ -3654,7 +3661,7 @@ test("starter propagates explicit autopilot selection without inventing publicat
   assert.match(kickoff.prompt, /"prepare":true/);
 });
 
-test("frozen controller continues to use approved code while candidate tools change", async (t) => {
+test("frozen controller stays on the validated manifest when candidate tools change", async (t) => {
   const { root } = await workspace(t);
   const original = await captureCandidateImplementation();
   await mkdir(path.join(root, "scripts"));
@@ -3663,8 +3670,11 @@ test("frozen controller continues to use approved code while candidate tools cha
     await writeFile(path.join(root, "scripts", file.name), await readFile(path.join(original.directory, file.name)));
   }
   const { freezeDevelopmentController } = await import("../development-controller.mjs");
-  const frozen = await freezeDevelopmentController(root);
+  const loaded = await import(pathToFileURL(path.join(root, "scripts", "development-workflow.mjs")).href);
+  const checked = await loaded.requireDevelopmentImplementation();
+  const frozen = await freezeDevelopmentController(root, checked);
   await writeFile(path.join(root, "scripts", "development-policy.mjs"), "throw new Error('Candidate policy must not be adopted');\n");
+  await assert.rejects(freezeDevelopmentController(root, checked), /loaded controller\/helper implementation changed/);
   await requireCandidateImplementation(frozen.implementation);
   const control = await import(pathToFileURL(path.join(frozen.directory, "development-policy.mjs")).href);
   assert.equal(control.developmentReviewRequirements(["backend/src/runtime.ts"]).requiresHumanReview, false);
@@ -3672,6 +3682,61 @@ test("frozen controller continues to use approved code while candidate tools cha
   await fs.chmod(protectedFile, 0o600);
   await writeFile(protectedFile, "// altered trusted snapshot\n");
   await assert.rejects(requireCandidateImplementation(frozen.implementation), /changed/);
+});
+
+test("registered snapshots reject a validation/capture edit and its replay after source restoration", async (t) => {
+  const { root } = await workspace(t);
+  const { directory, controller } = await copiedController(root, undefined, path.join(root, "scripts"));
+  const { registerDevelopmentExtension } = await import(pathToFileURL(path.join(directory, "workflow-extension.mjs")).href);
+  const { freezeDevelopmentController } = await import(pathToFileURL(path.join(directory, "development-controller.mjs")).href);
+  const session = { rpc: { agent: { list: async () => ({ agents: [{
+    id: "devpocket-reviewer", path: path.join(root, ".github", "agents", "devpocket-reviewer.agent.md"), tools: ["read", "search"],
+  }] }) } } };
+  let workflow;
+  await registerDevelopmentExtension({
+    defineWorkflow: (value) => value,
+    joinSession: async (registration) => { [workflow] = registration.workflows; return session; },
+  }, root);
+  const policy = path.join(directory, "development-policy.mjs"), original = await readFile(policy);
+  const marker = "__devpocketUnapprovedSnapshot";
+  const changed = Buffer.concat([original, Buffer.from(`\nglobalThis.${marker} = true;\n`)]);
+  const remaining = new Set(controller.loadedImplementation.files.map((input) =>
+    path.join(controller.loadedImplementation.directory, input.name)));
+  const open = fs.open;
+  let edited = false;
+  fs.open = async (file, ...args) => {
+    const handle = await open(file, ...args);
+    if (args[0] !== "r" || !remaining.has(file)) return handle;
+    const close = handle.close.bind(handle);
+    handle.close = async () => {
+      await close();
+      remaining.delete(file);
+      // Change only after validation has read and closed every approved input.
+      if (!remaining.size && !edited) { edited = true; await writeFile(policy, changed); }
+    };
+    return handle;
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(workflow.run({ session, step: async (_key, prepare) => prepare() }),
+      /loaded controller\/helper implementation changed/);
+    assert.equal(edited, true);
+    assert.equal(globalThis[marker], undefined);
+  } finally {
+    fs.open = open;
+    syncBuiltinESMExports();
+    await writeFile(policy, original);
+    delete globalThis[marker];
+  }
+  await writeFile(policy, changed);
+  const unapproved = await freezeDevelopmentController(root, await captureCandidateImplementation(directory));
+  await writeFile(policy, original);
+  await controller.requireDevelopmentImplementation();
+  try {
+    await assert.rejects(workflow.run({ session, step: async () => unapproved }),
+      /recorded development controller does not match the loaded approved implementation/);
+    assert.equal(globalThis[marker], undefined);
+  } finally { delete globalThis[marker]; }
 });
 
 function syntheticTaskGrant(scope, hooks, implementation) {

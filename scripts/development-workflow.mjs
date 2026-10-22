@@ -9,10 +9,11 @@ import { activeHookSnapshot, assertCandidate, assertIdentity, changedPaths, insp
 import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "./native-candidate.mjs";
 import { originRepository, requirePushTarget } from "./git-state.mjs";
 
-const loadedImplementation = await captureCandidateImplementation();
+export const loadedImplementation = await captureCandidateImplementation();
 
 export async function requireDevelopmentImplementation() {
   await requireCandidateImplementation(loadedImplementation);
+  return loadedImplementation;
 }
 
 function immutable(value) {

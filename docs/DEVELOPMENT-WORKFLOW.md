@@ -109,10 +109,15 @@ Sensitive/unclassified paths focus independent review rather than blanket human
 sign-off. Legacy isolated-execution requests are rejected rather than reinterpreted.
 
 When changing development machinery, keep the approved local controller stable.
-Use `freezeDevelopmentController(root)` from `scripts\development-controller.mjs`
-before edits when a captured copy is needed, and use its `git-state.mjs` for
-read-only source capture. Candidate revisions can be tested in the authorized CI
-environment without adopting each revision locally. Snapshot hashes guard local
+Use `freezeDevelopmentController(root, implementation)` from
+`scripts\development-controller.mjs` with the immutable manifest returned by
+`requireDevelopmentImplementation()`. The same validated manifest is checked
+before and after copying; a later worktree edit cannot become the snapshot's
+approval source. Freeze before edits when a captured copy is needed, and use
+its `git-state.mjs` for read-only source capture. Replay preserves that binding;
+restoring the worktree does not approve a different snapshot. Candidate revisions
+can be tested in the authorized CI environment without adopting each revision
+locally. Snapshot hashes guard local
 execution identity, not against a hostile process with the same OS permissions.
 Local control/instruction/hook adoption still needs its applicable explicit scope.
 

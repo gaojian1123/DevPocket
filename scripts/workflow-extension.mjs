@@ -1,7 +1,7 @@
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseTask, requireDevelopmentImplementation, taskSchema } from "./development-workflow.mjs";
+import { loadedImplementation, parseTask, requireDevelopmentImplementation, taskSchema } from "./development-workflow.mjs";
 import { freezeDevelopmentController } from "./development-controller.mjs";
 import { requireCandidateImplementation } from "./native-candidate.mjs";
 import { readOnlyGit } from "./verification.mjs";
@@ -72,9 +72,14 @@ export async function registerDevelopmentExtension({ defineWorkflow, joinSession
     run: async (ctx) => {
       await requireReadonlyReviewer(ctx.session, root);
       const snapshot = await ctx.step("devpocket-controller-snapshot-v1", async () => {
-        await requireDevelopmentImplementation();
-        return freezeDevelopmentController(root);
+        const implementation = await requireDevelopmentImplementation();
+        return freezeDevelopmentController(root, implementation);
       });
+      if (!snapshot || snapshot.directory !== snapshot.implementation?.directory ||
+          snapshot.implementation?.version !== loadedImplementation.version ||
+          JSON.stringify(snapshot.implementation.files) !== JSON.stringify(loadedImplementation.files)) {
+        throw new Error("The recorded development controller does not match the loaded approved implementation.");
+      }
       await requireCandidateImplementation(snapshot.implementation);
       const controller = await import(pathToFileURL(path.join(snapshot.directory, "development-workflow.mjs")).href);
       return controller.runDevelopment(ctx, { root });
