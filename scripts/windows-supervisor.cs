@@ -521,10 +521,6 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
                 throw new InvalidDataException("A launch path resolves outside its declared identity.");
         }
 
-        public static IDisposable BindLaunchPaths(Dictionary<string, object> configuration, Dictionary<string, object> request) {
-            return new LaunchPaths(configuration, request);
-        }
-
         void Bind(string selected, object roots, bool directory) {
             string root = null;
             foreach (string candidate in (System.Collections.IList)roots)
@@ -556,6 +552,10 @@ public sealed class DevPocketWindowsSupervisor : ServiceBase {
             for (int index = handles.Count - 1; index >= 0; index--) handles[index].Dispose();
             handles.Clear();
         }
+    }
+
+    public static IDisposable BindLaunchPaths(Dictionary<string, object> configuration, Dictionary<string, object> request) {
+        return new LaunchPaths(configuration, request);
     }
 
     public static void ValidateCommandRequest(Dictionary<string, object> configuration, Dictionary<string, object> request) {
