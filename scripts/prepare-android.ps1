@@ -17,6 +17,16 @@ function Fetch-Verified([string]$Url, [string]$Destination, [string]$Algorithm, 
     }
 }
 
+function Get-StablePackage([xml]$Repository, [string]$PackagePath) {
+    $packages = @($Repository.SelectNodes("//*[local-name()='remotePackage' and @path='$PackagePath']") | Where-Object {
+        $channel = $_.SelectSingleNode("./*[local-name()='channelRef']/@ref")
+        $preview = $_.SelectSingleNode("./*[local-name()='revision']/*[local-name()='preview']")
+        $channel -and $channel.Value -eq 'channel-0' -and (-not $preview -or $preview.InnerText -eq '0')
+    })
+    if ($packages.Count -ne 1) { throw "Stable SDK package is missing or ambiguous: $PackagePath" }
+    return ,$packages[0]
+}
+
 function Write-LocalPackage([xml]$Repository, [System.Xml.XmlElement]$Package, [string]$Destination) {
     if (-not $Package) { throw "Package metadata is unavailable: $Destination" }
     $cursor = [IO.Path]::GetFullPath($Destination)
@@ -99,8 +109,8 @@ New-Item -ItemType Directory -Force -Path (Join-Path $sdk 'licenses') | Out-Null
 Copy-Item -LiteralPath $license -Destination (Join-Path $sdk 'licenses\android-sdk-license')
 [xml]$repo = (Invoke-WebRequest -Uri 'https://dl.google.com/android/repository/repository2-3.xml' -TimeoutSec 90).Content
 $packages = @(
-    @{ Package = 'platforms;android-35'; Destination = 'platforms\android-35' },
-    @{ Package = 'build-tools;35.0.0'; Destination = 'build-tools\35.0.0' }
+    @{ Package = 'platforms;android-37.2'; Destination = 'platforms\android-37.2' },
+    @{ Package = 'build-tools;37.0.0'; Destination = 'build-tools\37.0.0' }
 )
 if ($Emulator) {
     $packages += @(
@@ -110,7 +120,7 @@ if ($Emulator) {
 }
 foreach ($spec in $packages) {
     $dest = Join-Path $sdk $spec.Destination
-    $pkg = $repo.SelectSingleNode("//*[local-name()='remotePackage' and @path='$($spec.Package)']")
+    $pkg = Get-StablePackage $repo $spec.Package
     if (Test-Path -LiteralPath $dest) {
         Write-LocalPackage $repo $pkg $dest
         continue
@@ -128,10 +138,10 @@ foreach ($spec in $packages) {
     Write-LocalPackage $repo $pkg $dest
 }
 if ($Emulator) {
-    $image = Join-Path $sdk 'system-images\android-35\google_apis\x86_64'
+    $image = Join-Path $sdk 'system-images\android-37.0\google_apis\x86_64'
     if (-not (Test-Path -LiteralPath (Join-Path $image 'package.xml'))) {
         [xml]$images = (Invoke-WebRequest -Uri 'https://dl.google.com/android/repository/sys-img/google_apis/sys-img2-3.xml' -TimeoutSec 90).Content
-        $pkg = $images.SelectSingleNode("//*[local-name()='remotePackage' and @path='system-images;android-35;google_apis;x86_64']")
+        $pkg = Get-StablePackage $images 'system-images;android-37.0;google_apis;x86_64'
         $licenseId = $pkg.'uses-license'.ref
         $acceptedLicense = Join-Path $ExistingSdk "licenses\$licenseId"
         if (-not $licenseId -or -not (Test-Path -LiteralPath $acceptedLicense)) {
@@ -140,13 +150,13 @@ if ($Emulator) {
         Copy-Item -LiteralPath $acceptedLicense -Destination (Join-Path $sdk "licenses\$licenseId")
         if (-not (Test-Path -LiteralPath $image)) {
             $archive = @($pkg.archives.archive | Where-Object { -not $_.'host-os' -or $_.'host-os' -eq 'windows' })[0].complete
-            if (-not $archive.url -or -not $archive.checksum.InnerText) { throw 'No verified API-35 x86_64 image archive was found.' }
-            $zip = Join-Path $tools ('api35-' + $archive.url)
+            if (-not $archive.url -or -not $archive.checksum.InnerText) { throw 'No verified API-37 x86_64 image archive was found.' }
+            $zip = Join-Path $tools ('api37-' + $archive.url)
             Fetch-Verified "https://dl.google.com/android/repository/sys-img/google_apis/$($archive.url)" $zip 'SHA1' $archive.checksum.InnerText
-            $stage = Join-Path $tools 'api35-image.unpack'
+            $stage = Join-Path $tools 'api37-image.unpack'
             Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
             $top = @(Get-ChildItem -LiteralPath $stage -Directory)
-            if ($top.Count -ne 1) { throw 'Unexpected API-35 image archive layout.' }
+            if ($top.Count -ne 1) { throw 'Unexpected API-37 image archive layout.' }
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $image) | Out-Null
             Move-Item -LiteralPath $top[0].FullName -Destination $image
         }
@@ -168,8 +178,8 @@ if ($DownloadJdk) {
     }
 }
 $wrapper = Join-Path $root 'android\gradle\wrapper\gradle-wrapper.jar'
-$checksumResponse = (Invoke-WebRequest -Uri 'https://services.gradle.org/distributions/gradle-8.11.1-wrapper.jar.sha256' -TimeoutSec 90).Content
+$checksumResponse = (Invoke-WebRequest -Uri 'https://services.gradle.org/distributions/gradle-9.8.2-wrapper.jar.sha256' -TimeoutSec 90).Content
 $checksum = if ($checksumResponse -is [byte[]]) { [Text.Encoding]::UTF8.GetString($checksumResponse).Trim() } else { "$checksumResponse".Trim() }
-Fetch-Verified 'https://raw.githubusercontent.com/gradle/gradle/v8.11.1/gradle/wrapper/gradle-wrapper.jar' $wrapper 'SHA256' $checksum
+Fetch-Verified 'https://raw.githubusercontent.com/gradle/gradle/v9.8.2/gradle/wrapper/gradle-wrapper.jar' $wrapper 'SHA256' $checksum
 Write-Output "Android SDK ready: $sdk"
 Write-Output 'Only local .tools files and the pinned wrapper were prepared; no licenses were auto-accepted and no global toolchain was changed.'

@@ -1,5 +1,47 @@
 [
   {
+    "id": "legacy-push-token",
+    "shape": "push-registration",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": { "provider": "fcm", "token": "legacy-registration-token-fixture" }
+  },
+  {
+    "id": "fid-push-registration",
+    "shape": "push-registration",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": { "provider": "fcm-fid", "fid": "c123456789012345678901" }
+  },
+  {
+    "id": "fid-push-disabled",
+    "shape": "push-registration",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": { "provider": "fcm-fid", "fid": null }
+  },
+  {
+    "id": "invalid-fid-push",
+    "shape": "push-registration",
+    "backendValid": false,
+    "androidValid": false,
+    "wire": { "provider": "fcm-fid", "fid": "not-a-fid" }
+  },
+  {
+    "id": "missing-fid-is-not-unregister",
+    "shape": "push-registration",
+    "backendValid": false,
+    "androidValid": false,
+    "wire": { "provider": "fcm-fid" }
+  },
+  {
+    "id": "unknown-push-provider",
+    "shape": "push-registration",
+    "backendValid": false,
+    "androidValid": false,
+    "wire": { "provider": "future-fcm", "fid": "c123456789012345678901" }
+  },
+  {
     "id": "legacy-message-default-attachments",
     "shape": "command",
     "backendValid": true,

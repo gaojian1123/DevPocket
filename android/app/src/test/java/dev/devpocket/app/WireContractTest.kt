@@ -23,6 +23,7 @@ class WireContractTest {
                     "receipt" -> WireJson.decodeFromJsonElement<Receipt>(wire)
                     "question" -> WireJson.decodeFromJsonElement<QuestionRecord>(wire)
                     "component" -> WireJson.decodeFromJsonElement<ComponentCard>(wire)
+                    "push-registration" -> WireJson.decodeFromJsonElement<PushRegistration>(wire)
                     else -> error("Unknown shared sample shape: $id")
                 }
             }
@@ -48,6 +49,11 @@ class WireContractTest {
                 is ComponentCard -> {
                     assertEquals(value, WireJson.decodeFromString<ComponentCard>(WireJson.encodeToString(value)))
                     if (value.status == "ready") assertNotNull(value.spec)
+                }
+                is PushRegistration -> {
+                    assertEquals(value, WireJson.decodeFromString<PushRegistration>(
+                        WireJson.encodeToString<PushRegistration>(value)))
+                    assertEquals(wire, WireJson.encodeToJsonElement<PushRegistration>(value))
                 }
             }
         }

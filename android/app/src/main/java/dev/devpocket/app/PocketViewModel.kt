@@ -1,9 +1,14 @@
 package dev.devpocket.app
 
+import android.Manifest
 import android.app.Application
 import android.content.ContentResolver
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
+import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.devpocket.app.background.BackgroundCheckpoints
@@ -50,6 +55,7 @@ data class PocketUi(
     val error: String? = null,
     val theme: String = "system",
     val pushStatus: String = "未配置原生推送",
+    val localNetworkAllowed: Boolean? = null,
     val background: BackgroundState = BackgroundState(),
     val navigateToSession: Boolean = false,
     val files: List<FileEntry> = emptyList(),
@@ -79,7 +85,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     private val prefs = application.getSharedPreferences("devpocket_settings", 0)
     private val background = (application as DevPocketApplication).background
     private val mutable = MutableStateFlow(PocketUi(theme = prefs.getString("theme", "system") ?: "system",
-        background = background.state.value))
+        background = background.state.value, localNetworkAllowed = localNetworkPermissionState()))
     val ui = mutable.asStateFlow()
     private var active = false
     private var streamJob: Job? = null
@@ -122,7 +128,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     }
     fun setTheme(value: String) {
         require(value in setOf("system", "light", "dark"))
-        prefs.edit().putString("theme", value).apply()
+        prefs.edit { putString("theme", value) }
         mutable.update { it.copy(theme = value) }
     }
 
@@ -134,6 +140,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
                 "界面同步已暂停；后台模式继续监听未归档会话" else "后台已暂停实时连接") }
             return
         }
+        localNetworkPermissionChanged()
         background.checkPermissions()
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
@@ -224,7 +231,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
 
     fun open(scope: Scope, session: SessionInfo) {
         streamJob?.cancel()
-        prefs.edit().putString("last_scope", WireJson.encodeToString(scope)).apply()
+        prefs.edit { putString("last_scope", WireJson.encodeToString(scope)) }
         mutable.update { it.copy(selected = scope, session = session, events = emptyList(), firstRetainedEventCursor = null, requests = emptyList(),
             draft = Draft(), outbox = emptyList(), files = emptyList(), filePath = "", preview = null, git = null, diff = null,
             models = emptyList(), attachments = emptyList(), connection = "正在读取缓存") }
@@ -236,7 +243,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
 
     fun closeSession() {
         streamJob?.cancel()
-        prefs.edit().remove("last_scope").apply()
+        prefs.edit { remove("last_scope") }
         mutable.update { it.copy(selected = null, session = null, events = emptyList(), firstRetainedEventCursor = null, requests = emptyList()) }
     }
 
@@ -738,8 +745,19 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         background.checkPermissions()
         syncPush()
     }
+    private fun localNetworkPermissionState(): Boolean? {
+        val context = getApplication<DevPocketApplication>()
+        return if (Build.VERSION.SDK_INT >= 37 && context.applicationInfo.targetSdkVersion >= 37)
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED
+        else null
+    }
+    fun localNetworkPermissionChanged() {
+        mutable.update { it.copy(localNetworkAllowed = localNetworkPermissionState()) }
+    }
+    fun localNetworkSettingsUnavailable() {
+        mutable.update { it.copy(error = "系统没有可用的应用权限设置页面，请从系统设置中管理局域网权限。") }
+    }
     override fun onCleared() {
         streamJob?.cancel(); refreshJob?.cancel()
-        super.onCleared()
     }
 }

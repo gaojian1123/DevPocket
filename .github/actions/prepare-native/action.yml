@@ -5,7 +5,7 @@ runs:
   steps:
     - uses: actions/setup-node@v7
       with:
-        node-version: 24
+        node-version: 26.12.1
         cache: npm
     - uses: actions/setup-java@v6
       with:
@@ -27,6 +27,8 @@ runs:
         test -x "$jdk/bin/java" && test -f "$jdk/release"
         printf 'JAVA_HOME=%s\n' "$jdk" >> "$GITHUB_ENV"
         printf '%s/bin\n' "$jdk" >> "$GITHUB_PATH"
+    - shell: bash
+      run: npm install --global npm@12.2.1 --ignore-scripts --no-audit --no-fund
     - shell: bash
       run: npm ci --no-audit --no-fund
     - name: Prepare hosted KVM and stable SDK packages without accepting new licenses
@@ -53,15 +55,15 @@ runs:
         test -r /dev/kvm && test -w /dev/kvm || { echo "::error title=Native preparation::KVM_ACCESS_UNAVAILABLE"; exit 78; }
         test -s "$ANDROID_HOME/licenses/android-sdk-license" || { echo "::error title=Native preparation::SDK_LICENSE_MISSING"; exit 78; }
         if "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --channel=0 \
-          "platforms;android-35" "build-tools;35.0.0" "platform-tools" "emulator" \
-          "system-images;android-35;google_apis;x86_64" </dev/null; then :; else
+          "platforms;android-37.2" "build-tools;37.0.0" "platform-tools" "emulator" \
+          "system-images;android-37.0;google_apis;x86_64" </dev/null; then :; else
           code=$?; echo "::error title=Native preparation::SDK_PACKAGE_PREPARATION_FAILED"; exit "$code"
         fi
-        test -s "$ANDROID_HOME/platforms/android-35/android.jar" || { echo "::error title=Native preparation::SDK_PLATFORM_MISSING"; exit 78; }
-        test -x "$ANDROID_HOME/build-tools/35.0.0/aapt" || { echo "::error title=Native preparation::SDK_BUILD_TOOLS_MISSING"; exit 78; }
+        test -s "$ANDROID_HOME/platforms/android-37.2/android.jar" || { echo "::error title=Native preparation::SDK_PLATFORM_MISSING"; exit 78; }
+        test -x "$ANDROID_HOME/build-tools/37.0.0/aapt" || { echo "::error title=Native preparation::SDK_BUILD_TOOLS_MISSING"; exit 78; }
         test -x "$ANDROID_HOME/platform-tools/adb" || { echo "::error title=Native preparation::ADB_MISSING"; exit 78; }
         test -x "$ANDROID_HOME/emulator/emulator" || { echo "::error title=Native preparation::EMULATOR_MISSING"; exit 78; }
-        test -s "$ANDROID_HOME/system-images/android-35/google_apis/x86_64/system.img" || { echo "::error title=Native preparation::SYSTEM_IMAGE_MISSING"; exit 78; }
+        test -s "$ANDROID_HOME/system-images/android-37.0/google_apis/x86_64/system.img" || { echo "::error title=Native preparation::SYSTEM_IMAGE_MISSING"; exit 78; }
     - name: Verify Linux process, ownership and build entry points
       id: platform_tests
       shell: bash

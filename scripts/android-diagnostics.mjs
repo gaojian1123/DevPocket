@@ -52,7 +52,7 @@ function project(text, root, truncated, catalogue) {
     for (const [pattern, kind] of [
       [/Several environment variables and\/or system properties contain different paths to the SDK/i, "sdk-path-conflict"],
       [/SDK location not found|Failed to find Platform SDK|Android SDK platform \d+ is missing/i, "sdk-missing"],
-      [/JDK 17 or 21 is required|Android Gradle plugin requires Java|Unsupported class file major version|requires at least JVM runtime version/i, "jdk-incompatible"],
+      [/JDK (?:21 or 25|17(?:, 21 or 25| or 21)) is required|Android Gradle plugin requires Java|Unsupported class file major version|requires at least JVM runtime version/i, "jdk-incompatible"],
       [/Could not resolve|Could not find [\w.-]+:[\w.-]+:/i, "dependency-resolution"],
       [/Could not (?:GET|HEAD)|PKIX path building failed|SSLHandshakeException/i, "dependency-download"],
       [/There were failing tests/i, "jvm-tests"],

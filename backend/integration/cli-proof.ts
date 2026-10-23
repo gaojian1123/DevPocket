@@ -8,7 +8,7 @@ import path from "node:path";
 import { parseArgs, promisify } from "node:util";
 import { z } from "zod";
 import { HostConfig } from "../src/bridge.js";
-import { PendingRequest, type WireEvent } from "../src/protocol.js";
+import { Id, PendingRequest, utf16String, type WireEvent } from "../src/protocol.js";
 import { authenticatedProofFetch, ProofKey } from "../src/local-proof.js";
 import { startRelay } from "../src/relay.js";
 import { provisionHost } from "../src/store.js";
@@ -16,8 +16,8 @@ import { localPipe } from "../../scripts/local-ipc.mjs";
 
 const absolute = z.string().refine((value) => path.isAbsolute(value));
 const Metadata = z.object({
-  version: z.literal(2), runId: z.string().uuid(), repo: absolute, root: absolute, workspace: absolute, plugin: absolute,
-  sessionId: z.string().uuid(), hostId: z.string().uuid(),
+  version: z.literal(2), runId: Id, repo: absolute, root: absolute, workspace: absolute, plugin: absolute,
+  sessionId: Id, hostId: Id,
   deviceToken: z.string().regex(/^dpd_[A-Za-z0-9_-]{43}$/),
   relayUrl: z.string().regex(/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}$/),
   hostConfigPath: absolute, marker: z.string().regex(/^DP_ORIGINAL_[a-f0-9]{32}$/),
@@ -92,7 +92,7 @@ async function control(proof: CliProof, command: "inspect" | "stop") {
       if (settled) return;
       try {
         const value = z.object({
-          runId: z.string().uuid(), relayUrl: z.string(), hostId: z.string().uuid(),
+          runId: Id, relayUrl: z.string(), hostId: Id,
           status: z.enum(["ready", "closed"]),
         }).strict().parse(JSON.parse(text));
         assert.equal(value.runId, proof.runId);
@@ -137,7 +137,7 @@ export async function readCliProof(directory: string, repo = process.cwd()): Pro
 }
 
 const CliIdentity = z.object({
-  runId: z.string().uuid(), sessionId: z.string().uuid(), parentPid: z.number().int().positive(),
+  runId: Id, sessionId: Id, parentPid: z.number().int().positive(),
   processCreatedAt: z.string().datetime({ offset: true }), capturedAt: z.string().datetime(),
 }).strict();
 
@@ -231,7 +231,7 @@ export async function verifyCliAttachment(proof: CliProof) {
   const before = await readCliIdentity(proof);
   const registration = z.object({
     parentPid: z.literal(before.parentPid), sessionId: z.literal(proof.sessionId),
-    attachedAt: z.string().datetime(), recordedCliVersion: z.string().min(1).max(80),
+    attachedAt: z.string().datetime(), recordedCliVersion: utf16String(80).min(1),
   }).parse(JSON.parse(await proofFile(path.join(proof.root, "bridge", proof.hostId, proof.sessionId, "registration.json"))));
   assert.ok(Date.parse(before.capturedAt) < Date.parse(registration.attachedAt), "Identity capture must predate attachment.");
   return { before, registration };
@@ -239,7 +239,7 @@ export async function verifyCliAttachment(proof: CliProof) {
 
 export async function requireManualCli(proof: CliProof, idle = false): Promise<void> {
   const catalog = z.object({ sessions: z.array(z.object({
-    hostId: z.string().uuid(), sessionId: z.string().uuid(), permissionMode: z.string(), state: z.string(), online: z.boolean(),
+    hostId: Id, sessionId: Id, permissionMode: z.string(), state: z.string(), online: z.boolean(),
   })) }).parse(await cliProofRequest(proof)("/v1/catalog"));
   const session = catalog.sessions.find((item) => item.hostId === proof.hostId && item.sessionId === proof.sessionId);
   assert.ok(session?.online, "The selected original CLI must be connected.");

@@ -62,7 +62,7 @@ try {
         schemaVersion = 1
         name = 'devpocket-extension'
         version = $version
-        node = '24.x'
+        node = [string]$package.engines.node
         files = @($files)
     }
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'manifest.json') -Encoding utf8NoBOM

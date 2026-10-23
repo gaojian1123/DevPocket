@@ -98,7 +98,7 @@ test("SDK preparation initializes matching package metadata without accepting li
   const run = () => exec("pwsh", ["-NoProfile", "-NonInteractive", "-File", entry], { timeout: 30000 });
   const models = JSON.parse((await run()).stdout);
   assert.ok(models.every((item) => item.exists), "Archive extraction alone must not leave SDK package metadata missing.");
-  assert.deepEqual(models.map((item) => item.path), ["platforms;android-35", "build-tools;35.0.0"]);
+  assert.deepEqual(models.map((item) => item.path), ["platforms;android-37.2", "build-tools;37.0.0"]);
   assert.ok(models.every((item) => item.rootNamespace === "http://schemas.android.com/repository/android/common/02" &&
     item.remoteNodes === 0 && item.license === "android-sdk-license"));
   assert.deepEqual(models.map((item) => item.typeNamespace), [
@@ -110,7 +110,7 @@ test("SDK preparation initializes matching package metadata without accepting li
   await run();
   assert.deepEqual(await Promise.all(metadata.map((file) => readFile(file))), bytes);
   assert.equal(await readFile(path.join(root, ".tools", "android-sdk", "licenses", "android-sdk-license"), "utf8"), "fixture-already-accepted\n");
-  await writeFile(path.join(root, ".tools", "android-sdk", "build-tools", "35.0.0", "source.properties"), "Pkg.Revision=34.0.0\n");
+  await writeFile(path.join(root, ".tools", "android-sdk", "build-tools", "37.0.0", "source.properties"), "Pkg.Revision=34.0.0\n");
   await rm(metadata[1]);
   await assert.rejects(run(), (error) => error.code === 1 && /revision/.test(error.stderr));
   await assert.rejects(readFile(metadata[1]), { code: "ENOENT" });

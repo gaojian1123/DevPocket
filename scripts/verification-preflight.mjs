@@ -598,7 +598,7 @@ export async function verificationPreflight(root, plan, options = {}) {
       candidateImplementation, candidateSafe, prefixResolution, powershellNode };
   });
   const nativeNpm = () => once("native-npm", async () => {
-    // Gradle uses CMD's explicit npm.cmd, not PowerShell's preferred launcher.
+    // Gradle and workflow shards use npm.cmd to preserve forwarded arguments on Windows.
     const windows = process.platform === "win32";
     const file = await resolveVerificationExecutable(root, windows ? "npm.cmd" : "npm", { shell: windows });
     const actual = await realpath(file), binary = await fileIdentity(actual), identity = await npm();
@@ -655,9 +655,9 @@ export async function verificationPreflight(root, plan, options = {}) {
     };
     const has = (id) => selected.some((item) => item.group === group && item.id === id);
     await check("node", () => once("node", async () => {
-      if (!/^v24\./.test(process.version)) throw diagnosticError("preflight-version");
+      if (!/^v26\./.test(process.version)) throw diagnosticError("preflight-version");
       return { version: process.version, file: process.execPath, binary: await fileIdentity(process.execPath),
-        child: await tool("node", ["--version"], (text) => /^v24\./.test(text)) };
+        child: await tool("node", ["--version"], (text) => /^v26\./.test(text)) };
     }));
     await check("command-ownership", owner);
     if (!issues.length) await check("powershell", powershell);
@@ -666,6 +666,7 @@ export async function verificationPreflight(root, plan, options = {}) {
     if (usesNpm) {
       await check("root-dependencies", () => once("root-dependencies", () => dependencies(root)), "preflight-dependencies");
       if (!issues.length) await check("npm", npm);
+      if (group === "tooling" && !issues.length) await check("native-npm", nativeNpm);
       if (!issues.length) await check("node-command", () => once("node-command", async () => {
         if ((await npm()).candidateSafe !== true) return { status: "unbound" };
         const child = (await memo.get("node")).child;
@@ -679,7 +680,7 @@ export async function verificationPreflight(root, plan, options = {}) {
         if (kind === "native" && samePath(file, child.file)) return { ...child, target, kind };
         const output = await probe((await powershell()).file,
           ["-NoProfile", "-NonInteractive", "-Command", `& '${file.replaceAll("'", "''")}' --version; exit $LASTEXITCODE`]);
-        if (!/^v24\./.test(output)) throw diagnosticError("preflight-version");
+        if (!/^v26\./.test(output)) throw diagnosticError("preflight-version");
         return { file, target, kind, binary, output: digest(output) };
       }));
       identities.push(["node-environment", environment(/^(?:NODE_.*|TSX_.*|TS_NODE_.*|ESBUILD_.*|NPM_CONFIG_.*|PATH|COMSPEC|PATHEXT|NODEFAULTCURRENTDIRECTORYINEXEPATH|SHELL|SYSTEMROOT|WINDIR|CI|TZ|LANG|LC_.*)$/i)]);
@@ -746,18 +747,18 @@ export async function verificationPreflight(root, plan, options = {}) {
         const java = path.join(jdk, "bin", executableName("java"));
         await access(java, constants.R_OK | constants.X_OK);
         const output = await probe(java, ["-version"]);
-        if (!/(?:openjdk|java) version "(?:17|21)\./.test(output)) throw diagnosticError("preflight-version");
+        if (!/(?:openjdk|java) version "(?:21|25)\./.test(output)) throw diagnosticError("preflight-version");
         return { jdk, java: await fileIdentity(java), release: await fileIdentity(path.join(jdk, "release")),
           tree: await treeIdentity(jdk), version: digest(output) };
       }), "preflight-sdk");
-      await check("android-platform-35", () => once(`sdk:${sdk}`, async () => ({
-        sdk, platform: await fileIdentity(path.join(sdk, "platforms", "android-35", "android.jar")),
-        platformMetadata: await fileIdentity(path.join(sdk, "platforms", "android-35", "package.xml")),
+      await check("android-platform-37.2", () => once(`sdk:${sdk}`, async () => ({
+        sdk, platform: await fileIdentity(path.join(sdk, "platforms", "android-37.2", "android.jar")),
+        platformMetadata: await fileIdentity(path.join(sdk, "platforms", "android-37.2", "package.xml")),
         license: await fileIdentity(path.join(sdk, "licenses", "android-sdk-license")),
-        aapt: await fileIdentity(path.join(sdk, "build-tools", "35.0.0", executableName("aapt2"))),
-        zipalign: await fileIdentity(path.join(sdk, "build-tools", "35.0.0", executableName("zipalign"))),
-        buildToolsMetadata: await fileIdentity(path.join(sdk, "build-tools", "35.0.0", "package.xml")),
-        buildTools: await treeIdentity(path.join(sdk, "build-tools", "35.0.0")),
+        aapt: await fileIdentity(path.join(sdk, "build-tools", "37.0.0", executableName("aapt2"))),
+        zipalign: await fileIdentity(path.join(sdk, "build-tools", "37.0.0", executableName("zipalign"))),
+        buildToolsMetadata: await fileIdentity(path.join(sdk, "build-tools", "37.0.0", "package.xml")),
+        buildTools: await treeIdentity(path.join(sdk, "build-tools", "37.0.0")),
       })), "preflight-sdk");
       await check("gradle-wrapper", () => once("gradle-wrapper", async () => ({
         jar: await fileIdentity(path.join(root, "android", "gradle", "wrapper", "gradle-wrapper.jar")),
@@ -780,7 +781,7 @@ export async function verificationPreflight(root, plan, options = {}) {
         const emulatorSdk = path.resolve(root, process.env.DEVPOCKET_EMULATOR_SDK ?? sdk);
         const architecture = androidImageArchitecture();
         const image = (options.image ?? process.env.DEVPOCKET_ANDROID_IMAGE ??
-          `system-images/android-35/google_apis/${architecture}`).replaceAll("\\", "/");
+          `system-images/android-37.0/google_apis/${architecture}`).replaceAll("\\", "/");
         await check("android-image", () => once(`image:${emulatorSdk}:${image}`, async () => {
           if (androidImagePattern.exec(image)?.[1] !== architecture) {
             throw diagnosticError("preflight-sdk");

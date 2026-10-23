@@ -179,7 +179,7 @@ test("shared credential names cover structured aliases and assigned text without
 
 test("credential assignments with long whitespace cannot stall ordinary prose projection", async () => {
   const source = new URL("../src/security.ts", import.meta.url).href;
-  await promisify(execFile)(process.execPath, ["--experimental-transform-types", "--input-type=module", "--eval", `
+  await promisify(execFile)(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", `
     import assert from "node:assert/strict";
     const { redact } = await import(${JSON.stringify(source)});
     for (const value of ["secret" + " ".repeat(128 * 1024) + "ordinary prose",

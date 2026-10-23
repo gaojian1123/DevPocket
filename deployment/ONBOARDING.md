@@ -9,7 +9,7 @@ historical trial commands below and does not require their `.data` release recor
 or a checkout whose source matches the frozen deployment.
 
 On the **new Windows Dev Box**, verify/extract the ZIP using its included README,
-have Node 24 and Azure Developer CLI installed, and sign in to the intended Azure
+have Node 26.12.1 or newer within 26.x, PowerShell 7 (`pwsh` on `PATH`) and Azure Developer CLI installed, and sign in to the intended Azure
 directory if needed. From the extracted package:
 
 ```powershell
@@ -99,7 +99,7 @@ Only these management phases exist:
 - `host-register`: use the existing host-record administrator contract through a non-migrating database connection. No database schema or running service change is made.
 - `host-finalize`: require successful local public-HTTPS host authentication, remove only that operation's encrypted handoff journal, retain the permanent host and a non-sensitive closing receipt, and audit bounded visible guest logs.
 
-The Dev Box creates a one-time RSA-3072 recipient key under a new `%LOCALAPPDATA%\DevPocket\trial-<operation-id>` directory. Inheritance is disabled; only the current user and SYSTEM have access. Windows PowerShell's ACL helper receives its own default module search path, avoiding incompatible PowerShell 7 module-path inheritance. No global environment setting is changed.
+The Dev Box creates a one-time RSA-3072 recipient key under a new `%LOCALAPPDATA%\DevPocket\trial-<operation-id>` directory. Inheritance is disabled; only the current user and SYSTEM have access. The PowerShell 7 (`pwsh`) ACL helper receives its own default module search path, avoiding incompatible module-path inheritance from another runtime. No execution policy or global environment setting is changed.
 
 The VM receives **only the public key**. Standard Node crypto produces RSA-OAEP-SHA256/AES-256-GCM encrypted configuration. AAD binds the scope, VM, host, operation nonce, recipient fingerprint, expiry and configuration digest. The plaintext host token, private key and bare AES key never enter management requests or ordinary outputs.
 
@@ -113,7 +113,7 @@ This protects transport and ordinary logs, not against administrators of the VM/
 
 ## Local preparation and explicit execution
 
-Node 24, the project's existing dependencies and the existing tenant-scoped azd identity are used. No new cloud service, package installation or global CLI extension is required.
+Node 26, the project's locked dependencies and the existing tenant-scoped azd identity are used. No new cloud service, package installation or global CLI extension is required.
 
 ```powershell
 npm run build

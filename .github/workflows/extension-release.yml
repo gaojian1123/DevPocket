@@ -13,10 +13,10 @@ jobs:
   package:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26.12.1
           cache: npm
       - name: Check release tag
         if: github.ref_type == 'tag'
@@ -28,12 +28,13 @@ jobs:
           if ($env:RELEASE_TAG -ne "extension-v$version") {
             throw 'The extension tag must match package.json.'
           }
+      - run: npm install --global npm@12.2.1 --ignore-scripts --no-audit --no-fund
       - run: npm ci --no-audit --no-fund
       - run: npm test
       - run: npm run test:setup
       - run: npm run test:extension-package
       - run: npm run package:extension
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: devpocket-extension
           path: |
@@ -48,7 +49,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: devpocket-extension
           path: packages
@@ -62,6 +63,6 @@ jobs:
           $assets = @(Get-ChildItem -LiteralPath packages -File | ForEach-Object { $_.FullName })
           gh release create $env:RELEASE_TAG --verify-tag --draft `
             --title "DevPocket extension $env:RELEASE_TAG" `
-            --notes 'Standalone user extension. Requires Node 24 and a compatible GitHub Copilot runtime (CLI or desktop app) with extension and bundled-SDK support. On a new Windows Dev Box, run setup with an existing azd login to enroll with your running Azure relay, or use install --user with an administrator-provisioned private host configuration. Verify the ZIP checksum and follow its README. No credentials or SDK are included.' `
+            --notes 'Standalone user extension. Requires Node 26.12.1 or newer within 26.x and a compatible GitHub Copilot runtime (CLI or desktop app) with extension and bundled-SDK support. On a new Windows Dev Box, run setup with an existing azd login to enroll with your running Azure relay, or use install --user with an administrator-provisioned private host configuration. Verify the ZIP checksum and follow its README. No credentials or SDK are included.' `
             @assets
           if ($LASTEXITCODE -ne 0) { throw 'Draft release creation failed; existing assets were not overwritten.' }

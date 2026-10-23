@@ -11,12 +11,28 @@ import { PassThrough } from "node:stream";
 const exec = promisify(execFile);
 const entry = path.resolve("scripts/android-runner.mjs");
 
+test("visible manual emulators change only the window flag and automated launches remain headless", async () => {
+  const { emulatorLaunchArguments } = await import("../android-emulator.mjs");
+  for (const platform of ["win32", "linux", "darwin"]) {
+    const input = { avdName: "owned-fixture", ports: { console: 5580, grpc: 8554 }, gpu: "swiftshader", platform };
+    const hidden = emulatorLaunchArguments(input);
+    assert.deepEqual(hidden, ["-avd", "owned-fixture", "-port", "5580", "-grpc", "8554",
+      platform === "win32" ? "-grpc-use-jwt" : "-grpc-use-token", "-no-window", "-no-audio",
+      "-no-boot-anim", "-no-snapshot", "-no-metrics", "-show-kernel", "-gpu", "swiftshader",
+      ...(platform === "win32" ? [] : ["-accel", "on"])]);
+    assert.deepEqual(emulatorLaunchArguments({ ...input, visible: false }), hidden);
+    assert.deepEqual(emulatorLaunchArguments({ ...input, visible: true }), hidden.filter((item) => item !== "-no-window"));
+    assert.throws(() => emulatorLaunchArguments({ ...input, visible: "false" }), /explicit boolean/);
+  }
+});
+
 test("native image selection matches the host architecture and macOS requires actual HVF evidence", async () => {
   const { androidImageArchitecture, androidImagePattern, macOSAcceleration } = await import("../android-platform.mjs");
   assert.equal(androidImageArchitecture("darwin", "arm64"), "arm64-v8a");
   for (const platform of ["win32", "linux", "darwin"]) assert.equal(androidImageArchitecture(platform, "x64"), "x86_64");
   assert.throws(() => androidImageArchitecture("linux", "arm64"), /requires/);
   assert.equal(androidImagePattern.exec("system-images/android-35/google_apis/arm64-v8a")[1], "arm64-v8a");
+  assert.equal(androidImagePattern.exec("system-images/android-37.0/google_apis/x86_64")[1], "x86_64");
   const valid = "accel:\n0\nHypervisor.Framework OS X Version 15.0\naccel\n";
   assert.deepEqual(macOSAcceleration(valid), { provider: "HVF", usable: true });
   for (const output of [valid.replace("\n0\n", "\n1\n"), valid + valid, "Hypervisor.Framework is installed and usable",

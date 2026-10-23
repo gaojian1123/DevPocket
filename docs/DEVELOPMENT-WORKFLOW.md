@@ -297,7 +297,7 @@ turn old review/test records into a new source by editing their fields.
 
 ## Verification
 
-Run from the checkout with Node 24 and PowerShell 7. The complete workflow
+Run from the checkout with Node 26, npm 12.2.1 and PowerShell 7. The complete workflow
 regression suite also needs Git with SSH signing support (`ssh-keygen` for
 disposable signing fixtures), Python 3.12 (standard-library checks), the
 root npm dependencies (including TypeScript/tsx), and, on Windows, the existing
@@ -323,7 +323,7 @@ cleanup remain failures, not plain process-group fallbacks. Control receipts
 are per-command and are not supplied to the target process.
 
 The complete local gate also supports macOS Android builds and native tests.
-Apple Silicon selects the ARM64 API-35 image; Intel Macs select x86_64. Device
+Apple Silicon selects the ARM64 API-37 image; Intel Macs select x86_64. Device
 evidence retains macOS, host architecture and usable HVF acceleration, alongside
 the existing source/APK identities, instrumentation cases and cleanup evidence.
 The account-local emulator pool keeps its default single slot. After a native
@@ -576,7 +576,7 @@ remain rejected. This support does not reduce selected checks, grant dependency
 execution consent or substitute for the task's source fingerprint.
 
 Every execution first checks the groups selected by the planner and `--group`.
-The read-only probes cover Node 24, PowerShell 7 and command ownership; selected
+The read-only probes cover Node 26, PowerShell 7 and command ownership; selected
 Node checks also inspect npm, declared installed dependencies and effective npm
 configuration. Tooling adds Git/SSH and standard-library Python prerequisites,
 not Java, an Android SDK, an emulator or operational Python packages. Backend
@@ -1443,20 +1443,20 @@ repaired, run full verification against the actual candidate.
 ## Android execution environment
 
 For local Windows runs, provision an isolated executor with hardware-accelerated emulation,
-JDK 17/21, SDK platform/build-tools 35, platform-tools, and an installed x86_64
+JDK 21/25, SDK platform 37.2/build-tools 37.0.0, platform-tools, and an installed x86_64
 system image. Licenses must already be accepted by the operator. The runner does
 not install tools, silently accept terms or change host virtualization settings.
 Explicit setup can use `scripts\prepare-android.ps1 -Emulator`; this downloads
-checksum-verified tools and the API-35 image into `.tools`, reusing an already
+checksum-verified tools and the API-37 image into `.tools`, reusing an already
 accepted SDK license. Hosted Linux CI setup is described below and does not
 change this local Windows installation.
 
 Set process/runner environment variables to the provisioned paths:
 
 - `DEVPOCKET_JDK`: JDK directory.
-- `DEVPOCKET_ANDROID_SDK`: SDK containing platform/build-tools 35.
+- `DEVPOCKET_ANDROID_SDK`: SDK containing platform 37.2/build-tools 37.0.0.
 - `DEVPOCKET_ANDROID_IMAGE`: relative system-image directory, normally
-  `system-images\android-35\google_apis\x86_64`.
+  `system-images\android-37.0\google_apis\x86_64`.
 - `DEVPOCKET_EMULATOR_SDK`: optional separate SDK containing emulator,
   platform-tools and the image, when the build SDK is separate.
 
@@ -1515,7 +1515,7 @@ before targeted cleanup; never delete another run or a retained trial AVD.
 The CI `device` job uses the standard x64 `ubuntu-24.04` VM, not `ubuntu-slim`,
 ARM or a job container. GitHub supports
 [hardware-accelerated Android testing on standard Linux runners](https://github.blog/changelog/2024-04-02-github-actions-hardware-accelerated-android-virtualization-now-available/).
-The job selects Node 24 and Temurin JDK 21 and uses the image's PowerShell 7,
+The job selects Node 26, npm 12.2.1 and Temurin JDK 21 and uses the image's PowerShell 7,
 Python 3 and Android command-line tools. The
 [runner image inventory](https://github.com/actions/runner-images/blob/8197087fc536320d1441203fdb5da9ae1b44b863/images/ubuntu/Ubuntu2404-Readme.md)
 is a snapshot, not proof of any future job's installed versions.
@@ -1528,7 +1528,7 @@ Setup does not grant world access, modify local developer virtualization or
 install a self-hosted runner. Failed post-run access is never silently repaired
 by the verifier or accepted as a successful environment check.
 `sdkmanager --channel=0` installs the required stable platform/build tools,
-emulator and API-35 Google APIs x86_64 image into the disposable VM's existing
+emulator and API-37 Google APIs x86_64 image into the disposable VM's existing
 SDK. Stdin is closed: no `yes`, `--licenses` or invented acceptance hash is used.
 Existing license records must suffice, and required files are checked afterward
 because a refused package may be skipped. Missing licenses, SDK tools or
@@ -1633,6 +1633,12 @@ device. Run the starter in one terminal and keep it open:
 .\scripts\start-test-emulator.ps1
 ```
 
+Add `-Visible` for an interactive emulator window. This is an explicit manual
+opt-in; automated checks and omitted switches remain headless. Port leases,
+private AVD/ADB data, live ownership checks and scoped shutdown are unchanged.
+Use `-Sdk`, `-Jdk` and `-Image` to select existing shared tools without copying
+or updating them.
+
 It prints a new owned run directory after readiness. From the same checkout
 in another terminal, supply that exact directory:
 
@@ -1714,7 +1720,7 @@ GitHub provisions the hosted VM; this does not install a local runner. The
 [checkout container credential requirement](https://github.com/actions/checkout/blob/v7.0.1/README.md)
 is 2.329.0 or newer for authenticated Git inside Docker container actions; this
 workflow has no job container and keeps `persist-credentials: false`.
-Project toolchains remain Node 24, Temurin JDK 21 and Python 3.12. The Windows
+Project toolchains use Node 26, npm 12.2.1, Temurin JDK 21 and Python 3.12. The Windows
 Android job passes its explicit project-local SDK; the Linux device job passes
 the explicit hosted SDK path after the required stable packages are available.
 

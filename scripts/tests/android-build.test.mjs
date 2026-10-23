@@ -7,6 +7,40 @@ import { test } from "node:test";
 
 const exec = promisify(execFile);
 
+test("SDK preparation selects the stable channel and rejects unavailable or ambiguous stable packages", async () => {
+  const harness = [
+    "$ErrorActionPreference = 'Stop'",
+    "$tokens = $null; $errors = $null",
+    "$ast = [Management.Automation.Language.Parser]::ParseFile($env:SDK_PREPARATION_SOURCE, [ref]$tokens, [ref]$errors)",
+    "if ($errors.Count) { throw 'SDK preparation did not parse.' }",
+    "$selector = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-StablePackage'}, $true)",
+    "if ($selector) { . ([scriptblock]::Create($selector.Extent.Text)) }",
+    "$assignment = $ast.Find({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and $node.Left.VariablePath.UserPath -eq 'pkg'}, $true)",
+    "if (-not $assignment) { throw 'SDK package-selection call site is missing.' }",
+    "$select = [scriptblock]::Create($assignment.Right.Extent.Text)",
+    "$spec = @{ Package = 'emulator' }",
+    "$preview = '<remotePackage path=\"emulator\"><revision><major>99</major></revision><channelRef ref=\"channel-2\"/></remotePackage>'",
+    "$stable = '<remotePackage path=\"emulator\"><revision><major>37</major></revision><channelRef ref=\"channel-0\"/></remotePackage>'",
+    "[xml]$repo = '<repository>' + $preview + $stable + '</repository>'",
+    "$selected = & $select",
+    "$rejected = @()",
+    "foreach ($body in @($preview, ($stable + $stable), $stable.Replace('channel-0', 'channel-unknown'), $stable.Replace('</major>', '</major><preview>1</preview>'))) {",
+    "  [xml]$repo = '<repository>' + $body + '</repository>'",
+    "  try { $null = & $select; $rejected += $false } catch {",
+    "    if ($_.Exception.Message -notmatch 'Stable SDK package') { throw }",
+    "    $rejected += $true",
+    "  }",
+    "}",
+    "@{ channel = $selected.channelRef.ref; revision = $selected.revision.major; rejected = $rejected } | ConvertTo-Json -Compress",
+  ].join("\n");
+  const result = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", harness],
+    { env: { ...process.env, SDK_PREPARATION_SOURCE: path.resolve("scripts/prepare-android.ps1") }, timeout: 20_000 });
+  const selected = JSON.parse(result.stdout);
+  assert.equal(selected.channel, "channel-0", "A preview listed first must not be selected.");
+  assert.equal(selected.revision, "37");
+  assert.deepEqual(selected.rejected, [true, true, true, true]);
+});
+
 test("the clean Android CI job restores locked Node inputs before invoking the component-aware native build", async () => {
   const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
   const job = workflow.split("\n  android:")[1].split("\n  device:")[0];
@@ -16,6 +50,9 @@ test("the clean Android CI job restores locked Node inputs before invoking the c
   assert.ok(node >= 0 && install > node && build > install);
   const gradle = await readFile("android/app/build.gradle.kts", "utf8");
   assert.match(gradle, /commandLine\(npm \+ listOf\("run", "build", "--workspace", "@devpocket\/components"\)\)/);
+  assert.match(gradle, /addGeneratedSourceDirectory\(copyAssets, CopyComponentAssets::outputDirectory\)/);
+  assert.match(gradle, /from\(inputDirectory\) \{ into\("components"\) \}/);
+  assert.doesNotMatch(gradle, /assets\.srcDir|android\.sourceset\.disallowProvider/);
   const preparation = await readFile(".github/actions/prepare-native/action.yml", "utf8");
   assert.ok(preparation.includes("npm ci --no-audit --no-fund"));
 });
@@ -26,7 +63,7 @@ async function buildFixture(t) {
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const directory of [
     "scripts", "android/gradle/wrapper", "selected jdk/bin", "inherited jdk/bin",
-    "selected sdk/platforms/android-35", "inherited sdk/platforms/android-35",
+    "selected sdk/platforms/android-37.2", "inherited sdk/platforms/android-37.2",
   ]) await mkdir(path.join(root, directory), { recursive: true });
   await writeFile(path.join(root, "scripts", "build-android.ps1"), await readFile("scripts/build-android.ps1"));
   const wrapper = path.join(root, "android", "gradle", "wrapper", "gradle-wrapper.jar");
@@ -37,7 +74,7 @@ async function buildFixture(t) {
     await writeFile(java, process.platform === "win32" ? "" :
       `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(path.join(root, "android", "gradle-fixture.mjs"))} "$@"\n`);
     if (process.platform !== "win32") await chmod(java, 0o755);
-    await writeFile(path.join(root, `${name} sdk`, "platforms", "android-35", "android.jar"), "");
+    await writeFile(path.join(root, `${name} sdk`, "platforms", "android-37.2", "android.jar"), "");
   }
   await writeFile(path.join(root, "android", "gradlew.bat"),
     `@echo off\r\n"${process.execPath}" "%~dp0gradle-fixture.mjs" %*\r\nexit /b %ERRORLEVEL%\r\n`);
@@ -45,7 +82,7 @@ async function buildFixture(t) {
     "import {writeFileSync} from 'node:fs';",
     "import assert from 'node:assert/strict';",
     "const args=process.argv.slice(2);",
-    `if(process.platform!=="win32") assert.deepEqual(args.splice(0,4),["-Dorg.gradle.appname=gradlew","-classpath",${JSON.stringify(wrapper)},"org.gradle.wrapper.GradleWrapperMain"]);`,
+    `if(process.platform!=="win32") assert.deepEqual(args.splice(0,5),["--enable-native-access=ALL-UNNAMED","-Dorg.gradle.appname=gradlew","-classpath",${JSON.stringify(wrapper)},"org.gradle.wrapper.GradleWrapperMain"]);`,
     "writeFileSync('invocation.json', JSON.stringify({",
     "  cwd: process.cwd(), args,",
     "  java: process.env.JAVA_HOME, sdk: process.env.ANDROID_HOME,",

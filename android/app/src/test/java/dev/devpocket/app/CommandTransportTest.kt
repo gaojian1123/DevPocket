@@ -5,8 +5,13 @@ import dev.devpocket.app.data.Action
 import dev.devpocket.app.data.Command
 import dev.devpocket.app.data.RelayApi
 import dev.devpocket.app.data.Scope
+import dev.devpocket.app.data.ApiFailure
+import dev.devpocket.app.data.WireJson
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.JsonNull
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
@@ -15,6 +20,32 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CommandTransportTest {
+    @Test fun pushRegistrationUsesExplicitFidsAndLegacyRelayRejectionIsVisible() = runBlocking {
+        MockWebServer().use { server ->
+            server.start()
+            server.enqueue(MockResponse().setBody("""{"registered":true,"provider":"fcm-fid"}"""))
+            server.enqueue(MockResponse().setBody("""{"registered":false,"provider":"fcm-fid"}"""))
+            server.enqueue(MockResponse().setResponseCode(400).setBody(
+                """{"error":{"code":"INVALID_REQUEST","message":"Relay upgrade required"}}"""))
+            val account = Account("account", server.url("/").toString().trimEnd('/'), "test-only-credential", "device", "Test")
+            val api = RelayApi(account)
+            val fid = "c" + "a".repeat(21)
+            api.registerPush(fid)
+            val registered = server.takeRequest()
+            assertEquals("PUT", registered.method)
+            assertEquals("/v1/push-token", registered.path)
+            assertEquals("Bearer test-only-credential", registered.getHeader("Authorization"))
+            val body = WireJson.parseToJsonElement(registered.body.readUtf8()).jsonObject
+            assertEquals(setOf("provider", "fid"), body.keys)
+            assertEquals("fcm-fid", body.getValue("provider").jsonPrimitive.content)
+            assertEquals(fid, body.getValue("fid").jsonPrimitive.content)
+            api.registerPush(null)
+            assertEquals(JsonNull, WireJson.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject["fid"])
+            assertTrue(runCatching { api.registerPush(fid) }.exceptionOrNull() is ApiFailure)
+            assertEquals(3, server.requestCount)
+        }
+    }
+
     @Test fun lostCommandResponseRetriesTheSameImmutableCommandId() = runBlocking {
         MockWebServer().use { server ->
             server.start()

@@ -1107,6 +1107,8 @@ test("a changed compiler toolchain cannot reuse a previously successful native a
     const entry = path.join(root, "changed-toolchain.mjs");
     await writeFile(entry, [
       "import childProcess from 'node:child_process';import {syncBuiltinESMExports} from 'node:module';",
+      // OpenSSL initializes its Windows entropy provider using the real system directory.
+      "import {randomUUID} from 'node:crypto';randomUUID();",
       "const operatingSystemEnvironment={...process.env};const spawn=childProcess.spawn;",
       `process.env.SystemRoot=${JSON.stringify(systemRoot)};`,
       // Only toolchain discovery sees the fixture; OS processes still need the real system directory.

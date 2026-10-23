@@ -3,7 +3,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
-  actionCapability, Id, Json, PendingRequest, RequestId, SessionSummary, UserEvent,
+  actionCapability, Id, Json, PendingRequest, RequestId, SessionSummary, UserEvent, utf16String,
   type Action, type ComponentReference, type QuestionRecord, type Receipt,
 } from "./protocol.js";
 import { Fault, hash, redact } from "./security.js";
@@ -48,25 +48,25 @@ export const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const text = (value: unknown): string => typeof value === "string" ? value : "";
 const runtimeEvent = z.object({ id: z.string(), type: z.string(), timestamp: z.string(),
-  agentId: z.string().optional(), data: z.record(z.unknown()) });
+  agentId: z.string().optional(), data: z.record(z.string(), z.unknown()) });
 const workingDirectory = z.object({
   primary: z.string().min(1).refine((value) => path.isAbsolute(value) && !value.includes("\0")),
 });
 const projectIdentity = SessionSummary.pick({ projectId: true, projectName: true, workspace: true }).nullable();
 const runtimeActivity = z.object({ hasActiveWork: z.boolean(), abortable: z.unknown().optional() });
-const permissionMode = z.object({ mode: z.string().min(1).max(80) });
+const permissionMode = z.object({ mode: utf16String(80).min(1) });
 const pendingPermissions = z.object({ items: z.array(z.object({
-  requestId: RequestId, request: z.record(z.unknown()).optional(), permissionRequest: z.record(z.unknown()).optional(),
+  requestId: RequestId, request: z.record(z.string(), z.unknown()).optional(), permissionRequest: z.record(z.string(), z.unknown()).optional(),
   recoveryEpisodeId: RequestId.optional(),
 }).strict().refine((item) => (item.request !== undefined) !== (item.permissionRequest !== undefined))) })
   .refine(({ items }) => new Set(items.map((item) => item.requestId)).size === items.length, "Permission request IDs must be unique.");
 const currentModel = z.object({
-  modelId: z.string().min(1).max(200), reasoningEffort: z.string().max(60).nullish(),
+  modelId: utf16String(200).min(1), reasoningEffort: utf16String(60).nullish(),
 });
 const sessionName = z.object({ name: z.string() });
-const reasoningEfforts = z.array(z.string().min(1).max(60));
+const reasoningEfforts = z.array(utf16String(60).min(1));
 const modelCatalogue = z.object({ list: z.array(z.object({
-  id: z.string().min(1).max(200), name: z.string().optional(),
+  id: utf16String(200).min(1), name: z.string().optional(),
   supportedReasoningEfforts: reasoningEfforts.optional(), supported_reasoning_efforts: reasoningEfforts.optional(),
   capabilities: z.object({ supports: z.object({
     reasoning_effort: reasoningEfforts.optional(), reasoning_efforts: reasoningEfforts.optional(),
@@ -92,30 +92,30 @@ const messageQueue = z.object({
 const requestResolution = z.object({ success: z.boolean() }).strict();
 const userQuestion = z.object({
   requestId: RequestId, toolCallId: RequestId.optional(),
-  question: z.string().trim().min(1).max(12_000),
-  choices: z.array(z.string().min(1).max(1000)).max(50).optional(),
+  question: utf16String(12_000, z.string().trim()).min(1),
+  choices: z.array(utf16String(1000).min(1)).max(50).optional(),
   allowFreeform: z.boolean().optional(),
 }).strict();
 const elicitationField = z.object({
-  type: z.literal("string"), title: z.string().max(500).optional(), description: z.string().max(10_000).optional(),
-  enum: z.array(z.string().min(1).max(1000)).min(1).max(50).optional(),
+  type: z.literal("string"), title: utf16String(500).optional(), description: utf16String(10_000).optional(),
+  enum: z.array(utf16String(1000).min(1)).min(1).max(50).optional(),
   minLength: z.number().int().min(0).max(8000).optional(),
   maxLength: z.number().int().min(1).optional(), default: z.string().optional(),
 }).strict().refine((field) => (field.minLength ?? 0) <= (field.maxLength ?? 8000));
 const elicitationSchema = z.object({
-  type: z.literal("object"), properties: z.record(elicitationField),
+  type: z.literal("object"), properties: z.record(z.string(), elicitationField),
   required: z.array(z.string()).optional(), title: z.string().optional(), description: z.string().optional(),
   additionalProperties: z.boolean().optional(),
 }).strict();
 const elicitationRequest = z.object({
   requestId: RequestId, toolCallId: RequestId.optional(),
-  elicitationSource: z.string().min(1).max(200).optional(),
-  message: z.string().min(1).max(12_000).refine((value) => !!value.trim()),
+  elicitationSource: utf16String(200).min(1).optional(),
+  message: utf16String(12_000).min(1).refine((value) => !!value.trim()),
   mode: z.literal("form").optional(),
   requestedSchema: elicitationSchema,
 }).strict();
 const modelSelection = z.object({
-  modelId: z.string().min(1).max(200).optional(), deferred: z.boolean().optional(),
+  modelId: utf16String(200).min(1).optional(), deferred: z.boolean().optional(),
   confirmation: z.object({
     targetModelDisplayName: z.string().min(1), currentTokens: z.number().int().nonnegative(),
     targetLimit: z.number().int().nonnegative(),
@@ -145,7 +145,7 @@ const pathFields = {
   args: pathArguments.optional(), arguments: pathArguments.optional(),
 };
 const toolFields = {
-  ...permissionFields, args: z.record(Json).optional(), arguments: z.record(Json).optional(),
+  ...permissionFields, args: z.record(z.string(), Json).optional(), arguments: z.record(z.string(), Json).optional(),
 };
 const aliasesAgree = (...values: unknown[]): boolean => {
   const present = values.filter((value) => value !== undefined);
@@ -158,7 +158,7 @@ const permissionRequest = z.discriminatedUnion("kind", [
     commandSegments: z.array(z.object({ identifier: z.string(), fullCommandText: z.string() }).strict()).optional(),
     hasWriteFileRedirection: z.boolean().optional(), possiblePaths: z.array(z.string()).optional(),
     possibleUrls: z.array(z.object({ url: z.string() }).strict()).optional(),
-    resolvedPaths: z.record(z.string()).optional(), resolvedWorkingDirectory: z.string().optional(),
+    resolvedPaths: z.record(z.string(), z.string()).optional(), resolvedWorkingDirectory: z.string().optional(),
   }).strict(),
   z.object({ ...commandFields, kind: z.literal("commands"), commandIdentifiers: z.array(z.string()).optional() }).strict(),
   z.object({ ...pathFields, kind: z.literal("read") }).strict(),
@@ -265,7 +265,7 @@ function permission(item: unknown): PendingRequest {
       kind === "write" ? !!text(file).trim() && (typeof request.diff === "string" || typeof request.newFileContents === "string") :
         kind === "url" ? !!text(url).trim() :
           ["mcp", "custom-tool"].includes(kind) && !!text(request.toolName).trim() &&
-          (kind !== "mcp" || !!text(server).trim()) && z.record(z.unknown()).safeParse(request.args ?? request.arguments).success;
+          (kind !== "mcp" || !!text(server).trim()) && z.record(z.string(), z.unknown()).safeParse(request.args ?? request.arguments).success;
   const detail = parsed.success
     ? JSON.stringify(Object.fromEntries(Object.entries(request).filter(([key]) => !permissionMetadata.has(key))), null, 2)
     : "This permission form is unsupported. Review and answer it in the original client.";

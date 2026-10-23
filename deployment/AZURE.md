@@ -74,7 +74,7 @@ No GitHub token is needed on the VM/relay. **Host pairing credentials are not cr
 
 ## Project-local setup and parameters
 
-Prerequisites: Node 24, azd 1.25.5+, PowerShell 7 on Windows, Python 3 for local script tests, and an explicit azd login for the target tenant. **az CLI authentication is not required.** Local Docker is optional: this path builds the relay image on the VM after deployment approval. The current machine had no Docker, so no local container execution is claimed.
+Prerequisites: Node 26.12.1 or newer within 26.x, npm 12.2.1, azd 1.25.5+, PowerShell 7 on Windows, Python 3 for local script tests, and an explicit azd login for the target tenant. **az CLI authentication is not required.** Local Docker is optional: this path builds the relay image on the VM after deployment approval. The current machine had no Docker, so no local container execution is claimed.
 
 From `C:\Projects\DevPocket`:
 

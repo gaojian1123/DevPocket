@@ -13,6 +13,16 @@ import { diagnosticError, contextualFailure, failureDetails } from "./diagnostic
 import { waitForAndroidHome } from "./android-home.mjs";
 import { androidImageArchitecture, androidImagePattern, macOSAcceleration } from "./android-platform.mjs";
 
+export function emulatorLaunchArguments({ avdName, ports, gpu, visible = false, platform = process.platform }) {
+  if (typeof visible !== "boolean") throw new TypeError("Emulator visibility must be an explicit boolean.");
+  const windows = platform === "win32";
+  return ["-avd", avdName, "-port", String(ports.console),
+    "-grpc", String(ports.grpc), windows ? "-grpc-use-jwt" : "-grpc-use-token",
+    ...(visible ? [] : ["-no-window"]), "-no-audio",
+    "-no-boot-anim", "-no-snapshot", "-no-metrics", "-show-kernel", "-gpu", gpu,
+    ...(!windows ? ["-accel", "on"] : [])];
+}
+
 export function createLiveDeviceGuard(workers, inspect, signal) {
   const controller = new AbortController();
   const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
@@ -181,7 +191,7 @@ export async function withAndroidEmulator(options, operation) {
   const jdk = path.resolve(options.jdk ?? process.env.DEVPOCKET_JDK ?? path.join(root, ".tools", "jdk-21"));
   const architecture = androidImageArchitecture();
   const image = (options.image ?? process.env.DEVPOCKET_ANDROID_IMAGE ??
-    path.join("system-images", "android-35", "google_apis", architecture)).replaceAll("\\", path.sep);
+    path.join("system-images", "android-37.0", "google_apis", architecture)).replaceAll("\\", path.sep);
   const identity = { root, directory, runId, sdk, emulatorSdk, jdk, image };
   const manage = (file, args, env, name) => {
     if (closing) throw new Error("The emulator run is closing.");
@@ -267,10 +277,9 @@ export async function withAndroidEmulator(options, operation) {
     await waitForAndroid(() => ownsListener(lease.ports.adb, adbServer.child.pid, signal),
       "Owned ADB listener", 30_000, adbServer, signal);
     diagnostics?.stage("boot", "start");
-    const emulator = manage(executable, ["-avd", identity.avdName, "-port", String(lease.ports.console),
-      "-grpc", String(lease.ports.grpc), windows ? "-grpc-use-jwt" : "-grpc-use-token", "-no-window", "-no-audio",
-      "-no-boot-anim", "-no-snapshot", "-no-metrics", "-show-kernel", "-gpu", gpu,
-      ...(!windows ? ["-accel", "on"] : [])], env, "emulator");
+    const emulator = manage(executable, emulatorLaunchArguments({
+      avdName: identity.avdName, ports: lease.ports, gpu, visible: options.visible,
+    }), env, "emulator");
     const bootDeadline = Date.now() + 600_000;
     guard = createLiveDeviceGuard([adbServer, emulator], async () => {
       if (!await ownsListener(lease.ports.adb, adbServer.child.pid, guard.signal)) {

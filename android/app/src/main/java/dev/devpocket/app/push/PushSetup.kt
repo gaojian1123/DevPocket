@@ -1,6 +1,7 @@
 package dev.devpocket.app.push
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -14,8 +15,12 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
+import androidx.core.net.toUri
+import com.google.android.gms.tasks.Task
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
+import com.google.firebase.installations.FirebaseInstallations
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
@@ -26,6 +31,7 @@ import dev.devpocket.app.background.BackgroundService
 import dev.devpocket.app.background.SessionNotice
 import dev.devpocket.app.data.Account
 import dev.devpocket.app.data.RelayApi
+import dev.devpocket.app.data.PushRegistration
 import dev.devpocket.app.data.Scope
 import dev.devpocket.app.data.Vault
 import dev.devpocket.app.data.WireJson
@@ -34,8 +40,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 object PushSetup {
+    private val registrationLock = Mutex()
     val configured: Boolean get() = listOf(BuildConfig.FCM_APPLICATION_ID, BuildConfig.FCM_API_KEY,
         BuildConfig.FCM_PROJECT_ID, BuildConfig.FCM_SENDER_ID).all { it.isNotBlank() }
 
@@ -46,7 +55,7 @@ object PushSetup {
                 .setApplicationId(BuildConfig.FCM_APPLICATION_ID).setApiKey(BuildConfig.FCM_API_KEY)
                 .setProjectId(BuildConfig.FCM_PROJECT_ID).setGcmSenderId(BuildConfig.FCM_SENDER_ID).build())
         } catch (error: IllegalArgumentException) {
-            context.getSharedPreferences("devpocket_push", 0).edit().putString("status", "FCM 配置无效：${error.message}").apply()
+            context.getSharedPreferences("devpocket_push", 0).edit { putString("status", "FCM 配置无效：${error.message}") }
             Log.e("DevPocketPush", "Firebase configuration is invalid", error)
         }
     }
@@ -60,17 +69,53 @@ object PushSetup {
     suspend fun register(context: Context, accounts: List<Account>) {
         if (!configured) return
         initialize(context)
-        val token = suspendCancellableCoroutine<String> { continuation ->
-            FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+        context.getSharedPreferences("devpocket_push", 0).edit {
+            putString("status", "正在注册 FCM 安装标识；中转同步尚未确认。")
+        }
+        registrationLock.withLock {
+            val fid = awaitResult(FirebaseInstallations.getInstance().id)
+            awaitResult(FirebaseMessaging.getInstance().register())
+            check(awaitResult(FirebaseInstallations.getInstance().id) == fid) {
+                "FCM 注册标识已变化，请重新注册。"
+            }
+            synchronize(context, accounts, fid)
+        }
+    }
+
+    suspend fun registered(context: Context, fid: String) {
+        if (!configured) return
+        initialize(context)
+        registrationLock.withLock {
+            if (awaitResult(FirebaseInstallations.getInstance().id) != fid) {
+                Log.i("DevPocketPush", "A superseded FCM registration callback was ignored")
+                return@withLock
+            }
+            synchronize(context, Vault(context).accounts(), fid)
+        }
+    }
+
+    private suspend fun <T> awaitResult(task: Task<T>): T =
+        suspendCancellableCoroutine { continuation ->
+            task.addOnCompleteListener { completed ->
                 if (!continuation.isActive) return@addOnCompleteListener
-                if (task.isSuccessful) continuation.resumeWith(Result.success(task.result))
-                else continuation.resumeWith(Result.failure(task.exception ?: IllegalStateException("FCM 注册失败。")))
+                if (completed.isSuccessful) continuation.resumeWith(Result.success(completed.result))
+                else continuation.resumeWith(Result.failure(completed.exception ?: IllegalStateException("FCM 注册失败。")))
             }
         }
-        Vault(context).put("fcm_token", token)
-        for (account in accounts) RelayApi(account).registerPush(token)
-        context.getSharedPreferences("devpocket_push", 0).edit()
-            .putString("status", "已向 ${accounts.size} 个中转注册 FCM。送达仍取决于系统、网络和中转配置；未承诺必达。").apply()
+
+    private suspend fun synchronize(context: Context, accounts: List<Account>, fid: String) {
+        val registration = PushRegistration.Installation(fid)
+        context.getSharedPreferences("devpocket_push", 0).edit {
+            putString("status", "FCM 标识已注册，正在同步到中转；尚未确认全部同步完成。")
+        }
+        for (account in accounts) RelayApi(account).registerPush(registration.fid)
+        Vault(context).apply {
+            put("fcm_fid", fid)
+            put("fcm_token", null)
+        }
+        context.getSharedPreferences("devpocket_push", 0).edit {
+            putString("status", "已向 ${accounts.size} 个中转注册 FCM 安装标识。送达仍取决于系统、网络和中转配置；未承诺必达。")
+        }
     }
 }
 
@@ -134,7 +179,7 @@ object Notifications {
         backgroundUnavailable(context)?.let { throw IllegalStateException(it) }
         val intent = Intent(context, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            .setData(Uri.parse("devpocket://background/${Uri.encode(scope.key)}"))
+            .setData("devpocket://background/${Uri.encode(scope.key)}".toUri())
             .putExtra(MainActivity.NOTIFICATION_SCOPE, WireJson.encodeToString(scope))
         val open = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val message = if (notice.kind == "attention") "GitHub Copilot 会话需要你处理审批或问题。请停车后打开应用。"
@@ -172,18 +217,19 @@ object Notifications {
     }
 }
 
+// FID mode uses onRegistered; this lint check still requires the legacy token callback.
+@SuppressLint("MissingFirebaseInstanceTokenRefresh")
 class DevPocketMessagingService : FirebaseMessagingService() {
-    override fun onNewToken(token: String) {
-        super.onNewToken(token)
+    override fun onRegistered(installationId: String) {
+        super.onRegistered(installationId)
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val vault = Vault(applicationContext)
-                vault.put("fcm_token", token)
-                for (account in vault.accounts()) RelayApi(account).registerPush(token)
+                PushSetup.registered(applicationContext, installationId)
             } catch (error: Exception) {
-                Log.e("DevPocketPush", "Push token registration failed", error)
-                applicationContext.getSharedPreferences("devpocket_push", 0).edit()
-                    .putString("status", "FCM token 更新未同步，请在设置中重新注册。").apply()
+                Log.e("DevPocketPush", "Push installation registration failed", error)
+                applicationContext.getSharedPreferences("devpocket_push", 0).edit {
+                    putString("status", "FCM 安装标识尚未同步到全部中转，请确认中转支持 FID 后在设置中重新注册。")
+                }
             }
         }
     }

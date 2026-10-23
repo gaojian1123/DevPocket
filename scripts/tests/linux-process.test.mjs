@@ -153,11 +153,11 @@ test("Linux listener ownership distinguishes two live supervised servers", async
 test("the real Linux PowerShell build entrypoint invokes the pinned wrapper with the explicit toolchain", async (t) => {
   const directory = await fixture(t);
   for (const parts of [
-    ["scripts"], ["android", "gradle", "wrapper"], ["selected jdk", "bin"], ["selected sdk", "platforms", "android-35"],
+    ["scripts"], ["android", "gradle", "wrapper"], ["selected jdk", "bin"], ["selected sdk", "platforms", "android-37.2"],
   ]) await mkdir(path.join(directory, ...parts), { recursive: true });
   await writeFile(path.join(directory, "scripts", "build-android.ps1"), await readFile("scripts/build-android.ps1"));
   await writeFile(path.join(directory, "android", "gradle", "wrapper", "gradle-wrapper.jar"), "fixture");
-  await writeFile(path.join(directory, "selected sdk", "platforms", "android-35", "android.jar"), "fixture");
+  await writeFile(path.join(directory, "selected sdk", "platforms", "android-37.2", "android.jar"), "fixture");
   await writeFile(path.join(directory, "selected jdk", "bin", "java"),
     '#!/bin/sh\nexec "$FIXTURE_NODE" "$FIXTURE_JAVA" "$@"\n', { mode: 0o700 });
   const recorder = path.join(directory, "java.mjs");
@@ -177,7 +177,7 @@ test("the real Linux PowerShell build entrypoint invokes the pinned wrapper with
   const invocation = JSON.parse(await readFile(path.join(directory, "android", "invocation.json"), "utf8"));
   assert.deepEqual(invocation, {
     cwd: path.join(directory, "android"), java: jdk, sdk, sdkRoot: sdk, cache: path.join(directory, ".tools", "gradle-cache"),
-    args: ["-Dorg.gradle.appname=gradlew", "-classpath", path.join(directory, "android", "gradle", "wrapper", "gradle-wrapper.jar"),
+    args: ["--enable-native-access=ALL-UNNAMED", "-Dorg.gradle.appname=gradlew", "-classpath", path.join(directory, "android", "gradle", "wrapper", "gradle-wrapper.jar"),
       "org.gradle.wrapper.GradleWrapperMain", "--no-daemon", "--console=plain",
       ":app:assembleDebug", ":app:testDebugUnitTest", ":app:lintDebug", ":app:assembleDebugAndroidTest"],
   });
@@ -189,18 +189,18 @@ test("the real Linux PowerShell build entrypoint invokes the pinned wrapper with
 async function nativeBuildFixture(t) {
   const root = await fixture(t);
   const jdk = path.join(root, "selected jdk"), sdk = path.join(root, "selected sdk");
-  const image = path.join("system-images", "android-35", "google_apis", "x86_64");
+  const image = path.join("system-images", "android-37.0", "google_apis", "x86_64");
   const imageDir = path.join(sdk, image);
   const javaPath = path.join(jdk, "bin", "java"), adbPath = path.join(sdk, "platform-tools", "adb");
   const executable = path.join(sdk, "emulator", "emulator");
   for (const directory of [path.join(root, "scripts"), path.join(root, "android", "gradle", "wrapper"),
     path.dirname(javaPath), path.dirname(adbPath), path.dirname(executable), imageDir,
-    path.join(sdk, "platforms", "android-35"), path.join(root, ".tools", "gradle-cache")]) {
+    path.join(sdk, "platforms", "android-37.2"), path.join(root, ".tools", "gradle-cache")]) {
     await mkdir(directory, { recursive: true });
   }
   await writeFile(path.join(root, "scripts", "build-android.ps1"), await readFile("scripts/build-android.ps1"));
   await writeFile(path.join(root, "android", "gradle", "wrapper", "gradle-wrapper.jar"), "fixture");
-  await writeFile(path.join(sdk, "platforms", "android-35", "android.jar"), "fixture");
+  await writeFile(path.join(sdk, "platforms", "android-37.2", "android.jar"), "fixture");
   await writeFile(path.join(imageDir, "system.img"), "fixture");
   await writeFile(path.join(imageDir, "source.properties"), "Pkg.Revision=9\n");
   await writeFile(adbPath, "#!/bin/sh\nprintf 'Android Debug Bridge version 1.0.41\\n'\n", { mode: 0o700 });

@@ -5,11 +5,11 @@ if (-not $Jdk) { $Jdk = [IO.Path]::Combine($root, '.tools', 'jdk-21') }
 if (-not $Sdk) { $Sdk = [IO.Path]::Combine($root, '.tools', 'android-sdk') }
 $javaName = if ($IsWindows) { 'java.exe' } else { 'java' }
 if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($Jdk, 'bin', $javaName)))) {
-    [Console]::Error.WriteLine('JDK 17 or 21 is required. Pass -Jdk or run prepare-android.ps1 -DownloadJdk.')
+    [Console]::Error.WriteLine('JDK 21 or 25 is required. Pass -Jdk or run prepare-android.ps1 -DownloadJdk.')
     exit 78
 }
-if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($Sdk, 'platforms', 'android-35', 'android.jar')))) {
-    [Console]::Error.WriteLine('Android SDK platform 35 is missing. Pass -Sdk or run prepare-android.ps1.')
+if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($Sdk, 'platforms', 'android-37.2', 'android.jar')))) {
+    [Console]::Error.WriteLine('Android SDK platform 37.2 is missing. Pass -Sdk or run prepare-android.ps1.')
     exit 78
 }
 $Jdk = (Resolve-Path -LiteralPath $Jdk).ProviderPath
@@ -36,7 +36,7 @@ try {
         & .\gradlew.bat --no-daemon --console=plain @tasks
     } else {
         $wrapper = [IO.Path]::Combine([string[]]@($root, 'android', 'gradle', 'wrapper', 'gradle-wrapper.jar'))
-        & ([IO.Path]::Combine($Jdk, 'bin', 'java')) '-Dorg.gradle.appname=gradlew' '-classpath' $wrapper `
+        & ([IO.Path]::Combine($Jdk, 'bin', 'java')) '--enable-native-access=ALL-UNNAMED' '-Dorg.gradle.appname=gradlew' '-classpath' $wrapper `
             'org.gradle.wrapper.GradleWrapperMain' --no-daemon --console=plain @tasks
     }
     if ($LASTEXITCODE -ne 0) { throw "Android build failed with exit code $LASTEXITCODE" }

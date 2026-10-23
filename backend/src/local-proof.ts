@@ -1,7 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { Agent, request } from "node:http";
 import net from "node:net";
-import { Duplex, PassThrough } from "node:stream";
+import { duplexPair } from "node:stream";
 import { z } from "zod";
 
 export const ProofKey = z.string().regex(/^[a-f0-9]{64}$/);
@@ -18,8 +18,7 @@ export function createProofAgent(endpoint: string | URL, inputKey: string): Agen
   const destroy = agent.destroy.bind(agent);
   agent.destroy = () => { for (const socket of pending) socket.destroy(); destroy(); };
   agent.createConnection = () => {
-    const outbound = new PassThrough(), inbound = new PassThrough();
-    const gated = Duplex.from({ writable: outbound, readable: inbound });
+    const [gated, transport] = duplexPair();
     const socket = net.createConnection({ host: "127.0.0.1", port: Number(url.port) });
     Object.assign(gated, {
       setTimeout: (milliseconds: number, callback?: () => void) => {
@@ -45,7 +44,7 @@ export function createProofAgent(endpoint: string | URL, inputKey: string): Agen
       if (error) { gated.destroy(error); socket.destroy(); }
       else {
         socket.once("close", () => { if (!socket.readableEnded) gated.destroy(new Error("Proof connection closed.")); });
-        outbound.pipe(socket); socket.pipe(inbound);
+        transport.pipe(socket); socket.pipe(transport);
       }
     };
     const fail = () => finish(new Error("The original proof relay could not authenticate this connection."));

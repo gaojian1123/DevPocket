@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { test } from "node:test";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationImpact } from "../verification-policy.mjs";
 import { developmentReviewRequirements, isVerificationPolicyPath } from "../development-policy.mjs";
-import { syntheticExecution, verificationTools, windowsNodeLauncher } from "./fixtures/verification-tools.mjs";
+import { copyTypeScript, npmPackageDirectory, syntheticExecution, verificationTools, windowsNodeLauncher } from "./fixtures/verification-tools.mjs";
 import { combineVerification, executeVerification, verificationPlan } from "../verification.mjs";
 import { openVerificationRun, readVerificationRun } from "../verification-run.mjs";
 import { emulatorInputDifference, resolveVerificationExecutable, verificationExecutionPolicy } from "../verification-preflight.mjs";
@@ -858,7 +858,7 @@ test("the native adapter preserves literal parameters, mandatory instrumentation
     assert.equal(build.status, "partial");
     assert.equal(build.checks.find((check) => check.id === "android-build").status, "passed");
     assert.equal(build.checks.find((check) => check.id === "android-device").status, "not_run");
-    const image = `system-images/android-35/google_apis/${androidImageArchitecture()}`;
+    const image = `system-images/android-37.0/google_apis/${androidImageArchitecture()}`;
     const device = await verify(root, ["--group", "device", "--jdk", jdk, "--sdk", sdk, "--image", image]);
     assert.equal(device.exitCode, 1);
     const check = device.report.checks.find((item) => item.id === "android-device");
@@ -1100,7 +1100,7 @@ test("a planning catalogue exception cannot qualify an otherwise valid current a
   const evidence = { version: 1, runId: randomUUID(), source: plan.source, status: "passed", cleanup: "completed",
     evidence: "emulator-test-sdk-adapter", platform: process.platform, architecture: process.arch,
     acceleration: { provider: process.platform === "darwin" ? "HVF" : "KVM", usable: true },
-    image: `system-images/android-35/google_apis/${androidImageArchitecture()}`,
+    image: `system-images/android-37.0/google_apis/${androidImageArchitecture()}`,
     apkSha256: "a".repeat(64), testApkSha256: "b".repeat(64), tests: 4, cases,
     discoveredClasses: cases.map((item) => item.class) };
   const input = path.join(root, ".data", "current.json");
@@ -1502,7 +1502,7 @@ test("a device shard accepts current complete case and APK evidence without fabr
     "await writeFile(path.join(directory,'device-report.json'),JSON.stringify({version:1,runId,status:'passed',cleanup:'completed',",
     "source:await sourceSnapshot(process.cwd()),evidence:'emulator-test-sdk-adapter',apkSha256:sha,testApkSha256:sha,",
     `...${JSON.stringify({ platform: process.platform, architecture: process.arch,
-      image: `system-images/android-35/google_apis/${androidImageArchitecture()}`,
+      image: `system-images/android-37.0/google_apis/${androidImageArchitecture()}`,
       ...(process.platform === "darwin" ? { acceleration: { provider: "HVF", usable: true } } :
         process.platform === "linux" ? { acceleration: { provider: "KVM", usable: true } } : {}) })},`,
     "tests:8,cases,discoveredClasses:['dev.devpocket.app.AdaptiveLayoutTest','dev.devpocket.app.FixtureFlowTest','dev.devpocket.app.NativeFlowTest'],",
@@ -1636,13 +1636,14 @@ async function recoveryFixture(t, { candidate = false, sensitive = false } = {})
     build: script("backend-build"), schema: script("schema"),
   } };
   if (candidate) {
-    manifest.devDependencies = { typescript: "5.8.3" };
+    const typescript = await copyTypeScript(root);
+    manifest.devDependencies = { typescript };
     manifest.scripts.typecheck = "tsc -p backend/tsconfig.json --noEmit && tsc -p backend/tsconfig.cli-proof.json" +
       (sensitive ? " && node fixture.mjs head-sensitive" : "");
     await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {
-      "": { devDependencies: manifest.devDependencies }, "node_modules/typescript": { version: "5.8.3" },
+      "": { devDependencies: manifest.devDependencies }, "node_modules/typescript": { version: typescript },
     } }));
-    for (const dependency of ["typescript", "@types", "undici-types"]) {
+    for (const dependency of ["@types", "undici-types"]) {
       await cp(path.resolve("node_modules", dependency), path.join(root, "node_modules", dependency),
         { recursive: true, verbatimSymlinks: true });
     }
@@ -2247,6 +2248,27 @@ test("selected-group preflight blocks missing dependencies and SDKs before any e
   });
 });
 
+test("Android preflight requires a JDK supported by API37 JVM tests", async (t) => {
+  for (const javaVersion of ["17.0.1", "21.0.1", "25.0.1"]) await t.test(javaVersion, async (t) => {
+    const root = await repository(t, { native: true, javaVersion });
+    await mkdir(path.join(root, "scripts"));
+    await writeFile(path.join(root, "scripts", "build-android.ps1"), [
+      "param($Jdk,$Sdk,[switch]$Lint,[switch]$Instrumentation)",
+      "Set-Content -LiteralPath '.data/native-ran' -Value 'yes'", "",
+    ].join("\n"));
+    const result = await verify(root, ["--group", "android"]);
+    if (javaVersion.startsWith("17.")) {
+      assert.equal(result.report.status, "blocked", "JDK17 cannot run the required API37 JVM tests.");
+      assert.ok(result.report.preflight.groups.some((group) => group.issues.some((issue) => issue.prerequisite === "jdk")));
+      assert.equal(result.report.checks.find((check) => check.id === "android-build").executionState, "not-started");
+      await assert.rejects(readFile(path.join(root, ".data", "native-ran")), { code: "ENOENT" });
+    } else {
+      assert.equal(result.report.checks.find((check) => check.id === "android-build").status, "passed");
+      assert.equal((await readFile(path.join(root, ".data", "native-ran"), "utf8")).trim(), "yes");
+    }
+  });
+});
+
 test("missing SDK package metadata blocks before executing the native build", async (t) => {
   const root = await repository(t, { native: true }), tools = toolchains.get(root);
   await mkdir(path.join(root, "scripts"));
@@ -2254,10 +2276,10 @@ test("missing SDK package metadata blocks before executing the native build", as
     "param($Jdk,$Sdk,[switch]$Lint,[switch]$Instrumentation)",
     "Set-Content -LiteralPath '.data/native-ran' -Value 'yes'", "",
   ].join("\n"));
-  await rm(path.join(tools.sdk, "build-tools", "35.0.0", "package.xml"));
+  await rm(path.join(tools.sdk, "build-tools", "37.0.0", "package.xml"));
   const result = await verify(root, ["--group", "android"]);
   assert.equal(result.report.status, "blocked", JSON.stringify(result.report));
-  assert.ok(result.report.preflight.groups[0].issues.some((issue) => issue.prerequisite === "android-platform-35"));
+  assert.ok(result.report.preflight.groups[0].issues.some((issue) => issue.prerequisite === "android-platform-37.2"));
   assert.equal(result.report.checks.find((item) => item.id === "android-build").executionState, "not-started");
   await assert.rejects(readFile(path.join(root, ".data", "native-ran")), { code: "ENOENT" });
 });
@@ -2349,9 +2371,11 @@ test("optimized Python cannot bypass the actual prerequisite probe comparisons",
     "m.distribution=lambda name:types.SimpleNamespace(files=[])",
     script,
   ].join("\n")], { cwd: root, env: { ...process.env, PYTHONOPTIMIZE: "1" }, timeout: 30000 });
-  assert.deepEqual(JSON.parse((await invoke([3, 12, 0], "50.0.1")).stdout).version, [3, 12, 0]);
+  const dependencyVersion = (await readFile(path.join(root, "deployment", "azure", "probe", "requirements-test.txt"), "utf8"))
+    .trim().split("==")[1];
+  assert.deepEqual(JSON.parse((await invoke([3, 12, 0], dependencyVersion)).stdout).version, [3, 12, 0]);
   for (const [name, version, dependency, message] of [
-    ["version", [3, 11, 0], "50.0.1", /Python/],
+    ["version", [3, 11, 0], dependencyVersion, /Python/],
     ["dependency", [3, 12, 0], "0.0.0", /cryptography/],
   ]) await t.test(name, () => assert.rejects(invoke(version, dependency),
     (error) => error.code === 1 && message.test(error.stderr)));
@@ -2437,8 +2461,8 @@ test("native preflight binds tool bytes rather than incidental file timestamps",
   };
   const files = [
     ["jdk", path.join(tools.jdk, "release")],
-    ["build-tools", path.join(tools.sdk, "build-tools", "35.0.0", process.platform === "win32" ? "aapt2.exe" : "aapt2")],
-    ["image", path.join(tools.sdk, "system-images", "android-35", "google_apis", androidImageArchitecture(), "system.img")],
+    ["build-tools", path.join(tools.sdk, "build-tools", "37.0.0", process.platform === "win32" ? "aapt2.exe" : "aapt2")],
+    ["image", path.join(tools.sdk, "system-images", "android-37.0", "google_apis", androidImageArchitecture(), "system.img")],
     ["emulator", path.join(tools.sdk, "emulator", process.platform === "win32" ? "emulator.exe" : "emulator")],
   ];
   for (const [, file] of files) await fileSystem.utimes(file, 1, 1);
@@ -2697,7 +2721,7 @@ test("Android preflight binds the CMD-selected npm and refuses unknown launchers
     await writeFile(path.join(root, "scripts", "build-android.ps1"), "# not executed\n");
     await writeFile(path.join(root, ".gitignore"), (await readFile(path.join(root, ".gitignore"), "utf8")) + "/npm.cmd\n/.npmrc\n");
     const original = await resolveVerificationExecutable(root, "npm.cmd", { shell: true });
-    await cp(path.join(path.dirname(original), "node_modules", "npm"), path.join(root, "node_modules", "npm"),
+    await cp(await npmPackageDirectory(original), path.join(root, "node_modules", "npm"),
       { recursive: true, verbatimSymlinks: true });
     const plan = await verificationPlan(root, "HEAD");
     const preflight = () => verificationPreflight(root, plan, {
@@ -2749,7 +2773,7 @@ for (const trigger of ["lifecycle", "package-resolution", "compiler-input"])
     await mkdir(path.join(modules, "@devpocket"), { recursive: true });
     await mkdir(path.join(modules, ".bin"));
     await mkdir(path.join(modules, "esbuild"));
-    await cp(path.resolve("node_modules/typescript"), path.join(modules, "typescript"), { recursive: true });
+    const typescript = await copyTypeScript(root);
     await copyFile(path.resolve("node_modules/.bin/tsc.cmd"), path.join(modules, ".bin", "tsc.cmd"));
     const pkg = { name: "@devpocket/components", version: "0.1.0", type: "module", files: ["dist"],
       devDependencies: { esbuild: "0.1.0" },
@@ -2759,7 +2783,7 @@ for (const trigger of ["lifecycle", "package-resolution", "compiler-input"])
     await writeFile(path.join(modules, "esbuild", "index.js"), "export async function build() {}\n");
     await writeFile(path.join(workspace, "package.json"), JSON.stringify(pkg));
     await writeFile(path.join(workspace, "tsconfig.json"), JSON.stringify({
-      compilerOptions: { outDir: "dist", target: "es2023", types: [] }, include: ["src/*.ts"],
+      compilerOptions: { rootDir: "src", outDir: "dist", target: "es2023", types: [] }, include: ["src/*.ts"],
     }));
     await writeFile(path.join(workspace, "src", "fixture.ts"), "export const value = 1;\n");
     await writeFile(path.join(workspace, "build.mjs"),
@@ -2768,20 +2792,21 @@ for (const trigger of ["lifecycle", "package-resolution", "compiler-input"])
     const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
     manifest.workspaces = ["packages/components"];
     manifest.dependencies = { "@devpocket/components": "file:packages/components" };
-    manifest.devDependencies = { typescript: "5.8.3" };
+    manifest.devDependencies = { typescript };
     await writeFile(path.join(root, "package.json"), JSON.stringify(manifest));
     await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {
       "": { dependencies: manifest.dependencies, devDependencies: manifest.devDependencies },
       "packages/components": pkg,
       "node_modules/@devpocket/components": { resolved: "packages/components", link: true },
-      "node_modules/typescript": { version: "5.8.3" },
+      "node_modules/typescript": { version: typescript },
       "node_modules/esbuild": { version: "0.1.0" },
     } }));
     const sentinel = path.join(root, ".data", "compiler-input"), marker = path.join(root, ".data", "shadow-ran");
     const failure = `require('node:fs').writeFileSync(${JSON.stringify(marker)},'called');process.exit(23);`;
     if (trigger === "compiler-input") {
       await writeFile(path.join(modules, "typescript", "bin", "tsc"),
-        `#!/usr/bin/env node\nif(require('node:fs').existsSync(${JSON.stringify(sentinel)})){${failure}}\nrequire('../lib/tsc.js');\n`);
+        `#!/usr/bin/env node\nimport {createRequire} from 'node:module';const require=createRequire(import.meta.url);\n` +
+        `if(require('node:fs').existsSync(${JSON.stringify(sentinel)})){${failure}}\nawait import('../lib/tsc.js');\n`);
     }
     await mkdir(path.join(root, "scripts"));
     if (trigger === "lifecycle")
@@ -3295,7 +3320,7 @@ test("an unchanged HEAD-sensitive compiler shim or implementation cannot inherit
   for (const kind of ["shim", "implementation"]) await t.test(kind, async () => {
     const file = kind === "shim"
       ? path.join(root, "node_modules", ".bin", process.platform === "win32" ? "tsc.cmd" : "tsc")
-      : path.join(root, "node_modules", "typescript", "lib", "_tsc.js");
+      : path.join(root, "node_modules", "typescript", "lib", "tsc.js");
     const backup = path.join(root, ".data", `${kind}-original`);
     await cp(file, backup, { verbatimSymlinks: true });
     try {
@@ -3306,7 +3331,9 @@ test("an unchanged HEAD-sensitive compiler shim or implementation cannot inherit
           : `#!/bin/sh\n"${process.execPath}" .data/compiler.cjs\n`);
         if (process.platform !== "win32") await chmod(file, 0o755);
         await writeFile(path.join(root, ".data", "compiler.cjs"), guard);
-      } else await writeFile(file, guard + await readFile(file, "utf8"));
+      } else await writeFile(file,
+        "import {createRequire as fixtureCreateRequire} from 'node:module';const fixtureRequire=fixtureCreateRequire(import.meta.url);\n" +
+        guard.replaceAll("require(", "fixtureRequire(") + await readFile(file, "utf8"));
       const result = await preflight();
       assert.equal(result.status, "passed", JSON.stringify(result));
       assert.equal(result.groups[0].candidateEligibility.status, "unbound");
@@ -3330,9 +3357,15 @@ test("an unchanged HEAD-sensitive npm launcher cannot qualify typecheck and alte
     const launcher = (await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
       "(Get-Command npm -CommandType Application,ExternalScript | Select-Object -First 1).Source"])).stdout.trim();
     const wrapper = path.join(root, ".data", "npm-wrapper"), entry = path.join(wrapper, "npm.ps1");
-    const original = await readFile(launcher, "utf8");
+    const installation = await npmPackageDirectory(launcher);
+    let original = await readFile(launcher, "utf8");
+    if (path.dirname(launcher).toLowerCase() === path.join(installation, "bin").toLowerCase()) {
+      const basedir = "$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent";
+      assert.ok(original.includes(basedir));
+      original = original.replace(basedir, "$basedir=Join-Path $PSScriptRoot 'node_modules\\npm\\bin'");
+    }
     await mkdir(wrapper);
-    await cp(path.join(path.dirname(launcher), "node_modules", "npm"), path.join(wrapper, "node_modules", "npm"),
+    await cp(installation, path.join(wrapper, "node_modules", "npm"),
       { recursive: true, verbatimSymlinks: true });
     await writeFile(entry, original);
     const env = { ...process.env };
@@ -3376,10 +3409,11 @@ test("an unchanged HEAD-sensitive npm launcher cannot qualify typecheck and alte
       assert.equal(report.groups[0].candidateEligibility.reason, "npm-unrecognized");
       assert.equal(report.groups[0].reusable, false);
     });
-    await t.test("genuine npm prefix redirection cannot attest its unrecognized effective implementation", async () => {
+    await t.test("a relocated npm implementation cannot attest unrecognized effective execution", async () => {
       const redirectedEnv = { ...process.env };
       for (const name of Object.keys(redirectedEnv)) if (/^npm_config_prefix$/i.test(name)) delete redirectedEnv[name];
       redirectedEnv.NPM_CONFIG_PREFIX = wrapper;
+      if (!original.includes("npm-prefix.js")) redirectedEnv.PATH = env.PATH;
       const first = await verify(root, [], redirectedEnv);
       assert.equal(first.report.status, "passed", JSON.stringify(first.report));
       const backend = first.report.preflight.groups.find((group) => group.group === "backend");

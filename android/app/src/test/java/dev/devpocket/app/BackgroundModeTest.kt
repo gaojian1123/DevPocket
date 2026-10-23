@@ -9,8 +9,12 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.ComponentName
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
+import android.content.pm.PackageManager
+import com.google.firebase.FirebaseApp
 import dev.devpocket.app.background.BackgroundCheckpoints
 import dev.devpocket.app.background.BackgroundMode
 import dev.devpocket.app.background.BackgroundService
@@ -21,6 +25,7 @@ import dev.devpocket.app.background.WatchStatus
 import dev.devpocket.app.data.Scope
 import dev.devpocket.app.data.WireJson
 import dev.devpocket.app.push.Notifications
+import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -65,6 +70,55 @@ class BackgroundModeTest {
         assertFalse(restored.state.value.enabled)
         assertTrue(restored.state.value.message.contains("中断"))
         assertNull(shadowOf(app).nextStartedService)
+    }
+
+    @Test fun synchronousPreferenceWriteFailuresAreNotConvertedToSuccessfulEdits() {
+        val context = object : ContextWrapper(app) {
+            override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
+                val prefs = super.getSharedPreferences(name, mode)
+                return object : SharedPreferences by prefs {
+                    override fun edit(): SharedPreferences.Editor {
+                        val editor = prefs.edit()
+                        return object : SharedPreferences.Editor by editor {
+                            override fun putBoolean(key: String?, value: Boolean): SharedPreferences.Editor {
+                                editor.putBoolean(key, value)
+                                return this
+                            }
+                            override fun putString(key: String?, value: String?): SharedPreferences.Editor {
+                                editor.putString(key, value)
+                                return this
+                            }
+                            override fun remove(key: String?): SharedPreferences.Editor {
+                                editor.remove(key)
+                                return this
+                            }
+                            override fun commit() = false
+                        }
+                    }
+                }
+            }
+        }
+        val mode = BackgroundMode(context)
+        assertThrows(IOException::class.java) { mode.start() }
+        assertFalse(mode.state.value.enabled)
+        assertNull(shadowOf(app).nextStartedService)
+        mode.stop()
+        assertNotNull(mode.state.value.error)
+        val checkpoints = BackgroundCheckpoints(context)
+        val scope = Scope("account", "host", "session")
+        assertThrows(IOException::class.java) { runBlocking { checkpoints.save(scope, NoticeCheckpoint(cursor = 1)) } }
+        assertThrows(IOException::class.java) { runBlocking { checkpoints.remove(scope) } }
+    }
+
+    @Test fun fidSupportDoesNotEnableAutomaticFirebaseInitialization() {
+        val provider = app.packageManager.getProviderInfo(
+            ComponentName(app, "com.google.firebase.provider.FirebaseInitProvider"),
+            PackageManager.MATCH_DISABLED_COMPONENTS)
+        assertFalse(provider.enabled)
+        assertFalse(provider.exported)
+        val metadata = app.packageManager.getApplicationInfo(app.packageName, PackageManager.GET_META_DATA).metaData
+        assertTrue(metadata.getBoolean("firebase_messaging_installation_id_enabled"))
+        assertTrue(FirebaseApp.getApps(app).isEmpty())
     }
 
     @Test fun explicitStartCreatesVisibleNonStickyServiceWithAStopAction() {

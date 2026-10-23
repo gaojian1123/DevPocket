@@ -5,8 +5,8 @@ import { z } from "zod";
 import { Fault, RateLimiter, bearer, fileName, publicError, relayUrl } from "./security.js";
 import { RelayStore } from "./store.js";
 import {
-  Command, HostFrame, Id, MAX_UPLOAD, MetadataPatch, PROTOCOL, VERSION, allowedMime,
-  type Receipt, type SessionInfo, type UserEvent,
+  Command, HostFrame, Id, MAX_UPLOAD, MetadataPatch, PROTOCOL, PushRegistration, VERSION, allowedMime, utf16String,
+  type PushTarget, type Receipt, type SessionInfo, type UserEvent,
 } from "./protocol.js";
 import { FcmPush, type PushSender } from "./push.js";
 import { ProofKey, proofSignature } from "./local-proof.js";
@@ -122,10 +122,10 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
         const work = (async () => {
           try {
             store.authorize(target.id, hostId);
-            const result = await push.send(target.token, {
+            const result = await push.send(target.target, {
               hostId, sessionId, eventId: event.id, kind: event.kind === "requests" ? "attention" : "status",
             });
-            if (result === "unregistered") store.pushToken(target.id, null);
+            if (result === "unregistered") store.clearPushTarget(target.id, target.target, target.revision);
           } catch (error) {
             console.error("[devpocket] Push notification failed:", error instanceof Fault ? error.code : "delivery error");
           }
@@ -329,7 +329,7 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
     }
     if (method === "POST" && url.pathname === "/v1/pair") {
       limiter.take(`pair:${ip}`, 6);
-      const input = z.object({ code: z.string().min(40).max(160), name: z.string().trim().min(1).max(80) })
+      const input = z.object({ code: utf16String(160).min(40), name: utf16String(80, z.string().trim()).min(1) })
         .strict().parse(await jsonBody(request));
       const existing = request.headers.authorization ? store.device(bearer(request.headers.authorization)) : undefined;
       json(response, 201, store.pair(input.code, input.name, existing));
@@ -364,10 +364,13 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
     }
     if (url.pathname === "/v1/push-token" && method === "PUT") {
       limiter.take(`push:${device.id}`, 8);
-      const input = z.object({ provider: z.literal("fcm"), token: z.string().min(20).max(4096).nullable() }).strict().parse(await jsonBody(request));
-      if (input.token && !push) throw new Fault("PUSH_UNCONFIGURED", "This relay has no FCM credentials. Background delivery is unavailable.", 409);
-      store.pushToken(device.id, input.token);
-      json(response, 200, { registered: input.token !== null, provider: "fcm" });
+      const input = PushRegistration.parse(await jsonBody(request));
+      const value = input.provider === "fcm" ? input.token : input.fid;
+      const target: PushTarget | null = value === null ? null :
+        { kind: input.provider === "fcm" ? "token" : "fid", value };
+      if (target && !push) throw new Fault("PUSH_UNCONFIGURED", "This relay has no FCM credentials. Background delivery is unavailable.", 409);
+      store.setPushTarget(device.id, target);
+      json(response, 200, { registered: target !== null, provider: input.provider });
       return;
     }
     const grant = /^\/v1\/grants\/([a-f0-9-]+)$/.exec(url.pathname);
@@ -397,7 +400,7 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
       }
       if (resource === "/attachments" && method === "POST") {
         limiter.take(`uploads:${device.id}`, 12);
-        const rawName = z.string().max(1000).parse(request.headers["x-file-name"]);
+        const rawName = utf16String(1000).parse(request.headers["x-file-name"]);
         let name: string;
         try { name = fileName(decodeURIComponent(rawName)); }
         catch (error) {

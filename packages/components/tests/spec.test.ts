@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  ComponentError, MAX_COMPONENT_BYTES, componentBytes, createComponentMarkdown, parseComponentSpec, safeLink, sortableDate, tableLink,
+  ComponentError, ComponentSpecSchema, MAX_COMPONENT_BYTES, componentBytes, createComponentMarkdown, parseComponentSpec, safeLink, sortableDate, tableLink,
 } from "../src/spec.js";
 
 const chart = () => ({
@@ -88,6 +88,29 @@ test("link handling permits explicit web destinations but no credentials or scri
     { id: 42, url: "https://example.com/items/42" }), "https://example.com/items/42");
   assert.equal(tableLink({ key: "id", label: "ID", type: "link", href: "https://example.com/{missing}" }, { id: 42 }), null);
   assert.equal(tableLink({ key: "id", label: "ID", type: "link" }, { id: "javascript:alert(1)" }), null);
+});
+
+test("record parsing rejects unsafe keys before they can disappear from chart or table rows", () => {
+  for (const key of ["__proto__", "constructor", "prototype"]) {
+    const extra = Object.fromEntries([[key, "unsafe"]]);
+    for (const value of [
+      { ...chart(), data: [{ day: "Monday", completed: 4, ...extra }] },
+      { type: "datagrid", columns: [{ key: "n", label: "N" }], rows: [{ n: 1, ...extra }] },
+    ]) {
+      assert.equal(ComponentSpecSchema.safeParse(value).success, false, key);
+      assert.throws(() => parseComponentSpec(value), { code: "COMPONENT_INVALID" });
+    }
+  }
+});
+
+test("text bounds retain UTF-16 limits for astral characters", () => {
+  const emoji = "\u{1F600}";
+  assert.equal(parseComponentSpec({ ...chart(), title: emoji.repeat(100) }).title, emoji.repeat(100));
+  assert.throws(() => parseComponentSpec({ ...chart(), title: emoji.repeat(101) }), { code: "COMPONENT_INVALID" });
+  const table = { type: "datagrid", columns: [{ key: "text", label: "Text" }], rows: [{ text: emoji.repeat(4000) }] };
+  assert.deepEqual(parseComponentSpec(table), table);
+  assert.throws(() => parseComponentSpec({ ...table, rows: [{ text: emoji.repeat(4001) }] }),
+    { code: "COMPONENT_INVALID" });
 });
 
 test("link expansion stops reading substitutions once the URL cannot fit its bound", () => {

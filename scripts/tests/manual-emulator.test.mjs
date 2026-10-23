@@ -3,6 +3,26 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+test("the manual PowerShell entry forwards visible mode only when explicitly requested", async () => {
+  const script = path.resolve("scripts/start-test-emulator.ps1");
+  const harness = [
+    "$ErrorActionPreference = 'Stop'; $global:captured = @()",
+    "function node { $global:captured += ,@($args); $global:LASTEXITCODE = 0 }",
+    "& $env:MANUAL_EMULATOR_ENTRY -Sdk 'selected-sdk' -Jdk 'selected-jdk' -RunDirectory 'owned-run'",
+    "& $env:MANUAL_EMULATOR_ENTRY -Sdk 'selected-sdk' -Jdk 'selected-jdk' -RunDirectory 'owned-run' -Visible",
+    "ConvertTo-Json -InputObject $global:captured -Depth 4 -Compress",
+  ].join("\n");
+  const result = await promisify(execFile)("pwsh", ["-NoProfile", "-NonInteractive", "-Command", harness],
+    { env: { ...process.env, MANUAL_EMULATOR_ENTRY: script, DEVPOCKET_ANDROID_IMAGE: "", DEVPOCKET_EMULATOR_SDK: "" },
+      timeout: 20_000 });
+  const [hidden, visible] = JSON.parse(result.stdout);
+  assert.deepEqual(hidden, [path.resolve("scripts/manual-emulator.mjs"), "start", "--repo", process.cwd(), "--queue-timeout", "900",
+    "--sdk", "selected-sdk", "--jdk", "selected-jdk", "--directory", "owned-run"]);
+  assert.deepEqual(visible, [...hidden, "--visible"]);
+});
 
 test("manual commands address one live owned run and stop is acknowledged only after cleanup", async (t) => {
   const { openManualControl, requestManualEmulator } = await import("../manual-emulator.mjs");

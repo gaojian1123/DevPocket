@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.net.toUri
 import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
@@ -46,12 +47,13 @@ import kotlinx.serialization.json.*
 
 private const val COMPONENT_ORIGIN = "https://appassets.androidplatform.net"
 private const val COMPONENT_PAGE = "$COMPONENT_ORIGIN/assets/components/index.html"
+private const val UNSUPPORTED_WEBVIEW = "当前系统 WebView 不支持安全显示此内容，请在原始客户端查看。"
 private val componentResources = setOf("/assets/components/index.html", "/assets/components/component.js",
     "/assets/components/component.css", "/assets/components/component.js.LEGAL.txt", "/assets/components/THIRD-PARTY-NOTICES.txt")
 
 internal fun componentExternalUri(value: String): Uri? {
     if (value.length > 2000 || value.any { it <= ' ' || it == '\u007f' || it == '\\' }) return null
-    val uri = Uri.parse(value)
+    val uri = value.toUri()
     return uri.takeIf { it.scheme in setOf("http", "https") && !it.host.isNullOrEmpty() &&
         it.userInfo == null && it.host != "appassets.androidplatform.net" }
 }
@@ -127,14 +129,14 @@ private fun ComponentSurface(card: ComponentCard, detail: Boolean, modifier: Mod
             WebViewFeature.isFeatureSupported(WebViewFeature.POST_WEB_MESSAGE)
     }
     if (!supported || failure != null) {
-        Text(failure ?: "当前系统 WebView 不支持安全显示此内容，请在原始客户端查看。",
+        Text(failure ?: UNSUPPORTED_WEBVIEW,
             modifier.padding(vertical = 16.dp), color = MaterialTheme.colorScheme.error)
         return
     }
     key(card.componentId, context) {
         AndroidView(
             factory = { viewContext ->
-                ComponentWebView(viewContext, failed = { failure = it }, measured = {
+                componentWebView(viewContext, failed = { failure = it }, measured = {
                     val bounded = it.coerceIn(72, 420)
                     if (!detail && height != bounded) { height = bounded; changed() }
                 }, rendered = { rendering(it) }, requestLink = { if (link == null) link = it })
@@ -162,8 +164,8 @@ private fun ComponentSurface(card: ComponentCard, detail: Boolean, modifier: Mod
 }
 
 @SuppressLint("SetJavaScriptEnabled")
-private class ComponentWebView(context: Context, private val failed: (String) -> Unit,
-    private val measured: (Int) -> Unit, private val rendered: (Boolean) -> Unit, private val requestLink: (Uri) -> Unit) : WebView(context) {
+private fun componentWebView(context: Context, failed: (String) -> Unit,
+    measured: (Int) -> Unit, rendered: (Boolean) -> Unit, requestLink: (Uri) -> Unit) = object : WebView(context) {
     private var active = true
     private var ready = false
     private var requestId = ""
@@ -218,18 +220,20 @@ private class ComponentWebView(context: Context, private val failed: (String) ->
                 return true
             }
         }
-        WebViewCompat.addWebMessageListener(this, "devPocketHost", setOf(COMPONENT_ORIGIN)) { _, message, origin, mainFrame, _ ->
-            if (!active) return@addWebMessageListener
-            if (!mainFrame || origin.scheme != "https" || origin.host != "appassets.androidplatform.net" ||
-                origin.port != -1 || origin.userInfo != null) {
-                Log.w("DevPocket", "Blocked an untrusted component frame.")
-                return@addWebMessageListener
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            WebViewCompat.addWebMessageListener(this, "devPocketHost", setOf(COMPONENT_ORIGIN)) { _, message, origin, mainFrame, _ ->
+                if (!active) return@addWebMessageListener
+                if (!mainFrame || origin.scheme != "https" || origin.host != "appassets.androidplatform.net" ||
+                    origin.port != -1 || origin.userInfo != null) {
+                    Log.w("DevPocket", "Blocked an untrusted component frame.")
+                    return@addWebMessageListener
+                }
+                if (message.type != WebMessageCompat.TYPE_STRING) { fail("渲染器消息类型不受支持。"); return@addWebMessageListener }
+                receive(message.data.orEmpty())
             }
-            if (message.type != WebMessageCompat.TYPE_STRING) { fail("渲染器消息类型不受支持。"); return@addWebMessageListener }
-            receive(message.data.orEmpty())
-        }
-        loadUrl(COMPONENT_PAGE)
-        postDelayed({ if (active && !ready) fail("可视化渲染器未能启动，请在原始客户端查看。") }, 15_000)
+            loadUrl(COMPONENT_PAGE)
+            postDelayed({ if (active && !ready) fail("可视化渲染器未能启动，请在原始客户端查看。") }, 15_000)
+        } else fail(UNSUPPORTED_WEBVIEW)
     }
 
     fun render(card: ComponentCard, view: String, theme: String, zoom: Int) {
@@ -248,8 +252,10 @@ private class ComponentWebView(context: Context, private val failed: (String) ->
 
     private fun send() {
         if (active && ready) pending?.let {
-            WebViewCompat.postWebMessage(this, WebMessageCompat(it), Uri.parse(COMPONENT_ORIGIN))
-            pending = null
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.POST_WEB_MESSAGE)) {
+                WebViewCompat.postWebMessage(this, WebMessageCompat(it), COMPONENT_ORIGIN.toUri())
+                pending = null
+            } else fail(UNSUPPORTED_WEBVIEW)
         }
     }
 

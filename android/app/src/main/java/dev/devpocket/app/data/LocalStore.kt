@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import androidx.core.database.sqlite.transaction
 import kotlinx.serialization.json.decodeFromJsonElement
 
 class LocalStore(context: Context) : SQLiteOpenHelper(context, "devpocket-cache.db", null, 2) {
@@ -47,12 +48,10 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "devpocket-cache.
         val entry = Outbox(scope, command, "sending", System.currentTimeMillis(), attachments = draft.attachments,
             componentReference = draft.componentReference)
         val db = writableDatabase
-        db.beginTransaction()
-        try {
+        db.transaction {
             saveOutbox(entry)
-            if (this.draft(scope).revision <= draft.revision) saveDraft(scope, Draft(revision = draft.revision + 1))
-            db.setTransactionSuccessful()
-        } finally { db.endTransaction() }
+            if (this@LocalStore.draft(scope).revision <= draft.revision) saveDraft(scope, Draft(revision = draft.revision + 1))
+        }
         return entry
     }
 
@@ -128,8 +127,7 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "devpocket-cache.
     @Synchronized fun applyPage(scope: Scope, page: EventPage) {
         require(page.events.all { it.hostId == scope.hostId && it.sessionId == scope.sessionId }) { "Relay returned another session's events." }
         val db = writableDatabase
-        db.beginTransaction()
-        try {
+        db.transaction {
             if (page.reset) db.delete("events", "scope=?", arrayOf(scope.key))
             for (event in page.events) {
                 val values = ContentValues().apply {
@@ -142,17 +140,14 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, "devpocket-cache.
             db.execSQL("INSERT INTO cursors VALUES (?,?) ON CONFLICT(scope) DO UPDATE SET value=excluded.value", arrayOf<Any>(scope.key, cursor))
             db.execSQL("DELETE FROM events WHERE scope=? AND cursor NOT IN (SELECT cursor FROM events WHERE scope=? ORDER BY cursor DESC LIMIT 6000)",
                 arrayOf(scope.key, scope.key))
-            db.setTransactionSuccessful()
-        } finally { db.endTransaction() }
+        }
     }
 
     @Synchronized fun forgetAccount(accountId: String) {
         val db = writableDatabase
-        db.beginTransaction()
-        try {
+        db.transaction {
             db.delete("catalogs", "account_id=?", arrayOf(accountId))
             for (table in listOf("events", "cursors", "drafts", "outbox")) db.delete(table, "scope LIKE ?", arrayOf("$accountId|%"))
-            db.setTransactionSuccessful()
-        } finally { db.endTransaction() }
+        }
     }
 }

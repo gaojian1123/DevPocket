@@ -127,7 +127,7 @@ fun SessionPane(state: PocketUi, model: PocketViewModel, expanded: Boolean) {
     }
     componentId?.let { selected ->
         val card = state.events.asReversed().firstOrNull { it.component?.componentId == selected &&
-            it.hostId == state.selected?.hostId && it.sessionId == state.selected?.sessionId }?.component
+            it.hostId == state.selected?.hostId && it.sessionId == state.selected.sessionId }?.component
         ComponentDetail(card, state.requests.isNotEmpty(), !state.uploading, componentReferenceError,
             dismiss = { componentId = null }, reference = { value ->
                 val scope = state.selected
@@ -379,7 +379,7 @@ private fun RequestCard(request: PendingRequest, disabled: Boolean,
             }
             if (readOnly) {
                 request.choices.forEach { Text("• $it", style = MaterialTheme.typography.bodyMedium) }
-                if (history?.record?.status != "confirmed")
+                if (history.record.status != "confirmed")
                     Text("未确认的尝试不代表运行时接受了该答案；请在原始客户端核实。", style = MaterialTheme.typography.bodySmall)
             } else if (!request.supported || request.type == "terminal") {
                 Text("请在原始 GitHub Copilot 客户端处理。此形式不支持远程确认，不会自动接受。",
@@ -417,13 +417,14 @@ internal fun ComposeBar(
     attach: () -> Unit,
     models: () -> Unit,
     stop: () -> Unit,
+    modifier: Modifier = Modifier,
     removeComponentReference: () -> Unit = {},
     inputModifier: Modifier = Modifier,
 ) {
     val session = state.session ?: return
     val hasMessage = state.draft.text.isNotBlank()
     val showStop = !hasMessage && session.state in setOf("running", "waiting", "cancel_requested")
-    Surface(tonalElevation = 3.dp) {
+    Surface(modifier = modifier, tonalElevation = 3.dp) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = models, enabled = session.online && session.capabilities.models && !state.busy,

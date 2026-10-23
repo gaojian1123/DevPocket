@@ -5,6 +5,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { utf16String } from "@devpocket/components";
 import { HostConfig } from "../../backend/src/bridge.ts";
 import { inspectUserExtension, installUserExtension, userExtensionDirectory } from "../../backend/src/install-user.ts";
 import { canonical, openHost, publicFingerprint, requireValue, sha, validConfig } from "./handoff.mjs";
@@ -12,15 +13,15 @@ import { AzureSetupClient, vmParts } from "./setup-azure.mjs";
 import { renderSetupAction, runSetupAction, scopeHash } from "./setup-actions.mjs";
 import { exists, lockDirectory, protectDirectory, readJson, saveJson, savePrivate } from "./setup-state.mjs";
 
-const uuid = z.string().uuid();
-const nameSchema = z.string().trim().min(1).max(80).regex(/^[^\x00-\x1f\x7f-\x9f]+$/);
+const uuid = z.guid();
+const nameSchema = utf16String(80, z.string().trim()).min(1).regex(/^[^\x00-\x1f\x7f-\x9f]+$/);
 const optionsSchema = z.object({ tenantId: uuid.optional(), vmId: z.string().optional(), name: nameSchema.optional() }).strict();
 const stateSchema = z.object({
   schemaVersion: z.literal(1), assetHash: z.string().regex(/^[a-f0-9]{64}$/),
   target: z.object({ tenantId: uuid, principalId: uuid, vmId: z.string(), vmUniqueId: uuid,
     deploymentId: uuid, dataDiskId: z.string(), subscriptionId: uuid }).strict(),
-  copilotHome: z.string(), discoveryScope: z.record(z.unknown()), scope: z.record(z.unknown()).optional(),
-  operations: z.record(z.unknown()), authenticated: z.boolean().optional(),
+  copilotHome: z.string(), discoveryScope: z.record(z.string(), z.unknown()), scope: z.record(z.string(), z.unknown()).optional(),
+  operations: z.record(z.string(), z.unknown()), authenticated: z.boolean().optional(),
   installed: z.boolean().optional(), complete: z.boolean().optional(),
 }).strict();
 

@@ -57,7 +57,7 @@ export async function backendTestCatalogue(root, scope = "backend") {
       throw new Error("Linked backend test catalogues are not supported.");
     }
   }
-  const ts = await import("typescript");
+  const { parse } = await import("@babel/parser");
   const names = scope === "backend"
     ? (await readdir(path.join(root, "backend", "tests"))).filter((name) => name.endsWith(".test.ts")).sort()
     : LINUX_PLATFORM_TESTS.map((file) => path.basename(file));
@@ -72,42 +72,54 @@ export async function backendTestCatalogue(root, scope = "backend") {
     identities.push([file, hash(text)]);
     totalBytes += Buffer.byteLength(text);
     if (totalBytes > 4 * 1024 * 1024) throw new Error("Backend test catalogue exceeded its source budget.");
-    const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, name.endsWith(".ts") ? ts.ScriptKind.TS : ts.ScriptKind.JS);
-    if (source.parseDiagnostics.length) throw new Error("Backend test declarations could not be parsed.");
+    let source;
+    try {
+      source = parse(text, { sourceType: "module", sourceFilename: file, attachComment: false,
+        createParenthesizedExpressions: true, plugins: name.endsWith(".ts") ? ["typescript"] : [] });
+    } catch (error) {
+      throw new Error("Backend test declarations could not be parsed.", { cause: error });
+    }
     const imports = new Set();
-    for (const statement of source.statements) {
-      if (!ts.isImportDeclaration(statement) || statement.moduleSpecifier.text !== "node:test") continue;
-      if (statement.importClause?.name) imports.add(statement.importClause.name.text);
-      const bindings = statement.importClause?.namedBindings;
-      if (bindings && ts.isNamedImports(bindings)) {
-        for (const binding of bindings.elements) {
-          if (!binding.isTypeOnly && ["test", "it", "describe"].includes((binding.propertyName ?? binding.name).text)) {
-            imports.add(binding.name.text);
-          }
-        }
+    for (const statement of source.program.body) {
+      if (statement.type !== "ImportDeclaration" || statement.source.value !== "node:test" || statement.importKind === "type") continue;
+      for (const binding of statement.specifiers) {
+        if (binding.type === "ImportDefaultSpecifier" ||
+            binding.type === "ImportSpecifier" && binding.importKind !== "type" &&
+              ["test", "it", "describe"].includes(binding.imported.name ?? binding.imported.value))
+          imports.add(binding.local.name);
       }
     }
     const entries = [];
     const visit = (node, contexts = new Set()) => {
-      const expression = ts.isCallExpression(node) ? node.expression : undefined;
-      const direct = expression && ts.isIdentifier(expression) && imports.has(expression.text);
-      const member = expression && ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression) &&
-        ((contexts.has(expression.expression.text) && expression.name.text === "test") ||
-          (imports.has(expression.expression.text) && ["only", "skip", "todo"].includes(expression.name.text)));
+      if (!node || typeof node.type !== "string") return;
+      const expression = ["CallExpression", "OptionalCallExpression"].includes(node.type) ? node.callee : undefined;
+      const direct = expression?.type === "Identifier" && imports.has(expression.name);
+      const member = expression && ["MemberExpression", "OptionalMemberExpression"].includes(expression.type) &&
+        !expression.computed && expression.object.type === "Identifier" && expression.property.type === "Identifier" &&
+        ((contexts.has(expression.object.name) && expression.property.name === "test") ||
+          (imports.has(expression.object.name) && ["only", "skip", "todo"].includes(expression.property.name)));
       if (direct || member) {
         // Node reports member calls at the method token, not the receiver.
-        const location = source.getLineAndCharacterOfPosition((member ? expression.name : expression).getStart(source));
-        entries.push({ file, line: location.line + 1, column: location.character + 1 });
+        const location = (member ? expression.property : expression).loc.start;
+        entries.push({ file, line: location.line, column: location.column + 1 });
         if (++declarations > 2048) throw new Error("Backend declarations exceeded their budget.");
         for (const argument of node.arguments) {
           const nested = new Set(contexts);
-          if ((ts.isArrowFunction(argument) || ts.isFunctionExpression(argument)) &&
-              argument.parameters[0] && ts.isIdentifier(argument.parameters[0].name)) {
-            nested.add(argument.parameters[0].name.text);
+          if (["ArrowFunctionExpression", "FunctionExpression"].includes(argument.type)) {
+            const parameter = argument.params[0];
+            const identifier = parameter?.type === "AssignmentPattern" ? parameter.left :
+              parameter?.type === "RestElement" ? parameter.argument : parameter;
+            if (identifier?.type === "Identifier") nested.add(identifier.name);
           }
           visit(argument, nested);
         }
-      } else ts.forEachChild(node, (child) => visit(child, contexts));
+      } else {
+        for (const [key, value] of Object.entries(node)) {
+          if (["loc", "start", "end", "comments", "tokens", "extra"].includes(key)) continue;
+          if (Array.isArray(value)) for (const child of value) visit(child, contexts);
+          else if (value && typeof value === "object") visit(value, contexts);
+        }
+      }
     };
     visit(source);
     files.push({ absolute, file, entries });

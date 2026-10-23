@@ -36,7 +36,8 @@ import dev.devpocket.app.data.Scope
 import dev.devpocket.app.data.SessionInfo
 
 @Composable
-fun DevPocket(model: PocketViewModel, requestNotifications: () -> Unit) {
+fun DevPocket(model: PocketViewModel, requestNotifications: () -> Unit,
+    requestLocalNetwork: () -> Unit, openPermissionSettings: () -> Unit) {
     val state by model.ui.collectAsStateWithLifecycle()
     var destination by rememberSaveable { mutableStateOf("sessions") }
     var pairing by rememberSaveable { mutableStateOf(false) }
@@ -85,7 +86,8 @@ fun DevPocket(model: PocketViewModel, requestNotifications: () -> Unit) {
                             VerticalDivider()
                         }
                         if (destination == "settings") {
-                            SettingsPane(state, model, requestNotifications, { pairing = true }, Modifier.weight(1f))
+                            SettingsPane(state, model, requestNotifications, requestLocalNetwork, openPermissionSettings,
+                                { pairing = true }, Modifier.weight(1f))
                         } else if (expanded) {
                             SessionList(state, model, { pairing = true }, Modifier.widthIn(max = 360.dp).width(320.dp).fillMaxHeight())
                             VerticalDivider()
@@ -109,7 +111,7 @@ fun DevPocket(model: PocketViewModel, requestNotifications: () -> Unit) {
                 }
             }
         }
-        if (pairing) PairDialog(state, model) { pairing = false }
+        if (pairing) PairDialog(state, model, requestLocalNetwork, openPermissionSettings) { pairing = false }
     }
 }
 
@@ -260,7 +262,8 @@ private fun SessionList(state: PocketUi, model: PocketViewModel, pair: () -> Uni
 }
 
 @Composable
-private fun PairDialog(state: PocketUi, model: PocketViewModel, dismiss: () -> Unit) {
+private fun PairDialog(state: PocketUi, model: PocketViewModel,
+    requestLocalNetwork: () -> Unit, openPermissionSettings: () -> Unit, dismiss: () -> Unit) {
     var relay by rememberSaveable { mutableStateOf("") }
     var code by rememberSaveable { mutableStateOf("") }
     var name by rememberSaveable { mutableStateOf("我的 Android") }
@@ -268,7 +271,8 @@ private fun PairDialog(state: PocketUi, model: PocketViewModel, dismiss: () -> U
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.widthIn(max = 560.dp).fillMaxWidth().padding(16.dp).imePadding().testTag("native_pair_form"),
             shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp) {
-            LazyColumn(contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            LazyColumn(modifier = Modifier.testTag("pairing_fields"), contentPadding = PaddingValues(24.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 item { Text("安全配对", style = MaterialTheme.typography.headlineSmall) }
                 item { Text("在 Dev Box 的 DevPocket 管理命令中生成 5 分钟有效的一次性码。每台手机持有独立、可撤销的凭据。") }
                 item { OutlinedTextField(relay, { relay = it }, label = { Text("HTTPS 中转地址") },
@@ -277,6 +281,9 @@ private fun PairDialog(state: PocketUi, model: PocketViewModel, dismiss: () -> U
                 item { OutlinedTextField(code, { code = it }, label = { Text("一次性配对码") },
                     visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth()) }
                 item { OutlinedTextField(name, { name = it.take(80) }, label = { Text("设备名称") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
+                if (state.localNetworkAllowed != null) item {
+                    LocalNetworkAccessControls(state.localNetworkAllowed, requestLocalNetwork, openPermissionSettings)
+                }
                 item { Text("GitHub 令牌不会被传到手机。只向你信任的独立中转发送配对码。", style = MaterialTheme.typography.bodySmall) }
                 state.error?.let { message -> item { Text(message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) } }
                 item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -294,6 +301,7 @@ private fun PairDialog(state: PocketUi, model: PocketViewModel, dismiss: () -> U
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SettingsPane(state: PocketUi, model: PocketViewModel, notifications: () -> Unit,
+    requestLocalNetwork: () -> Unit, openPermissionSettings: () -> Unit,
     pair: () -> Unit, modifier: Modifier = Modifier) {
     var revoke by remember { mutableStateOf<BoxCard?>(null) }
     var forget by remember { mutableStateOf<String?>(null) }
@@ -306,6 +314,11 @@ private fun SettingsPane(state: PocketUi, model: PocketViewModel, notifications:
                 for ((id, title) in listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色"))
                     FilterChip(selected = state.theme == id, onClick = { model.setTheme(id) }, label = { Text(title) })
             } }
+            if (state.localNetworkAllowed != null) item {
+                SettingsCard("局域网连接", Icons.Default.Router) {
+                    LocalNetworkAccessControls(state.localNetworkAllowed, requestLocalNetwork, openPermissionSettings)
+                }
+            }
             item { SettingsCard("后台模式", Icons.Default.NotificationsActive) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("接收后台提醒", modifier = Modifier.weight(1f))
@@ -368,6 +381,31 @@ private fun SettingsPane(state: PocketUi, model: PocketViewModel, notifications:
             text = { Text("本机草稿、历史缓存将被删除。这不是服务端撤销；丢失设备的授权请在 Dev Box 撤销。") },
             confirmButton = { TextButton(onClick = { model.forget(id); forget = null }) { Text("移除") } },
             dismissButton = { TextButton(onClick = { forget = null }) { Text("取消") } })
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun LocalNetworkAccessControls(allowed: Boolean, request: () -> Unit, openSettings: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(if (allowed) "已允许局域网访问" else "局域网访问尚未允许",
+            style = MaterialTheme.typography.titleSmall, modifier = Modifier.testTag("local_network_status"))
+        Text("Android 17 上连接局域网中转前需要此权限；公网中转不需要。应用不会扫描局域网。",
+            style = MaterialTheme.typography.bodySmall)
+        if (!allowed) Text("拒绝授权后仍可使用公网中转。若系统不再询问，可在应用权限设置中开启。",
+            style = MaterialTheme.typography.bodySmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!allowed) OutlinedButton(onClick = request,
+                modifier = Modifier.heightIn(min = 48.dp).testTag("local_network_permission_request")) {
+                Text("允许局域网访问")
+            }
+            TextButton(onClick = openSettings,
+                modifier = Modifier.heightIn(min = 48.dp).testTag("local_network_permission_settings")) {
+                Text("系统权限设置")
+            }
+        }
+        Text("授权不会自动重新配对或重发操作；请先核实未确认的结果，再手动继续。",
+            style = MaterialTheme.typography.bodySmall)
     }
 }
 
