@@ -20,7 +20,7 @@ const policyInputs = [
   "verify.mjs", "verify.ps1", "verification.mjs", "verification-policy.mjs", "verification-executor.mjs", "verification-preflight.mjs",
   "verification-run.mjs", "verification-transition.mjs", "verification-backend.mjs", "verification-android.mjs",
   "test-workflow.mjs", "verification-tooling.mjs", "verification-admission.mjs", "verification-ci.mjs",
-  "verification-ci-artifact.ps1", "development-policy.mjs",
+  "verification-ci-artifact.ps1", "development-policy.mjs", "development-paths.mjs",
   "candidate-commit.mjs", "native-candidate.mjs", "git-state.mjs", "process.mjs",
   "owned-command-windows.mjs", "owned-command.cs", "owned-command.ps1", "owned-command-linux.py", "owned-command-darwin.py", "local-ipc.mjs",
   "backend-diagnostics.mjs", "diagnostic-errors.mjs", "diagnostic-publication.mjs", "bounded-worker-log.mjs",
@@ -645,29 +645,45 @@ export async function verificationPreflight(root, plan, options = {}) {
       } : {}) };
   });
   const results = [];
+  let ownershipFailure;
   for (const group of groups) {
-    const identities = [], issues = [];
-    const check = async (prerequisite, operation, reason = "preflight-tool") => {
-      try { identities.push([prerequisite, await operation()]); }
-      catch (error) {
-        issues.push({ prerequisite, failure: failureDetails(error, reason) });
+    const identities = [], issues = [], notProbed = [], passed = new Set();
+    const check = async (prerequisite, operation, reason = "preflight-tool", requires = []) => {
+      const blockedBy = requires.filter((name) => !passed.has(name));
+      if (blockedBy.length) {
+        notProbed.push({ prerequisite, blockedBy });
+        return;
+      }
+      try {
+        identities.push([prerequisite, await operation()]);
+        passed.add(prerequisite);
+      } catch (error) {
+        const failure = failureDetails(error, reason);
+        issues.push({ prerequisite, failure });
+        if (failure.observedProcess === "owned-command-supervisor" && failure.processTreeStopped !== true) {
+          ownershipFailure = error;
+          passed.delete("command-ownership");
+        }
       }
     };
     const has = (id) => selected.some((item) => item.group === group && item.id === id);
+    await check("command-ownership", () => {
+      if (ownershipFailure) throw ownershipFailure;
+      return owner();
+    });
     await check("node", () => once("node", async () => {
       if (!/^v26\./.test(process.version)) throw diagnosticError("preflight-version");
       return { version: process.version, file: process.execPath, binary: await fileIdentity(process.execPath),
         child: await tool("node", ["--version"], (text) => /^v26\./.test(text)) };
-    }));
-    await check("command-ownership", owner);
-    if (!issues.length) await check("powershell", powershell);
+    }), "preflight-tool", ["command-ownership"]);
+    await check("powershell", powershell, "preflight-tool", ["command-ownership"]);
     await check("output-directory", () => writable(root, options.directory), "preflight-path");
     const usesNpm = ["tooling", "backend", "android", "device"].includes(group);
     if (usesNpm) {
       await check("root-dependencies", () => once("root-dependencies", () => dependencies(root)), "preflight-dependencies");
-      if (!issues.length) await check("npm", npm);
-      if (group === "tooling" && !issues.length) await check("native-npm", nativeNpm);
-      if (!issues.length) await check("node-command", () => once("node-command", async () => {
+      await check("npm", npm, "preflight-tool", ["command-ownership", "node", "powershell"]);
+      if (group === "tooling") await check("native-npm", nativeNpm, "preflight-tool", ["command-ownership", "npm"]);
+      await check("node-command", () => once("node-command", async () => {
         if ((await npm()).candidateSafe !== true) return { status: "unbound" };
         const child = (await memo.get("node")).child;
         const file = await resolveVerificationExecutable(root, "node", { shell: true });
@@ -682,34 +698,31 @@ export async function verificationPreflight(root, plan, options = {}) {
           ["-NoProfile", "-NonInteractive", "-Command", `& '${file.replaceAll("'", "''")}' --version; exit $LASTEXITCODE`]);
         if (!/^v26\./.test(output)) throw diagnosticError("preflight-version");
         return { file, target, kind, binary, output: digest(output) };
-      }));
+      }), "preflight-tool", ["command-ownership", "npm"]);
       identities.push(["node-environment", environment(/^(?:NODE_.*|TSX_.*|TS_NODE_.*|ESBUILD_.*|NPM_CONFIG_.*|PATH|COMSPEC|PATHEXT|NODEFAULTCURRENTDIRECTORYINEXEPATH|SHELL|SYSTEMROOT|WINDIR|CI|TZ|LANG|LC_.*)$/i)]);
     }
-    if (has("typecheck") && !issues.length) {
+    if (has("typecheck")) {
       await check("typecheck-contract", () => typecheckContract(root, inputs,
         identities.find(([name]) => name === "node")?.[1], identities.find(([name]) => name === "npm")?.[1],
-        identities.find(([name]) => name === "node-command")?.[1], options.signal));
+        identities.find(([name]) => name === "node-command")?.[1], options.signal),
+      "preflight-tool", ["command-ownership", "root-dependencies", "node-command"]);
     }
     if (has("backend-build")) await check("backend-output", () => writable(root, path.join(root, "dist")), "preflight-path");
     if (group === "tooling" || has("backend-tests")) {
-      if (!issues.length) {
-        await check("git", () => once("git", async () => ({
-          tool: await tool("git", ["--version"], (text) => /^git version 2\.(?:3[4-9]|[4-9]\d|\d{3,})\./.test(text)),
-          configuration: digest(await readOnlyGit(root, ["config", "--null", "--list", "--show-origin", "--show-scope"])),
-          branch: (await readOnlyGit(root, ["rev-parse", "--symbolic-full-name", "HEAD"])).trim(),
-        })));
-      }
+      await check("git", () => once("git", async () => ({
+        tool: await tool("git", ["--version"], (text) => /^git version 2\.(?:3[4-9]|[4-9]\d|\d{3,})\./.test(text)),
+        configuration: digest(await readOnlyGit(root, ["config", "--null", "--list", "--show-origin", "--show-scope"])),
+        branch: (await readOnlyGit(root, ["rev-parse", "--symbolic-full-name", "HEAD"])).trim(),
+      })), "preflight-tool", ["command-ownership"]);
     }
     if (group === "tooling") {
-      if (!issues.length) {
-        await check("ssh-keygen", () => once("ssh-keygen", async () => {
-          const file = await resolveVerificationExecutable(root, "ssh-keygen");
-          return { file, binary: await fileIdentity(file) };
-        }));
-      }
+      await check("ssh-keygen", () => once("ssh-keygen", async () => {
+        const file = await resolveVerificationExecutable(root, "ssh-keygen");
+        return { file, binary: await fileIdentity(file) };
+      }));
     }
     if (group === "tooling" || has("setup") || has("operations-tests")) {
-      if (!issues.length) await check("python", () => python("python"));
+      await check("python", () => python("python"), "preflight-tool", ["command-ownership"]);
       identities.push(["python-environment", environment(/^(?:PYTHON.*|VIRTUAL_ENV)$/i)]);
     }
     if (has("azure-tests")) {
@@ -723,7 +736,7 @@ export async function verificationPreflight(root, plan, options = {}) {
           path.join(root, ".tools", "probe-python", process.platform === "win32" ? "Scripts" : "bin",
             process.platform === "win32" ? "python.exe" : "python");
         return python(file, match[1]);
-      }, "preflight-dependencies");
+      }, "preflight-dependencies", ["command-ownership"]);
     }
     if (has("operations-tests")) {
       await check("operations-python", async () => {
@@ -731,11 +744,11 @@ export async function verificationPreflight(root, plan, options = {}) {
         const match = requirements.trim().match(/^cryptography==(\d+\.\d+\.\d+)$/);
         if (!match) throw diagnosticError("preflight-dependencies");
         return python("python", match[1]);
-      }, "preflight-dependencies");
+      }, "preflight-dependencies", ["command-ownership"]);
     }
     if (["android", "device"].includes(group)) {
       const device = group === "device";
-      if (!issues.length) await check("native-npm", nativeNpm);
+      await check("native-npm", nativeNpm, "preflight-tool", ["command-ownership", "npm"]);
       await check("android-entry", () => fileIdentity(path.join(root, "scripts", device ? "test-android.ps1" : "build-android.ps1")), "preflight-path");
       const jdk = path.resolve(root, options.jdk ?? (device ? process.env.DEVPOCKET_JDK : undefined) ?? path.join(".tools", "jdk-21"));
       const sdk = path.resolve(root, options.sdk ?? (device ? process.env.DEVPOCKET_ANDROID_SDK : undefined) ?? path.join(".tools", "android-sdk"));
@@ -750,7 +763,7 @@ export async function verificationPreflight(root, plan, options = {}) {
         if (!/(?:openjdk|java) version "(?:21|25)\./.test(output)) throw diagnosticError("preflight-version");
         return { jdk, java: await fileIdentity(java), release: await fileIdentity(path.join(jdk, "release")),
           tree: await treeIdentity(jdk), version: digest(output) };
-      }), "preflight-sdk");
+      }), "preflight-sdk", ["command-ownership"]);
       await check("android-platform-37.2", () => once(`sdk:${sdk}`, async () => ({
         sdk, platform: await fileIdentity(path.join(sdk, "platforms", "android-37.2", "android.jar")),
         platformMetadata: await fileIdentity(path.join(sdk, "platforms", "android-37.2", "package.xml")),
@@ -793,7 +806,7 @@ export async function verificationPreflight(root, plan, options = {}) {
         await check("adb", () => once(`adb:${emulatorSdk}`, async () => {
           const adb = path.join(emulatorSdk, "platform-tools", executableName("adb"));
           return { binary: await fileIdentity(adb), version: digest(await probe(adb, ["version"])) };
-        }), "preflight-sdk");
+        }), "preflight-sdk", ["command-ownership"]);
         await check("emulator-acceleration", () => once(`emulator:${emulatorSdk}`, async () => {
           const emulator = path.join(emulatorSdk, "emulator", executableName("emulator"));
           const output = await probe(emulator, ["-accel-check"]);
@@ -813,7 +826,7 @@ export async function verificationPreflight(root, plan, options = {}) {
             version: digest(versions[0]), tree: digest(JSON.stringify(files)) };
           options.onEmulatorIdentity?.(structuredClone({ identity, files }));
           return identity;
-        }), "preflight-acceleration");
+        }), "preflight-acceleration", ["command-ownership"]);
       }
     }
     const npmIdentity = identities.find(([name]) => name === "npm")?.[1];
@@ -833,11 +846,12 @@ export async function verificationPreflight(root, plan, options = {}) {
         cache?.init || cache?.initKotlin || cache?.initDirectory ||
         identities.find(([name]) => name === "native-npm")?.[1]?.bound !== true ||
         identities.find(([name]) => name === "native-configuration")?.[1]?.reusable !== true);
-    results.push({ group, status: issues.length ? "blocked" : "passed", issues,
-      candidateSafe, reusable: !issues.length && !unbound,
+    const blocked = issues.length > 0 || notProbed.length > 0;
+    results.push({ group, status: blocked ? "blocked" : "passed", issues, notProbed,
+      candidateSafe, reusable: !blocked && !unbound,
       ...(has("typecheck") ? { candidateEligibility: identities.find(([name]) => name === "typecheck-contract")?.[1] ??
         { status: "unavailable", reason: "prerequisites-blocked" } } : {}),
-      ...(issues.length ? {} : {
+      ...(blocked ? {} : {
         fingerprint: digest(JSON.stringify({ platform: process.platform, arch: process.arch, identities })),
         prerequisites: identities.map(([prerequisite, value]) => ({ prerequisite, fingerprint: digest(JSON.stringify(value)) })),
       }) });

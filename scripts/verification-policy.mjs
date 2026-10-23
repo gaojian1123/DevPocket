@@ -31,7 +31,7 @@ const rules = [
   { id: "documentation", description: "Documentation does not select application checks.",
     matches: (file) => ["README.md", "VALIDATION.md"].includes(file) || /^docs\/.*\.md$/.test(file), checks: [] },
   { id: "development-tooling", description: "Local tool setup, trust policy and candidate preparation use the complete tooling suite.",
-    matches: (file) => ["scripts/development-policy.mjs",
+    matches: (file) => ["scripts/development-policy.mjs", "scripts/development-paths.mjs",
       "scripts/candidate-commit.mjs", "scripts/native-candidate.mjs",
       "scripts/setup-xcode-mcp.mjs", "config/xcode-mcp.example.json", "scripts/test-workflow.mjs"].includes(file), checks: tooling },
   { id: "agent-instructions", description: "DevPocket development instructions use workflow regressions, not application checks.",
@@ -46,7 +46,7 @@ const rules = [
     matches: (file) => [
       "verification", "verification-execution", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
       "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
-      "bounded-worker-log", "development-tools", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner", "macos-host",
+      "bounded-worker-log", "development-tools", "development-approval", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner", "macos-host",
     ].some((name) => file === `scripts/tests/${name}.test.mjs`) ||
       ["scripts/tests/fixtures/emulator-lease-peer.mjs", "scripts/tests/fixtures/verification-tools.mjs"].includes(file), checks: tooling },
   { id: "backend-execution", description: "Backend command adaptation, builds and packaging require backend checks, not native execution.",
@@ -106,7 +106,7 @@ const otherPlatformInputs = new Set([
 ]);
 const selectsMacos = (file, rule) => !otherPlatformInputs.has(file) && (
   macosRules.has(rule.id) || rule.id === "android-execution" ||
-  rule.id === "tooling-regression" && /^scripts\/tests\/(?:verification(?:-execution|-diagnostics)?|development-tools|android-runner|android-build|native-lifecycle|process|emulator-resources|manual-emulator|xcode-mcp|workflow-runner|macos-host)\.test\.mjs$/.test(file) ||
+  rule.id === "tooling-regression" && /^scripts\/tests\/(?:verification(?:-execution|-diagnostics)?|development-(?:tools|approval)|android-runner|android-build|native-lifecycle|process|emulator-resources|manual-emulator|xcode-mcp|workflow-runner|macos-host)\.test\.mjs$/.test(file) ||
   file === "scripts/tests/fixtures/emulator-lease-peer.mjs" || file === "scripts/tests/fixtures/verification-tools.mjs");
 const orderedChecks = (ids) => allChecks.filter((id) => ids.includes(id));
 const safePath = (file) => typeof file === "string" && file.length <= 240 &&

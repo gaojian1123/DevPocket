@@ -1,23 +1,10 @@
 import { createHash } from "node:crypto";
 import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
+import { classifyDevelopmentPath } from "./development-paths.mjs";
+export { isVerificationPolicyPath } from "./development-paths.mjs";
 
 // Local authorization is independent of CI impact and never overrides native tool permissions.
-const executionScripts = new Set([
-  "development-policy", "candidate-commit", "native-candidate",
-  "git-state", "verification", "verification-policy", "verify", "verification-executor", "test-workflow",
-  "verification-backend", "verification-android", "process", "owned-command", "owned-command-windows",
-  "verification-preflight", "verification-run", "verification-transition",
-  "verification-tooling", "verification-admission", "verification-ci", "verification-ci-artifact",
-  "owned-command-linux", "owned-command-darwin", "local-ipc", "device-run", "worker-diagnostics", "device-diagnostics", "diagnostic-errors",
-  "bounded-worker-log", "diagnostic-publication", "native-lifecycle", "backend-diagnostics",
-  "verification-diagnostics", "android-diagnostics", "platform-diagnostics",
-  "bundle-extension", "package-extension", "launch-cli-proof", "export-schema",
-  "build-android", "prepare-android", "test-android", "android-runner", "android-emulator", "android-home", "android-platform",
-  "emulator-resources", "linux-emulator", "linux-runtime", "manual-emulator", "native-startup",
-  "start-test-emulator", "stop-test-emulator", "test-native-layouts", "save-debug-artifact",
-]);
-const sensitiveBackend = new Set(["security", "runtime", "files", "protocol", "store", "relay", "bridge", "host-record", "push"]);
 const packageMetadata = new Set(["name", "version", "description", "author", "contributors", "license", "keywords",
   "homepage", "bugs", "repository", "funding"]);
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -38,6 +25,11 @@ const reasons = {
     why: "Independent review must classify actual effects. Unresolved execution scope remains blocked, not implicitly authorized." },
 };
 
+const workspaceSetupGuidance =
+  "Required workspace-local dependency restoration and tool installation are included without a separate project approval. " +
+  "After a relevant manifest change or an actual missing-prerequisite failure, use lockfiles or pinned, integrity-verified releases and install into this worktree. " +
+  "Inspect installer/lifecycle effects and keep environment changes command-scoped; global or user-profile installation, administrator privileges and persistent system configuration remain outside this scope.";
+
 function changedPaths(value) {
   if (!Array.isArray(value) || value.length > 2000 || value.some((file) => typeof file !== "string" ||
       !file.length || file.length > 1000 || /[\\\x00-\x1f]|^[\/]|^[A-Za-z]:/.test(file) ||
@@ -46,31 +38,6 @@ function changedPaths(value) {
   }
   return [...new Set(value)].sort();
 }
-
-function classification(file) {
-  const lower = file.toLowerCase();
-  if (/(?:^|\/)(?:agents|claude)\.md$/.test(lower) ||
-      lower === ".github/copilot-instructions.md" || /^\.github\/instructions\/.*\.instructions\.md$/.test(lower) ||
-      /^\.github\/(?:agents|skills)\//.test(lower)) return "instructions";
-  if (/^\.github\/(?:workflows|actions|extensions)\//.test(lower) || lower === ".github/codeowners" ||
-      /^scripts\/([^/]+)\.(?:mjs|ps1|cs|py|ts)$/.test(lower) && executionScripts.has(lower.slice(8).replace(/\.[^.]+$/, ""))) {
-    return "execution";
-  }
-  if (/(?:^|\/)(?:\.npmrc|package(?:-lock)?\.json|npm-shrinkwrap\.json|tsconfig(?:\.[^/]+)?\.json|requirements[^/]*\.txt)$/.test(lower) ||
-      /^(?:android\/gradle\/|android\/gradlew(?:\.bat)?$)/.test(lower) ||
-      /^android\/.*(?:\.gradle(?:\.kts)?|gradle\.properties)$/.test(lower)) return "dependency";
-  if (/^backend\/src\/([^/]+)\.ts$/.test(lower) && sensitiveBackend.has(lower.slice(12, -3)) ||
-      /\/(?:vault|wire|localstore|relayapi)\.kt$/.test(lower) || /(?:^|\/)androidmanifest\.xml$/.test(lower) ||
-      lower.startsWith("extension/") || lower === "protocol.schema.json") return "sensitive";
-  if (["readme.md", "validation.md", ".gitignore"].includes(lower) ||
-      /^(?:docs|backend|android|scripts|test-fixtures)\//.test(lower) ||
-      /^\.github\/(?:issue_template\/|pull_request_template(?:\/|\.md$))/.test(lower) ||
-      /^\.github\/[^/]+\.md$/.test(lower) ||
-      /^(?:deployment|infra)\//.test(lower) || lower === "azure.yaml") return null;
-  return "unknown";
-}
-
-export const isVerificationPolicyPath = (file) => ["execution", "instructions", "dependency"].includes(classification(file));
 
 function packageExecution(text) {
   const value = JSON.parse(text);
@@ -82,7 +49,7 @@ export function developmentReviewRequirements(files, packageChanges = {}, policy
   const retained = new Set(changedPaths(policyPaths));
   const grouped = new Map();
   for (const file of changedPaths([...new Set([...changedPaths(files), ...retained])])) {
-    let code = classification(file);
+    let code = classifyDevelopmentPath(file);
     const change = Object.hasOwn(packageChanges, file) ? packageChanges[file] : null;
     if (!retained.has(file) && /(?:^|\/)package\.json$/i.test(file) &&
         change?.before !== undefined && change?.after !== undefined) {
@@ -114,7 +81,7 @@ export async function inspectDevelopmentPolicy(root, base, files, git, policyPat
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(base)) throw new TypeError("An explicit task base is required.");
   const physicalRoot = await realpath(root), inputs = [];
   const contents = Object.create(null), beforeContents = Object.create(null), packageChanges = Object.create(null);
-  for (const file of files.filter((name) => classification(name))) {
+  for (const file of files.filter((name) => classifyDevelopmentPath(name))) {
     const entry = await git(root, ["--literal-pathspecs", "ls-tree", "-z", base, "--", file]);
     if (/^100(?:644|755) blob [a-f0-9]+\t/.test(entry)) {
       beforeContents[file] = await git(root, ["show", `${base}:${file}`]);
@@ -200,12 +167,13 @@ export function developmentApprovalRequest(scope, policy, stage, hooks) {
     hooks,
     effects: stage === "execution"
       ? ["Use these exact policy inputs for local checks and task-scoped candidate commits.",
+        workspaceSetupGuidance,
         ...(scope.ci ? [`Run the reviewed .github/workflows/ci.yml hosted-runner setup and checks for candidates on ${scope.ci.repository} ${scope.ci.ref}, including their pull-request merge ref.`] : []),
         "Record human review of these policy changes; still require source-bound verification and independent review."]
       : ["Satisfy the local human-review requirement for these exact changes after verification and independent review."],
     exclusions: ["No push, PR creation, merge, deployment, extension installation/reload or live runtime control.",
-      scope.ci ? "No local tool installation, new infrastructure, device enrollment, shared-machine configuration or bypass of native permissions."
-        : "No new tool installation, device enrollment, shared-machine configuration or bypass of native permissions."],
+      "No global or user-profile installation, administrator privileges, persistent PATH changes, device enrollment, shared-machine configuration or bypass of native permissions.",
+      ...(scope.ci ? ["No new infrastructure."] : [])],
     validity: "Only this task, workspace and listed input versions. Ordinary source repairs do not expand this grant. Changed inputs or targets require a new decision.",
   };
   if (request.inputs.length !== paths.length) throw new Error("Approval inputs do not cover every requested path.");
@@ -234,11 +202,13 @@ export function developmentTaskApprovalRequest(scope, hooks, implementation) {
   const effects = [
     `Allow ${actions.join(", ")} for this task and ${scope.workspace.branch}; reuse this scope across ordinary source repairs.`,
     `Use existing local checks ${publication ? "when their local execution is authorized" : "only"}. Changed executable inputs still need their exact local execution approval.`,
+    workspaceSetupGuidance,
     ...(publication ? [`Authorize automatic repository CI for ${ci.repository} ${ci.ref}, including existing-PR synchronization and PR creation. Candidate dependencies, install scripts and changed tools run as the ordinary disposable runner identity without per-revision project approval. Public network access is permitted. This is ordinary CI, not an adversarial sandbox or permission to adopt new local control.`] : []),
     "Retain required checks, independent review and source-bound results. Keep approved local tooling unchanged until separately authorized adoption.",
   ];
   const exclusions = [
-    "No merge, deployment, release, production secrets, cloud administration, device enrollment, live runtime control, local installation, extension reload or Git hook changes.",
+    "No merge, deployment, release, production secrets, cloud administration, device enrollment, live runtime control, extension installation/reload or Git hook changes.",
+    "No global or user-profile installation, administrator privileges, persistent PATH changes or shared-machine configuration.",
     "No automatic local tool/instruction/hook adoption, native permission bypass, new targets or increased user-selected limits.",
     ...(delivery === "working-tree" ? ["No commit, push or PR creation."] : []),
   ];
@@ -279,12 +249,19 @@ export function developmentExecutionAuthorization(scope, policy, hooks, implemen
     : { status: "needs_human", route: "local", request };
 }
 
-export function formatDevelopmentApproval(request, details, summary, snapshot) {
+export function formatDevelopmentApproval(request, details, summary, snapshot, showDetails = false) {
   if (typeof snapshot !== "string" || Buffer.byteLength(snapshot) !== request.detailsBytes ||
       hash(snapshot) !== request.detailsSha256) throw new TypeError("An exact immutable approval snapshot is required.");
-  let fence = "```";
-  for (const match of snapshot.matchAll(/`+/g)) {
-    if (match[0].length >= fence.length) fence = "`".repeat(match[0].length + 1);
+  if (!showDetails && (typeof summary !== "string" || !summary.trim())) {
+    throw new TypeError("A nonblank behavior summary is required when full details are hidden.");
+  }
+  let contents = "Full diff/contents: available on request; viewing them does not approve this request.";
+  if (showDetails) {
+    let fence = "```";
+    for (const match of snapshot.matchAll(/`+/g)) {
+      if (match[0].length >= fence.length) fence = "`".repeat(match[0].length + 1);
+    }
+    contents = `Contents to approve (immutable native-question snapshot):\n${fence}text\n${snapshot}\n${fence}`;
   }
   return [
     `Approval requested: ${request.action}`,
@@ -301,7 +278,7 @@ export function formatDevelopmentApproval(request, details, summary, snapshot) {
     `Local detail copy (not authoritative): ${details}`,
     `Details SHA256: ${request.detailsSha256}`,
     `Request identity: ${request.id}`,
-    `Contents to approve (immutable native-question snapshot):\n${fence}text\n${snapshot}\n${fence}`,
+    contents,
   ].join("\n\n");
 }
 

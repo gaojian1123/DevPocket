@@ -8,23 +8,22 @@ For new user requests to implement a feature or fix a bug, use the repository's
 `devpocket-development` skill by default. Its source of truth is
 `.github\skills\devpocket-development\SKILL.md`: invoke the skill when available,
 otherwise read that file directly. It defines workspace selection, the task
-contract, verification, independent review and same-task recovery.
+contract and completion criteria, with conditional links to the full rules in
+`docs\DEVELOPMENT-WORKFLOW.md`.
 
 Continue the existing task and workspace for follow-ups. Dispatched implementers
 and reviewers perform their assigned step, rather than starting another pipeline.
-Follow `docs\DEVELOPMENT-WORKFLOW.md` for verification, delivery authorization
-and recovery. Development uses the owning session's original tools, not a
-registered Dynamic Workflow or development extension.
+Use the owning session's original tools and existing CI, not a registered
+Dynamic Workflow or development extension.
 Advice, explanations, planning, read-only reviews and documentation-only edits
 do not start an implementation pipeline. Development retains required verification,
 independent review and scoped authorization; self-review is not independent review.
 
-For unattended development, follow **Unattended execution** in
-`docs\DEVELOPMENT-WORKFLOW.md`: use ordinary hosted CI within explicit task-scoped
-authority, retaining tests, independent review and process cleanup. This workflow
-does not require an adversarial sandbox or tamper-proof test execution. Keep local
-control adoption and publication authority separate; retain missing scope instead
-of opening unattended questions. Product security requirements below are unchanged.
+For PR delivery, read **CI-first delivery and live qualification** in the guide;
+for unattended work, also read **Unattended execution**. Use explicit task-scoped
+ordinary CI authority, separate from local control adoption; retain missing scope
+without unattended questions. For interruptions or failed evidence, read
+**Stops and recovery**. These routes preserve the product invariants below.
 
 ## Terminology
 
@@ -52,5 +51,6 @@ Preserve protocol identifiers such as `cliVersion`, `terminal` and
 
 - Use `npm run verify -- -Base BASE_COMMIT` for the diff-selected gate; planning, partial shards and skipped required tests are not completed verification. For authorized commit delivery, create the candidate after focused checks and before final verification and independent review.
 - Use the relevant checks in `package.json` for backend changes and `scripts\build-android.ps1 -Lint` for Android changes. Documentation-only edits need no application build.
+- Restore dependencies and install task-required tools within the worktree without another project approval after a relevant manifest change or an actual missing-prerequisite failure. Follow **Workspace-local prerequisites** in `docs\DEVELOPMENT-WORKFLOW.md`; native tool permissions and authorization for effects outside that scope remain unchanged.
 - Real GitHub Copilot checks use explicitly opted-in disposable sessions in the intended client; CLI checks use disposable terminals. Extension installation/reload, host/device enrollment and cloud operations require authorization for the specific target; previous trial approvals are not standing permission.
 - Before deployment or onboarding, read the matching runbook in `deployment\`. Keep credentials and private runtime evidence in ignored storage; preserve sealed artifacts and record new acceptance separately.

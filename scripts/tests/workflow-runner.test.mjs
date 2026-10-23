@@ -37,14 +37,34 @@ test("the dedicated workflow entry retains the complete explicit suite without d
   assert.deepEqual(WORKFLOW_TEST_FILES, [
     "verification", "verification-execution", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
     "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
-    "bounded-worker-log", "development-tools", "process", "emulator-resources", "manual-emulator",
+    "bounded-worker-log", "development-tools", "development-approval", "process", "emulator-resources", "manual-emulator",
     "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner", "macos-host",
   ].map((name) => `scripts/tests/${name}.test.mjs`));
   assert.equal(new Set(WORKFLOW_TEST_FILES).size, WORKFLOW_TEST_FILES.length);
   assert.deepEqual(WORKFLOW_TEST_SHARDS.flatMap((part) => part.files).sort(), [...WORKFLOW_TEST_FILES].sort());
+  assert.deepEqual(WORKFLOW_TEST_SHARDS.find((part) => part.id === "candidate").files,
+    ["scripts/tests/development-tools.test.mjs", "scripts/tests/development-approval.test.mjs"]);
   for (const file of WORKFLOW_TEST_FILES) await readFile(file);
   const development = await readFile("scripts/tests/development-tools.test.mjs", "utf8");
   assert.doesNotMatch(development, /import\(["']\.\/xcode-mcp\.test\.mjs["']\)/);
+});
+
+test("the standalone approval contracts run without Git, PowerShell, signing or candidate fixtures", async (t) => {
+  const item = await fixture(t);
+  item.env.PATH = item.root;
+  const entry = path.resolve("scripts/tests/development-approval.test.mjs");
+  const result = await run(item, ["--test", "--test-reporter=tap", entry]);
+  assert.equal(result.code, 0, result.stderr + result.stdout);
+  assert.match(result.stdout, /^# tests 10\r?$/m);
+  assert.match(result.stdout, /^# skipped 0\r?$/m);
+  assert.match(result.stdout, /^# fail 0\r?$/m);
+  const quick = await readFile(entry, "utf8");
+  const full = await readFile("scripts/tests/development-tools.test.mjs", "utf8");
+  const names = [...quick.matchAll(/^test\("([^"]+)"/gm)].map((match) => match[1]);
+  assert.equal(names.length, 10);
+  assert.ok(names.every((name) => !full.includes(`test("${name}"`)), "Moved contracts must run exactly once in the full suite.");
+  assert.doesNotMatch(quick,
+    /(?:from\s+|import\(\s*)["'](?:node:(?:child_process|fs(?:\/promises)?)|\.\.\/(?:candidate-commit|native-candidate|verification)\.mjs)["']/);
 });
 
 test("the runner preserves Node file isolation, inherited environment, complete execution and failure status", async (t) => {

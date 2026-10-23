@@ -155,7 +155,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.macos == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic)
     name: macOS regressions
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7

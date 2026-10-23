@@ -210,11 +210,11 @@ test("skill-led tooling selects only its complete regression suite, independentl
 });
 
 test("development policy and named agent instructions remain protected without selecting application checks", async (t) => {
-  const tooling = ["scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
+  const tooling = ["scripts/development-policy.mjs", "scripts/development-paths.mjs", "scripts/candidate-commit.mjs",
     "scripts/native-candidate.mjs", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
     "scripts/verify.mjs", "scripts/verify.ps1", "scripts/tests/verification.test.mjs",
     "scripts/test-workflow.mjs", "scripts/tests/workflow-runner.test.mjs",
-    "scripts/tests/development-tools.test.mjs", ".github/ISSUE_TEMPLATE/ai-task.yml",
+    "scripts/tests/development-tools.test.mjs", "scripts/tests/development-approval.test.mjs", ".github/ISSUE_TEMPLATE/ai-task.yml",
     ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"];
   for (const files of [...tooling.map((file) => [file]), [...tooling, "README.md", "docs/DEVELOPMENT-WORKFLOW.md"]]) {
     await t.test(files.join(", "), () => {
@@ -1829,11 +1829,15 @@ test("unconfirmed process cleanup retains host capacity even before a check star
     const result = await executeVerification(root, await verificationPlan(root, "HEAD"), {
       group: "tooling", directory: path.join(root, ".data", "verification", "unknown-process"),
     });
-    assert.ok(intercepted > 0, JSON.stringify(result));
+    assert.equal(intercepted, 1, "An unconfirmed owner must stop all later command probes.");
     assert.equal(result.status, "blocked");
     assert.equal(result.admission.state, "unconfirmed");
     assert.ok(result.preflight.groups[0].issues.some((issue) =>
       issue.failure.observedProcess === "owned-command-supervisor" && issue.failure.processTreeStopped === false));
+    for (const prerequisite of ["powershell", "npm", "git", "python"]) {
+      assert.ok(result.preflight.groups[0].notProbed.some((item) =>
+        item.prerequisite === prerequisite && item.blockedBy.includes("command-ownership")));
+    }
   } finally {
     replacement.mock.restore();
     syncBuiltinESMExports();
@@ -2267,6 +2271,86 @@ test("Android preflight requires a JDK supported by API37 JVM tests", async (t) 
       assert.equal((await readFile(path.join(root, ".data", "native-ran"), "utf8")).trim(), "yes");
     }
   });
+});
+
+test("preflight reports independent missing tools and dependencies together without inventing dependent failures", async (t) => {
+  const { verificationPreflight } = await import("../verification-preflight.mjs");
+  const { root, counts } = await recoveryFixture(t);
+  const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  manifest.dependencies = { "missing-fixture": "1.0.0" };
+  await writeFile(path.join(root, "package.json"), JSON.stringify(manifest));
+  const plan = await verificationPlan(root, "HEAD");
+  const realpath = fileSystem.realpath;
+  const missing = t.mock.method(fileSystem, "realpath", (file, ...args) => {
+    if (/^(?:pwsh|python)(?:\.(?:com|exe))?$/i.test(path.basename(String(file)))) {
+      throw Object.assign(new Error("Missing fixture executable"), { code: "ENOENT" });
+    }
+    return realpath(file, ...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    const result = await verificationPreflight(root, plan, {
+      group: "tooling", directory: path.join(root, ".data", "verification", "multiple-prerequisites"),
+    });
+    const [group] = result.groups;
+    assert.equal(result.status, "blocked", JSON.stringify(result));
+    assert.deepEqual(group.issues.map((issue) => issue.prerequisite).sort(), ["powershell", "python", "root-dependencies"]);
+    assert.deepEqual(group.notProbed, [
+      { prerequisite: "npm", blockedBy: ["powershell"] },
+      { prerequisite: "native-npm", blockedBy: ["npm"] },
+      { prerequisite: "node-command", blockedBy: ["npm"] },
+    ]);
+    assert.equal(group.reusable, false);
+    assert.equal(Object.hasOwn(group, "fingerprint"), false);
+    assert.deepEqual(await counts(), {});
+  } finally {
+    missing.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("uncertain ownership blocks command probes across selected groups but still inspects independent files", async (t) => {
+  const { verificationPreflight } = await import("../verification-preflight.mjs");
+  const root = await repository(t, { native: true, operations: true }), tools = toolchains.get(root);
+  const plan = await verificationPlan(root, "HEAD", true);
+  const spawn = childProcess.spawn;
+  let commands = 0;
+  const replacement = t.mock.method(childProcess, "spawn", (file, args, options) => {
+    if (args.some((arg) => /owned-command-(?:windows\.mjs|linux\.py|darwin\.py)$/.test(arg))) {
+      commands++;
+      return spawn(process.execPath, ["-e", "process.exit(0)"], options);
+    }
+    return spawn(file, args, options);
+  });
+  syncBuiltinESMExports();
+  try {
+    const result = await verificationPreflight(root, plan, {
+      jdk: tools.jdk, sdk: tools.sdk, directory: path.join(root, ".data", "verification", "unsafe-owner"),
+    });
+    assert.equal(result.status, "blocked");
+    assert.equal(commands, 1);
+    assert.deepEqual(result.groups.map((group) => group.group), CHECK_GROUPS);
+    for (const group of result.groups) {
+      assert.ok(group.issues.length, "Keep a real failure for existing report consumers and recovery.");
+      assert.ok(group.issues.some(({ failure }) => failure.processTreeStopped === false));
+      assert.equal(group.reusable, false);
+      assert.equal(Object.hasOwn(group, "fingerprint"), false);
+    }
+    const native = result.groups.find((group) => group.group === "device");
+    for (const prerequisite of ["jdk", "adb", "emulator-acceleration"]) {
+      assert.ok(native.notProbed.some((item) => item.prerequisite === prerequisite &&
+        item.blockedBy.includes("command-ownership")), prerequisite);
+      assert.ok(native.issues.every((issue) => issue.prerequisite !== prerequisite));
+    }
+    assert.ok(native.issues.some((issue) => issue.prerequisite === "android-entry"),
+      "Missing source files are independently observable even when execution is unsafe.");
+    assert.ok(native.notProbed.every((item) => !["android-platform-37.2", "android-image", "gradle-wrapper"].includes(item.prerequisite)));
+    assert.ok(result.groups.find((group) => group.group === "backend").notProbed.some((item) =>
+      item.prerequisite === "probe-python" && item.blockedBy.includes("command-ownership")));
+  } finally {
+    replacement.mock.restore();
+    syncBuiltinESMExports();
+  }
 });
 
 test("missing SDK package metadata blocks before executing the native build", async (t) => {
@@ -3116,7 +3200,7 @@ test("a changed captured execution policy cannot resume an earlier successful ru
   await import(pathToFileURL(path.join(copied, "verification-android.mjs")).href);
   assert.equal(await copiedPolicy.verificationExecutionPolicy(), first.policy, "The copied policy must match before mutation.");
   for (const name of ["test-workflow.mjs", "verification-tooling.mjs", "verification-admission.mjs",
-    "verification-ci.mjs", "verification-ci-artifact.ps1", "development-policy.mjs", "emulator-resources.mjs",
+    "verification-ci.mjs", "verification-ci-artifact.ps1", "development-policy.mjs", "development-paths.mjs", "emulator-resources.mjs",
     "native-candidate.mjs"]) await t.test(name, async () => {
     const file = path.join(copied, name), original = await readFile(file);
     try {

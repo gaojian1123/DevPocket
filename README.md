@@ -290,130 +290,69 @@ After the user finished the trial, its dedicated local emulator, ADB server and 
 ## AI development workflow
 
 The repository's **devpocket-development skill** is the default agent route for
-feature implementation and bug fixes under `AGENTS.md`. It keeps implementation
-in the current session when already in a suitable linked worktree, runs the
-existing source-bound verifier and requests an independent read-only reviewer.
-The recipe lives in `.github\skills\devpocket-development\SKILL.md`; an agent can
-read it directly when skill discovery has not refreshed. Development uses the
-owning session's original tools; the former Dynamic Workflow and development
-extension have been removed. Discussion, planning
-and documentation-only tasks do not start the implementation pipeline.
+feature implementation and bug fixes under `AGENTS.md`. The
+[short recipe](.github/skills/devpocket-development/SKILL.md) keeps the owning
+session in its linked worktree and points to the
+[authoritative development guide](docs/DEVELOPMENT-WORKFLOW.md).
+Discussion, planning, read-only review and documentation-only tasks do not start
+the implementation pipeline. The former development extension and Dynamic
+Workflow are retired; use the original client's tools and existing CI.
 
-The skill distinguishes reviewed working-tree changes from authorized commit/PR
-delivery. **PR delivery is CI-first:** approved focused checks precede an
-authorized candidate commit and Draft PR; the existing grouped CI supplies the
-complete gate instead of repeating it locally before publication. A draft is
-pending evidence, not verified readiness. Independent review and live CI
-qualification still precede ready delivery, and the original task base remains
-fixed. Working-tree-only work does not gain upload permission; local full
-verification remains available when that is the authorized route.
+**Choose the delivery route:** reviewed working-tree changes are the default.
+[Local delivery](docs/DEVELOPMENT-WORKFLOW.md#delivery-targets-and-candidate-preparation)
+does not acquire upload authority. [CI-first PR delivery](docs/DEVELOPMENT-WORKFLOW.md#ci-first-delivery-and-live-qualification)
+uses permitted focused checks, an authorized candidate and pending Draft PR,
+then the complete hosted gate, independent review and live freshness before ready.
+The original task base stays fixed. Neither route authorizes merge or deployment.
 
-There is no default two-round cap or separate time/credit budget.
-Same-scope work continues under the original client's limits and any explicit
-user cap. Repeated failures get diagnosis and a different approach before a
-no-progress stop; normal repair rounds do not require renewed project approval.
-See **Task-scoped autonomy** in `docs\DEVELOPMENT-WORKFLOW.md`.
-Native PR tools finish only the recorded delivery scope; development does not
-authorize merging or deployment. The skill retains verification requirements
-and scoped authorization; it is
-guidance, not a replacement for programmatic evidence checks or protected CI.
+**Execution scope:** [Scoped approvals](docs/DEVELOPMENT-WORKFLOW.md#scoped-development-approvals)
+separate local control adoption from ordinary hosted CI and publication.
+[Workspace-local setup](docs/DEVELOPMENT-WORKFLOW.md#workspace-local-prerequisites)
+covers required locked dependencies/tools after a manifest change or actual
+missing-prerequisite failure, not global installation or changed control adoption.
+[Unattended execution](docs/DEVELOPMENT-WORKFLOW.md#unattended-execution) reuses an
+explicit task grant; autopilot does not create one. The
+[autonomy rules](docs/DEVELOPMENT-WORKFLOW.md#task-scoped-autonomy) preserve user
+limits/cancellation without a project-default time, credit or repair-round cap.
 
-**Unattended development** reuses one explicit task-scoped grant rather than
-requesting approval at every phase. Sensitive/unclassified filenames focus
-independent review, not mandatory human sign-off. Autopilot never supplies
-missing authority: it retains a concrete blocker without opening a question.
-Candidate dependencies, installation scripts and modified tools can execute on
-authorized disposable GitHub-hosted runners with their normal execution identity.
-Public internet and ordinary CI caches are allowed. This protects the developer
-machine and keeps production credentials/publication permissions outside candidate
-execution; it does not promise that hostile code cannot influence tests.
-No restricted-token worker, temporary supervisor service or adversarial sandbox
-is required or reserved as a future mode. Normal platform checks, independent
-review, deadlines and cleanup remain mandatory, as does DevPocket's product security.
-See **Unattended execution** in `docs\DEVELOPMENT-WORKFLOW.md` for task-scoped
-ordinary CI authority and separate local tool adoption.
+**Checks:** use `npm run verify -- -Base BASE_COMMIT` for the diff-selected gate;
+`-Plan` explains [impact selection](docs/DEVELOPMENT-WORKFLOW.md#responsibility-based-impact)
+without acceptance. Shared execution, CI/dependencies and unknown paths retain
+conservative coverage; mixed changes take the union. Preflight reports independent
+missing prerequisites together and distinguishes safely unrun dependent probes.
+For failed runs or verified edits becoming a commit, follow the guide's
+[recovery](docs/DEVELOPMENT-WORKFLOW.md#selected-group-preflight-and-explicit-recovery)
+or [conversion](docs/DEVELOPMENT-WORKFLOW.md#working-tree-evidence-to-an-authorized-candidate)
+route without rewriting old evidence.
 
-Verification classifies changed paths centrally and derives CI lanes from the
-selected check definitions, independently of local Agent trust requirements.
-Development policy, candidate preparation, source identity, planning,
-evidence aggregation and their named contract regressions select the complete
-tooling suite in the independent **tooling** lane, without application builds
-or Android provisioning. `AGENTS.md` and the named DevPocket skill/reviewer
-instructions select it too; README, validation and docs Markdown alone select
-no checks. The verifier's compatibility entry separates these contracts from
-the backend and Android execution adapters. Backend build/command inputs select
-backend checks; native build/device inputs select build, device and layouts.
-Shared process execution, cross-lane CI, shared dependencies and unknown paths
-remain conservative full impact. Runtime/wire compatibility coverage is retained,
-and mixed changes take the union. Plans explain responsibilities, not approval.
+For lightweight approval feedback:
 
-Verification now preflights only selected groups before expensive checks and
-retains immutable, checkout-local run receipts. Explicit `-Resume RUN_JSON`
-continues failed or unfinished groups while reusing still-valid successful
-groups; source/policy changes, unconfirmed cleanup and interrupted owners remain
-blocking. A separately authorized native candidate commit can use `-Promote`
-with its bound request/receipt to qualify eligible content-only checks for the
-candidate without rewriting their original execution HEAD or time. Supported
-Git text normalization is proved separately from unchanged execution bytes;
-CRLF/LF storage conversion alone no longer invalidates an otherwise proven
-transition. Unknown filters/encodings and unproven command contracts still
-refuse reuse. Ordinary
-aggregation, human approvals, independent review and remote CI remain separate.
-See the recovery and candidate-conversion sections in the development guide;
-these are local verification operations, not an App wake-up scheduler or a
-cross-commit cache.
+```powershell
+node --test scripts/tests/development-approval.test.mjs
+```
 
-`npm run test:workflow` uses `scripts/test-workflow.mjs`, which owns the complete
-explicit tooling test list, including Xcode setup and the runner's own contracts.
-The command, `workflow-tests` check ID and shard IDs are retained verification
-interfaces, not a registered Dynamic Workflow. Shared skill, policy and native
-candidate regressions live in `scripts/tests/development-tools.test.mjs`.
-It launches Node's test runner with separate file processes and Node's default
-concurrency, inherits the terminal streams, and preserves failures and exit status.
-It does not import the tests into one process or discover the entire test directory;
-extension packaging and the separate Linux process gate keep their own entries.
-Derived `WORKFLOW_TEST_SHARDS` use that same entry and catalogue. CI runs them
-independently; every required part must pass before `workflow-tests` qualifies.
-Version-5 aggregates retain each part's actual execution origin instead of
-inventing one full-suite execution.
+This pure Node entry is also part of the complete `npm run test:workflow`
+catalogue and existing `candidate` shard. Git/signing/hooks/candidate fixtures
+remain in `development-tools.test.mjs`. The fast entry cannot substitute for
+`workflow-tests` or Required verification; every formal shard and its actual
+execution origin remain mandatory. See
+[tooling regression scheduling](docs/DEVELOPMENT-WORKFLOW.md#tooling-regression-scheduling).
 
-Updated local verifier entrypoints share one per-user host admission slot for
-heavy checks. Queue time is separate from command deadlines, and owned nested
-verifiers can borrow a live parent ticket. This is cooperative admission, not an
-OS throttle: older entrypoints and direct focused commands are unaffected.
-Interrupted ownership remains explicit; no lock is reclaimed merely from a PID.
+Required Android evidence includes emulator instrumentation, not just APK build.
+The ordinary hosted Ubuntu/KVM device route and Windows/macOS coverage are
+described in [CI activation and trust](docs/DEVELOPMENT-WORKFLOW.md#ci-activation-and-trust);
+missing reports or acceleration remain blockers, and historical failures remain
+history. Repository files do not configure branch protection or grant runtime,
+cloud, publication or installation authority outside the stated setup scope.
+Local heavy verification uses [host admission](docs/DEVELOPMENT-WORKFLOW.md#host-wide-local-admission);
+queueing does not consume command deadlines or justify removing retained owners.
 
-Local execution trust and human-review requirements belong to
-`scripts\development-policy.mjs`. Ordinary code/test changes and same-scope repairs reuse the task's
-local-development authorization; entire script/backend directories are not
-automatic human-review gates. Protected local execution/adoption retains exact
-approval; an ordinary-CI task grant permits candidate execution in its named
-repository/ref without per-revision project approval. Sensitive/unclassified product changes retain independent
-inspection, independently of CI impact.
-Requests describe the action, reason, target, effects, exclusions and validity,
-with actual changes available as details. Retain original-client user decisions
-for the same task and trusted input versions;
-ordinary candidate repairs reuse that authority while refreshing evidence.
-Passing tests and independent AI review do not create authority. See
-**Scoped development approvals** in `docs\DEVELOPMENT-WORKFLOW.md`.
-GitHub merge review is enforced separately by repository rulesets/required
-reviews/CODEOWNERS when configured; this tooling does not configure them.
-Android-affecting changes require actual emulator
-instrumentation against a local test adapter, not just a successful APK build.
-CI runs this device gate on a standard GitHub-hosted Ubuntu 24.04 VM with KVM;
-no self-hosted runner registration, runner-enable variable or custom environment
-is needed. Windows local/manual emulator entry points retain their shared
-resource pool. Missing acceleration, failed fixtures and missing reports still
-block the required gate; moving CI does not repair historical Windows UI failures.
-See [development workflow](docs/DEVELOPMENT-WORKFLOW.md) for the skill-led route,
-`npm run verify`, CI-first draft/qualification steps, runner prerequisites and CI
-rules. Missing required device evidence blocks acceptance. Repository files do
-not by themselves enable a runner, enforce branch protection or authorize
-installation, runtime control, cloud operations, merging or publication.
 Automatic and manual emulator entry points share an account-wide resource pool
 across worktrees (one emulator by default). Use `npm run emulator:status` to
 inspect it; manual layout/stop commands require the run directory printed by
 `scripts\start-test-emulator.ps1`, never a fixed ADB port or retained AVD name.
+
+### Command ownership
 
 Windows command deadlines include supervisor startup, ownership-helper
 preparation, execution and shutdown. A late zero exit or `completed` output
@@ -910,8 +849,8 @@ The same entry runs tooling, backend, Android build/unit/lint and actual device
 checks. Platform-specific Windows/Linux tests retain their native hosts; a Mac
 run is not evidence that those OS implementations were exercised.
 
-Hosted CI uses the same planner's `ciMacos` decision to select an ARM64
-`macos-15` job for shared verification infrastructure and relevant native changes.
+Hosted CI uses the same planner's `ciMacos` decision to select the rolling ARM64
+`macos-latest` image for shared verification infrastructure and relevant native changes.
 It reruns the existing `native` tooling shard, including macOS process cleanup,
 registry locks, IPC/admission and Python-path regressions. `Required verification`
 requires its successful job result and separate source-bound macOS evidence;
@@ -924,12 +863,16 @@ hardware acceptance.
 The macOS command owner uses kernel responsibility scopes and PID-version-bound
 signals, including nested command ownership; missing native APIs fail closed.
 Command-level environment overrides cannot discard the inherited supervision
-link. Unstable process observations are retried; if they cannot be established,
-cleanup remains unconfirmed rather than being treated as an empty process tree.
+link. Unstable process observations are retried within the existing command and
+cleanup deadlines. Exhausting one snapshot attempt does not permanently fail
+cleanup if later observations stabilize; persistent uncertainty still cannot
+be treated as an empty process tree.
 Kernel inspection refusals get bounded retries, not an assumed process exit.
 Empty-tree confirmation requires consecutive stable scans, including after a
-parent disappears or becomes a zombie. A failed nested supervisor still triggers
+parent disappears or becomes a zombie. Unconfirmed nested cleanup still triggers
 cleanup of other verifiably owned processes, but never a successful receipt.
+A failed target launch stays nonzero; its diagnostic precedes the terminal
+cleanup receipt so confirmed cleanup is not confused with command success.
 CI diagnostics project fixed macOS owner error categories from the existing
 private log, not raw exception messages, paths or receipt tokens. These hints
 do not prove a leaf cause or establish successful cleanup.

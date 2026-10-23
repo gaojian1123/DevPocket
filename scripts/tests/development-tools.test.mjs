@@ -10,16 +10,15 @@ import { assertCandidate, changedPaths, inspectWorktree, prepareCandidate, sha25
   validateCandidateReceiptProof, activeHookSnapshot } from "../candidate-commit.mjs";
 import { executeVerification, git, sourceSnapshot, verificationPlan } from "../verification.mjs";
 import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "../native-candidate.mjs";
-import { developmentApprovalDetails, developmentApprovalRequest, developmentApprovalSatisfied, developmentReviewRequirements,
-  formatDevelopmentApproval, inspectDevelopmentPolicy, isVerificationPolicyPath } from "../development-policy.mjs";
-import { developmentTaskApprovalRequest, developmentTaskActionAllowed, developmentExecutionAuthorization } from "../development-policy.mjs";
+import { developmentApprovalDetails, developmentReviewRequirements, inspectDevelopmentPolicy,
+  isVerificationPolicyPath } from "../development-policy.mjs";
 import { originRepository, requirePushTarget } from "../git-state.mjs";
 
 const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
   "verification-android.mjs", "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs",
   "verification-transition.mjs", "test-workflow.mjs", "verification-tooling.mjs",
-  "verification-admission.mjs", "verification-ci.mjs", "verification-ci-artifact.ps1",
+  "verification-admission.mjs", "verification-ci.mjs", "verification-ci-artifact.ps1", "development-paths.mjs",
   "owned-command-darwin.py", "local-ipc.mjs", "android-platform.mjs", "emulator-resources.mjs"];
 // Top-level tests stay serial; only fresh-workspace cases without shared environment writes use this limit.
 const isolatedCases = { concurrency: 2 };
@@ -91,8 +90,14 @@ test("repository development uses the skill and shared tools without a registere
   assert.match(skill, /source identity matches the review/);
   assert.match(skill, /developmentReviewRequirements/);
   assert.match(skill, /CI reports do not supply/);
-  assert.match(skill, /stating the contract is not another plan-approval/);
-  assert.match(skill, /no implicit two-round limit/);
+  assert.match(agents, /within the worktree without another project approval/);
+  assert.match(skill, /\[Workspace-local prerequisites\]/);
+  assert.match(skill, /concise behavior summary/);
+  assert.match(guide, /### Workspace-local prerequisites/);
+  assert.match(guide, /This setup scope does not approve changed\s+dependency\/build inputs/);
+  assert.match(guide, /Viewing details grants no authority/);
+  assert.match(skill, /Stating the contract is not another plan-approval/);
+  assert.match(skill, /no project-default repair cap/);
   assert.match(skill, /`ci-inspection` procedure instead of adopting candidate control/);
   assert.match(readme, /skill\*\* is the default agent route/);
   assert.match(issue, /devpocket-development skill and AGENTS\.md/);
@@ -102,6 +107,22 @@ test("repository development uses the skill and shared tools without a registere
   assert.match(reviewer, /For candidate-commit delivery/);
   assert.match(reviewer, /Diagnosis never establishes acceptance, approval or publication readiness/);
   assert.match(reviewer, /underlying live API\/archive\/source records/);
+  assert.equal([...skill.matchAll(/^\*\*Complete when:\*\*/gm)].length, 8);
+  for (const anchor of ["delivery-targets-and-candidate-preparation", "local-verification-and-acceptance",
+    "ci-first-delivery-and-live-qualification", "selected-group-preflight-and-explicit-recovery",
+    "working-tree-evidence-to-an-authorized-candidate", "independent-review-and-delivery-freshness", "stops-and-recovery"]) {
+    assert.ok(skill.includes(`DEVELOPMENT-WORKFLOW.md#${anchor}`), anchor);
+  }
+  for (const match of skill.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
+    const [file, anchor] = match[1].split("#");
+    const target = new URL(file, new URL("../../.github/skills/devpocket-development/SKILL.md", import.meta.url));
+    const text = await readFile(target, "utf8");
+    if (anchor) {
+      const headings = [...text.matchAll(/^#{1,6} (.+)$/gm)].map((item) =>
+        item[1].toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s/g, "-"));
+      assert.ok(headings.includes(anchor), `Missing skill reference: ${match[1]}`);
+    }
+  }
   for (const text of [agents, skill, readme, issue, guide, reviewer]) {
     assert.doesNotMatch(text, /devpocket_start_development|devpocket_check_development_readiness|run_dynamic_workflow/);
   }
@@ -113,31 +134,36 @@ test("repository development uses the skill and shared tools without a registere
 });
 
 test("the skill freezes an authorized delivery candidate before final verification and review", async () => {
-  const skill = await readFile(new URL("../../.github/skills/devpocket-development/SKILL.md", import.meta.url), "utf8");
+  const [skill, guide] = await Promise.all([
+    "../../.github/skills/devpocket-development/SKILL.md", "../../docs/DEVELOPMENT-WORKFLOW.md",
+  ].map((file) => readFile(new URL(file, import.meta.url), "utf8")));
   const sections = skill.split(/^## \d+\. /m).slice(1);
   assert.deepEqual(sections.map((section) => section.split(/\r?\n/, 1)[0]), [
     "Establish the task", "Select the workspace", "Implement in the owning session",
     "Freeze the verification target", "Obtain source-bound verification",
     "Request independent review", "Repair and recheck", "Hand off or publish",
   ]);
-  const [contract, , , target, verification, , repair, handoff] = sections;
-  assert.match(contract, /Working-tree implementation/);
+  const [contract, , , target, verification, review, repair, handoff] = sections;
+  assert.match(contract, /working-tree implementation/);
   assert.match(contract, /PR delivery/);
-  assert.match(contract, /local commit, push and PR creation authorization separately/);
-  assert.match(target, /retain the edits without creating a commit/);
-  assert.match(target, /once local commit\s+authorization is established/);
-  assert.match(target, /clean tracked and non-ignored working tree/);
-  assert.match(target, /Keep `BASE_COMMIT` at the original task baseline; never replace/);
-  assert.match(verification, /For local candidate-commit evidence, require `source.head` to equal\s+`CANDIDATE_COMMIT`/);
-  assert.match(verification, /CI evidence uses the explicit qualification above instead/);
-  assert.match(target, /permission to publish pending work, not permission to claim verification, mark\s+ready or merge/);
-  assert.match(repair, /new authorized follow-up commit/);
-  assert.match(repair, /amend only if the user explicitly requests it/);
-  assert.match(repair, /HEAD to remain `CANDIDATE_COMMIT` before publishing/);
-  assert.match(handoff, /Missing\s+execution consent blocks CI-triggering publication/);
-  assert.match(handoff, /unresolved final-review\s+requirements block ready delivery, not an otherwise authorized pending draft/);
-  assert.match(handoff, /An unchanged push does not invalidate local source evidence/);
-  assert.match(handoff, /Required remote CI and checks of a/);
+  assert.match(contract, /local commit, push and PR creation authorization\s+separately/);
+  assert.match(target, /retains the edits without creating a commit/);
+  assert.match(target, /matching commit and hook authority/);
+  assert.match(target, /clean tracked and non-ignored working\s+tree/);
+  assert.match(target, /Keep `BASE_COMMIT` unchanged/);
+  assert.match(verification, /evidence binds `source.head` to `CANDIDATE_COMMIT`/);
+  assert.match(verification, /CI keeps candidate and tested\s+merge ref distinct/);
+  assert.match(target, /pending draft is `ci-pending`, not `ready`/);
+  assert.match(review, /Only after complete evidence/);
+  assert.match(repair, /new follow-up\s+commit, with amendment only when explicitly requested/);
+  assert.match(repair, /candidate is still clean at\s+`CANDIDATE_COMMIT`/);
+  assert.match(handoff, /mark the\s+same authorized draft ready only after freshness/);
+  assert.match(guide, /Missing execution consent blocks CI-triggering publication/);
+  assert.match(guide, /blocks ready delivery, not an otherwise authorized pending draft/);
+  assert.match(guide, /An unchanged push does not invalidate local source evidence/);
+  assert.match(guide, /Required remote CI\s+and checks of a different PR\/merge ref still apply/);
+  assert.match(guide, /`pass` with blockers, `changes_requested` without a blocker/);
+  assert.match(guide, /keep the\s+approved local tools fixed/);
 });
 
 async function workspace(t, { separateGitDir = false } = {}) {
@@ -225,58 +251,6 @@ test("skill delivery verifies a committed candidate against the original task ba
   assert.throws(() => combineVerification(changedHead, [report]), /source|Source/);
 });
 
-test("local review requirements preserve trust boundaries independently of impact rules", async () => {
-  const { developmentReviewRequirements } = await import("../development-policy.mjs");
-  for (const [file, requiresReview, protectedPath] of [
-    ["README.md", false, false], ["VALIDATION.md", false, false], ["docs/policy.md", false, false],
-    ["AGENTS.md", true, true], ["scripts/git-state.mjs", true, true],
-    ["scripts/development-policy.mjs", true, true], ["scripts/candidate-commit.mjs", true, true],
-    ["scripts/tests/development-tools.test.mjs", false, false],
-    ["scripts/test-workflow.mjs", true, true], ["scripts/tests/workflow-runner.test.mjs", false, false],
-    ["scripts/build-android.ps1", true, true], ["scripts/test-android.ps1", true, true],
-    ["scripts/android-runner.mjs", true, true], ["scripts/package-extension.ps1", true, true],
-    ["scripts/bundle-extension.mjs", true, true], ["scripts/export-schema.ts", true, true],
-    [".github/agents/devpocket-reviewer.agent.md", true, true],
-    [".github/skills/devpocket-development/SKILL.md", true, true],
-    [".github/copilot-instructions.md", true, true],
-    [".github/instructions/backend.instructions.md", true, true],
-    [".github/instructions/nested/checks.instructions.md", true, true],
-    [".github/README.md", false, false],
-    ["scripts/verification.mjs", true, true], ["scripts/verification-policy.mjs", true, true],
-    ["scripts/verification-preflight.mjs", true, true], ["scripts/verification-run.mjs", true, true],
-    ["scripts/verification-transition.mjs", true, true],
-    ["scripts/verification-tooling.mjs", true, true], ["scripts/verification-admission.mjs", true, true],
-    ["scripts/verification-ci.mjs", true, true], ["scripts/verification-ci-artifact.ps1", true, true],
-    ["scripts/verify.mjs", true, true], [".github/workflows/ci.yml", true, true],
-    ["package-lock.json", true, true], [".NPMRC", true, true], ["backend/tsconfig.json", true, true],
-    ["deployment/azure/probe/requirements-test.txt", true, true],
-    ["android/gradlew.bat", true, true], ["android/app/build.gradle.kts", true, true],
-    ["android/app/src/main/java/dev/devpocket/app/ui/Screen.kt", false, false],
-    ["android/app/src/main/java/dev/devpocket/app/data/Store.kt", false, false],
-    ["android/app/src/main/java/dev/devpocket/app/data/Vault.kt", true, false],
-    ["android/app/src/main/AndroidManifest.xml", true, false],
-    ["backend/tests/fixture.test.ts", false, false], ["backend/integration/fixture.ts", false, false],
-    ["backend/src/runtime.ts", true, false], ["backend/src/push.ts", true, false],
-    ["backend/src/cli.ts", false, false], ["extension/entry.mjs", true, false],
-    ["deployment/setup.ps1", false, false], ["infra/main.bicep", false, false], ["azure.yaml", false, false],
-    [".github/ISSUE_TEMPLATE/ai-task.yml", false, false], [".github/CODEOWNERS", true, true],
-    ["protocol.schema.json", true, false], ["test-fixtures/fixture.json", false, false],
-    ["unclassified.txt", true, false],
-  ]) {
-    const result = developmentReviewRequirements([file]);
-    assert.equal(result.requiresHumanReview, protectedPath, file);
-    assert.deepEqual(result.protectedPaths, protectedPath ? [file] : [], file);
-    assert.deepEqual(result.reviewPaths, requiresReview && !protectedPath ? [file] : [], file);
-    assert.ok(result.reasons.every((reason) => reason.title && reason.why && reason.paths.includes(file)));
-  }
-  assert.deepEqual(developmentReviewRequirements([]), { requiresHumanReview: false, protectedPaths: [], reviewPaths: [], reasons: [] });
-  assert.deepEqual(developmentReviewRequirements(["README.md", "scripts/candidate-commit.mjs", "AGENTS.md", "AGENTS.md"]).protectedPaths,
-    ["AGENTS.md", "scripts/candidate-commit.mjs"]);
-  for (const invalid of [undefined, null, {}, "README.md", [null], [""], ["../package.json"], [".git/config"], ["C:/outside"]]) {
-    assert.throws(() => developmentReviewRequirements(invalid), /actual changed-path list/);
-  }
-});
-
 test("package metadata does not grant a dependency-policy exemption to executable changes", async (t) => {
   const { root } = await workspace(t), file = "package.json";
   const original = { name: "fixture", version: "1", scripts: { test: "node --test" }, dependencies: { example: "1.0.0" } };
@@ -305,17 +279,6 @@ test("package metadata does not grant a dependency-policy exemption to executabl
   assert.equal((await inspectDevelopmentPolicy(root, base, [file], git)).requiresHumanReview, true);
   assert.equal(developmentReviewRequirements([file]).requiresHumanReview, true, "Missing originals cannot establish metadata-only change.");
 });
-
-function approvalFixture() {
-  const file = "scripts/verify.mjs";
-  const scope = { sessionId: "fixture-session", runId: "fixture-run", base: "1".repeat(40),
-    workspace: { root: path.resolve(".data", "approval-fixture"), branch: "refs/heads/task" },
-    task: { goal: "Improve local verification", acceptance: ["Preserve required checks"] } };
-  const policy = { ...developmentReviewRequirements([file]), contents: { [file]: "// policy fixture\n" }, inputs: [
-    { path: file, kind: "file", mode: 0, sha256: "2".repeat(64) },
-  ] };
-  return { scope, policy, hooks: { directory: "fixture-hooks", fingerprint: "3".repeat(64) } };
-}
 
 test("approval inspection and rendering preserve prototype-like added and existing filenames", async (t) => {
   const { root } = await workspace(t), files = ["__proto__", "constructor", "toString"];
@@ -346,77 +309,6 @@ test("approval inspection and rendering preserve prototype-like added and existi
   }
   const existingDetails = developmentApprovalDetails(existingBase, existing, files);
   assert.ok(files.every((file) => existingDetails.includes(`original ${file}\n`) && existingDetails.includes(`updated ${file}\n`)));
-});
-
-test("scoped approval identity follows authority inputs, not unrelated source revisions", () => {
-  const { scope, policy, hooks } = approvalFixture();
-  const request = developmentApprovalRequest(scope, policy, "execution", hooks);
-  const unrelated = { ...policy, source: { head: "4".repeat(40), fingerprint: "5".repeat(64) } };
-  assert.equal(developmentApprovalRequest(scope, unrelated, "execution", hooks).id, request.id);
-  for (const next of [
-    developmentApprovalRequest({ ...scope, runId: "another-task" }, policy, "execution", hooks),
-    developmentApprovalRequest({ ...scope, sessionId: "another-session" }, policy, "execution", hooks),
-    developmentApprovalRequest({ ...scope, workspace: { ...scope.workspace, branch: "refs/heads/other" } }, policy, "execution", hooks),
-    developmentApprovalRequest(scope, { ...policy, inputs: [{ ...policy.inputs[0], sha256: "6".repeat(64) }] }, "execution", hooks),
-    developmentApprovalRequest(scope, { ...policy, contents: { "scripts/verify.mjs": "Substituted presentation" } }, "execution", hooks),
-    developmentApprovalRequest(scope, policy, "execution", { ...hooks, fingerprint: "7".repeat(64) }),
-  ]) assert.notEqual(next.id, request.id);
-  const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
-  const message = formatDevelopmentApproval(request, "actual-changes.txt", undefined, snapshot);
-  for (const label of ["Approval requested:", "Why now:", "Target:", "Changes:", "After approval:", "Not included:", "Valid for:"]) {
-    assert.ok(message.includes(label), label);
-  }
-  assert.ok(message.includes(scope.workspace.root));
-  assert.ok(message.includes("scripts/verify.mjs"));
-  assert.ok(message.includes("actual-changes.txt"));
-  assert.ok(message.includes(snapshot));
-  assert.throws(() => formatDevelopmentApproval(request, "actual-changes.txt"), /immutable approval snapshot/);
-  assert.throws(() => formatDevelopmentApproval(request, "actual-changes.txt", undefined, "Substituted"), /immutable approval snapshot/);
-  assert.equal(developmentApprovalSatisfied(request, [{ requestId: request.id, approved: true }]), false);
-  assert.throws(() => developmentApprovalRequest(scope, { ...policy, inputs: [] }, "execution", hooks), /every requested path/);
-});
-
-test("approval snapshots cannot escape their native-question code block", () => {
-  const { scope, policy, hooks } = approvalFixture();
-  policy.contents["scripts/verify.mjs"] = "```text\nuntrusted contents\n```\n";
-  const request = developmentApprovalRequest(scope, policy, "execution", hooks);
-  const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
-  const message = formatDevelopmentApproval(request, "reference-only.txt", undefined, snapshot);
-  assert.ok(message.includes(`\n\`\`\`\`text\n${snapshot}\n\`\`\`\``));
-});
-
-test("approval records require the exact original-client decision and subject", () => {
-  const { scope, policy, hooks } = approvalFixture();
-  const request = developmentApprovalRequest(scope, policy, "execution", hooks);
-  const approved = { version: 1, requestId: request.id, origin: "original-client", decision: "approved" };
-  assert.equal(developmentApprovalSatisfied(request, [approved]), true);
-  for (const change of [
-    { version: 2 }, { requestId: "another-request" }, { origin: "agent" },
-    { decision: "rejected" }, { decision: "cancelled" }, { decision: "invalid" }, { approved: true },
-  ]) assert.equal(developmentApprovalSatisfied(request, [{ ...approved, ...change }]), false);
-  const changed = developmentApprovalRequest(scope, {
-    ...policy, inputs: [{ ...policy.inputs[0], sha256: "9".repeat(64) }],
-  }, "execution", hooks);
-  assert.equal(developmentApprovalSatisfied(changed, [approved]), false);
-});
-
-test("CI execution consent binds the repository and branch without inheriting local-only consent", () => {
-  const { scope, policy, hooks } = approvalFixture();
-  const local = developmentApprovalRequest(scope, policy, "execution", hooks);
-  const target = { repository: "fixture/verification", ref: scope.workspace.branch };
-  const request = developmentApprovalRequest({ ...scope, ci: target }, policy, "execution", hooks);
-  assert.notEqual(request.id, local.id);
-  assert.equal(developmentApprovalSatisfied(request, [{ version: 1, requestId: local.id,
-    origin: "original-client", decision: "approved" }]), false);
-  const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
-  const message = formatDevelopmentApproval(request, "reference-only.txt", "CI-first task", snapshot);
-  assert.match(message, /CI target: fixture\/verification/);
-  assert.match(message, /No push, PR creation, merge/);
-  assert.ok(request.effects.some((effect) => effect.includes("hosted-runner setup")));
-  for (const ci of [
-    { ...target, ref: "refs/heads/other" }, { ...target, repository: "../verification" },
-    { ...target, workflow: "different.yml" },
-  ]) assert.throws(() => developmentApprovalRequest({ ...scope, ci }, policy, "execution", hooks), /exact repository and branch/);
 });
 
 test("a configured hook changed after candidate preparation cannot execute", async (t) => {
@@ -581,7 +473,7 @@ test("candidate implementation capture includes every verification adapter and r
     assert.match(captured.files.find((file) => file.name === name)?.sha256 ?? "", /^[a-f0-9]{64}$/);
   }
   await requireCandidateImplementation(captured);
-  for (const name of ["native-candidate.mjs", "owned-command.cs", "verification-ci.mjs"]) {
+  for (const name of ["native-candidate.mjs", "owned-command.cs", "verification-ci.mjs", "development-paths.mjs"]) {
     assert.ok(captured.files.some((file) => file.name === name));
     assert.equal(isVerificationPolicyPath(`scripts/${name}`), true);
   }
@@ -1384,87 +1276,6 @@ test("staging after final inspection never commits an unowned file", async (t) =
   assert.deepEqual((await git(root, ["diff", "--name-only", before.source.head, "HEAD"])).trim().split("\n"), ["README.md"]);
   const index = path.resolve(root, (await git(root, ["rev-parse", "--git-path", "index"])).trim());
   await assert.rejects(readFile(`${index}.lock`), { code: "ENOENT" });
-});
-
-test("task grants allow ordinary CI repairs without approving changed local tools", () => {
-  const { scope, policy, hooks } = approvalFixture();
-  scope.task = { ...scope.task, delivery: "pull-request" };
-  scope.ci = { repository: "owner/repo", ref: scope.workspace.branch };
-  const implementation = { version: 2, directory: "approved-tools",
-    files: [{ name: "development-policy.mjs", sha256: "5".repeat(64) }] };
-  const { request, snapshot } = developmentTaskApprovalRequest(scope, hooks, implementation);
-  const receipt = { version: 1, requestId: request.id, origin: "original-client", decision: "approved" };
-  assert.match(snapshot, /ordinary disposable runner identity without per-revision project approval/);
-  assert.match(snapshot, /ordinary CI, not an adversarial sandbox/);
-  for (const action of ["commit", "push", "create-draft-pr", "mark-pr-ready", "ordinary-ci"]) {
-    assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [], action), false);
-    assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [receipt], action), true);
-  }
-  for (const action of ["merge", "deploy", "local-install", "adopt-policy", "reload", "isolated-execution"]) {
-    assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [receipt], action), false);
-  }
-  assert.equal(developmentExecutionAuthorization(scope, policy, hooks, implementation, [receipt]).status, "needs_human");
-  assert.equal(developmentExecutionAuthorization(scope, policy, hooks, implementation, [], "ci").status, "needs_human");
-  const allowed = developmentExecutionAuthorization(scope, policy, hooks, implementation, [receipt], "ci");
-  assert.equal(allowed.route, "github-hosted");
-  assert.equal(allowed.adoption, "not-authorized");
-  const repaired = { ...policy, inputs: policy.inputs.map((input) => ({ ...input, sha256: "6".repeat(64) })) };
-  assert.equal(developmentExecutionAuthorization(scope, repaired, hooks, implementation, [receipt], "ci").status, "allowed");
-  for (const mutate of [
-    (value) => { value.base = "7".repeat(40); },
-    (value) => { value.runId = "another-task"; },
-    (value) => { value.ci.repository = "owner/another"; },
-    (value) => { value.workspace.branch = value.ci.ref = "refs/heads/another"; },
-  ]) {
-    const changed = structuredClone(scope);
-    mutate(changed);
-    assert.equal(developmentTaskActionAllowed(changed, hooks, implementation, [receipt], "ordinary-ci"), false);
-  }
-  const legacy = { ...scope, task: { ...scope.task, execution: { kind: "github-hosted",
-    repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: "4".repeat(40) } } };
-  assert.throws(() => developmentTaskApprovalRequest(legacy, hooks, implementation), /retired/);
-  assert.throws(() => developmentExecutionAuthorization(scope, policy, hooks, implementation, [receipt], "unknown"),
-    /Choose local execution or ordinary CI explicitly/);
-  const localOnly = { ...scope, task: { ...scope.task, delivery: "local-commit" } };
-  assert.match(developmentExecutionAuthorization(localOnly, policy, hooks, implementation, [receipt], "ci").reason,
-    /explicit PR delivery scope/);
-});
-
-test("local-verification PR grants bind ordinary CI authority to the repository and branch", () => {
-  const { scope, hooks } = approvalFixture();
-  scope.task.delivery = "pull-request";
-  scope.ci = { repository: "owner/repo", ref: scope.workspace.branch };
-  const implementation = { version: 2, directory: "trusted-tools",
-    files: [{ name: "development-policy.mjs", sha256: "5".repeat(64) }] };
-  const { request, snapshot } = developmentTaskApprovalRequest(scope, hooks, implementation);
-  const receipt = { version: 1, requestId: request.id, origin: "original-client", decision: "approved" };
-  assert.deepEqual(request.actions, ["edit", "check", "independent-review", "repair", "commit",
-    "push", "create-draft-pr", "mark-pr-ready", "ordinary-ci"]);
-  assert.match(snapshot, /automatic repository CI for owner\/repo refs\/heads\/task/);
-  assert.doesNotMatch(snapshot, /Use existing local checks only/);
-  const question = formatDevelopmentApproval(request, "diagnostic-copy.txt", "", snapshot);
-  assert.match(question, /CI target: owner\/repo at refs\/heads\/task/);
-  assert.doesNotMatch(question, /ci\.yml only/);
-  for (const action of ["push", "create-draft-pr", "mark-pr-ready", "ordinary-ci"]) {
-    assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [receipt], action), true);
-    assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [], action), false);
-    for (const target of [{ repository: "owner/another", ref: "refs/heads/task" },
-      { repository: "owner/repo", ref: "refs/heads/another" }]) {
-      const changed = { ...scope, ci: target, workspace: { ...scope.workspace, branch: target.ref } };
-      assert.equal(developmentTaskActionAllowed(changed, hooks, implementation, [receipt], action), false);
-    }
-  }
-  for (const ci of [undefined, null, { repository: "owner/repo", ref: "refs/heads/another" },
-    { repository: "../repo", ref: scope.workspace.branch }]) {
-    assert.throws(() => developmentTaskApprovalRequest({ ...scope, ci }, hooks, implementation), /CI.*repository and branch/);
-  }
-  for (const delivery of ["working-tree", "local-commit"]) {
-    const local = { ...scope, ci: undefined, task: { ...scope.task, delivery } };
-    const localRequest = developmentTaskApprovalRequest(local, hooks, implementation).request;
-    assert.deepEqual(localRequest.actions, ["edit", "check", "independent-review", "repair",
-      ...(delivery === "local-commit" ? ["commit"] : [])]);
-    assert.match(localRequest.effects.join(" "), /Use existing local checks only/);
-  }
 });
 
 test("publication scope checks the actual origin and every effective push destination", async (t) => {
