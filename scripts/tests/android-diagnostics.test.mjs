@@ -229,7 +229,11 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.equal([...expandedNormal.matchAll(
     /- uses: actions\/setup-node@v7\n\s+with:\n\s+node-version: 26\.12\.1\n/g,
   )].length, 7);
-  assert.equal([...expandedNormal.matchAll(/- uses: actions\/setup-java@v6\n\s+with:\n\s+distribution: temurin\n\s+java-version: '21'/g)].length, 2);
+  assert.equal([...expandedNormal.matchAll(/- uses: actions\/setup-java@v6\n\s+with:\n\s+distribution: temurin\n\s+java-version: '25'/g)].length, 2);
+  const androidBuild = await readFile("android/app/build.gradle.kts", "utf8");
+  assert.match(androidBuild, /sourceCompatibility = JavaVersion\.VERSION_17/);
+  assert.match(androidBuild, /targetCompatibility = JavaVersion\.VERSION_17/);
+  assert.match(androidBuild, /jvmTarget\.set\(org\.jetbrains\.kotlin\.gradle\.dsl\.JvmTarget\.JVM_17\)/);
   assert.match(workflow, /- uses: actions\/setup-python@v7\n\s+with:\n\s+python-version: '3\.12'/);
   assert.match(workflow, /^permissions:\n  contents: read\n/m);
   assert.doesNotMatch(workflow, /continue-on-error:|FORCE_JAVASCRIPT_ACTIONS_TO_NODE20|ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION/);

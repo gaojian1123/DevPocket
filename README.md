@@ -770,7 +770,7 @@ AGP 9 uses built-in Kotlin with Kotlin/Compose compiler 2.4.21. The app retains
 minSdk 26 and Java/Kotlin bytecode target 17, and targets Android 17 (API 37).
 Lint and Kotlin compiler warnings fail the project checks; release builds shrink
 unused resources as well as code.
-An existing Android Studio JBR 25 can be selected explicitly with `-Jdk`.
+CI uses Temurin JDK 25. An existing Android Studio JBR 25 can be selected explicitly with `-Jdk`.
 API-37 Robolectric tests require Java 21 or newer; Java 17 bytecode remains the
 application target, not the host test-JVM requirement.
 Native access is enabled only for the Gradle launcher/daemon and forked JVM

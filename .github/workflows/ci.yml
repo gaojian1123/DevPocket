@@ -327,7 +327,7 @@ jobs:
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '25'
       - name: Prepare project-local SDK using already accepted runner licenses
         shell: pwsh
         run: .\scripts\prepare-android.ps1 -ExistingSdk $env:ANDROID_HOME

@@ -1739,7 +1739,7 @@ before targeted cleanup; never delete another run or a retained trial AVD.
 The CI `device` job uses the standard x64 `ubuntu-24.04` VM, not `ubuntu-slim`,
 ARM or a job container. GitHub supports
 [hardware-accelerated Android testing on standard Linux runners](https://github.blog/changelog/2024-04-02-github-actions-hardware-accelerated-android-virtualization-now-available/).
-The job selects Node 26, npm 12.2.1 and Temurin JDK 21 and uses the image's PowerShell 7,
+The job selects Node 26, npm 12.2.1 and Temurin JDK 25 and uses the image's PowerShell 7,
 Python 3 and Android command-line tools. The
 [runner image inventory](https://github.com/actions/runner-images/blob/8197087fc536320d1441203fdb5da9ae1b44b863/images/ubuntu/Ubuntu2404-Readme.md)
 is a snapshot, not proof of any future job's installed versions.
@@ -1944,7 +1944,7 @@ GitHub provisions the hosted VM; this does not install a local runner. The
 [checkout container credential requirement](https://github.com/actions/checkout/blob/v7.0.1/README.md)
 is 2.329.0 or newer for authenticated Git inside Docker container actions; this
 workflow has no job container and keeps `persist-credentials: false`.
-Project toolchains use Node 26, npm 12.2.1, Temurin JDK 21 and Python 3.12. The Windows
+Project toolchains use Node 26, npm 12.2.1, Temurin JDK 25 and Python 3.12. The Windows
 Android job passes its explicit project-local SDK; the Linux device job passes
 the explicit hosted SDK path after the required stable packages are available.
 
