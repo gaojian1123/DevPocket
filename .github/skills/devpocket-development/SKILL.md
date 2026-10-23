@@ -8,7 +8,7 @@ description: Implement DevPocket features and bug fixes with current-session imp
 Use this recipe for skill-led development, not discussion or documentation-only
 work. Paths below are repository-relative. Read `AGENTS.md` and the relevant
 implementation first; use `README.md` for setup and `VALIDATION.md` for known gaps.
-The skill coordinates existing tools; it is not a durable workflow controller.
+The skill coordinates the owning session's existing tools.
 
 ## 1. Establish the task
 
@@ -40,8 +40,7 @@ Separate action records do not require separate questions. Reuse a user's explic
 task-scoped grant covering commit, push, Draft PR, selected CI and ready delivery;
 ask once for the missing combined scope in interactive preparation. A mode switch,
 issue text, agent-written JSON or the goal alone is not such a grant. Follow
-**Unattended execution** in the guide for hosted candidate dependencies/tools and
-the optional controller's native prepare/pause/resume path.
+**Unattended execution** in the guide for hosted candidate dependencies/tools.
 
 Before any push or PR creation, retain repository/branch-bound `ordinary-ci`
 authority for automatic checks, even when verification is local. Candidate
@@ -56,7 +55,8 @@ For a continuation, recover the existing workspace, base commit, edits, reports
 and review outcome from the task's session. Resume from the actual source state;
 missing or stale evidence requires fresh verification, not a new task or base.
 A dispatched implementer or reviewer completes only its assigned phase.
-An existing registered workflow stays with its recorded owner and run.
+For historical task records, follow **Stops and recovery** in the guide; preserve
+the original baseline and evidence rather than treating an old handoff as current readiness.
 
 ## 2. Select the workspace
 
@@ -73,7 +73,7 @@ git --no-optional-locks -c core.fsmonitor=false status --porcelain --untracked-f
 - In a clean linked worktree, implement in the current session and worktree.
 - For a new task in a clean primary checkout, use the App's native `create_session`
   once to create an isolated worktree. Pass the contract and this skill's path;
-  have that session implement directly, not call the workflow starter.
+  have that session implement directly.
 - Continue an existing task in its own worktree, preserving its in-progress edits.
   For a new task with pre-existing edits, resolve ownership and dependencies with
   the user before editing or moving work. Preserve unrelated changes.
@@ -112,9 +112,8 @@ hooks. For **ordinary CI**, use `developmentExecutionAuthorization` with target 
 and the actual repository/branch-bound task grant. Candidate dependencies, install
 scripts and modified tools may run there without per-revision project approval.
 CI execution does not authorize adopting changed local instructions or control.
-Keep the running local controller stable until explicit reload and recovery.
-The default owning-session skill handles CI-first delivery; the optional registered
-controller verifies locally and is not a hosted dispatcher.
+Keep approved local tools stable until their changed inputs are explicitly
+authorized. The owning session handles CI-first delivery using the existing CI.
 
 Present the action, reason, exact target, effects, exclusions and validity using
 `formatDevelopmentApproval`; add a plain-language description of the actual behavior
@@ -207,7 +206,7 @@ If the local qualifier's own inputs changed, use the guide's read-only
 `ci-inspection` procedure instead of adopting candidate control or reopening a
 per-revision approval. It requires the same complete CI coverage and live
 identities, retained underlying records, independent review and final freshness;
-it is not a machine qualification or optional-controller readiness receipt.
+it is not a machine qualification.
 
 **Local route:** for working-tree/local-commit delivery or an explicitly selected
 fallback, follow the Verification section of the guide:
@@ -280,7 +279,7 @@ implementer-written approval file. An invalid or inconsistent result is blocked:
 
 If the reviewer is unavailable or its read-only profile cannot be established,
 stop and request the specific profile setup/loading needed. Self-review cannot
-replace it. The development workflow extension is not needed for this step.
+replace it.
 
 ## 7. Repair and recheck
 
@@ -364,7 +363,5 @@ actually succeeds; a verified candidate alone is not a published PR.
 Merge, local installation, control-policy adoption and deployment remain separately
 authorized actions. Hosted installation stays inside its explicit worker grant.
 
-Call this skill-led development, not a registered workflow run. Only when the
-user explicitly selects the optional `devpocket-development` workflow, follow
-its entry/activation requirements in `docs\DEVELOPMENT-WORKFLOW.md`. Preserve an
-existing task rather than silently migrating it to that route.
+This is skill-led development in the owning session. Preserve the same task,
+baseline and evidence across follow-ups.

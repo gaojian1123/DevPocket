@@ -294,8 +294,9 @@ feature implementation and bug fixes under `AGENTS.md`. It keeps implementation
 in the current session when already in a suitable linked worktree, runs the
 existing source-bound verifier and requests an independent read-only reviewer.
 The recipe lives in `.github\skills\devpocket-development\SKILL.md`; an agent can
-read it directly when skill discovery has not refreshed. The default route needs
-neither the development extension nor Dynamic Workflows. Discussion, planning
+read it directly when skill discovery has not refreshed. Development uses the
+owning session's original tools; the former Dynamic Workflow and development
+extension have been removed. Discussion, planning
 and documentation-only tasks do not start the implementation pipeline.
 
 The skill distinguishes reviewed working-tree changes from authorized commit/PR
@@ -307,26 +308,14 @@ qualification still precede ready delivery, and the original task base remains
 fixed. Working-tree-only work does not gain upload permission; local full
 verification remains available when that is the authorized route.
 
-The **registered devpocket-development workflow** remains an explicit opt-in for
-controller-managed execution and progress-aware repairs, not the default entry point.
-Its starter also reuses a freshly inspected clean linked worktree in the current
-session, isolates a clean primary checkout and blocks dirty or unknown checkouts.
-The controller makes a task-scoped local candidate commit through original native
-permissions before final source-bound verification and independent review.
-Repairs create new commits and evidence; earlier commits and reports remain.
-Neither route imposes a default two-round cap or a separate time/credit budget.
+There is no default two-round cap or separate time/credit budget.
 Same-scope work continues under the original client's limits and any explicit
 user cap. Repeated failures get diagnosis and a different approach before a
 no-progress stop; normal repair rounds do not require renewed project approval.
-The controller records separate read-only progress diagnoses, not acceptance
-approvals. See **Task-scoped autonomy** in `docs\DEVELOPMENT-WORKFLOW.md`.
-Its read-only readiness check reuses durable evidence for an unchanged candidate
-without repeating local final verification. Source, HEAD, branch or index changes
-invalidate readiness. The optional controller verifies locally and does not
-dispatch hosted jobs; use the default skill for ordinary CI-first delivery.
-Native PR tools finish only the recorded delivery scope. Neither route merges or deploys.
-Extension activation and App run approvals remain explicit. Both routes
-retain the same verification requirements and scoped authorization; a skill is
+See **Task-scoped autonomy** in `docs\DEVELOPMENT-WORKFLOW.md`.
+Native PR tools finish only the recorded delivery scope; development does not
+authorize merging or deployment. The skill retains verification requirements
+and scoped authorization; it is
 guidance, not a replacement for programmatic evidence checks or protected CI.
 
 **Unattended development** reuses one explicit task-scoped grant rather than
@@ -342,13 +331,13 @@ No restricted-token worker, temporary supervisor service or adversarial sandbox
 is required or reserved as a future mode. Normal platform checks, independent
 review, deadlines and cleanup remain mandatory, as does DevPocket's product security.
 See **Unattended execution** in `docs\DEVELOPMENT-WORKFLOW.md` for task-scoped
-ordinary CI authority and separate local controller adoption.
+ordinary CI authority and separate local tool adoption.
 
 Verification classifies changed paths centrally and derives CI lanes from the
 selected check definitions, independently of local Agent trust requirements.
-Development orchestration, candidate preparation, source identity, planning,
+Development policy, candidate preparation, source identity, planning,
 evidence aggregation and their named contract regressions select the complete
-workflow suite in the independent **tooling** lane, without application builds
+tooling suite in the independent **tooling** lane, without application builds
 or Android provisioning. `AGENTS.md` and the named DevPocket skill/reviewer
 instructions select it too; README, validation and docs Markdown alone select
 no checks. The verifier's compatibility entry separates these contracts from
@@ -376,6 +365,9 @@ cross-commit cache.
 
 `npm run test:workflow` uses `scripts/test-workflow.mjs`, which owns the complete
 explicit tooling test list, including Xcode setup and the runner's own contracts.
+The command, `workflow-tests` check ID and shard IDs are retained verification
+interfaces, not a registered Dynamic Workflow. Shared skill, policy and native
+candidate regressions live in `scripts/tests/development-tools.test.mjs`.
 It launches Node's test runner with separate file processes and Node's default
 concurrency, inherits the terminal streams, and preserves failures and exit status.
 It does not import the tests into one process or discover the entire test directory;
@@ -392,16 +384,15 @@ OS throttle: older entrypoints and direct focused commands are unaffected.
 Interrupted ownership remains explicit; no lock is reclaimed merely from a PID.
 
 Local execution trust and human-review requirements belong to
-`scripts\development-policy.mjs`, shared by skill-led development and the optional
-controller. Ordinary code/test changes and same-scope repairs reuse the task's
+`scripts\development-policy.mjs`. Ordinary code/test changes and same-scope repairs reuse the task's
 local-development authorization; entire script/backend directories are not
 automatic human-review gates. Protected local execution/adoption retains exact
 approval; an ordinary-CI task grant permits candidate execution in its named
 repository/ref without per-revision project approval. Sensitive/unclassified product changes retain independent
 inspection, independently of CI impact.
 Requests describe the action, reason, target, effects, exclusions and validity,
-with actual changes available as details. The optional controller consumes only
-native decisions journaled for the same task and trusted input versions;
+with actual changes available as details. Retain original-client user decisions
+for the same task and trusted input versions;
 ordinary candidate repairs reuse that authority while refreshing evidence.
 Passing tests and independent AI review do not create authority. See
 **Scoped development approvals** in `docs\DEVELOPMENT-WORKFLOW.md`.
@@ -415,7 +406,7 @@ is needed. Windows local/manual emulator entry points retain their shared
 resource pool. Missing acceleration, failed fixtures and missing reports still
 block the required gate; moving CI does not repair historical Windows UI failures.
 See [development workflow](docs/DEVELOPMENT-WORKFLOW.md) for the skill-led route,
-`npm run verify`, CI-first draft/qualification steps, optional workflow activation, runner prerequisites and CI
+`npm run verify`, CI-first draft/qualification steps, runner prerequisites and CI
 rules. Missing required device evidence blocks acceptance. Repository files do
 not by themselves enable a runner, enforce branch protection or authorize
 installation, runtime control, cloud operations, merging or publication.

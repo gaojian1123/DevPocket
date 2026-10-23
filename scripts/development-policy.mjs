@@ -1,15 +1,14 @@
 import { createHash } from "node:crypto";
-import { lstat, open, readFile, realpath } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 
 // Local authorization is independent of CI impact and never overrides native tool permissions.
 const executionScripts = new Set([
-  "development-policy", "development-workflow", "workflow-extension", "candidate-commit", "native-candidate",
+  "development-policy", "candidate-commit", "native-candidate",
   "git-state", "verification", "verification-policy", "verify", "verification-executor", "test-workflow",
   "verification-backend", "verification-android", "process", "owned-command", "owned-command-windows",
   "verification-preflight", "verification-run", "verification-transition",
   "verification-tooling", "verification-admission", "verification-ci", "verification-ci-artifact",
-  "development-controller",
   "owned-command-linux", "owned-command-darwin", "local-ipc", "device-run", "worker-diagnostics", "device-diagnostics", "diagnostic-errors",
   "bounded-worker-log", "diagnostic-publication", "native-lifecycle", "backend-diagnostics",
   "verification-diagnostics", "android-diagnostics", "platform-diagnostics",
@@ -236,11 +235,11 @@ export function developmentTaskApprovalRequest(scope, hooks, implementation) {
     `Allow ${actions.join(", ")} for this task and ${scope.workspace.branch}; reuse this scope across ordinary source repairs.`,
     `Use existing local checks ${publication ? "when their local execution is authorized" : "only"}. Changed executable inputs still need their exact local execution approval.`,
     ...(publication ? [`Authorize automatic repository CI for ${ci.repository} ${ci.ref}, including existing-PR synchronization and PR creation. Candidate dependencies, install scripts and changed tools run as the ordinary disposable runner identity without per-revision project approval. Public network access is permitted. This is ordinary CI, not an adversarial sandbox or permission to adopt new local control.`] : []),
-    "Retain required checks, independent review and source-bound results. Keep the running local controller unchanged until separately authorized adoption.",
+    "Retain required checks, independent review and source-bound results. Keep approved local tooling unchanged until separately authorized adoption.",
   ];
   const exclusions = [
     "No merge, deployment, release, production secrets, cloud administration, device enrollment, live runtime control, local installation, extension reload or Git hook changes.",
-    "No automatic local controller/instruction/hook adoption, native permission bypass, new targets or increased user-selected limits.",
+    "No automatic local tool/instruction/hook adoption, native permission bypass, new targets or increased user-selected limits.",
     ...(delivery === "working-tree" ? ["No commit, push or PR creation."] : []),
   ];
   const snapshot = canonical({ scope, hooks, implementation, actions, effects, exclusions });
@@ -304,65 +303,6 @@ export function formatDevelopmentApproval(request, details, summary, snapshot) {
     `Request identity: ${request.id}`,
     `Contents to approve (immutable native-question snapshot):\n${fence}text\n${snapshot}\n${fence}`,
   ].join("\n\n");
-}
-
-export async function readDevelopmentApprovalDetails(request, file) {
-  try {
-    const info = await lstat(file);
-    if (!info.isFile() || info.isSymbolicLink() || info.size !== request.detailsBytes) return null;
-    const bytes = await readFile(file);
-    if (bytes.length !== request.detailsBytes || hash(bytes) !== request.detailsSha256) return null;
-    return bytes.toString("utf8");
-  } catch (error) {
-    if (["ENOENT", "ENOTDIR"].includes(error.code)) return null;
-    throw error;
-  }
-}
-
-export async function obtainDevelopmentApproval(ctx, request, details, summary) {
-  if (!request) return null;
-  const snapshot = await readDevelopmentApprovalDetails(request, details);
-  const changedDetails = () => ({ status: "blocked",
-    reason: "Approval details changed or are unavailable. No decision based on substituted contents may authorize execution.",
-    approval: request });
-  if (snapshot === null) return changedDetails();
-  const message = formatDevelopmentApproval(request, details, summary, snapshot);
-  if (ctx.args?.mode === "autopilot" && !(request.stage === "task" && ctx.args.prepare === true)) {
-    return { status: "needs_human", reason: "Unattended execution has no matching authorization. Progress is retained; no question or automatic approval was issued.",
-      approval: { ...request, message } };
-  }
-  if (ctx.session?.capabilities?.ui?.elicitation !== true || typeof ctx.session.ui?.elicitation !== "function") {
-    return { status: "needs_human", reason: "The original client's interactive approval UI is unavailable. Review this request there; no approval or execution was assumed.",
-      approval: { ...request, message } };
-  }
-  if (typeof ctx.step !== "function") throw new Error("Approval requires the original workflow journal.");
-  const decision = await ctx.step(`devpocket-approval-v1:${request.id}`, async () => {
-    const response = await ctx.session.ui.elicitation({
-      message,
-      requestedSchema: { type: "object", properties: { decision: { type: "string",
-        title: request.action, enum: ["approve", "reject"],
-        enumNames: [request.stage === "task" ? "Authorize this task scope" :
-          request.stage === "execution" ? "Approve this policy for local checks" : "Accept this sensitive change review",
-          "Reject this request"] } },
-      required: ["decision"] },
-    });
-    const valid = response && ["accept", "decline", "cancel"].includes(response.action) &&
-      Object.keys(response).every((key) => ["action", "content"].includes(key)) &&
-      (response.action !== "accept" || response.content && Object.keys(response.content).length === 1 &&
-        ["approve", "reject"].includes(response.content.decision));
-    const approved = valid && response.action === "accept" && response.content.decision === "approve";
-    const detailsMatch = !approved || await readDevelopmentApprovalDetails(request, details) !== null;
-    return { version: 1, requestId: request.id, origin: "original-client",
-      decision: !valid || !detailsMatch ? "invalid" : response.action === "cancel" ? "cancelled" :
-        approved ? "approved" : "rejected" };
-  });
-  if (!developmentApprovalSatisfied(request, [decision])) return {
-    status: decision?.decision === "invalid" ? "blocked" : "needs_human",
-    reason: "This approval was rejected, cancelled or not established. No automatic retry or broader permission is inferred.",
-    approval: { ...request, message }, decision,
-  };
-  if (await readDevelopmentApprovalDetails(request, details) === null) return changedDetails();
-  return { receipt: decision };
 }
 
 export function developmentApprovalSatisfied(request, receipts) {

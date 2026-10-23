@@ -1,6 +1,6 @@
 # Development workflow
 
-## Default: skill-led development
+## Skill-led development
 
 `AGENTS.md` routes ordinary implementation requests to the **devpocket-development
 skill** at `.github\skills\devpocket-development\SKILL.md`. That file is the
@@ -14,16 +14,13 @@ delivery. PR delivery defaults to **CI-first**: approved focused checks precede 
 authorized candidate and pending Draft PR; CI supplies the complete gate before
 independent review and ready delivery. The task's original base remains unchanged.
 Working-tree-only work does not acquire upload authority. This ordering does not
-grant publication permission or relax evidence identity. The optional controller below
-also creates a local candidate before final verification and review, through the
-original native tool permissions. It stays local-only, including prepared runs.
-Task grants retain authority for subsequent native-tool delivery; they do not
-make the controller publish or dispatch CI.
+grant publication permission or relax evidence identity. Task grants retain only
+the stated authority for subsequent native-tool delivery.
 
-This route does not require extension loading, the starter tool or Dynamic
-Workflows. It uses the existing verifier and read/search-only
+Development uses the owning session's original tools, the existing verifier and read/search-only
 `devpocket-reviewer`; unavailable required checks or independent review still
-block completion. The skill is agent guidance, not a durable controller or a
+block completion. The former registered Dynamic Workflow, development extension
+and starter/readiness tools have been removed. The skill is agent guidance, not a
 guarantee that an agent cannot skip a step. Verification remains executable;
 required CI and independent review guard normal delivery. Adding the skill does
 not configure repository rules.
@@ -60,10 +57,9 @@ additional authority are `needs_human`; ordinary technical failures are not
 requests to approve another repair. All successful repairs still require fresh
 applicable verification and independent acceptance review.
 
-Verification blocked at either report or check level stops the optional controller
-before code-repair dispatch. Admission or ownership failures with only `not_run`
-checks retain their diagnostic report; they do not authorize another implementation
-round, owner takeover or lock removal.
+Admission or ownership failures with only `not_run` checks require environment
+inspection rather than code repair. Retain their diagnostic report; it does not
+authorize owner takeover or lock removal.
 
 ## Unattended execution
 
@@ -107,57 +103,6 @@ local execution by default; pass target `ci` to check the same grant's ordinary
 hosted execution scope. A CI grant does not approve changed tools locally.
 Sensitive/unclassified paths focus independent review rather than blanket human
 sign-off. Legacy isolated-execution requests are rejected rather than reinterpreted.
-
-When changing development machinery, keep the approved local controller stable.
-Use `freezeDevelopmentController(root, implementation)` from
-`scripts\development-controller.mjs` with the immutable manifest returned by
-`requireDevelopmentImplementation()`. The same validated manifest is checked
-before and after copying; a later worktree edit cannot become the snapshot's
-approval source. Freeze before edits when a captured copy is needed, and use
-its `git-state.mjs` for read-only source capture. Replay preserves that binding;
-restoring the worktree does not approve a different snapshot. Candidate revisions
-can be tested in the authorized CI environment without adopting each revision
-locally. Snapshot hashes guard local
-execution identity, not against a hostile process with the same OS permissions.
-Local control/instruction/hook adoption still needs its applicable explicit scope.
-
-### Optional controller preparation
-
-For an explicitly selected registered workflow, add `prepare: true` and the
-requested delivery scope to its normal task arguments. For example:
-
-```json
-{
-  "goal": "Implement the agreed feature",
-  "acceptance": ["The specified behavior works without regressions"],
-  "mode": "autopilot",
-  "prepare": true,
-  "delivery": "pull-request"
-}
-```
-
-Preparation is the explicitly interactive setup step: one native scope decision,
-then `ctx.pause` before implementation. Resume that **same run ID**, retaining
-its journal, baseline and budget. Replayed grants do not need an available UI.
-The run rechecks source, Git configuration/index, hooks and trusted implementation
-before continuing. Missing or rejected scope is not retried or auto-approved.
-An unprepared `mode: autopilot` or PR delivery returns a specific
-`needs_human` result before implementation. The starter propagates an explicitly
-chosen mode to an isolated child rather than forcing `interactive`.
-
-The extension freezes approved controller modules in a native-journaled setup
-step under ignored `.data\development-controllers`. Resume reads that same snapshot
-instead of freezing modified candidate code. Candidate source edits do not replace those
-modules. Changed snapshot bytes still stop the run; reload/adoption is explicit.
-The optional controller verifies locally and does not dispatch hosted jobs.
-Use the owning-session skill for ordinary CI-first work instead of starting this
-optional route for a hosted-only task. It returns the actual
-`authorizedDeliveryActions` after local verification and independent review;
-the owning original client completes any authorized PR work using native tools.
-A `ready` candidate is not a claim that a PR already exists.
-Prepared delivery readiness also checks the approved Git configuration. Changing
-an origin or push URL invalidates the retained delivery grant even if the source,
-index, branch and hooks are otherwise unchanged.
 
 ## Scoped development approvals
 
@@ -217,63 +162,17 @@ the task's attached branch. It adds the reviewed workflow's hosted setup/checks,
 including its PR merge ref, to the stated execution effects. The request identity
 changes with that target; a local-only decision cannot satisfy it. Commit,
 push/Draft PR creation, merge and deployment authority remain separately recorded.
-The optional local controller does not add this CI scope automatically.
+Retain the actual original-client decision and compare its task, target, hooks
+and input versions before reuse. A policy-bound manifest remains a review subject
+when restored to the task base; pass those retained paths to policy inspection.
+Ordinary source repairs need fresh evidence, not a new decision for unchanged
+scope. Changed executable inputs or expanded effects need a decision showing the
+delta. Rejection or cancellation is not permission to retry.
 
-The optional controller requests a decision through the runtime-bundled SDK's
-native `session.ui.elicitation`, only when its capability is present. It never
-answers its own question or substitutes a new permission handler. Its durable
-approval key binds the session/run, task contract, worktree/branch, base, requested
-effects, hooks and relevant input versions. Ordinary source edits are deliberately
-absent from that key: they invalidate applicable test/review evidence, not unchanged
-authority. Execution-policy requests explicitly cover execution and human review
-of those listed policy changes. Sensitive product changes receive independent
-review after verification; actual additional authority remains a separate decision.
-The controller retains task-affected policy paths through repairs, final review
-and readiness, including deleted/restored inputs. All these phases inspect the
-same subject rather than shrinking an approved combination into an unapproved
-subset. This policy history does not add paths to CI impact selection.
-Inspection receives that retained history, not just the current diff. A manifest
-that became an execution-policy subject remains one after restoration to the task
-base; only never-bound manifests qualify for the metadata-only exemption.
-
-Accepted decisions continue the pending phase in the same invocation, without
-dispatching implementation again. Repeated requests for the same scope replay the
-runtime-journaled decision, not an editable workspace receipt. The controller
-checks an already-retained exact receipt before requiring an interactive UI, while
-still checking detail-file type/hash and current source, hooks, implementation and
-inputs. Loss of UI capability alone cannot invalidate matching retained consent.
-The controller
-rechecks source, workspace, hooks, implementation and approval inputs after the
-answer and before continuing.
-The exact original/proposed details digest and byte length are part of the request.
-Details are checked before presentation, before recording an accepted decision,
-and before continuation; substituted, missing or linked details cannot supply consent.
-An existing invalid detail copy reaches this guard and records a blocked handoff
-instead of escaping as a file-creation error.
-Replacing and restoring a local copy cannot change the snapshot already sent in
-the native question. Filename dictionaries and missing-content rendering preserve
-own properties, including names such as `__proto__`.
-Rejection/cancellation stays rejected for that key; it is not retried under another
-command. Malformed or missing answers are not
-approval. An unavailable UI returns the specific pending request, without running
-the action. Crashes, lost connections and uncertain commits retain the inspected
-recovery rules below; this approval continuation is not automatic side-effect replay.
-
-Execution integrity remains separate. A changed *loaded* controller/helper still
-requires explicit original-client reload and same-task recovery, not approval
-followed by hot adoption of mutable code. Hook/configuration changes still stop
-for direct inspection; this controller does not automatically install hooks or
-rewrite Git settings. Ordinary tests can be developed under a fixed controller;
-changing that controller itself does not get this exemption.
-
-Readiness recomputes requirements and checks the applicable actual decisions,
-including native task-scoped hosted authority.
-`requiresHumanReview` describes a requirement, not an eternal stop after it has
-been satisfied. Unsatisfied decisions return `needs_human` with their action and
-reason. Evidence remains bound to the final source and native candidate, and
-publication remains separately authorized. These local rules do not configure
-GitHub rulesets, suppress native permission prompts or transfer grants to another
-task. Session artifacts are diagnostic records, not authority.
+Readiness requires current source-bound verification, independent review and
+every applicable actual decision. `requiresHumanReview` describes a requirement,
+not a permanent stop after it is satisfied. Session records do not authenticate
+consent or configure GitHub rulesets.
 
 ## CI-first delivery and live qualification
 
@@ -370,7 +269,7 @@ local branch/CRLF checkout. The referenced envelope and ZIP remain evidence
 records; an editable qualification JSON is not an offline readiness credential.
 
 When the qualifier's own execution inputs or test catalogue changed, keep the
-approved local controller fixed. The owning-session skill may instead inspect
+approved local tools fixed. The owning-session skill may instead inspect
 the same live GitHub facts with the original client's read-only Git/GitHub/archive
 tools, without executing candidate policy locally. Retain a `ci-inspection`
 record with the actual API responses, bounded authenticated archive, complete
@@ -380,8 +279,8 @@ run attempt, successful gate, artifact digest and coverage from the original
 task base. Inspect every required check's origin and selected platform/device
 result; a successful gate label alone is insufficient.
 
-This is an agent inspection, not a machine `ci-qualification` or a controller
-readiness receipt. It never excuses failed, partial or unavailable evidence.
+This is an agent inspection, not a machine `ci-qualification`.
+It never excuses failed, partial or unavailable evidence.
 The independent reviewer must inspect those underlying records, not accept the
 implementer's verdict. Repeat the same live read-only checks after review;
 an unchecked or changed binding remains pending. This alternative is limited to
@@ -395,284 +294,6 @@ Require the same source/ref/attempt bindings covered by the review before markin
 the existing draft ready within the user's delivery authorization. Changed,
 missing or incomplete evidence remains pending; do not create a duplicate PR or
 turn old review/test records into a new source by editing their fields.
-
-The optional registered controller below remains local-only. It does not upload
-pending candidates or consume a CI qualification as if it were its own local
-verification report. Its shared verifier still understands complete sharded
-origins; its durable-result and native-approval requirements remain intact.
-
-## Optional: registered workflow
-
-Use this route only when the user explicitly selects controller-managed
-execution, or to continue an already recorded workflow run. Ordinary requests
-to implement a feature or fix a bug do not opt in. Pre-existing skill-led work
-stays with its current owner unless the user chooses to migrate it; preserve its
-contract, changes and evidence rather than starting from a base that omits them.
-
-The **devpocket-development** GitHub Copilot extension is development tooling,
-not the shipped phone/runtime extension. It uses the host's bundled SDK and
-`joinSession()` to register tools and a workflow. It does not replace the current
-runtime, change its permission handler, or request credentials.
-
-State the goal, observable acceptance criteria and non-goals before dispatch.
-Reuse decisions already made; ask only about unresolved scope, behavior or
-authority. An implementation request alone does not select this optional route.
-
-### Choose the entry point: current session first
-
-After explicitly authorizing this repository's development extension to load in
-the current session, freshly inspect the starting checkout before dispatch.
-Use bounded read-only Git inspection, as the starter does through the existing
-Git helper: confirm the repository root, compare the resolved `--git-dir` and
-`--git-common-dir`, and inspect
-`git --no-optional-locks -c core.fsmonitor=false status --porcelain --untracked-files=all --ignore-submodules=none`.
-Check staged, unstaged and non-ignored untracked changes; ignored artifacts do
-not make a checkout dirty. Session names and the presence of a `.git` file alone
-do not establish linked-worktree identity.
-
-- **Clean linked worktree:** prefer `run_dynamic_workflow` in the **current
-  session**, using the invocation below. There is no need for a child session.
-  Calling `devpocket_start_development` here also invokes that workflow exactly
-  once through the App's native tool boundary, without `create_session`.
-- **Clean primary checkout:** use `devpocket_start_development`, passing only
-  the `args` object below. It uses the App's native `create_session` with
-  `workspace_type: "worktree"` to isolate the task; that child invokes the
-  workflow directly. The controller still refuses the primary checkout.
-- **Dirty checkout or failed inspection:** stop and preserve the checkout.
-  The starter dispatches neither a workflow nor a child. Resolve any dependency
-  on existing changes before choosing a clean workspace; do not silently
-  start from a base that drops them. Dependencies on a particular in-progress
-  branch also require an explicit choice before dispatch, even when clean.
-
-Direct invocation of `run_dynamic_workflow` in an eligible current worktree:
-
-```json
-{
-  "name": "devpocket-development",
-  "args": {
-    "goal": "Describe the user-visible change",
-    "acceptance": ["An observable success case", "An observable failure case"],
-    "nonGoals": ["Behavior that must remain unchanged"]
-  }
-}
-```
-
-Discover the available native tool names; the starter supports both unqualified
-names and the existing `functions.`-qualified forms. It forwards the validated
-task arguments without adding model overrides or guessed workflow limits.
-If current-session workflow invocation is unavailable, rejected, fails or has an
-uncertain outcome, preserve/report that result. Never fall back to creating a
-child or dispatch the task a second time. Inspect an uncertain run before
-choosing a continuation.
-
-Loading/reloading the extension and the repository's read/search-only
-`devpocket-reviewer` profile is explicit. Reloading extensions may also reload
-other extensions in that session. Merely adding these files does not activate
-them in an already-running session. The GitHub Copilot host (desktop app or CLI)
-must support Dynamic Workflows and eligible execution credentials. The preferred
-direct entry does not require the starter, but still requires the native workflow
-tool, loaded workflow and read-only reviewer. For missing prerequisites, including
-session creation when isolation is needed, report the blocker and request the
-specific setup/loading authorization needed before proceeding. Silently switching
-an opted-in run to skill-led work or implementer self-review is not a substitute.
-The user can choose a different route explicitly. Honor the App's per-run
-approval and credit/time controls; opting in does not bypass them or authorize
-a replacement runtime.
-
-Omit `maxRepairRounds` for progress-aware continuation without a project round
-cap. Set it only when the user explicitly chooses a nonnegative integer cap;
-zero means no automatic repair. Existing explicit values, including 0, 1 and 2,
-retain that meaning. Time/credit limits belong to the native workflow invocation,
-not a guessed `meta.limits` or a second project budget.
-
-The controller follows **implement → local candidate commit → final verification
-→ independent review**:
-
-1. The implementer finishes changes and targeted development checks, leaving the
-   index/history unchanged. It returns the inspected task-owned paths and the
-   exact `sourceSnapshot` observed after its last edit/check. There is no mandatory
-   full acceptance pass before committing.
-2. The controller checks ownership, source, index, branch and Git configuration.
-   This optional controller verifies locally. Protected execution, dependency
-   and instruction changes require their exact local execution approval before
-   use. The default owning-session skill handles ordinary CI-first delivery when
-   candidate tools are authorized only in the hosted environment.
-   An accepted native, input-bound decision continues this phase; missing or
-   rejected consent stops with the specific request. Ordinary code/test paths
-   no longer trigger this decision solely because of their directory.
-   The controller also snapshots the active Git hooks directory before implementation;
-   changed hook inputs stop for human policy approval before native mutation.
-   Otherwise its guarded candidate helper holds the real index's exclusive lock
-   before final preflight, stages only the inspected literal paths into an isolated
-   index, and commits it through the original session's native PowerShell tool/permission
-   pipeline. It checks the captured tree and expected parent before committing,
-   then publishes the verified index through its owned lock. Concurrent staged-only
-   edits cannot be overwritten by staging into the live index. Missing
-   native tools or denied permission blocks the step; there is no direct mutation
-   fallback. Git configuration and hooks are
-   retained. The commit includes the project `Co-authored-by` trailer and a
-   `Copilot-Session` trailer from the live owning session, not a task-specific
-   identity embedded in source.
-3. With the candidate HEAD, clean index/worktree and original branch confirmed,
-   the controller selects the diff against the explicit original base and runs
-   final verification once for that revision. Required checks, aggregation and
-   native evidence rules below are unchanged.
-4. A separate read-only reviewer examines that committed diff, added files and
-   source-bound verification. Both stages must retain the exact candidate identity
-   and clean tree. Passing verification alone does not make a candidate ready;
-   sensitive paths still require independent inspection, and missing authority
-   remains a specific blocker.
-
-Repairs create a new local commit on the failed candidate, then new selected
-verification and a fresh independent review. Prior commits/reports remain history.
-Each candidate's `review-<round>.patch` is persisted before verification and its
-path is included as `diff` in the failed-attempt history. Read-only diagnosis can
-therefore inspect earlier source changes even when verification never passed.
-After a repair still fails verification or acceptance review, the controller asks
-the same read/search-only reviewer profile for a separate **repair diagnosis**.
-It receives the fixed contract, current and previous failures, attempted approach,
-earlier report paths and actual scoped decisions. Its structured progress status,
-evidence and next approach are recorded against the unchanged candidate; this is
-not a passing acceptance review and cannot grant authority.
-
-A first `stalled` diagnosis feeds a different approach back to the implementer.
-If the following diagnosis still finds no progress, the controller returns
-`blocked` with that evidence. Demonstrated progress clears that stalled state,
-so productive tasks can continue beyond two repairs. An explicit repair cap is
-checked before spending another diagnosis/repair. Native budget failures and
-cancellation propagate without being recast as ordinary findings or retried
-under another run; the existing inspected recovery rules still apply.
-
-A no-op initial task uses the existing clean HEAD
-without an empty commit; a no-op repair stops instead of repeatedly checking the
-same failed revision. Commit/hook failures and concurrent source, history, branch,
-configuration or index changes stop explicitly. Nothing amends, resets, rewrites
-history or automatically cleans up a failed commit's index.
-Git Trace2 records observed hook exits during staging and commit, including
-`post-commit` failures that Git itself does not propagate. Hooks run normally,
-once per Git invocation; missing hook-exit evidence blocks rather than implying
-success. A failed post-commit hook leaves its completed local commit in place.
-Hook starts/exits are paired by trace session and child identity across nested
-Git commands. Command completion stays bound to the root Git invocation, and
-ordinary non-hook child failures are not reclassified as hook failures.
-The observed-name allowlist covers Git's documented hooks, including nested
-hooks such as `post-checkout`, separately from the candidate-only routing set.
-Every recognized hook still needs complete exit evidence; unknown names block.
-Repeated hook/exit descriptors are projected once without exporting trace SIDs;
-every observed hook invocation still requires its own complete exit evidence.
-Before index publication, failures leave the original live index intact; task
-working files remain available for recovery. The active hook snapshot covers the
-configured directory, including files reached through directory/file links,
-without copying hook source into reports. Inspection is bounded to 256 entries,
-eight levels, 1 MiB per file and 4 MiB total. An absent hooks directory is recorded
-explicitly; disappearing inputs, unreadable, changing or unsupported hook evidence
-blocks execution rather than silently allowing it.
-Hooks may invoke programs outside that directory; these snapshots do not parse
-arbitrary hook dependencies or replace the original native permission policy.
-Candidate requests retain version 4 to bind hook, executable-input and prepared
-reference-transaction evidence. Controller journals/results use version 8 for
-unattended task grants, independent risk review and
-cancellation-safe completion. Older
-requests/results require inspected recovery; they are not replayed as approval
-for the new controller.
-An operation-private hook route uses Git's `reference-transaction` prepared phase,
-while Git holds its ref locks, to bind the actual branch update, parent and
-inspected tree before advancing history. A verify-only transaction first proves the native veto
-works without advancing a ref or invoking user hooks. User hooks are forwarded
-once through `git hook run`, with original arguments, input, configuration and
-exit status; user hook files and persistent Git settings are not replaced.
-Git's earlier `preparing` notification is advisory: its unresolved `HEAD` update
-is accepted without creating probe, cleanup or commit evidence. Original hooks
-still receive that phase and retain their veto; the private capability probe is
-not forwarded. Only the later, locked `prepared` phase can establish admission.
-The mutating guard context is created separately after staging has established
-the inspected tree; the earlier verify-only probe cannot authorize a commit.
-Reference-binding evidence version 2 includes that tree. Hook edits remain in
-the working tree for inspection, but a different tree cannot enter branch history.
-The operation-private routing exists only for the candidate command. Unknown ref
-shapes, changed context and missing prepared evidence stop explicitly. Zero OIDs
-alone do not establish a no-op: `AUTO_MERGE` cleanup requires an actual absence
-check while the prepared transaction holds its lock, plus matching completion
-evidence. A ref created later is retained for inspection rather than deleted.
-The captured executable manifest uses version 2 and includes the local development
-policy module separately from CI impact policy, plus the shared verification
-executor, both execution adapters and their backend diagnostic import. Earlier
-input sets cannot qualify the current native launcher or publication checks.
-Native input capture reads through an owned file handle. A ctime-only disturbance
-may trigger one read-only recapture, which must be stable and retain identical
-file identity, mode, size, mtime and content hash. Persistent instability or changed
-content still fails; this never retries a Git mutation or accepts different inputs.
-The run retains its initial hook snapshot across verification, review, repairs
-and readiness checks. A later observation cannot become approval of changed
-hooks; any mismatch requires renewed human approval before continuing.
-Native dispatch also retains the loaded controller/helper input hashes. After
-the native permission boundary, a builtins-only bootstrap checks those bytes
-again before importing repository code. The candidate helper and its shared Git
-module execute from captured in-memory source; unclassified imports are rejected,
-not loaded from a mutable path. Direct mutable helper CLI execution is refused.
-Before Node starts, the trusted PowerShell launcher refuses nonempty `NODE_OPTIONS`.
-It does not clear or reinterpret those settings: startup preloads run before a
-JavaScript bootstrap, so an unbound startup environment requires explicit handling
-in the original client rather than a mutable-code fallback.
-An on-disk change to the loaded controller snapshot requires approval and an
-explicit reload rather than silent adoption. Candidate tool edits remain separate
-from that snapshot and may be exercised through the owning-session skill's
-CI-first route under an applicable hosted grant.
-Verification receives a separate deep-frozen plan snapshot; returned evidence is
-copied/frozen and aggregated against the controller's private original plan.
-Neither verifier callbacks nor later observations can rewrite its required checks
-or source identity.
-Machine-readable trailer queries suppress signature display without changing
-commit signing or the user's Git display settings.
-Read-only index/status/diff probes disable optional Git locks and fsmonitor for
-that command. Configuration-evidence queries stay unmodified, and authorized Git
-mutations retain their configured behavior.
-Root and Git metadata comparisons resolve directory aliases, while task ownership
-retains the caller's workspace path.
-
-The controller accepts neither implementer-written approval nor an editable
-workspace result as the authoritative review. The SDK's durable step journal
-holds the final controller result. Runtime credit/time limits are chosen at
-invocation; the workflow does not guess them or override model preferences.
-Registration uses only Node built-ins and the runtime-bundled SDK, so a fresh
-worktree can load it before restoring application dependencies. Provision the
-runner toolchain once; normal missing repository dependencies can be restored
-from their lockfiles after an actual missing-dependency failure.
-
-For an existing run, route feedback to its current owner or inspect/resume its
-recorded run. Dispatched implementers/reviewers perform their assigned phase,
-rather than calling the starter recursively.
-
-The automatic endpoint is **ready for a PR**, with a clean local candidate commit
-and `handoff.json` under `.data\development\<run-id>`. The handoff identifies the
-exact commit, original base, workspace/branch, source fingerprint, verification
-and independent review. The controller never pushes, dispatches CI, creates PRs,
-merges or deploys. Prepared delivery authority is retained for the owning
-client's subsequent native-tool use, not evidence that publication occurred.
-Use the owning-session skill for CI-first delivery.
-Report the actual run/worktree and outcome when dispatched. Say that a workflow
-has started only after an invocation returns its run identity; a proposed plan
-or manually performed equivalent steps are not a registered workflow run.
-
-### Publish an unchanged candidate
-
-After separate publication authorization, call
-`devpocket_check_development_readiness` with `{"runId":"THE_COMPLETED_RUN_ID"}`
-in the owning session/worktree. This read-only tool reads the runtime's durable
-result, checks the original workspace/branch and exact clean candidate, and
-revalidates the existing verification/review bindings and check completeness.
-It does not run verification commands, create another commit or publish anything.
-An editable `handoff.json` cannot substitute for the durable result.
-
-If ready, push that unchanged commit and use the App's normal PR creation path.
-An unchanged push (including recording its upstream) does not require another
-local final verification. Recheck freshness if publication is delayed; readiness
-is a point-in-time result, not authority to publish a later revision. Later edits,
-repair commits, merge/rebase ref changes or a changed index/branch invalidate it
-and require applicable verification and independent review for the new candidate.
-Old reports are never relabelled. Required remote CI and human policy review
-remain independent requirements; this avoids duplicate **local** final acceptance,
-not repository gates.
 
 ## Verification
 
@@ -696,7 +317,7 @@ Fork/exit and zombie transitions require a new observation; two stable empty
 scans confirm completion. Nested cleanup failures are retained while the
 supervisor attempts to stop all other verifiably owned processes.
 The in-process emulator recovery dependency is included in both the captured
-controller implementation and the verifier execution-policy fingerprint.
+candidate/verification implementation and the verifier execution-policy fingerprint.
 Unsupported native APIs, unbound parents or missing nested
 cleanup remain failures, not plain process-group fallbacks. Control receipts
 are per-command and are not supplied to the target process.
@@ -740,7 +361,7 @@ The base is explicit; it is not guessed from a branch name. Planning is not
 acceptance. The source fingerprint includes tracked and non-ignored untracked
 inputs, including deletions. Required checks come from the actual diff, not an
 agent's risk label. The planner and `scripts\verification-policy.mjs` catalogue
-are shared by local verification, the development controller and CI. Each
+are shared by local verification and CI. Each
 selected check defines its group; `requiredGroups` is derived from those
 definitions, never from "non-Android means backend."
 
@@ -755,7 +376,7 @@ adding a new file does not silently inherit a tooling exemption.
 | Responsibility | Representative inputs | Required checks |
 | --- | --- | --- |
 | Documentation | `README.md`, `VALIDATION.md`, `docs/**/*.md` | None |
-| Development tooling | `development-workflow.mjs`, `development-policy.mjs`, `candidate-commit.mjs`, `native-candidate.mjs`, `setup-xcode-mcp.mjs`, `config/xcode-mcp.example.json`, `test-workflow.mjs`; routing and the development extension entry | Complete `workflow-tests` in `tooling` |
+| Development tooling | `development-policy.mjs`, `candidate-commit.mjs`, `native-candidate.mjs`, `setup-xcode-mcp.mjs`, `config/xcode-mcp.example.json`, `test-workflow.mjs` | Complete `workflow-tests` in `tooling` |
 | Agent instructions | `AGENTS.md`, the DevPocket skill/reviewer and AI task template | Complete `workflow-tests` |
 | Source/verification contracts | Root `.gitignore`, `git-state.mjs`, `verification.mjs`, `verification-policy.mjs`, `verify.mjs`, `verify.ps1`; named diagnostic/evidence projections and workflow regressions | Complete `workflow-tests` |
 | Backend execution/build | `verification-backend.mjs`, extension bundle/package helpers, CLI-proof launcher, backend TypeScript configs, extension distribution workflow | Tooling and backend checks; no Android provisioning |
@@ -787,15 +408,6 @@ Named synthetic workflow tests run the whole existing suite, not a selected
 subset. The separate Linux process regression belongs to hosted native
 preparation and continues to select native execution.
 
-The original five-path routing change (`AGENTS.md`, routing module, routing
-regression, README and this guide) still selects only `workflow-tests`. So do
-`git-state.mjs`, `native-candidate.mjs`, `verification.mjs` and
-`tests/verification.test.mjs`, individually or together. This is because of
-their responsibilities, not because they occur together in a particular PR.
-Authority over acceptance does not make a source/aggregation helper an
-application build input: real Git, CLI, aggregation and controlled-process
-contracts verify that authority. Application tests cannot replace those contracts.
-
 ### Verification modules and compatibility
 
 `scripts\verification.mjs` retains `verificationPlan(root, base, all)`,
@@ -816,29 +428,12 @@ uses tracked and non-ignored worktree bytes, indexed Git modes, link identity
 and tracked deletions, without newline normalization or absolute checkout paths.
 Staging identical bytes does not change it; a different HEAD is checked
 separately, and an unmerged index refuses evidence. It is not a replacement for
-a candidate controller's separate index, tree, parent, branch and hook/config
+a native candidate helper's separate index, tree, parent, branch and hook/config
 freshness checks.
 Read-only index probes use `readOnlyGit` (or `readOnlyGitArgs` when retaining
 private-index/Trace2 context), which disables optional locks and fsmonitor for
 that command only. Raw `git` remains available for unchanged configuration
 evidence and authorized mutations; probe overrides do not rewrite user settings.
-
-The controller's fixed implementation capture includes `verification-executor.mjs`,
-`verification-backend.mjs`, `verification-android.mjs` and `backend-diagnostics.mjs`
-alongside `git-state.mjs`, the recovery/preflight/transition modules, owned-command
-launcher inputs and the existing imports. Re-capture, explicitly approve
-and reload the changed implementation; an old loaded snapshot cannot silently
-acquire the new inputs. The native candidate loader still permits only its
-captured candidate helper and Git module, not the verification adapters.
-Classification changes do not permit mutable-disk fallback or relabelling earlier
-candidate/review evidence. Regression cases cover missing legacy inputs, adapter
-changes before dispatch and after native approval, and rejected non-native imports.
-
-The initial extraction changes actual shared and per-side executors, so its
-own migration requires broad source-bound verification. Later pure source,
-plan, aggregate or regression edits select tooling without those executors
-being changed. Do not use the migration's full plan as a substitute for proving
-the lighter pathsets and the necessary per-side/full unions independently.
 
 Mixed changes take the union; no narrow rule cancels another path's requirements.
 `--all` explicitly selects every check. Plan JSON and CLI output include
@@ -858,7 +453,7 @@ actual-input inspection. Its scoped approvals above replace directory-wide
 script/backend stops, without changing any selected checks. Execution-core,
 instruction and dependency/build authorization remains explicit. Sensitive
 review paths focus independent review rather than a human signature.
-Both routes retain source-bound `policyReview` requirements and actual scoped
+Skill-led delivery retains source-bound `policyReview` requirements and actual scoped
 decisions separately from test evidence. Satisfied requirements permit `ready`;
 specific pending requirements yield `needs_human`. Missing local evidence is
 never interpreted as approval.
@@ -866,7 +461,7 @@ never interpreted as approval.
 CI planning, lane selection and aggregation do not decide Agent or GitHub
 approval. GitHub merge review belongs to externally configured rulesets,
 required reviews and CODEOWNERS, not a plan flag; these changes do not create or
-modify that configuration. Both routes retain the applicable pre-execution
+modify that configuration. Local and hosted execution retain the applicable pre-execution
 authority described above. A planner-only change selects contract
 regressions; a cross-lane CI or shared-executor change selects full impact.
 Neither bypasses the protected-policy stop. Targeted synthetic regressions
@@ -1086,12 +681,12 @@ A late result is still a timeout,
 and neither a timeout nor a passing subset qualifies acceptance.
 
 The regression suite tests data contracts through the same planner, signed-ledger
-and evidence-validation functions used by the CLI/controller. Corrupt-record and
+and evidence-validation functions used by the verifier. Corrupt-record and
 qualification matrices use explicitly synthetic reports in disposable repositories,
 not a fresh expensive verification run merely to create input data. They are not
 application acceptance evidence. Representative CLI failures and real end-to-end
 recovery/conversion retain their actual commands and execution-count assertions;
-native permission, hooks, signing, index, source-change and cleanup cases still use
+native startup, hooks, signing, index, source-change and cleanup cases still use
 real processes. Test scheduling and required check selection are unchanged.
 Per-path impact matrices call the production classifier directly instead of
 creating a repository and CLI process for every name. Representative CLI plans,
@@ -1153,8 +748,8 @@ only that control index advances atomically, never the original evidence.
 Paths must remain under the owning checkout's verification/CI/development
 storage, without linked parents; readers never execute paths from a record.
 Each storage root itself is a valid run directory, not just its descendants.
-CLI report destinations remain limited to verification/CI storage; development
-storage is an internal controller surface, not an additional CLI destination.
+CLI report destinations remain limited to verification/CI storage; historical
+development storage remains recognized for retained records, not as an additional CLI destination.
 Report/output directories cannot be a retained ledger directory or anything
 beneath it. The pure CLI path guard checks this before creating directories or
 opening a report, including planning/aggregation; direct execution and run APIs
@@ -1186,8 +781,7 @@ recovery.
 partial shard unless it covers all required checks. Ordinary `--combine` still
 rejects failed reports, missing checks, source mismatches and conflicting
 evidence. A partial shard or preflight result never completes the final gate.
-The optional workflow retains its own journal and candidate/review ordering:
-resuming a verifier run does not resume, approve or publish a controller run.
+Resuming verification neither supplies independent review nor authorizes publication.
 
 ### Working-tree evidence to an authorized candidate
 
@@ -1342,7 +936,7 @@ Changing imports alone is not sufficient. This migration does not grant commit
 or publication authority, replace recorded human decisions, or weaken candidate
 identity, hook approval, independent review or source-bound evidence checks.
 
-### Full workflow regression scheduling
+### Tooling regression scheduling
 
 `npm run test:workflow` remains the complete default regression gate. Its dedicated
 entry, `scripts/test-workflow.mjs`, exports the explicit `WORKFLOW_TEST_FILES`
@@ -1350,6 +944,8 @@ catalogue and passes that full list to a child `node --test` invocation. Tests a
 CI contracts read the same catalogue rather than parse a package script. The
 impact policy independently names the approved tooling paths; unknown tests and
 runner lookalikes still require all checks.
+The command, `workflow-tests` check ID, catalogue exports and shard IDs remain
+compatible verification interfaces; none registers or launches a Dynamic Workflow.
 
 The tooling command has a 60-minute watchdog for both the complete entry and
 each formal shard. The expanded candidate suite can exceed the former
@@ -1382,7 +978,7 @@ verification gate. No test-directory glob is used: extension packaging and the
 separate Linux process regression remain outside this list. Xcode setup is an
 ordinary peer entry, with fixture environment restoration asserted in that file.
 
-Within `scripts\tests\development-workflow.test.mjs`, selected scenario groups use
+Within `scripts\tests\development-tools.test.mjs`, selected scenario groups use
 Node's built-in test scheduler with a fixed limit of **two** subtests. Each
 such subtest creates and cleans up its own temporary repository and linked
 worktree; all scheduled subtests are awaited. This overlaps independent
@@ -1392,9 +988,10 @@ index, hook directory, receipt or verification result.
 Top-level tests within each file remain serial. Scenarios sharing a fixture and
 tests that write `process.env` (filesystem-monitor configuration and optional-lock probes) remain
 serial too. Do not enable file-wide concurrency or apply the subtest option to
-a shared-state group. The original assertions, scenarios, command deadlines,
-default entry point and responsibility-based check selection are unchanged;
-there is no fast-only gate or cross-source acceptance cache.
+a shared-state group. Shared-tool assertions and command deadlines remain in
+force; only retired orchestration scenarios were removed. The default entry and
+responsibility-based selection remain; there is no fast-only gate or cross-source
+acceptance cache.
 
 Measure the complete entry on the same machine and toolchain, retaining its exit
 status, total elapsed time and per-test output. Compare completed scenario names
@@ -1733,8 +1330,8 @@ test failures; using a short owned scratch path resolved those without changing
 app code or tests. These are targeted local observations, **not** mandatory
 source-bound acceptance, independent-review approval or evidence that #7's CI
 has recovered. Changes to the build script, test registration, diagnostic
-exporter and CI artifact wiring require the workflow's human policy review
-before the controller executes the changed verification policy.
+exporter and CI artifact wiring require the applicable execution authority
+before running the changed verification policy.
 
 ### Owned-worker exit diagnostics
 
@@ -2175,11 +1772,10 @@ approvals in the repository ruleset. `CODEOWNERS` alone does not enforce these.
 Runner migration does not configure branch protection or enable automatic merge.
 
 CI, skill instructions and reviewer profiles in a PR are themselves changeable
-code. Neither development route is a sandbox or a cryptographic attestation
+code. Skill-led development is not a sandbox or a cryptographic attestation
 service. A protected review
 process (or an organization-controlled required workflow) must guard changes to
-the checks themselves. The optional workflow enforces independent review through
-its controller; skill-led development relies on the agent to request that review.
+the checks themselves. Skill-led development relies on the agent to request independent review.
 The verifier checks source-bound test evidence, not the authenticity of an AI
 review. CI-first live qualification authenticates existing Actions artifacts;
 it does not create another GitHub review/check publisher or replace those review
@@ -2193,44 +1789,25 @@ are not repurposed for CI candidates.
 
 ## Stops and recovery
 
-For skill-led work, follow the recovery steps in
-`.github\skills\devpocket-development\SKILL.md`. The remaining rules apply to
-recorded runs of the optional workflow.
+Follow `.github\skills\devpocket-development\SKILL.md` in the same owning session.
+Preserve the task contract, original base, edits, actual decisions and evidence.
+Missing checks, uncertain commit outcomes, concurrent source/index/history/
+branch/configuration changes or unresolved authority remain explicit blockers.
+Native cancellation and user-selected limits retain their original accounting.
 
-The controller stops for missing prerequisites, agent failure, inconsistent
-review results, commit/hook errors or uncertain commit outcomes, concurrent
-source/index/history/branch/configuration changes, unauthorized protected local
-execution or changed trusted control, unresolved authority/product decisions,
-an explicit repair cap, or sustained lack of progress
-after diagnosis and a changed approach. Native budget/cancellation stops retain
-the original runtime's outcome and accounting.
-Uncertain external side effects remain outside the automatic workflow.
+After an interrupted commit, inspect the candidate request/receipt, current
+index and history before deciding whether any new operation is needed. Preserve
+failed commits and reports; never replay an uncertain mutation. Inspect the
+recorded owner before recovering a retained lock. Existing or replaced locks
+are not removed automatically.
 
-An interrupted implementation or candidate commit is not automatically replayed. Inspect
-`state.json`, the runtime's durable workflow record, and any retained lock. A
-completed native run may be read through `devpocket_check_development_readiness`
-only while its task/workspace/source still match and the candidate index/worktree
-remain clean. Reentering the controller never promotes a cached `ready` proposal
-to native run completion; an interrupted run requires inspected recovery even
-when its source and approvals are unchanged. Inspect the recorded
-candidate request/receipt, current index and history after a commit interruption;
-preserve failed commits and reports rather than guessing whether to retry.
-Finalization is awaited before the workflow lock is released. Cancellation
-observed during final persistence, lock cleanup, journal completion or the final
-readiness check changes the recovery state to `cancelled` and removes only the
-handoff file created by that attempt. Candidate,
-verification and review evidence remain available, and the original cancellation
-still propagates. Invalidation failures are reported explicitly; recovery files
-never replace the runtime's durable outcome or establish readiness on their own.
-Handle and lock cleanup failures retain the original execution or invalidation
-error rather than replacing it, and owned cleanup is still attempted.
-If cancellation first arrives with a rejecting cleanup, its signal reason is
-retained alongside that failure, without duplicating an existing nested cause.
-The candidate index lock records its owner PID and token. Inspect that owner
-before recovering an interrupted commit; existing or replaced locks are never
-removed automatically.
-The committed-candidate controller uses a versioned journal key; older uncommitted
-handoffs cannot be promoted to readiness or have their commit fields rewritten.
-In-flight runs retain their existing controller's restrictions. Start further
-work only from an explicitly reviewed state, with scoped commit/policy authority
-where needed, rather than deleting evidence or reloading to bypass a stop.
+Historical Dynamic Workflow records and snapshots are retained in ignored
+storage, not executed or upgraded by this route. Before reloading a session with
+an old in-flight run, finish or stop that run through the original client.
+For unfinished work, inspect its original task/base, actual Git state, decisions
+and process ownership, then continue in its owning session using the skill.
+Re-establish verification and independent review for the current source.
+Old handoffs and manifests containing retired modules are not current readiness
+or candidate-conversion proof; never rewrite their version, HEAD or input list
+to make them pass. The separate shipped phone/runtime extension is not retired
+by this change.
