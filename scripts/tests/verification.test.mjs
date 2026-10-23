@@ -455,7 +455,9 @@ test("mixed development tooling and application changes select the union from th
     assert.equal(Object.hasOwn(impact, "requiresHumanReview"), false);
     assert.equal(developmentReviewRequirements([...tooling, file]).requiresHumanReview, true);
     assert.equal(impact.layouts, layouts);
-    assert.equal(impact.selectionReasons.length, 4);
+    assert.equal(impact.selectionReasons.length, 3);
+    assert.deepEqual(impact.selectionReasons.slice(0, 2).map((reason) => reason.rule),
+      ["development-tooling", "agent-instructions"]);
     assert.deepEqual(impact.selectionReasons.flatMap((item) => item.paths).sort(), [file, ...tooling].sort());
   });
 });
