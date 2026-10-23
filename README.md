@@ -874,8 +874,8 @@ The same entry runs tooling, backend, Android build/unit/lint and actual device
 checks. Platform-specific Windows/Linux tests retain their native hosts; a Mac
 run is not evidence that those OS implementations were exercised.
 
-Hosted CI uses the same planner's `ciMacos` decision to select an ARM64
-`macos-15` job for shared verification infrastructure and relevant native changes.
+Hosted CI uses the same planner's `ciMacos` decision to select the rolling ARM64
+`macos-latest` image for shared verification infrastructure and relevant native changes.
 It reruns the existing `native` tooling shard, including macOS process cleanup,
 registry locks, IPC/admission and Python-path regressions. `Required verification`
 requires its successful job result and separate source-bound macOS evidence;
@@ -888,12 +888,16 @@ hardware acceptance.
 The macOS command owner uses kernel responsibility scopes and PID-version-bound
 signals, including nested command ownership; missing native APIs fail closed.
 Command-level environment overrides cannot discard the inherited supervision
-link. Unstable process observations are retried; if they cannot be established,
-cleanup remains unconfirmed rather than being treated as an empty process tree.
+link. Unstable process observations are retried within the existing command and
+cleanup deadlines. Exhausting one snapshot attempt does not permanently fail
+cleanup if later observations stabilize; persistent uncertainty still cannot
+be treated as an empty process tree.
 Kernel inspection refusals get bounded retries, not an assumed process exit.
 Empty-tree confirmation requires consecutive stable scans, including after a
-parent disappears or becomes a zombie. A failed nested supervisor still triggers
+parent disappears or becomes a zombie. Unconfirmed nested cleanup still triggers
 cleanup of other verifiably owned processes, but never a successful receipt.
+A failed target launch stays nonzero; its diagnostic precedes the terminal
+cleanup receipt so confirmed cleanup is not confused with command success.
 CI diagnostics project fixed macOS owner error categories from the existing
 private log, not raw exception messages, paths or receipt tokens. These hints
 do not prove a leaf cause or establish successful cleanup.
