@@ -3470,6 +3470,34 @@ test("an unchanged HEAD-sensitive npm launcher cannot qualify typecheck and alte
     const control = (await preflight()).groups[0].candidateEligibility;
     assert.ok(control.status === "bound" || control.reason === "npm-unrecognized",
       "A genuine but unrecognized npm distribution must use fresh execution.");
+    await t.test("npm stderr cannot corrupt metadata, disappear from identity or enable reuse", async () => {
+      const diagnostic = path.join(wrapper, "stderr.txt");
+      const warning = "[Console]::Error.WriteLine([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'stderr.txt')))\n";
+      await writeFile(entry, warning + original);
+      try {
+        await writeFile(diagnostic, "PRIVATE_NPM_STDERR_FIRST");
+        const first = await preflight(), before = first.groups[0];
+        assert.equal(first.status, "passed", JSON.stringify(first));
+        assert.equal(before.candidateEligibility.reason, "npm-unrecognized");
+        assert.equal(before.reusable, false);
+        assert.equal(JSON.stringify(first).includes("PRIVATE_NPM_STDERR"), false);
+        await writeFile(diagnostic, "PRIVATE_NPM_STDERR_SECOND");
+        const second = await preflight(), after = second.groups[0];
+        assert.equal(second.status, "passed", JSON.stringify(second));
+        assert.equal(after.reusable, false);
+        assert.notDeepEqual(after.prerequisites.find((item) => item.prerequisite === "npm"),
+          before.prerequisites.find((item) => item.prerequisite === "npm"));
+        assert.equal(JSON.stringify(second).includes("PRIVATE_NPM_STDERR"), false);
+        await writeFile(entry, warning + "exit 23\n");
+        const failed = await preflight();
+        assert.equal(failed.status, "blocked");
+        assert.equal(failed.groups[0].reusable, false);
+        assert.equal(failed.groups[0].issues.find((item) => item.prerequisite === "npm").failure.exitCode, 23);
+      } finally {
+        await writeFile(entry, original);
+        await rm(diagnostic);
+      }
+    });
     await writeFile(entry, [
       "if($args.Count -ge 2 -and $args[0] -eq 'run' -and $args[1] -eq 'typecheck'){",
       "Add-Content -LiteralPath '.data/npm-count' -Value 'called'",

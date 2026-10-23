@@ -797,6 +797,12 @@ including in other selected groups, while independent file inspections continue.
 Blocked groups have no reusable environment fingerprint. Existing failure,
 terminal qualification and recovery invalidation rules apply to the whole group.
 
+npm metadata is parsed from stdout alone. Nonfatal stderr diagnostics are hashed
+into its identity and disable reuse rather than corrupting the JSON payload.
+Fresh checks may proceed with valid metadata and a zero exit code; nonzero exits
+and malformed metadata still block preflight. Prefix redirection to an older npm
+does not require removing inherited npm configuration or trusting a new distribution.
+
 Android-build qualification also binds the portable renderer's installed Node
 dependencies and npm/environment inputs. The Gradle task's actual `npm.cmd`
 lookup (including the working directory) and CMD interpreter are bound separately

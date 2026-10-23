@@ -524,7 +524,7 @@ export async function verificationPreflight(root, plan, options = {}) {
     ["-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"], (text) => /^7\./.test(text)));
   const npm = () => once("npm", async () => {
     const shell = await powershell();
-    const output = JSON.parse(await probe(shell.file, ["-NoProfile", "-NonInteractive", "-Command",
+    const probeResult = await runCommand(shell.file, ["-NoProfile", "-NonInteractive", "-Command",
       "$ErrorActionPreference='Stop'; $command=Get-Command npm -CommandType Application,ExternalScript | Select-Object -First 1; " +
       "$nodeCommand=Get-Command node -CommandType Application,ExternalScript | Select-Object -First 1; " +
       "$version=& npm --version; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}; " +
@@ -534,7 +534,9 @@ export async function verificationPreflight(root, plan, options = {}) {
       "if($settings.ContainsKey($Matches[1])){throw 'Duplicate npm configuration output.'}; $settings[$Matches[1]]=$Matches[2] }; " +
       "if($settings.Count -ne 4){throw 'Incomplete npm configuration output.'}; " +
       "@{file=$command.Source;nodeFile=$nodeCommand.Source;nodeType=$nodeCommand.CommandType.ToString();version=\"$version\";nodeOptions=$settings['node-options'];scriptShell=$settings['script-shell'];" +
-      "userConfig=$settings['userconfig'];globalConfig=$settings['globalconfig']} | ConvertTo-Json -Compress"]));
+      "userConfig=$settings['userconfig'];globalConfig=$settings['globalconfig']} | ConvertTo-Json -Compress"],
+    { cwd: root, timeoutMs: 30000, signal: options.signal });
+    const output = JSON.parse(probeResult.stdout);
     if (!/^\d+\.\d+\.\d+$/.test(output.version) || !path.isAbsolute(output.file) || !path.isAbsolute(output.nodeFile) ||
         !["Application", "ExternalScript"].includes(output.nodeType)) {
       throw diagnosticError("preflight-version");
@@ -565,7 +567,8 @@ export async function verificationPreflight(root, plan, options = {}) {
       !process.execArgv.some((value) => /^--(?:import|require|loader|experimental-loader)(?:=|$)|^-r$/.test(value)) &&
       !Object.entries(process.env).some(([name, value]) =>
         /^(?:NODE_OPTIONS|NODE_PATH|NPM_CONFIG_NODE_OPTIONS|NPM_CONFIG_SCRIPT_SHELL)$/i.test(name) && value);
-    let candidateImplementation = process.platform === "win32" && candidateSafe && output.version === "11.16.0" &&
+    let candidateImplementation = process.platform === "win32" && candidateSafe && !probeResult.stderr.trim() &&
+      output.version === "11.16.0" &&
       samePath(path.resolve(output.file), actual) &&
       packageIdentity === "0f3af07d0eef7aeeeadb0efc710993da57bdbfacd9edbfc3cde3fd63a0a4206a" &&
       ["e8aedc8c76d6cb9423b70ede071228f7cb1644094c114b8721ae6d121100d4fe",
@@ -594,7 +597,7 @@ export async function verificationPreflight(root, plan, options = {}) {
         }
       }
     }
-    return { version: output.version, file: output.file, binary, packageIdentity, config,
+    return { version: output.version, file: output.file, binary, packageIdentity, config, stderr: digest(probeResult.stderr),
       candidateImplementation, candidateSafe, prefixResolution, powershellNode };
   });
   const nativeNpm = () => once("native-npm", async () => {
