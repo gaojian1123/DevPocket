@@ -91,6 +91,12 @@ test("repository development uses the skill and shared tools without a registere
   assert.match(skill, /source identity matches the review/);
   assert.match(skill, /developmentReviewRequirements/);
   assert.match(skill, /CI reports do not supply/);
+  assert.match(agents, /within the worktree without another project approval/);
+  assert.match(skill, /dependency restoration and tool installation without a separate project approval/);
+  assert.match(skill, /Default to this concise summary/);
+  assert.match(guide, /### Workspace-local prerequisites/);
+  assert.match(guide, /This setup scope does not approve changed\s+dependency\/build inputs/);
+  assert.match(guide, /Viewing details grants no authority/);
   assert.match(skill, /stating the contract is not another plan-approval/);
   assert.match(skill, /no implicit two-round limit/);
   assert.match(skill, /`ci-inspection` procedure instead of adopting candidate control/);
@@ -317,6 +323,38 @@ function approvalFixture() {
   return { scope, policy, hooks: { directory: "fixture-hooks", fingerprint: "3".repeat(64) } };
 }
 
+test("workspace-local setup is included without expanding global or changed-policy authority", () => {
+  const { scope, policy, hooks } = approvalFixture();
+  const implementation = { version: 2, directory: "approved-tools",
+    files: [{ name: "development-policy.mjs", sha256: "5".repeat(64) }] };
+  const requests = [
+    developmentApprovalRequest(scope, policy, "execution", hooks),
+    developmentApprovalRequest({ ...scope, ci: { repository: "owner/repo", ref: scope.workspace.branch } },
+      policy, "execution", hooks),
+  ];
+  for (const delivery of ["working-tree", "local-commit", "pull-request"]) {
+    const taskScope = { ...scope, task: { ...scope.task, delivery },
+      ...(delivery === "pull-request" ? { ci: { repository: "owner/repo", ref: scope.workspace.branch } } : {}) };
+    const { request } = developmentTaskApprovalRequest(taskScope, hooks, implementation);
+    requests.push(request);
+    const receipt = { version: 1, requestId: request.id, origin: "original-client", decision: "approved" };
+    assert.equal(developmentExecutionAuthorization(taskScope, policy, hooks, implementation, [receipt]).status, "needs_human");
+    for (const action of ["local-install", "adopt-policy", "reload"]) {
+      assert.equal(developmentTaskActionAllowed(taskScope, hooks, implementation, [receipt], action), false);
+    }
+  }
+  for (const request of requests) {
+    assert.match(request.effects.join(" "), /workspace-local dependency restoration and tool installation/);
+    assert.match(request.effects.join(" "), /without a separate project approval/);
+    assert.match(request.effects.join(" "), /manifest change or an actual missing-prerequisite failure/);
+    assert.match(request.effects.join(" "), /lockfiles or pinned, integrity-verified releases/);
+    assert.match(request.effects.join(" "), /command-scoped/);
+    assert.match(request.exclusions.join(" "), /No global or user-profile installation, administrator privileges, persistent PATH changes/);
+    assert.match(request.exclusions.join(" "), /extension installation\/reload/);
+    assert.doesNotMatch(request.exclusions.join(" "), /No (?:new|local) tool installation/);
+  }
+});
+
 test("approval inspection and rendering preserve prototype-like added and existing filenames", async (t) => {
   const { root } = await workspace(t), files = ["__proto__", "constructor", "toString"];
   const base = (await sourceSnapshot(root)).head;
@@ -362,27 +400,70 @@ test("scoped approval identity follows authority inputs, not unrelated source re
     developmentApprovalRequest(scope, policy, "execution", { ...hooks, fingerprint: "7".repeat(64) }),
   ]) assert.notEqual(next.id, request.id);
   const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
-  const message = formatDevelopmentApproval(request, "actual-changes.txt", undefined, snapshot);
+  const message = formatDevelopmentApproval(request, "actual-changes.txt",
+    "Adjust verification output without changing required checks.", snapshot);
   for (const label of ["Approval requested:", "Why now:", "Target:", "Changes:", "After approval:", "Not included:", "Valid for:"]) {
     assert.ok(message.includes(label), label);
   }
   assert.ok(message.includes(scope.workspace.root));
   assert.ok(message.includes("scripts/verify.mjs"));
   assert.ok(message.includes("actual-changes.txt"));
-  assert.ok(message.includes(snapshot));
+  assert.ok(message.includes(request.detailsSha256));
+  assert.ok(message.includes(request.id));
+  assert.equal(message.includes(snapshot), false);
+  assert.match(message, /Full diff\/contents: available on request/);
   assert.throws(() => formatDevelopmentApproval(request, "actual-changes.txt"), /immutable approval snapshot/);
   assert.throws(() => formatDevelopmentApproval(request, "actual-changes.txt", undefined, "Substituted"), /immutable approval snapshot/);
   assert.equal(developmentApprovalSatisfied(request, [{ requestId: request.id, approved: true }]), false);
   assert.throws(() => developmentApprovalRequest(scope, { ...policy, inputs: [] }, "execution", hooks), /every requested path/);
 });
 
-test("approval snapshots cannot escape their native-question code block", () => {
+test("summary approval size does not grow with full contents", () => {
+  const { scope, policy, hooks } = approvalFixture();
+  const summary = "Adjust verification output; required checks and authorization remain unchanged.";
+  const messages = [];
+  for (const size of [1, 10000]) {
+    policy.contents["scripts/verify.mjs"] = "private fixture contents\n".repeat(size);
+    const request = developmentApprovalRequest(scope, policy, "execution", hooks);
+    const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
+    const message = formatDevelopmentApproval(request, "reference-only.txt", summary, snapshot);
+    assert.ok(message.includes(summary));
+    assert.doesNotMatch(message, /private fixture contents|Contents to approve/);
+    messages.push(message);
+  }
+  assert.equal(messages[0].length, messages[1].length);
+});
+
+test("summary-only approvals require a nonblank behavior description", () => {
+  const { scope, policy, hooks } = approvalFixture();
+  const subjects = [
+    { request: developmentApprovalRequest(scope, policy, "execution", hooks),
+      snapshot: developmentApprovalDetails(scope.base, policy, policy.protectedPaths) },
+    developmentTaskApprovalRequest({ ...scope, task: { ...scope.task, delivery: "working-tree" } }, hooks,
+      { version: 2, directory: "approved-tools", files: [{ name: "development-policy.mjs", sha256: "5".repeat(64) }] }),
+  ];
+  for (const { request, snapshot } of subjects) {
+    for (const summary of [undefined, null, "", " \t\r\n", 42]) {
+      assert.throws(() => formatDevelopmentApproval(request, "reference-only.txt", summary, snapshot),
+        /nonblank behavior summary/);
+    }
+    for (const summary of [undefined, null, "", " \t\r\n"]) {
+      assert.ok(formatDevelopmentApproval(request, "reference-only.txt", summary, snapshot, true).includes(snapshot));
+    }
+  }
+});
+
+test("on-demand approval snapshots cannot escape their native-question code block", () => {
   const { scope, policy, hooks } = approvalFixture();
   policy.contents["scripts/verify.mjs"] = "```text\nuntrusted contents\n```\n";
   const request = developmentApprovalRequest(scope, policy, "execution", hooks);
   const snapshot = developmentApprovalDetails(scope.base, policy, policy.protectedPaths);
-  const message = formatDevelopmentApproval(request, "reference-only.txt", undefined, snapshot);
+  const message = formatDevelopmentApproval(request, "reference-only.txt", undefined, snapshot, true);
   assert.ok(message.includes(`\n\`\`\`\`text\n${snapshot}\n\`\`\`\``));
+  assert.ok(message.includes(request.id));
+  assert.ok(message.includes(request.detailsSha256));
+  assert.throws(() => formatDevelopmentApproval(request, "reference-only.txt", undefined, "Substituted", true),
+    /immutable approval snapshot/);
 });
 
 test("approval records require the exact original-client decision and subject", () => {
@@ -392,7 +473,7 @@ test("approval records require the exact original-client decision and subject", 
   assert.equal(developmentApprovalSatisfied(request, [approved]), true);
   for (const change of [
     { version: 2 }, { requestId: "another-request" }, { origin: "agent" },
-    { decision: "rejected" }, { decision: "cancelled" }, { decision: "invalid" }, { approved: true },
+    { decision: "rejected" }, { decision: "cancelled" }, { decision: "invalid" }, { decision: "view-details" }, { approved: true },
   ]) assert.equal(developmentApprovalSatisfied(request, [{ ...approved, ...change }]), false);
   const changed = developmentApprovalRequest(scope, {
     ...policy, inputs: [{ ...policy.inputs[0], sha256: "9".repeat(64) }],
@@ -1442,9 +1523,12 @@ test("local-verification PR grants bind ordinary CI authority to the repository 
     "push", "create-draft-pr", "mark-pr-ready", "ordinary-ci"]);
   assert.match(snapshot, /automatic repository CI for owner\/repo refs\/heads\/task/);
   assert.doesNotMatch(snapshot, /Use existing local checks only/);
-  const question = formatDevelopmentApproval(request, "diagnostic-copy.txt", "", snapshot);
+  const question = formatDevelopmentApproval(request, "diagnostic-copy.txt",
+    "Authorize task-scoped CI and delivery without merging.", snapshot);
   assert.match(question, /CI target: owner\/repo at refs\/heads\/task/);
   assert.doesNotMatch(question, /ci\.yml only/);
+  assert.equal(question.includes(snapshot), false);
+  assert.ok(formatDevelopmentApproval(request, "diagnostic-copy.txt", "", snapshot, true).includes(snapshot));
   for (const action of ["push", "create-draft-pr", "mark-pr-ready", "ordinary-ci"]) {
     assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [receipt], action), true);
     assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [], action), false);

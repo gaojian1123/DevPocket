@@ -100,8 +100,10 @@ Sensitive and unclassified paths are independent-review subjects, not automatic
 human checkpoints. Inspect their actual effects before selecting an execution route.
 
 An implementation request covers ordinary code/test edits, existing local checks
-and agreed repairs in this task's worktree. Reuse that scope without another
-project approval for each file, repair or retry. Path classification is a screening
+and agreed repairs in this task's worktree, including required workspace-local
+prerequisite setup. Follow **Workspace-local prerequisites** in the guide for
+dependency restoration and tool installation without a separate project approval.
+Reuse that scope for each file, repair or retry. Path classification is a screening
 rule, not proof that arbitrary test code is safe: inspect changes to commands,
 dependencies, accessed data, destinations and shared resources. An additional
 effect or unresolved execution scope needs a concrete decision.
@@ -116,11 +118,13 @@ Keep approved local tools stable until their changed inputs are explicitly
 authorized. The owning session handles CI-first delivery using the existing CI.
 
 Present the action, reason, exact target, effects, exclusions and validity using
-`formatDevelopmentApproval`; add a plain-language description of the actual behavior
-change and include the hash-validated, immutable diff/contents in the native question
-itself (or an immutable authenticated attachment). A mutable local file is only a
-reference copy, never the approval source. Ask only for missing scope. A manifest
-filename or hash alone is not an approval request. Record the actual user answer, task/target,
+`formatDevelopmentApproval`; summarize the actual behavior change, impact and risks
+in plain language. Supply a nonblank behavior summary; summary-only requests
+without one are rejected. Default to this concise summary, with the full hash-validated
+diff/contents available on request as an immutable snapshot. Follow **Scoped
+development approvals** in the guide for on-demand details and decision binding;
+viewing details is not approval. Ask only for missing scope. A manifest filename
+or hash alone is not an approval request. Record the actual user answer, task/target,
 actions and relevant input versions in the session. An agent-written JSON record
 or AI review alone is not human approval.
 
@@ -134,11 +138,11 @@ repeated prompts. Inspect uncertain side effects before considering another atte
 
 When a decision remains unresolved, report `needs_human` with that specific item.
 Inspection/editing may continue, and unaffected trusted checks may run. Use existing
-checks for focused feedback; restore unchanged locked dependencies only after a real
-missing-dependency failure and within the authorized environment. Local installation,
-runtime experiments, extension reload, enrollment, cloud administration and publication
-retain their target-specific authorization. The hosted grant covers only the stated
-worker setup and candidate execution. The verifier does not enforce consent.
+checks for focused feedback and resolve missing dependencies/tools under the
+workspace-local setup scope. Installation outside that scope, runtime experiments,
+extension reload, enrollment, cloud administration and publication retain their
+target-specific authorization. The hosted grant covers only the stated worker
+setup and candidate execution. The verifier does not enforce consent.
 
 ## 4. Freeze the verification target
 
@@ -360,8 +364,9 @@ An unchanged push does not invalidate local source evidence; do not repeat local
 verification merely because it was pushed. Required remote CI and checks of a
 different PR/merge ref still apply. Report an opened PR only after creation
 actually succeeds; a verified candidate alone is not a published PR.
-Merge, local installation, control-policy adoption and deployment remain separately
-authorized actions. Hosted installation stays inside its explicit worker grant.
+Merge, installation outside workspace-local prerequisite setup, control-policy
+adoption and deployment remain separately authorized actions. Hosted installation
+stays inside its explicit worker grant.
 
 This is skill-led development in the owning session. Preserve the same task,
 baseline and evidence across follow-ups.

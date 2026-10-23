@@ -80,9 +80,11 @@ Product authorization, session ownership and credential protection are unchanged
 Autopilot selects interaction behavior, not authority. Prepare delivery scope
 once: local commits, the named task-branch push, Draft PR, ordinary CI and ready
 delivery after acceptance can share one original-client decision. Merge,
-deployment, production access, local installation and extension activation remain
-separate. A missing scope is retained as a specific blocker without opening a
-question in unattended mode. Native permissions and user-selected limits remain.
+deployment, production access, installation outside workspace-local prerequisite
+setup and extension activation remain separate. Required workspace-local setup
+does not need another project approval, including in unattended mode. A missing
+scope is retained as a specific blocker without opening a question in unattended
+mode. Native permissions and user-selected limits remain.
 
 Keep production credentials and publication permissions out of candidate
 execution. CI uses read-only repository permissions and checkouts without
@@ -109,10 +111,10 @@ sign-off. Legacy isolated-execution requests are rejected rather than reinterpre
 Local authorization is separate from verification selection, independent review
 and the original client's tool permissions. `scripts\development-policy.mjs`
 is the shared decision/description module, not a sandbox or a source of consent.
-An implementation request covers ordinary edits, existing local checks and agreed
-repairs in its worktree. A request for a local commit or PR adds only its stated
-delivery scope; installation, runtime control, cloud operations and merging remain
-separate actions.
+An implementation request covers ordinary edits, existing local checks, agreed
+repairs and required workspace-local prerequisite setup. A request for a local
+commit or PR adds only its stated delivery scope; installation outside that setup
+scope, runtime control, cloud operations and merging remain separate actions.
 
 `developmentReviewRequirements` returns protected execution paths, sensitive review
 paths and concrete reasons. Ordinary test scripts, routine business code, issue
@@ -136,6 +138,27 @@ introduced effects or unresolved scope need a concrete decision, including when
 the code is named a test. Use existing tools and locked dependencies only within
 the authorized environment. This module does not grant an allow-all permission.
 
+### Workspace-local prerequisites
+
+Restore declared dependencies and install task-required tools in the worktree
+without another project approval, including in unattended work. Do this after a
+relevant dependency-manifest change or an actual missing-prerequisite failure,
+not speculatively. Preserve lockfiles; use pinned, integrity-verified releases for
+standalone tools. Installation destinations are workspace-local, such as
+`node_modules`, `.tools` or a private virtual environment. Reuse configured
+package-manager caches and keep task-specific environment changes command-scoped.
+
+Inspect package sources and installer/lifecycle effects before running them.
+An installation directory alone does not establish scope: global or user-profile
+installation, administrator privileges, persistent PATH/system/shared settings,
+Git hooks and extension activation retain separate authorization. Native tool
+permission prompts remain enforced. This setup scope does not approve changed
+dependency/build inputs, agent instructions or execution policy; their applicable
+local execution/adoption decisions still apply. It does not authorize deployment,
+runtime control, enrollment or publication.
+
+### Approval requests
+
 An approval request contains:
 
 - **Action and reason:** what is newly requested and why existing scope is insufficient.
@@ -144,18 +167,26 @@ An approval request contains:
   actions remain unauthorized.
 - **Validity:** task, target, allowed effects and relevant input versions; identify
   changes since a prior decision instead of asking again about unchanged scope.
-- **Details:** the actual diff or original/proposed contents and command scope.
-  Hashes identify those details but do not replace the explanation.
+- **Summary:** the actual behavior change, impact and risks in plain language.
+  Keep the full diff or original/proposed contents and command scope available
+  on request; hashes identify those details but do not replace the explanation.
 
-`formatDevelopmentApproval` supplies the common format. In skill-led work, add a
-plain-language description of the actual behavioral change and use the original
-client's question tool for the real user decision. The question contains the exact
-hash-validated contents as an immutable text snapshot; local files are reference
-copies, not an approval source. Markdown fences cannot escape the snapshot block.
-Retain that actual response in
-session evidence. A copied JSON file, implementer assertion or AI review does not
-authenticate approval. GitHub's separately configured required human reviews
-still apply; independent review does not bypass repository rules.
+`formatDevelopmentApproval` requires a nonblank behavior summary unless full
+details are explicitly requested. Use a plain-language description of the actual
+behavioral change and the original client's question tool for the real user
+decision. The default question shows the
+summary and scope, not the full diff/contents. A user may approve that exact request
+directly or ask to inspect its full details first. Retain the hash-validated
+snapshot even when it is not displayed; the request remains bound to those exact
+input versions. On demand, present that snapshot as immutable text using the
+formatter's `showDetails` argument, then obtain an explicit approval or rejection
+of the same request. Viewing details grants no authority. Local files are reference
+copies, not an approval source, and Markdown fences cannot escape the snapshot
+block. Independent review still inspects the full actual changes.
+Retain the actual approval response in session evidence. A copied JSON file,
+implementer assertion or AI review does not authenticate approval. GitHub's
+separately configured required human reviews still apply; independent review
+does not bypass repository rules.
 
 For CI-first policy decisions, `scope.ci` names the exact GitHub repository and
 the task's attached branch. It adds the reviewed workflow's hosted setup/checks,

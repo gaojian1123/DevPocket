@@ -386,12 +386,18 @@ Interrupted ownership remains explicit; no lock is reclaimed merely from a PID.
 Local execution trust and human-review requirements belong to
 `scripts\development-policy.mjs`. Ordinary code/test changes and same-scope repairs reuse the task's
 local-development authorization; entire script/backend directories are not
-automatic human-review gates. Protected local execution/adoption retains exact
+automatic human-review gates. Required workspace-local dependency restoration
+and tool installation do not need another project approval after a relevant
+manifest change or missing-prerequisite failure. Global/user-profile installation,
+privileged or persistent system changes and extension activation remain separate.
+Protected local execution/adoption retains exact
 approval; an ordinary-CI task grant permits candidate execution in its named
 repository/ref without per-revision project approval. Sensitive/unclassified product changes retain independent
 inspection, independently of CI impact.
 Requests describe the action, reason, target, effects, exclusions and validity,
-with actual changes available as details. Retain original-client user decisions
+with a concise change/impact/risk summary by default and full diff/contents
+available on request. Viewing details is not approval; exact-input binding and
+full independent review remain required. Retain original-client user decisions
 for the same task and trusted input versions;
 ordinary candidate repairs reuse that authority while refreshing evidence.
 Passing tests and independent AI review do not create authority. See

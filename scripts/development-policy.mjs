@@ -38,6 +38,11 @@ const reasons = {
     why: "Independent review must classify actual effects. Unresolved execution scope remains blocked, not implicitly authorized." },
 };
 
+const workspaceSetupGuidance =
+  "Required workspace-local dependency restoration and tool installation are included without a separate project approval. " +
+  "After a relevant manifest change or an actual missing-prerequisite failure, use lockfiles or pinned, integrity-verified releases and install into this worktree. " +
+  "Inspect installer/lifecycle effects and keep environment changes command-scoped; global or user-profile installation, administrator privileges and persistent system configuration remain outside this scope.";
+
 function changedPaths(value) {
   if (!Array.isArray(value) || value.length > 2000 || value.some((file) => typeof file !== "string" ||
       !file.length || file.length > 1000 || /[\\\x00-\x1f]|^[\/]|^[A-Za-z]:/.test(file) ||
@@ -200,12 +205,13 @@ export function developmentApprovalRequest(scope, policy, stage, hooks) {
     hooks,
     effects: stage === "execution"
       ? ["Use these exact policy inputs for local checks and task-scoped candidate commits.",
+        workspaceSetupGuidance,
         ...(scope.ci ? [`Run the reviewed .github/workflows/ci.yml hosted-runner setup and checks for candidates on ${scope.ci.repository} ${scope.ci.ref}, including their pull-request merge ref.`] : []),
         "Record human review of these policy changes; still require source-bound verification and independent review."]
       : ["Satisfy the local human-review requirement for these exact changes after verification and independent review."],
     exclusions: ["No push, PR creation, merge, deployment, extension installation/reload or live runtime control.",
-      scope.ci ? "No local tool installation, new infrastructure, device enrollment, shared-machine configuration or bypass of native permissions."
-        : "No new tool installation, device enrollment, shared-machine configuration or bypass of native permissions."],
+      "No global or user-profile installation, administrator privileges, persistent PATH changes, device enrollment, shared-machine configuration or bypass of native permissions.",
+      ...(scope.ci ? ["No new infrastructure."] : [])],
     validity: "Only this task, workspace and listed input versions. Ordinary source repairs do not expand this grant. Changed inputs or targets require a new decision.",
   };
   if (request.inputs.length !== paths.length) throw new Error("Approval inputs do not cover every requested path.");
@@ -234,11 +240,13 @@ export function developmentTaskApprovalRequest(scope, hooks, implementation) {
   const effects = [
     `Allow ${actions.join(", ")} for this task and ${scope.workspace.branch}; reuse this scope across ordinary source repairs.`,
     `Use existing local checks ${publication ? "when their local execution is authorized" : "only"}. Changed executable inputs still need their exact local execution approval.`,
+    workspaceSetupGuidance,
     ...(publication ? [`Authorize automatic repository CI for ${ci.repository} ${ci.ref}, including existing-PR synchronization and PR creation. Candidate dependencies, install scripts and changed tools run as the ordinary disposable runner identity without per-revision project approval. Public network access is permitted. This is ordinary CI, not an adversarial sandbox or permission to adopt new local control.`] : []),
     "Retain required checks, independent review and source-bound results. Keep approved local tooling unchanged until separately authorized adoption.",
   ];
   const exclusions = [
-    "No merge, deployment, release, production secrets, cloud administration, device enrollment, live runtime control, local installation, extension reload or Git hook changes.",
+    "No merge, deployment, release, production secrets, cloud administration, device enrollment, live runtime control, extension installation/reload or Git hook changes.",
+    "No global or user-profile installation, administrator privileges, persistent PATH changes or shared-machine configuration.",
     "No automatic local tool/instruction/hook adoption, native permission bypass, new targets or increased user-selected limits.",
     ...(delivery === "working-tree" ? ["No commit, push or PR creation."] : []),
   ];
@@ -279,12 +287,19 @@ export function developmentExecutionAuthorization(scope, policy, hooks, implemen
     : { status: "needs_human", route: "local", request };
 }
 
-export function formatDevelopmentApproval(request, details, summary, snapshot) {
+export function formatDevelopmentApproval(request, details, summary, snapshot, showDetails = false) {
   if (typeof snapshot !== "string" || Buffer.byteLength(snapshot) !== request.detailsBytes ||
       hash(snapshot) !== request.detailsSha256) throw new TypeError("An exact immutable approval snapshot is required.");
-  let fence = "```";
-  for (const match of snapshot.matchAll(/`+/g)) {
-    if (match[0].length >= fence.length) fence = "`".repeat(match[0].length + 1);
+  if (!showDetails && (typeof summary !== "string" || !summary.trim())) {
+    throw new TypeError("A nonblank behavior summary is required when full details are hidden.");
+  }
+  let contents = "Full diff/contents: available on request; viewing them does not approve this request.";
+  if (showDetails) {
+    let fence = "```";
+    for (const match of snapshot.matchAll(/`+/g)) {
+      if (match[0].length >= fence.length) fence = "`".repeat(match[0].length + 1);
+    }
+    contents = `Contents to approve (immutable native-question snapshot):\n${fence}text\n${snapshot}\n${fence}`;
   }
   return [
     `Approval requested: ${request.action}`,
@@ -301,7 +316,7 @@ export function formatDevelopmentApproval(request, details, summary, snapshot) {
     `Local detail copy (not authoritative): ${details}`,
     `Details SHA256: ${request.detailsSha256}`,
     `Request identity: ${request.id}`,
-    `Contents to approve (immutable native-question snapshot):\n${fence}text\n${snapshot}\n${fence}`,
+    contents,
   ].join("\n\n");
 }
 
