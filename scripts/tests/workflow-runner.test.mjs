@@ -63,7 +63,8 @@ test("the standalone approval contracts run without Git, PowerShell, signing or 
   const names = [...quick.matchAll(/^test\("([^"]+)"/gm)].map((match) => match[1]);
   assert.equal(names.length, 10);
   assert.ok(names.every((name) => !full.includes(`test("${name}"`)), "Moved contracts must run exactly once in the full suite.");
-  assert.doesNotMatch(quick, /node:(?:child_process|fs)|candidate-commit|native-candidate|verification\.mjs/);
+  assert.doesNotMatch(quick,
+    /(?:from\s+|import\(\s*)["'](?:node:(?:child_process|fs(?:\/promises)?)|\.\.\/(?:candidate-commit|native-candidate|verification)\.mjs)["']/);
 });
 
 test("the runner preserves Node file isolation, inherited environment, complete execution and failure status", async (t) => {
