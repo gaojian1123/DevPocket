@@ -92,6 +92,17 @@ test("JDK diagnostics recognize the API37 requirement and historical build messa
   }
 });
 
+test("SDK diagnostics recognize decimal platforms and historical integer messages", async (t) => {
+  const build = await readFile(path.resolve("scripts/build-android.ps1"), "utf8");
+  const current = /WriteLine\('(Android SDK platform [^']+)'\)/.exec(build)?.[1];
+  assert.ok(current, "Exercise the actual native build prerequisite message.");
+  for (const message of [current, "Android SDK platform 35 is missing.", "Android SDK platform 37 is missing."]) {
+    const item = await fixture(t, `${message}\n`);
+    const { report } = await collect(item);
+    assert.deepEqual(report.failureKinds, ["sdk-missing"], message);
+  }
+});
+
 test("the public Android exporter indexes standard build-type resources without losing the original failure", async (t) => {
   const item = await fixture(t);
   const source = path.join(item.root, "android", "app", "src", "debug", "res", "xml", "network_security_config.xml");

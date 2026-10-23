@@ -103,7 +103,12 @@ const elicitationField = z.object({
   maxLength: z.number().int().min(1).optional(), default: z.string().optional(),
 }).strict().refine((field) => (field.minLength ?? 0) <= (field.maxLength ?? 8000));
 const elicitationSchema = z.object({
-  type: z.literal("object"), properties: z.record(z.string(), elicitationField),
+  type: z.literal("object"), properties: z.preprocess((value, context) => {
+    // Zod 4 drops __proto__ record keys; reject them before validating the complete form.
+    if (value !== null && typeof value === "object" && Object.hasOwn(value, "__proto__"))
+      context.addIssue({ code: "custom", message: "Unsupported form field name." });
+    return value;
+  }, z.record(z.string(), elicitationField)),
   required: z.array(z.string()).optional(), title: z.string().optional(), description: z.string().optional(),
   additionalProperties: z.boolean().optional(),
 }).strict();

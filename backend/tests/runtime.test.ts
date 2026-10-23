@@ -979,6 +979,28 @@ test("unknown top-level elicitation fields keep the form in the original client"
   assert.equal(answers, 0);
 });
 
+test("own __proto__ elicitation properties cannot disappear before form validation", async (t) => {
+  for (const type of ["boolean", "string"]) await t.test(type, async (t) => {
+    const f = await capabilityFixture(t);
+    let answers = 0;
+    f.session.rpc.ui = { handlePendingElicitation: async () => { answers++; return { success: true }; } };
+    await f.runtime.connect();
+    const properties: Record<string, unknown> = JSON.parse(
+      `{"choice":{"type":"string","enum":["Yes","No"]},"__proto__":{"type":"${type}"}}`);
+    assert.ok(Object.hasOwn(properties, "__proto__"), "The JSON fixture must retain the own property.");
+    f.emit("elicitation.requested", {
+      requestId: "proto-form", message: "Choose", mode: "form",
+      requestedSchema: { type: "object", properties, required: ["choice"] },
+    });
+    const request = f.events.filter((event) => event.kind === "requests").at(-1)?.data.items.find((item) => item.requestId === "proto-form");
+    assert.equal(request?.type, "terminal");
+    assert.equal(request.supported, false);
+    assert.ok(!f.events.some((event) => event.kind === "question" && event.data.request.requestId === "proto-form"));
+    await assert.rejects(f.runtime.execute({ type: "answer", requestId: "proto-form", answer: "Yes" }), { code: "TERMINAL_REQUIRED" });
+    assert.equal(answers, 0);
+  });
+});
+
 test("supported question envelopes preserve their semantics without exporting correlation metadata", async (t) => {
   const f = await capabilityFixture(t), answers: unknown[] = [];
   f.session.rpc.ui = {
