@@ -49,13 +49,13 @@ test("tooling failures and plan causes survive public diagnostics without raw re
   t.after(() => rm(root, { recursive: true, force: true }));
   await writeFile(path.join(root, ".gitignore"), ".data/\n");
   await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: {
-    "test:workflow": "node --test --test-reporter=spec scripts/tests/development-workflow.test.mjs",
+    "test:workflow": "node --test --test-reporter=spec scripts/tests/development-tools.test.mjs",
   } }));
   await exec("git", ["init", "--quiet"], { cwd: root });
   await exec("git", ["add", "."], { cwd: root });
   await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Fixture"], { cwd: root });
   await mkdir(path.join(root, "scripts", "tests"), { recursive: true });
-  await writeFile(path.join(root, "scripts", "tests", "development-workflow.test.mjs"), [
+  await writeFile(path.join(root, "scripts", "tests", "development-tools.test.mjs"), [
     'import {test} from "node:test";',
     'import assert from "node:assert/strict";',
     'test("synthetic failure", () => { assert.fail("PRIVATE_TOOLING_LOG_CANARY"); });',
@@ -84,7 +84,7 @@ test("tooling failures and plan causes survive public diagnostics without raw re
   assert.deepEqual(diagnostics.selection.requiredGroups, ["tooling"]);
   assert.equal(Object.hasOwn(diagnostics.selection, "requiresHumanReview"), false);
   assert.equal(Object.hasOwn(diagnostics.selection, "legacyAgentReview"), false);
-  assert.deepEqual(diagnostics.selection.selectionReasons[0].paths, ["scripts/tests/development-workflow.test.mjs"]);
+  assert.deepEqual(diagnostics.selection.selectionReasons[0].paths, ["scripts/tests/development-tools.test.mjs"]);
   assert.equal(diagnostics.checks[0].id, "workflow-tests");
   assert.equal(diagnostics.checks[0].status, "failed");
   assert.equal(diagnostics.checks[0].failure.reason, "command-failed");
@@ -145,10 +145,10 @@ test("legacy diagnostic selections retain backend grouping without relabelling h
     });
   }
   const { projectVerificationSelection } = await import("../verification-policy.mjs");
-  const file = "scripts/workflow-extension.mjs";
+  const file = "scripts/native-candidate.mjs";
   const legacy = projectVerificationSelection({
     version: 1, requiredChecks: backend,
-    selectionReasons: [{ rule: "task-routing", paths: [file] }],
+    selectionReasons: [{ rule: "development-tooling", paths: [file] }],
   }, new Set([file]));
   assert.deepEqual(legacy.requiredGroups, ["backend"]);
   assert.deepEqual(legacy.selectionReasons, [], "Current impact rules must not explain a historical plan.");
@@ -160,7 +160,7 @@ test("historical local review flags are diagnostic-only and cannot manufacture a
   t.after(() => rm(root, { recursive: true, force: true }));
   await writeFile(path.join(root, ".gitignore"), ".data/\n");
   await exec("git", ["init", "--quiet"], { cwd: root });
-  const file = "scripts/development-workflow.mjs";
+  const file = "scripts/development-policy.mjs";
   await mkdir(path.join(root, "scripts"));
   await writeFile(path.join(root, file), "// fixture\n");
   for (const version of [1, 2, 3, VERIFICATION_REPORT_VERSION]) {
