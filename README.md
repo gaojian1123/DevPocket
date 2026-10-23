@@ -270,6 +270,24 @@ its matching pre-upgrade database backup rather than opening newer summaries
 with the old strict decoder. Installation, reload and deployment remain separate
 operator-authorized actions.
 
+## Apple client design handoff
+
+The selected Apple client design and implementation requirements are in
+[docs\APPLE-CLIENT.md](docs/APPLE-CLIENT.md). The self-contained visual reference
+is `docs\prototypes\apple-client\index.html`; run
+`node docs\prototypes\apple-client\serve.mjs` to open its loopback preview.
+No prototype dependency installation or build is needed.
+
+The reference covers iPhone, iPad, Mac and iPhone Duo, including chronological
+conversation/Canvas content, the single-close reader and Duo's compact,
+expanded and partially folded layouts. It contains only the selected design,
+uses in-memory fictional data, and does not contact a real runtime.
+Custom transition animation is deferred.
+
+This is not a native Apple client or Apple-device acceptance. Implementation
+should reuse the existing protocol and `packages\components` contract, while
+building a native shell and its platform-specific integration.
+
 ## Layout
 
 ```text
