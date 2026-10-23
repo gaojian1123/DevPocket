@@ -117,6 +117,9 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun clearError() = mutable.update { it.copy(error = null) }
+    fun componentError(scope: Scope, message: String) {
+        mutable.update { if (it.selected == scope) it.copy(error = message) else it }
+    }
     fun setTheme(value: String) {
         require(value in setOf("system", "light", "dark"))
         prefs.edit().putString("theme", value).apply()
@@ -327,14 +330,58 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch { attempt { withContext(Dispatchers.IO) { local.saveDraft(scope, draft) } } }
     }
 
+    fun referenceComponent(scope: Scope, card: ComponentCard): Boolean {
+        val state = mutable.value
+        if (state.selected != scope) {
+            mutable.update { it.copy(error = "会话已切换，请重新选择要引用的卡片。") }
+            return false
+        }
+        val current = state.events.firstOrNull { it.kind == "component" &&
+            it.hostId == scope.hostId && it.sessionId == scope.sessionId &&
+            it.data.stringValue("componentId") == card.componentId }?.let(::componentCard)
+        if (current?.status != "ready" || current.sha256 != card.sha256) {
+            componentError(scope, "这张卡片已不在可用历史中，请重新选择。")
+            return false
+        }
+        if (state.session?.online == true && state.session.componentVersion != COMPONENT_VERSION) {
+            componentError(scope, "当前连接不支持卡片引用，请更新主机桥接和中转服务。")
+            return false
+        }
+        if (state.uploading || state.draft.attachments.size >= 4) {
+            componentError(scope, "卡片引用占用一个附件位置，请等待上传完成或先移除一个附件。")
+            return false
+        }
+        val draft = state.draft.copy(componentReference = current.selection(), revision = state.draft.revision + 1)
+        mutable.update { it.copy(draft = draft) }
+        viewModelScope.launch { attempt { withContext(Dispatchers.IO) { local.saveDraft(scope, draft) } } }
+        return true
+    }
+
+    fun removeComponentReference() {
+        val state = mutable.value
+        val scope = state.selected ?: return
+        val draft = state.draft.copy(componentReference = null, revision = state.draft.revision + 1)
+        mutable.update { it.copy(draft = draft) }
+        viewModelScope.launch { attempt { withContext(Dispatchers.IO) { local.saveDraft(scope, draft) } } }
+    }
+
     fun send() {
         val state = mutable.value
         val scope = state.selected ?: return
         if (state.draft.text.isBlank() || state.session?.online != true || !state.session.capabilities.messages) return
         val draft = state.draft
+        if (draft.componentReference != null && state.session.componentVersion != COMPONENT_VERSION) {
+            componentError(scope, "当前连接不支持卡片引用。引用和草稿已保留，消息未发送。")
+            return
+        }
+        if (draft.attachmentCount > 4) {
+            componentError(scope, "每条消息最多 4 份附件，包含引用的卡片。")
+            return
+        }
         val stageKey = scope.key to draft.revision
         if (!staging.add(stageKey)) return
-        val command = Command(UUID.randomUUID().toString(), Action.Message(draft.text, draft.attachments.map { it.id }))
+        val command = Command(UUID.randomUUID().toString(),
+            Action.Message(draft.text, draft.attachments.map { it.id }, draft.componentReference?.reference))
         mutable.update { current ->
             if (current.selected == scope) current.copy(draft = DraftLogic.afterStaging(current.draft, draft)) else current
         }
@@ -352,7 +399,8 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
                         draft = if (current.draft.revision == draft.revision + 1 && current.draft.text.isEmpty())
                             draft.copy(revision = current.draft.revision + 1) else current.draft,
                         outbox = listOf(Outbox(scope, command, "failed", System.currentTimeMillis(),
-                            error = "本机存储失败，消息未发送。", attachments = draft.attachments)) +
+                            error = "本机存储失败，消息未发送。", attachments = draft.attachments,
+                            componentReference = draft.componentReference)) +
                             current.outbox.filterNot { it.command.commandId == command.commandId },
                         error = "本机存储失败，消息未发送：${error.message}",
                     )
@@ -494,10 +542,13 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
 
     fun restoreDraft(entry: Outbox) {
         val action = entry.command.action as? Action.Message ?: return
-        if (mutable.value.draft.text.isNotBlank()) { mutable.update { it.copy(error = "当前已有草稿，请先保存或发送。") }; return }
+        if (mutable.value.draft.let { it.text.isNotBlank() || it.attachments.isNotEmpty() || it.componentReference != null }) {
+            mutable.update { it.copy(error = "当前已有草稿，请先保存或发送。") }
+            return
+        }
         val scope = mutable.value.selected ?: return
         if (scope != entry.scope) return
-        val draft = Draft(action.text, mutable.value.draft.revision + 1, entry.attachments)
+        val draft = Draft(action.text, mutable.value.draft.revision + 1, entry.attachments, entry.componentReference)
         mutable.update { it.copy(draft = draft) }
         viewModelScope.launch { attempt { withContext(Dispatchers.IO) { local.saveDraft(scope, draft) } } }
     }
@@ -580,7 +631,10 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
 
     fun upload(uri: Uri) {
         val scope = mutable.value.selected ?: return
-        if (mutable.value.draft.attachments.size >= 4) { mutable.update { it.copy(error = "每条消息最多附加 4 个文件。") }; return }
+        if (mutable.value.draft.attachmentCount >= 4) {
+            mutable.update { it.copy(error = "每条消息最多 4 份附件，包含引用的卡片。") }
+            return
+        }
         viewModelScope.launch {
             mutable.update { it.copy(uploading = true) }
             attempt {
@@ -589,6 +643,7 @@ class PocketViewModel(application: Application) : AndroidViewModel(application) 
                 val attachment = apiFor(scope).upload(scope, file.first, file.second, file.third)
                 if (mutable.value.selected == scope) {
                     val current = mutable.value.draft
+                    check(current.attachmentCount < 4) { "附件位置已用完，已上传文件仍可从附件页查看。" }
                     val draft = current.copy(attachments = current.attachments + attachment, revision = current.revision + 1)
                     mutable.update { it.copy(draft = draft) }
                     withContext(Dispatchers.IO) { local.saveDraft(scope, draft) }

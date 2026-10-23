@@ -66,14 +66,76 @@ export function publicError(error: unknown): { code: string; message: string } {
   return { code: "INTERNAL_ERROR", message: "The operation failed. Inspect the local DevPocket log." };
 }
 
+const credentialName = "(?:(?<![a-z0-9])auth(?:orization)?|password|passwd|secret(?:[\\s_.-]*(?:key|value|string|binary))?|" +
+  "(?:api|private|access|signing|encryption)[\\s_.-]*key(?:[\\s_.-]*id)?|token|cookie|credentials?)";
+const credentialQualifier = "(?=\\s*(?:\\(|\\[|\\{|:)|\\s+[-\\u2013\\u2014]\\s+)";
+const credentialField = new RegExp(`${credentialName}(?:$|${credentialQualifier})`, "i");
+const credentialAnnotations = "(?:\\s*(?:\\([^\\r\\n()]*\\)|\\[[^\\r\\n\\[\\]]*\\]|\\{[^\\r\\n{}]*\\}))*";
+const credentialAssignment = new RegExp(
+  `(${credentialName})${credentialAnnotations}(?:(\\s+[-\\u2013\\u2014]\\s+)|\\s*(?:["']\\s*)?[:=]\\s*)`, "gi");
+
+export function isSensitiveFieldName(name: string): boolean {
+  const normalized = name.replace(/[\s_.-]/g, "");
+  const words = name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/([A-Z])([A-Z][a-z])/g, "$1 $2");
+  return credentialField.test(normalized) || credentialField.test(name.trim()) ||
+    /(?:^|[^a-z0-9])(?:password|passwd|secret|credentials?)(?:$|[^a-z0-9])/i.test(words);
+}
+
+function redactCredentialAssignments(value: string): string {
+  const parts: string[] = [];
+  let retainedFrom = 0;
+  credentialAssignment.lastIndex = 0;
+  for (let match = credentialAssignment.exec(value); match !== null; match = credentialAssignment.exec(value)) {
+    let start = credentialAssignment.lastIndex;
+    if (match[2]) {
+      let delimiter = start;
+      while (delimiter < value.length && !/[:=\r\n]/.test(value[delimiter]!)) delimiter++;
+      if (delimiter === value.length || /[\r\n]/.test(value[delimiter]!)) {
+        credentialAssignment.lastIndex = delimiter;
+        continue;
+      }
+      start = delimiter + 1;
+      while (start < value.length && /\s/.test(value[start]!)) start++;
+    }
+    const quote = value[start], quoted = quote === '"' || quote === "'";
+    const maskLine = match[2] !== undefined || /^cookie$/i.test(match[1]!);
+    let end = start, replacement = "[REDACTED]";
+    if (quoted) {
+      end++;
+      let closed = false;
+      while (end < value.length) {
+        if (value[end] === "\\") { end = Math.min(end + 2, value.length); continue; }
+        if (value[end] === quote) {
+          if (value[end + 1] === quote) { end += 2; continue; }
+          end++;
+          closed = true;
+          break;
+        }
+        end++;
+      }
+      // An unterminated quoted credential must not expose its remaining tail.
+      replacement = quote + replacement + (closed ? quote : "");
+    }
+    // Consume quoted values first so whole-line masking cannot expose a multiline tail.
+    if (maskLine || !quoted) {
+      const terminator = maskLine || /^auth(?:orization)?$/i.test(match[1]!) ? /[\r\n]/ : /[\r\n,;]/;
+      while (end < value.length && !terminator.test(value[end]!)) end++;
+      if (maskLine) replacement = "[REDACTED]";
+    }
+    parts.push(value.slice(retainedFrom, start), replacement);
+    retainedFrom = end;
+    credentialAssignment.lastIndex = end;
+  }
+  return parts.length ? parts.join("") + value.slice(retainedFrom) : value;
+}
+
 export function redact(value: string, limit = 64_000): string {
-  const clean = value
+  const clean = redactCredentialAssignments(value
     .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
-    .replace(/(?:github_pat_|gh[pousr]_|dp[hdp]_)[A-Za-z0-9_]*/g, "[REDACTED]")
-    .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]+/gi, "$1[REDACTED]")
-    .replace(/((?:api[_-]?key|password|secret|access[_-]?token|cookie)\s*["']?\s*[:=]\s*["']?)[^\s"',;]+/gi, "$1[REDACTED]");
+    .replace(/(?:github_pat_|gh[pousr]_|dp[hdp]_)[A-Za-z0-9_-]*/g, "[REDACTED]")
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]+/gi, "$1[REDACTED]"));
   const suffix = "\n[truncated; see original client]";
   return clean.length <= limit ? clean : clean.slice(0, Math.max(0, limit - suffix.length)) + suffix;
 }

@@ -54,7 +54,10 @@ test("standalone archive installs without a checkout and connects all projects t
   assert.deepEqual((await readdir(extracted)).sort(),
     ["README.md", "THIRD-PARTY-NOTICES.txt", "devpocket.mjs", "extension", "manifest.json", "setup-assets", "setup.mjs"]);
   assert.deepEqual((await readdir(path.join(extracted, "extension"))).sort(), ["bridge.mjs", "extension.mjs"]);
-  assert.match(await readFile(path.join(extracted, "THIRD-PARTY-NOTICES.txt"), "utf8"), /MIT/);
+  const notices = await readFile(path.join(extracted, "THIRD-PARTY-NOTICES.txt"), "utf8");
+  assert.match(notices, /MIT/);
+  const componentNotices = await readFile(path.join(repo, "packages", "components", "dist", "web", "THIRD-PARTY-NOTICES.txt"), "utf8");
+  assert.ok(notices.includes(componentNotices), "The bundled Markdown parser must retain all portable dependency licenses.");
   const home = path.join(root, "copilot home"), configPath = path.join(root, "host.local.json");
   const env = { ...process.env, NODE_OPTIONS: "", NODE_PATH: "", COPILOT_HOME: home };
   const cli = (...args) => run(process.execPath, [path.join(extracted, "devpocket.mjs"), ...args],

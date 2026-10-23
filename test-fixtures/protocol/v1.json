@@ -10,6 +10,92 @@
     }
   },
   {
+    "id": "explicit-component-reference",
+    "shape": "command",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": {
+      "commandId": "11111111-1111-4111-8111-111111111111",
+      "action": {
+        "type": "message", "text": "Explain the complete card.", "attachmentIds": [],
+        "componentReference": {
+          "componentId": "shared-markdown",
+          "sha256": "e7e27815cefd6978598ffd1d96edae03f03710ad1cccac1b4c8a47dd1a4ab4bc"
+        }
+      }
+    }
+  },
+  {
+    "id": "shared-line-component",
+    "shape": "component",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": {
+      "componentId": "shared-line", "toolCallId": "line-call", "version": 1, "status": "ready",
+      "originatingMessageId": "shared-origin", "encoding": "base64-json", "redacted": false,
+      "payload": "eyJ0eXBlIjoibGluZSIsInhBeGlzS2V5IjoiZGF5IiwiZGF0YSI6W3siZGF5IjoiQSIsInZhbHVlIjoxfV0sInNlcmllcyI6W3sibmFtZSI6IkNvdW50IiwiZGF0YUtleSI6InZhbHVlIn1dfQ==",
+      "sha256": "49ca09771a37825e5cca59f2226b02bb5e01e74f3bad4130d26c9fd04032f6bd"
+    }
+  },
+  {
+    "id": "shared-bar-component",
+    "shape": "component",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": {
+      "componentId": "shared-bar", "toolCallId": "bar-call", "version": 1, "status": "ready",
+      "encoding": "base64-json", "redacted": false,
+      "payload": "eyJ0eXBlIjoiYmFyIiwieEF4aXNLZXkiOiJkYXkiLCJkYXRhIjpbeyJkYXkiOiJBIiwidmFsdWUiOjF9XSwic2VyaWVzIjpbeyJuYW1lIjoiQ291bnQiLCJkYXRhS2V5IjoidmFsdWUifV19",
+      "sha256": "94c95bd67dce0a7bf1b0048a21a0ec3a905dc5934c1be0682c441ba3c03ccc07"
+    }
+  },
+  {
+    "id": "shared-table-component",
+    "shape": "component",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": {
+      "componentId": "shared-table", "toolCallId": "table-call", "version": 1, "status": "ready",
+      "encoding": "base64-json", "redacted": false,
+      "payload": "eyJ0eXBlIjoiZGF0YWdyaWQiLCJjb2x1bW5zIjpbeyJrZXkiOiJuYW1lIiwibGFiZWwiOiJOYW1lIn1dLCJyb3dzIjpbeyJuYW1lIjoic2hhcmVkIGZpeHR1cmUifV19",
+      "sha256": "4565e357334db57dcd0236f3b567ef055f24c97b6335487f5038a1a3bbf09e43"
+    }
+  },
+  {
+    "id": "shared-markdown-component",
+    "shape": "component",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": {
+      "componentId": "shared-markdown", "toolCallId": "markdown-call", "version": 1, "status": "ready",
+      "encoding": "base64-json", "redacted": false,
+      "payload": "eyJ0eXBlIjoibWFya2Rvd24iLCJjb250ZW50IjoiU2hhcmVkICoqY29tcGxldGUqKiBjb250ZW50LiJ9",
+      "sha256": "e7e27815cefd6978598ffd1d96edae03f03710ad1cccac1b4c8a47dd1a4ab4bc"
+    }
+  },
+  {
+    "id": "tampered-component-bytes",
+    "shape": "component",
+    "backendValid": false,
+    "androidValid": false,
+    "wire": {
+      "componentId": "tampered", "toolCallId": "tampered-call", "version": 1, "status": "ready",
+      "encoding": "base64-json", "redacted": false,
+      "payload": "eyJ0eXBlIjoibWFya2Rvd24iLCJjb250ZW50IjoiU2hhcmVkICoqY29tcGxldGUqKiBjb250ZW50LiJ9",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  {
+    "id": "unavailable-component-has-no-input",
+    "shape": "component",
+    "backendValid": true,
+    "androidValid": true,
+    "wire": {
+      "componentId": "unavailable", "toolCallId": "unavailable-call", "version": 1, "status": "unavailable",
+      "error": { "code": "COMPONENT_RENDER_FAILED", "message": "The original canvas call failed." }
+    }
+  },
+  {
     "id": "nullable-model-reasoning",
     "shape": "command",
     "backendValid": true,

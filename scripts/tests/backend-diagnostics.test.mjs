@@ -384,7 +384,9 @@ test("backend-only CI reuses the normal job, conditionally exports validated dia
   assert.match(gate, /if \(\$env:BACKEND_ONLY -eq 'true'\) \{\n\s+node scripts\\verify\.mjs .*--plan --report \.data\\ci\\gate\.json\n\s+throw 'A backend diagnostic cannot satisfy Required verification/);
   assert.doesNotMatch(workflow, /continue-on-error:|--test-concurrency|--test-name-pattern|\.data[\\/]\*\*/);
   const manifest = JSON.parse(await readFile("package.json", "utf8"));
-  assert.equal(manifest.scripts.test, "node --import tsx --test backend/tests/*.test.ts");
+  assert.equal(manifest.scripts.test, "npm test --workspace @devpocket/components && node --import tsx --test backend/tests/*.test.ts");
+  const components = JSON.parse(await readFile("packages/components/package.json", "utf8"));
+  assert.equal(components.scripts.test, "npm run build && node --import tsx --test tests/*.test.ts");
   assert.ok(WORKFLOW_TEST_FILES.includes("scripts/tests/backend-diagnostics.test.mjs"));
 });
 

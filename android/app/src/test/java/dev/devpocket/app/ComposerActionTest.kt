@@ -8,6 +8,8 @@ import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -20,6 +22,9 @@ import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import dev.devpocket.app.data.Capabilities
 import dev.devpocket.app.data.Draft
+import dev.devpocket.app.data.Attachment
+import dev.devpocket.app.data.ComponentReference
+import dev.devpocket.app.data.ComponentSelection
 import dev.devpocket.app.data.SessionInfo
 import dev.devpocket.app.ui.ComposeBar
 import org.junit.Assert.assertEquals
@@ -63,6 +68,7 @@ class ComposerActionTest {
                     attach = {},
                     models = {},
                     stop = { stopRequests++ },
+                    removeComponentReference = { state = state.copy(draft = state.draft.copy(componentReference = null)) },
                 )
             }
         }
@@ -156,5 +162,34 @@ class ComposerActionTest {
             compose.onNodeWithContentDescription(stopDescription).assertDoesNotExist()
             compose.onNodeWithTag("composer_action").assert(hasContentDescription(sendDescription)).assertIsNotEnabled()
         }
+    }
+
+    @Test fun aReferenceIsVisibleOnceWithoutFilesAndRemovingItNeverSendsOrClearsTheDraft() {
+        val reference = ComponentSelection(ComponentReference("card", "a".repeat(64)), "Complete card")
+        show(initial.copy(session = session.copy(componentVersion = 1),
+            draft = Draft("Keep this question", componentReference = reference)))
+        compose.onNodeWithTag("component_reference").assertIsDisplayed()
+        compose.onNodeWithContentDescription("\u79fb\u9664\u5361\u7247\u5f15\u7528").assertIsDisplayed()
+        compose.runOnIdle {
+            state = state.copy(draft = state.draft.copy(attachments = List(2) {
+                Attachment("file-$it", "file-$it.txt", "text/plain", 1, "b".repeat(64))
+            }))
+        }
+        compose.onAllNodesWithContentDescription("\u79fb\u9664\u5361\u7247\u5f15\u7528").assertCountEquals(1)
+        compose.onNodeWithContentDescription("\u79fb\u9664\u5361\u7247\u5f15\u7528").performClick()
+        compose.onNodeWithTag("component_reference").assertDoesNotExist()
+        compose.onNodeWithTag("message_input").assertTextContains("Keep this question")
+        assertEquals(2, state.draft.attachments.size)
+        assertEquals(emptyList<String>(), sent)
+    }
+
+    @Test fun aLegacyConnectionCannotSendAReferencedDraftAsAnOrdinaryMessage() {
+        val reference = ComponentSelection(ComponentReference("card", "a".repeat(64)), "Complete card")
+        show(initial.copy(draft = Draft("Keep this question", componentReference = reference)))
+        compose.onNodeWithTag("component_reference").assertIsDisplayed()
+        compose.onNodeWithTag("composer_action").assertIsNotEnabled()
+        assertEquals(emptyList<String>(), sent)
+        compose.onNodeWithContentDescription("\u79fb\u9664\u5361\u7247\u5f15\u7528").performClick()
+        compose.onNodeWithTag("composer_action").assertIsEnabled()
     }
 }

@@ -1,5 +1,8 @@
 package dev.devpocket.app
 
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteException
+import android.database.sqlite.SQLiteOpenHelper
 import androidx.test.core.app.ApplicationProvider
 import dev.devpocket.app.data.*
 import java.util.UUID
@@ -18,6 +21,45 @@ import org.robolectric.annotation.SQLiteMode
 @Config(sdk = [35], application = DevPocketApplication::class)
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
 class OutboxRecoveryTest {
+    @Test fun cacheUpgradePreservesOldDraftsAndReferencedRetriesRefuseAnOldClientDowngrade() {
+        val context = ApplicationProvider.getApplicationContext<DevPocketApplication>()
+        val scope = Scope(UUID.randomUUID().toString(), "host", "session")
+        val legacyDraft = Draft("Keep the unsent question", 3)
+        val legacyCommand = Command(UUID.randomUUID().toString(), Action.Message("Already staged"))
+        val selection = ComponentSelection(ComponentReference("card", "a".repeat(64)), "Complete card")
+        val referenced = legacyDraft.copy(revision = 4, componentReference = selection)
+        val command = Command(UUID.randomUUID().toString(), Action.Message(referenced.text,
+            componentReference = selection.reference))
+        try {
+            LocalStore(context).use { local ->
+                local.saveDraft(scope, legacyDraft)
+                local.saveOutbox(Outbox(scope, legacyCommand, "delivery_unknown", 1))
+                local.writableDatabase.version = 1
+            }
+            LocalStore(context).use { local ->
+                assertEquals(legacyDraft, local.draft(scope))
+                assertEquals(legacyCommand, local.outbox(scope).single().command)
+                assertEquals(2, local.readableDatabase.version)
+                local.saveDraft(scope, referenced)
+                local.stage(scope, referenced, command)
+            }
+            val older = object : SQLiteOpenHelper(context, "devpocket-cache.db", null, 1) {
+                override fun onCreate(db: SQLiteDatabase) = error("The existing cache must not be recreated.")
+                override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) =
+                    error("This is a downgrade check.")
+            }
+            try { assertThrows(SQLiteException::class.java) { older.readableDatabase } }
+            finally { older.close() }
+            LocalStore(context).use { local ->
+                val retained = local.outbox(scope).single { it.command.commandId == command.commandId }
+                assertEquals(command, retained.command)
+                assertEquals(selection, retained.componentReference)
+                assertEquals("sending", retained.status)
+                assertEquals(legacyCommand, local.outbox(scope).single { it.command != command }.command)
+            }
+        } finally { LocalStore(context).use { it.forgetAccount(scope.accountId) } }
+    }
+
     @Test fun eventDisplayTruncationDoesNotReopenAnAlreadyAttemptedQuestion() {
         val context = ApplicationProvider.getApplicationContext<DevPocketApplication>()
         val scope = Scope(UUID.randomUUID().toString(), "host", "session")

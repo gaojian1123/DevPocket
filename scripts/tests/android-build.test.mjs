@@ -7,6 +7,19 @@ import { test } from "node:test";
 
 const exec = promisify(execFile);
 
+test("the clean Android CI job restores locked Node inputs before invoking the component-aware native build", async () => {
+  const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
+  const job = workflow.split("\n  android:")[1].split("\n  device:")[0];
+  const node = job.indexOf("uses: actions/setup-node@");
+  const install = job.indexOf("run: npm ci --no-audit --no-fund");
+  const build = job.indexOf("Verify native build, JVM contracts and lint");
+  assert.ok(node >= 0 && install > node && build > install);
+  const gradle = await readFile("android/app/build.gradle.kts", "utf8");
+  assert.match(gradle, /commandLine\(npm \+ listOf\("run", "build", "--workspace", "@devpocket\/components"\)\)/);
+  const preparation = await readFile(".github/actions/prepare-native/action.yml", "utf8");
+  assert.ok(preparation.includes("npm ci --no-audit --no-fund"));
+});
+
 async function buildFixture(t) {
   await mkdir(".data/tests", { recursive: true });
   const root = await mkdtemp(path.resolve(".data/tests/android-build-"));

@@ -78,7 +78,7 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
   const push = options.pushSender ?? (options.fcmServiceAccount ? await FcmPush.fromFile(options.fcmServiceAccount) : undefined);
   const limiter = new RateLimiter(options.now);
   let origin = options.publicUrl ?? "http://127.0.0.1";
-  const hosts = new Map<string, { socket: WebSocket; ready: boolean; hostId: string; sessionId: string }>();
+  const hosts = new Map<string, { socket: WebSocket; ready: boolean; hostId: string; sessionId: string; components: boolean }>();
   const viewers = new Map<WebSocket, { deviceId: string; hostId: string; sessionId: string }>();
   const pushPending = new Set<Promise<void>>();
   const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024, perMessageDeflate: false });
@@ -92,8 +92,12 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
   const isReady = (connection: { socket: WebSocket; ready: boolean } | undefined): boolean =>
     connection?.ready === true && connection.socket.readyState === WebSocket.OPEN;
   const present = (item: SessionInfo): SessionInfo => {
-    const online = isReady(hosts.get(key(item.hostId, item.sessionId)));
-    return { ...item, online, state: online ? item.state : "offline" };
+    const connection = hosts.get(key(item.hostId, item.sessionId));
+    const online = isReady(connection);
+    const { componentVersion, ...legacy } = item;
+    return { ...legacy, online, state: online ? item.state : "offline",
+      ...(online ? (connection?.components ? { componentVersion: 1 as const } : {})
+        : componentVersion === undefined ? {} : { componentVersion }) };
   };
 
   function send(socket: WebSocket, data: unknown): void {
@@ -187,7 +191,8 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
         if (hosts.has(routeKey)) throw new Fault("ALREADY_ATTACHED", "A bridge is already registered for this runtime.", 409);
         wss.handleUpgrade(request, socket, head, (ws) => {
           trackHeartbeat(ws);
-          const connection = { socket: ws, ready: false, hostId: host.id, sessionId };
+          const connection = { socket: ws, ready: false, hostId: host.id, sessionId,
+            components: url.searchParams.get("components") === "1" };
           hosts.set(routeKey, connection);
           const deadline = setTimeout(() => ws.close(1008, "Registration timed out"), 10_000);
           ws.on("error", () => console.error("[devpocket] host socket error"));
@@ -206,13 +211,21 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
                   connection.ready = true;
                   send(ws, { type: "ready", protocol: PROTOCOL, hostId: host.id, sessionId,
                     ...(url.searchParams.get("workspaceMetadata") === "1" ? { workspaceMetadata: true } : {}),
-                    ...(url.searchParams.get("questionHistory") === "1" ? { questionHistory: true } : {}) });
+                    ...(url.searchParams.get("questionHistory") === "1" ? { questionHistory: true } : {}),
+                    ...(connection.components ? { components: true } : {}) });
                   if (knownSession) publish(host.id, sessionId, {
                     id: randomUUID(), at: new Date().toISOString(), kind: "runtime.state", data: { state: frame.summary.state },
                   });
                   for (const command of store.unsettled(host.id, sessionId)) {
                     try {
                       store.authorize(command.deviceId, host.id);
+                      if (command.action.type === "message" && command.action.componentReference && !connection.components) {
+                        result(host.id, sessionId, { commandId: command.commandId, status: "uncertain", error: {
+                          code: "COMPONENTS_UNAVAILABLE",
+                          message: "The reconnected bridge cannot recover this referenced message. Inspect the original client before sending another operation.",
+                        } });
+                        continue;
+                      }
                       send(ws, { type: "command", commandId: command.commandId, action: command.action });
                     } catch (error) {
                       if (!(error instanceof Fault)) throw error;
@@ -415,6 +428,8 @@ export async function startRelay(options: RelayOptions): Promise<{ url: string; 
         const previous = store.command(device.id, hostId, sessionId, command.commandId);
         if (!previous && !isReady(connection))
           throw new Fault("HOST_OFFLINE", "The original runtime is offline. No command was queued.", 503);
+        if (!previous && command.action.type === "message" && command.action.componentReference && !connection?.components)
+          throw new Fault("COMPONENTS_UNAVAILABLE", "The active bridge does not support component references. No command was queued.", 409);
         const submitted = store.submit(device.id, hostId, sessionId, command);
         if (submitted.fresh && connection) send(connection.socket, { type: "command", ...command });
         json(response, 202, submitted.receipt);

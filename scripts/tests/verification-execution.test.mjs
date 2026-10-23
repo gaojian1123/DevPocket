@@ -15,6 +15,7 @@ import { VERIFICATION_REPORT_VERSION, verificationImpact } from "../verification
 import { sdkPreparationFixture, syntheticExecution } from "./fixtures/verification-tools.mjs";
 import { WORKFLOW_TEST_FILES, WORKFLOW_TEST_SHARDS } from "../test-workflow.mjs";
 import { ciReportEnvelope, collectCIReports, githubVerificationContext, qualifyGitHubCI, validateLiveCIEnvelope } from "../verification-ci.mjs";
+import { dependencies, verificationArtifacts } from "../verification-preflight.mjs";
 
 const exec = promisify(execFile);
 
@@ -24,6 +25,73 @@ async function fixture(t) {
   t.after(() => rm(root, { recursive: true, force: true }));
   return root;
 }
+
+async function workspaceFixture(t) {
+  const root = await fixture(t), workspace = path.join(root, "packages", "components");
+  await mkdir(path.join(workspace, "src"), { recursive: true });
+  await mkdir(path.join(root, "node_modules", "@fixture"), { recursive: true });
+  const manifest = { name: "@fixture/components", version: "1.0.0", files: ["dist"], dependencies: {} };
+  const packageJson = path.join(root, "package.json"), lockFile = path.join(root, "package-lock.json");
+  const lock = { lockfileVersion: 3, packages: {
+    "": { dependencies: { "@fixture/components": "file:packages/components" } },
+    "node_modules/@fixture/components": { resolved: "packages/components", link: true },
+    "packages/components": manifest,
+  } };
+  await writeFile(packageJson, JSON.stringify({ workspaces: ["packages/components"],
+    dependencies: { "@fixture/components": "file:packages/components" } }));
+  await writeFile(path.join(workspace, "package.json"), JSON.stringify(manifest));
+  await writeFile(path.join(workspace, "src", "index.js"), "export const value = 1;\n");
+  await writeFile(lockFile, JSON.stringify(lock));
+  const link = path.join(root, "node_modules", "@fixture", "components");
+  await fileSystem.symlink(workspace, link, process.platform === "win32" ? "junction" : "dir");
+  return { root, workspace, lock, lockFile, packageJson, link };
+}
+
+test("declared internal workspaces bind their source and generated artifacts without weakening directory-link checks", async (t) => {
+  const f = await workspaceFixture(t);
+  const before = await dependencies(f.root);
+  await mkdir(path.join(f.workspace, "dist"));
+  await mkdir(path.join(f.root, "dist"));
+  await writeFile(path.join(f.root, "dist", "entry.js"), "// backend output\n");
+  await writeFile(path.join(f.workspace, "dist", "index.js"), "// component output\n");
+  assert.deepEqual(await dependencies(f.root), before, "Generated output is not an installed dependency input.");
+  const plan = { requiredChecks: ["backend-build"] };
+  const first = await verificationArtifacts(f.root, plan, "backend");
+  assert.equal(first.available, true);
+  await writeFile(path.join(f.workspace, "dist", "index.js"), "// changed output\n");
+  assert.notDeepEqual(await verificationArtifacts(f.root, plan, "backend"), first,
+    "Generated workspace bytes remain bound to backend evidence.");
+  await writeFile(path.join(f.workspace, "src", "index.js"), "export const value = 2;\n");
+  assert.notDeepEqual(await dependencies(f.root), before, "Workspace implementation bytes are inputs, not opaque directory links.");
+  const outside = path.join(f.root, "outside");
+  await mkdir(outside);
+  await fileSystem.symlink(outside, path.join(f.root, "node_modules", "unapproved"),
+    process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(dependencies(f.root), /preflight|path/i);
+});
+
+test("workspace declarations cannot escape, redirect, use globs or disagree with the lockfile", async (t) => {
+  for (const scenario of ["escape", "glob", "lock-version", "lock-dependencies", "redirect"]) {
+    const f = await workspaceFixture(t);
+    if (scenario === "escape" || scenario === "glob") {
+      await writeFile(f.packageJson, JSON.stringify({ workspaces: [scenario === "escape" ? "../outside" : "packages/*"],
+        dependencies: { "@fixture/components": "file:packages/components" } }));
+    } else if (scenario === "lock-version") {
+      f.lock.packages["packages/components"].version = "2.0.0";
+      await writeFile(f.lockFile, JSON.stringify(f.lock));
+    } else if (scenario === "lock-dependencies") {
+      f.lock.packages["packages/components"].dependencies = { undeclared: "1.0.0" };
+      await writeFile(f.lockFile, JSON.stringify(f.lock));
+    } else {
+      await fileSystem.unlink(f.link);
+      const target = path.join(f.root, "outside");
+      await mkdir(target);
+      await copyFile(path.join(f.workspace, "package.json"), path.join(target, "package.json"));
+      await fileSystem.symlink(target, f.link, process.platform === "win32" ? "junction" : "dir");
+    }
+    await assert.rejects(dependencies(f.root), /preflight|dependencies|path/i, scenario);
+  }
+});
 
 test("SDK preparation initializes matching package metadata without accepting licenses or rewriting existing metadata", async (t) => {
   const root = await fixture(t), entry = await sdkPreparationFixture(root);

@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { startAndroidFixture } from "../integration/android-fixture.js";
-import { SessionSummary, type EventPage, type Receipt } from "../src/protocol.js";
+import { SessionSummary, decodeComponentPayload, type EventPage, type Receipt } from "../src/protocol.js";
 
 test("the Android fixture refreshes requests and preserves one invocation across retry and reconnect", async (t) => {
   await mkdir(".data/tests", { recursive: true });
@@ -126,4 +126,50 @@ test("phone question history survives confirmed answers, immutable retry and bri
   assert.equal(confirmed.filter((event) => event.data.status === "confirmed" && event.data.answer === "[REDACTED]").length, 2);
   assert.equal(fixture.answers(), 7);
   assert.equal(fixture.invocations(), 7);
+});
+
+test("the native component fixture carries four cards and the complete referenced table through the real adapter", async (t) => {
+  await mkdir(".data/tests", { recursive: true });
+  const directory = await mkdtemp(path.resolve(".data/tests/component-fixture-"));
+  const fixture = await startAndroidFixture(path.join(directory, "owned"));
+  t.after(async () => { await fixture.close(); await rm(directory, { recursive: true, force: true }); });
+  const paired = await fetch(`${fixture.url}/v1/pair`, { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: fixture.pairingCode, name: "Component fixture phone" }) });
+  assert.equal(paired.status, 201);
+  const phone = await paired.json() as { token: string; hostId: string };
+  const headers = { Authorization: `Bearer ${phone.token}`, "Content-Type": "application/json" };
+  const scoped = `${fixture.url}/v1/hosts/${phone.hostId}/sessions/${fixture.sessionId}`;
+  async function send(text: string, componentReference?: { componentId: string; sha256: string }) {
+    const command = { commandId: randomUUID(), action: {
+      type: "message", text, attachmentIds: [], ...(componentReference ? { componentReference } : {}),
+    } };
+    const response = await fetch(`${scoped}/commands`, { method: "POST", headers, body: JSON.stringify(command) });
+    assert.equal(response.status, 202);
+    let receipt: Receipt | undefined;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      receipt = await (await fetch(`${scoped}/commands/${command.commandId}`, { headers })).json() as Receipt;
+      if (["completed", "failed", "uncertain"].includes(receipt.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(receipt?.status, "completed", receipt?.error?.message);
+    return command;
+  }
+  await send("native fixture components");
+  const page = await (await fetch(`${scoped}/events`, { headers })).json() as EventPage;
+  const cards = page.events.flatMap((event) => event.kind === "component" && event.data.status === "ready" ? [event.data] : []);
+  assert.deepEqual(cards.map((card) => decodeComponentPayload(card.payload, card.sha256).type),
+    ["line", "bar", "datagrid", "markdown"]);
+  const table = cards[2]!;
+  const decoded = decodeComponentPayload(table.payload, table.sha256);
+  assert.equal(decoded.type, "datagrid");
+  assert.ok(decoded.type === "datagrid" && decoded.rows.length === 6);
+  const command = await send("native fixture referenced card", { componentId: table.componentId, sha256: table.sha256 });
+  assert.equal((await fetch(`${scoped}/commands`, { method: "POST", headers, body: JSON.stringify(command) })).status, 202);
+  await fixture.reconnect();
+  const replay = await (await fetch(`${scoped}/events`, { headers })).json() as EventPage;
+  assert.equal(replay.events.filter((event) => event.kind === "component").length, 4);
+  assert.ok(replay.events.some((event) => event.kind === "assistant.message" &&
+    event.data.content === "Fixture received complete component reference"));
+  assert.equal(fixture.invocations(), 2);
 });

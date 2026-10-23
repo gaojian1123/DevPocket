@@ -10,7 +10,7 @@ const scripts = path.dirname(fileURLToPath(import.meta.url));
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const cancellation = new AbortController();
 let request, child, timer, buffer = "", received = 0, stopping = false, started = false, requestReceived = false;
-let preparationCleanupConfirmed = true;
+let preparationCleanupConfirmed = true, scratchCleanupConfirmed = true, requestValidated = false;
 let stopReason, inputFailure;
 function control(phase) {
   process.stderr.write(`\u001eDEVPOCKET:${request.receiptId}:${phase}\u001f`);
@@ -39,6 +39,29 @@ async function ordinary(file, directory = false, maximum = 2097152) {
 function checkDeadline() {
   if (Date.now() >= request.deadlineUnixMs) stop("timeout");
   cancellation.signal.throwIfAborted();
+}
+async function ownedStaging(directory, identity) {
+  const current = await lstat(directory, { bigint: true });
+  if (!identity || !current.isDirectory() || current.isSymbolicLink() ||
+      ["dev", "ino", "birthtimeNs"].some((key) => current[key] !== identity[key])) {
+    throw new Error("Ownership staging directory changed; it was preserved.");
+  }
+}
+async function publish(temporary, directory, identity) {
+  for (let attempt = 0; ; attempt++) {
+    checkDeadline();
+    await ownedStaging(temporary, identity);
+    let present = true;
+    try { await lstat(directory); }
+    catch (error) { if (error.code !== "ENOENT") throw error; present = false; }
+    if (present) throw new Error("Ownership publication destination appeared; it was not overwritten.");
+    checkDeadline();
+    try { await rename(temporary, directory); return; }
+    catch (error) {
+      if (!["EPERM", "EBUSY"].includes(error.code) || attempt === 3) throw error;
+      await delay(100, undefined, { signal: cancellation.signal });
+    }
+  }
 }
 async function cacheLock(directory, operation) {
   const pipe = `\\\\.\\pipe\\DevPocketNativeOwner_${digest(directory.toLowerCase())}`;
@@ -121,7 +144,11 @@ async function helper() {
     if (!exists) {
       const temporary = path.join(cache, `prepare-${randomUUID()}`);
       await mkdir(temporary);
+      scratchCleanupConfirmed = false;
+      let identity;
       try {
+        identity = await lstat(temporary, { bigint: true });
+        await ownedStaging(temporary, identity);
         const assembly = path.join(temporary, "owner.exe");
         await compile(compiler, sourcePath, assembly);
         if (digest(await readFile(sourcePath)) !== sourceHash) throw new Error("Ownership source changed during preparation.");
@@ -130,11 +157,14 @@ async function helper() {
           version: 1, source: sourceHash, toolchain, assembly: digest(await readFile(assembly)),
         }), { flag: "wx" });
         checkDeadline();
-        await rename(temporary, directory);
+        await publish(temporary, directory, identity);
+        scratchCleanupConfirmed = true;
       } catch (error) {
         try {
+          await ownedStaging(temporary, identity);
           for (const name of ["owner.exe", "manifest.json"]) await rm(path.join(temporary, name), { force: true });
           await rmdir(temporary);
+          scratchCleanupConfirmed = true;
         } catch (cleanupError) {
           throw new AggregateError([error, cleanupError], "Ownership preparation and its scratch cleanup failed.");
         }
@@ -162,6 +192,7 @@ async function main(value) {
       !/^[a-f0-9-]{36}$/.test(request.receiptId)) {
     throw new Error("Invalid Windows owned-command request.");
   }
+  requestValidated = true;
   timer = setTimeout(() => stop("timeout"), Math.max(0, request.deadlineUnixMs - Date.now()));
   if (request.cancelled) stop();
   try {
@@ -197,12 +228,13 @@ process.stdin.on("data", (text) => {
       requestReceived = true;
       void main(line).catch((error) => {
         if ((error === cancellation.signal.reason || error.cause === cancellation.signal.reason) &&
-            stopping && !started && preparationCleanupConfirmed) {
+            stopping && !started && preparationCleanupConfirmed && scratchCleanupConfirmed) {
           process.exitCode = inputFailure ? 1 : stopReason === "timeout" ? 124 : 130;
           if (!inputFailure) control(process.exitCode === 124 ? "deadline-expired" : "cancel-accepted");
           control("tree-stopped");
         } else {
           console.error(error); process.exitCode = 1;
+          if (requestValidated && !started && preparationCleanupConfirmed && scratchCleanupConfirmed) control("tree-stopped");
         }
       }).finally(() => { clearTimeout(timer); process.stdin.destroy(); });
     } else if (line.trim() === "cancel") stop();
