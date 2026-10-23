@@ -274,8 +274,8 @@ operator-authorized actions.
 
 The selected Apple client design and implementation requirements are in
 [docs\APPLE-CLIENT.md](docs/APPLE-CLIENT.md). The self-contained visual reference
-is `docs\prototypes\apple-client\index.html`; run
-`node docs\prototypes\apple-client\serve.mjs` to open its loopback preview.
+is `docs\prototypes\apple-client\index.html`. Open a terminal in that directory
+and run `node serve.mjs` on Windows or macOS, then open the loopback URL it prints.
 No prototype dependency installation or build is needed.
 
 The reference covers iPhone, iPad, Mac and iPhone Duo, including chronological
