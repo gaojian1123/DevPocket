@@ -1954,6 +1954,12 @@ documentation-only plan legitimately needs no check artifacts.
 These compatibility checks do not prove a remote Actions run succeeded or that
 its warnings disappeared. The separate extension-release workflow is unchanged.
 
+New PR-triggered verification runs cancel earlier in-progress runs for the same
+PR through its stable concurrency group. Different PRs remain independent.
+Manually dispatched verification runs retain their non-cancelling behavior;
+the separate native-startup diagnostic and extension-release workflows are unchanged.
+Cancellation does not qualify incomplete reports as acceptance.
+
 `ci.yml` plans every PR and runs selected tooling, backend and Android checks
 in separate hosted Windows jobs. The tooling job installs only Node/root npm
 dependencies and Python; it uses the hosted PowerShell/Git/compiler support,
