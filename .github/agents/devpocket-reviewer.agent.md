@@ -22,7 +22,7 @@ every added/untracked file in the changed-path list, and the relevant implementa
 and tests. For working-tree implementation, review the exact source snapshot and
 its bound verification; do not require a commit or label it final-commit evidence.
 For candidate-commit delivery, require the exact candidate SHA and clean
-index/worktree. Local verification, including the registered workflow, binds to
+index/worktree. Local verification binds to
 that HEAD and source fingerprint. CI-first delivery instead requires the actual
 live qualification or the guide's source-bound read-only `ci-inspection`, with
 its authenticated CI envelope: inspect repository/run/attempt,
@@ -32,7 +32,7 @@ pending Draft PR is not evidence of readiness. The owning session checks that
 identity before and after review. Missing or inconsistent evidence cannot receive
 `pass`; do not rerun checks or relabel reports. For an agent inspection, read the
 underlying live API/archive/source records and check every required binding;
-its summary is not a machine qualification or controller readiness receipt.
+its summary is not a machine qualification.
 For explicit working-tree-to-candidate conversion, inspect the original run,
 native request/receipt, transition proof and actual execution origins. Require
 the final candidate's source-bound qualification and all commit-sensitive reruns.

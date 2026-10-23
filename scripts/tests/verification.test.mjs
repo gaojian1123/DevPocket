@@ -179,10 +179,10 @@ test("private control directories reject direct outputs while internal bookkeepi
   assert.deepEqual(await hashes(), before);
 });
 
-test("task-routing tooling selects only its complete regression suite, independently of AGENTS", async (t) => {
+test("skill-led tooling selects only its complete regression suite, independently of AGENTS", async (t) => {
   const original = ["AGENTS.md", "README.md", "docs/DEVELOPMENT-WORKFLOW.md",
-    "scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs"];
-  for (const files of [original, ["scripts/workflow-extension.mjs"], ["scripts/tests/development-workflow.test.mjs"], ["AGENTS.md"]]) {
+    "scripts/native-candidate.mjs", "scripts/tests/development-tools.test.mjs"];
+  for (const files of [original, ["scripts/native-candidate.mjs"], ["scripts/tests/development-tools.test.mjs"], ["AGENTS.md"]]) {
     await t.test(files.join(", "), async (t) => {
       const root = await repository(t);
       for (const file of files) {
@@ -195,12 +195,12 @@ test("task-routing tooling selects only its complete regression suite, independe
       assert.deepEqual(result.report.requiredGroups, ["tooling"]);
       assert.equal(Object.hasOwn(result.report, "requiresHumanReview"), false);
       assert.equal(developmentReviewRequirements(result.report.changedFiles).requiresHumanReview,
-        files.some((file) => file === "AGENTS.md" || file === "scripts/workflow-extension.mjs"));
+        files.some((file) => file === "AGENTS.md" || file === "scripts/native-candidate.mjs"));
       assert.equal(result.report.layouts, false);
       assert.deepEqual(result.report.changedFiles, [...files].sort());
       assert.deepEqual(result.report.selectionReasons.flatMap((reason) => reason.paths).sort(), [...files].sort());
       assert.ok(result.report.selectionReasons.every((reason) =>
-        ["documentation", "task-routing", "agent-instructions"].includes(reason.rule) && reason.omittedPaths === 0));
+        ["documentation", "development-tooling", "tooling-regression", "agent-instructions"].includes(reason.rule) && reason.omittedPaths === 0));
       const publicPlan = JSON.parse(result.stdout.split(/\r?\n/).find((line) => line.startsWith("{")));
       assert.deepEqual(publicPlan.selectionReasons, result.report.selectionReasons);
       assert.deepEqual(publicPlan.requiredGroups, ["tooling"]);
@@ -209,12 +209,12 @@ test("task-routing tooling selects only its complete regression suite, independe
   }
 });
 
-test("development orchestration and named agent instructions remain protected without selecting application checks", async (t) => {
-  const tooling = ["scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
+test("development policy and named agent instructions remain protected without selecting application checks", async (t) => {
+  const tooling = ["scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
     "scripts/native-candidate.mjs", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
     "scripts/verify.mjs", "scripts/verify.ps1", "scripts/tests/verification.test.mjs",
     "scripts/test-workflow.mjs", "scripts/tests/workflow-runner.test.mjs",
-    ".github/extensions/devpocket-development/extension.mjs", ".github/ISSUE_TEMPLATE/ai-task.yml",
+    "scripts/tests/development-tools.test.mjs", ".github/ISSUE_TEMPLATE/ai-task.yml",
     ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"];
   for (const files of [...tooling.map((file) => [file]), [...tooling, "README.md", "docs/DEVELOPMENT-WORKFLOW.md"]]) {
     await t.test(files.join(", "), () => {
@@ -234,7 +234,7 @@ test("development orchestration and named agent instructions remain protected wi
 });
 
 test("the actual CI planner does not load local development trust policy", async (t) => {
-  const root = await changedRepository(t, ["scripts/development-workflow.mjs"]);
+  const root = await changedRepository(t, ["scripts/development-policy.mjs"]);
   const guard = path.join(root, ".data", "trust-import-guard.mjs");
   await mkdir(path.dirname(guard), { recursive: true });
   await writeFile(guard, [
@@ -319,8 +319,9 @@ test("shared execution, cross-lane CI, shared dependencies and unknown paths ret
       "scripts/bounded-worker-log.mjs", "scripts/backend-diagnostics.mjs"].map((file) => [file, "shared-execution"]),
     ...[".github/workflows/ci.yml", ".github/CODEOWNERS", "package.json", "package-lock.json", ".npmrc",
       "new-package/package.json"].map((file) => [file, "verification-infrastructure"]),
-    ...["scripts/workflow-extension-extra.mjs", "scripts/tests/development-workflow-extra.test.mjs",
-      "scripts/development-workflow-extra.mjs", "scripts/development-policy-extra.mjs", "scripts/candidate-commit-extra.mjs",
+    ...["scripts/workflow-extension.mjs", "scripts/development-workflow.mjs", "scripts/development-controller.mjs",
+      ".github/extensions/devpocket-development/extension.mjs", "scripts/tests/development-workflow.test.mjs",
+      "scripts/tests/development-tools-extra.test.mjs", "scripts/development-policy-extra.mjs", "scripts/candidate-commit-extra.mjs",
       "scripts/native-candidate-extra.mjs", "scripts/git-state-extra.mjs", "scripts/verification-extra.mjs",
       ".github/agents/another-reviewer.agent.md", ".github/skills/another-skill/SKILL.md",
       ".github/skills/devpocket-development/extra.md", ".github/actions/new-action/action.yml",
@@ -425,7 +426,7 @@ test("local Xcode setup and root ignore policy select tooling without weakening 
 
 test("mixed development tooling and application changes select the union from the single check catalogue", async (t) => {
   const core = ["workflow-tests", "typecheck", "backend-tests", "backend-build", "schema"];
-  const tooling = ["scripts/workflow-extension.mjs", "scripts/development-workflow.mjs",
+  const tooling = ["scripts/native-candidate.mjs", "scripts/development-policy.mjs",
     "scripts/candidate-commit.mjs", ".github/agents/devpocket-reviewer.agent.md"];
   for (const [file, checks, groups, layouts = false] of [
     ["backend/tests/fixture.test.ts", core, ["tooling", "backend"]],
@@ -510,7 +511,7 @@ test("real added, staged, deleted, renamed and mixed paths select a deterministi
 
 test("plan explanations are deterministic and bounded without truncating actual impact selection", async (t) => {
   const docs = Array.from({ length: 40 }, (_, index) => `docs/guide-${String(index).padStart(2, "0")}.md`).reverse();
-  const root = await changedRepository(t, [...docs, "docs/unusual name.md", "scripts/workflow-extension.mjs"]);
+  const root = await changedRepository(t, [...docs, "docs/unusual name.md", "scripts/native-candidate.mjs"]);
   const first = (await verify(root, ["--plan"])).report;
   const second = (await verify(root, ["--plan"])).report;
   assert.deepEqual(first.selectionReasons, second.selectionReasons);
@@ -519,7 +520,7 @@ test("plan explanations are deterministic and bounded without truncating actual 
   assert.deepEqual(reason.paths, [...docs].sort().slice(0, 16));
   assert.equal(reason.omittedPaths, 25);
   assert.ok(reason.description.length > 0);
-  assert.deepEqual(first.selectionReasons.find((item) => item.rule === "task-routing").checks, ["workflow-tests"]);
+  assert.deepEqual(first.selectionReasons.find((item) => item.rule === "development-tooling").checks, ["workflow-tests"]);
   const forced = (await verify(root, ["--plan", "--all"])).report;
   assert.deepEqual(forced.requiredChecks, CHECKS.map((check) => check.id));
   assert.deepEqual(forced.requiredGroups, CHECK_GROUPS);
@@ -557,7 +558,7 @@ test("public plan diagnostics preserve responsibility-specific selections withou
 });
 
 test("the CLI and PowerShell tooling shard run no application checks", async (t) => {
-  const root = await changedRepository(t, ["scripts/development-workflow.mjs", "scripts/candidate-commit.mjs",
+  const root = await changedRepository(t, ["scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
     ".github/agents/devpocket-reviewer.agent.md"]);
   const result = await verify(root, ["--group", "tooling"]);
   assert.equal(result.exitCode, 0);
@@ -591,7 +592,7 @@ test("tooling and application regression deadlines remain bounded without maskin
 });
 
 test("tooling aggregation accepts only complete current evidence and ignores unselected skipped jobs", async (t) => {
-  const root = await changedRepository(t, ["scripts/workflow-extension.mjs"]);
+  const root = await changedRepository(t, ["scripts/native-candidate.mjs"]);
   const verified = await verify(root, ["--group", "tooling"]);
   assert.equal(verified.exitCode, 0);
   const current = verified.report, input = path.join(root, ".data", "tooling-input.json");
@@ -663,7 +664,7 @@ test("tooling aggregation accepts only complete current evidence and ignores uns
 
 test("mixed and full plans require every tooling and application shard with strict job outcomes", async (t) => {
   for (const [name, files] of [
-    ["mixed", ["scripts/workflow-extension.mjs", "backend/tests/fixture.ts"]],
+    ["mixed", ["scripts/native-candidate.mjs", "backend/tests/fixture.ts"]],
     ["full", ["scripts/verification-executor.mjs"]],
   ]) await t.test(name, async (t) => {
     const root = await changedRepository(t, files), plan = (await verify(root, ["--plan"])).report;
@@ -721,8 +722,8 @@ test("CI projects actual planner groups and forwards selected and unselected job
   assert.doesNotMatch(planning + gate, /requiresHumanReview|development-policy/);
   for (const [name, files, groups] of [
     ["documentation", ["README.md"], []],
-    ["tooling", ["scripts/workflow-extension.mjs"], ["tooling"]],
-    ["development", ["scripts/development-workflow.mjs", "scripts/candidate-commit.mjs",
+    ["tooling", ["scripts/native-candidate.mjs"], ["tooling"]],
+    ["development", ["scripts/development-policy.mjs", "scripts/candidate-commit.mjs",
       ".github/agents/devpocket-reviewer.agent.md"], ["tooling"]],
     ["contracts", ["scripts/git-state.mjs", "scripts/native-candidate.mjs", "scripts/verification.mjs",
       "scripts/tests/verification.test.mjs"], ["tooling"]],
@@ -2076,7 +2077,7 @@ test("observed environment drift cannot be erased by restoring the initial depen
   await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
     "commit", "--quiet", "-m", "Environment drift fixture"], { cwd: root });
   await mkdir(path.join(root, "scripts"));
-  await writeFile(path.join(root, "scripts", "workflow-extension.mjs"), "// select tooling\n");
+  await writeFile(path.join(root, "scripts", "native-candidate.mjs"), "// select tooling\n");
   const running = verify(root, []);
   let ready = false, first;
   try {
@@ -3089,7 +3090,7 @@ test("a changed captured execution policy cannot resume an earlier successful ru
   assert.equal(await copiedPolicy.verificationExecutionPolicy(), first.policy, "The copied policy must match before mutation.");
   for (const name of ["test-workflow.mjs", "verification-tooling.mjs", "verification-admission.mjs",
     "verification-ci.mjs", "verification-ci-artifact.ps1", "development-policy.mjs", "emulator-resources.mjs",
-    "development-controller.mjs"]) await t.test(name, async () => {
+    "native-candidate.mjs"]) await t.test(name, async () => {
     const file = path.join(copied, name), original = await readFile(file);
     try {
       await writeFile(file, Buffer.concat([original, Buffer.from("\n")]));

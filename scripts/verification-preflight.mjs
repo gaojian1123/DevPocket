@@ -20,7 +20,7 @@ const policyInputs = [
   "verify.mjs", "verify.ps1", "verification.mjs", "verification-policy.mjs", "verification-executor.mjs", "verification-preflight.mjs",
   "verification-run.mjs", "verification-transition.mjs", "verification-backend.mjs", "verification-android.mjs",
   "test-workflow.mjs", "verification-tooling.mjs", "verification-admission.mjs", "verification-ci.mjs",
-  "verification-ci-artifact.ps1", "development-policy.mjs", "development-controller.mjs",
+  "verification-ci-artifact.ps1", "development-policy.mjs",
   "candidate-commit.mjs", "native-candidate.mjs", "git-state.mjs", "process.mjs",
   "owned-command-windows.mjs", "owned-command.cs", "owned-command.ps1", "owned-command-linux.py", "owned-command-darwin.py", "local-ipc.mjs",
   "backend-diagnostics.mjs", "diagnostic-errors.mjs", "diagnostic-publication.mjs", "bounded-worker-log.mjs",

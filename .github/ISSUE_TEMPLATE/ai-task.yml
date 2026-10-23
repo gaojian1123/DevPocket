@@ -8,7 +8,6 @@ body:
         An issue describes work; it does not authorize a deployment, installation,
         real GitHub Copilot experiment, device enrollment, or release. Follow the
         devpocket-development skill and AGENTS.md; reuse a suitable current worktree.
-        The registered workflow is optional and requires an explicit choice.
   - type: textarea
     id: goal
     attributes:

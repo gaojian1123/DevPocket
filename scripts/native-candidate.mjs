@@ -4,8 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const nativeFiles = ["candidate-commit.mjs", "git-state.mjs"];
-const implementationFiles = [...new Set([...nativeFiles, "native-candidate.mjs", "development-workflow.mjs", "workflow-extension.mjs",
-  "development-policy.mjs", "development-controller.mjs",
+const implementationFiles = [...new Set([...nativeFiles, "native-candidate.mjs", "development-policy.mjs",
   "verification.mjs", "verification-policy.mjs", "process.mjs", "device-run.mjs", "worker-diagnostics.mjs",
   "device-diagnostics.mjs", "diagnostic-errors.mjs", "bounded-worker-log.mjs", "diagnostic-publication.mjs",
   "native-lifecycle.mjs", "verification-executor.mjs", "verification-backend.mjs", "verification-android.mjs",
@@ -55,12 +54,12 @@ export async function captureCandidateImplementation(directory = fileURLToPath(n
 export async function requireCandidateImplementation(expected) {
   if (expected?.version !== 2 || typeof expected.directory !== "string" ||
       !Array.isArray(expected.files) || expected.files.length !== implementationFiles.length) {
-    throw new Error("A captured controller/helper implementation is required.");
+    throw new Error("A current captured candidate/verification implementation is required.");
   }
   const current = await captureCandidateImplementation(expected.directory);
   if (current.directory !== expected.directory || current.files.some((file, index) =>
     file.name !== expected.files[index]?.name || file.sha256 !== expected.files[index]?.sha256)) {
-    throw new Error("The loaded controller/helper implementation changed; obtain approval and reload it before continuing.");
+    throw new Error("The captured candidate/verification implementation changed; obtain approval and recapture it before continuing.");
   }
 }
 
