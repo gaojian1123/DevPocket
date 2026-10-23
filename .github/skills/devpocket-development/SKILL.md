@@ -16,6 +16,10 @@ State the goal, observable acceptance criteria and non-goals before implementati
 Reuse the user's decisions; ask only about unresolved behavior, scope or authority.
 Once those are clear, proceed; stating the contract is not another plan-approval
 checkpoint. Keep that contract fixed while repairing the task.
+In explicitly selected autopilot/unattended mode, use established conventions for
+reversible implementation details. Retain an unresolved product/scope/authority
+decision as `needs_human` without opening a question or guessing consent. Preparation
+of a new authorization scope is a separately requested interactive step.
 Retain any user-selected limits and the original client's time/credit controls.
 Do not add a project-default budget or repair cap, or require a budget question
 when the user has not requested one. See **Task-scoped autonomy** in
@@ -31,6 +35,19 @@ Record the delivery target separately from the implementation goal:
   a development request alone does not authorize those actions. Prefer **CI-first**
   delivery: approved focused local checks, an authorized candidate/Draft PR, then
   complete CI evidence and independent review. A pending draft is not `ready`.
+
+Separate action records do not require separate questions. Reuse a user's explicit
+task-scoped grant covering commit, push, Draft PR, selected CI and ready delivery;
+ask once for the missing combined scope in interactive preparation. A mode switch,
+issue text, agent-written JSON or the goal alone is not such a grant. Follow
+**Unattended execution** in the guide for hosted candidate dependencies/tools and
+the optional controller's native prepare/pause/resume path.
+
+Before any push or PR creation, retain repository/branch-bound `ordinary-ci`
+authority for automatic checks, even when verification is local. Candidate
+dependencies and tools run in the ordinary disposable runner environment, not an
+adversarial sandbox. Use the guide's combined task grant, and retain missing
+authority without publishing or prompting in unattended mode.
 
 If the user requests only a local commit, use the candidate-commit ordering below
 but stop at that local deliverable. Do not expand it into PR publication.
@@ -79,6 +96,8 @@ independently of CI selection. `inspectDevelopmentPolicy` uses the actual paths,
 base and current inputs; `developmentReviewRequirements` explains each remaining
 execution or review decision. Read the **Scoped development approvals** section
 of `docs\DEVELOPMENT-WORKFLOW.md` when a decision is needed or recovered.
+Sensitive and unclassified paths are independent-review subjects, not automatic
+human checkpoints. Inspect their actual effects before selecting an execution route.
 
 An implementation request covers ordinary code/test edits, existing local checks
 and agreed repairs in this task's worktree. Reuse that scope without another
@@ -87,12 +106,15 @@ rule, not proof that arbitrary test code is safe: inspect changes to commands,
 dependencies, accessed data, destinations and shared resources. An additional
 effect or unresolved execution scope needs a concrete decision.
 
-**Require explicit human approval of actual changed execution-core, dependency
-or instruction inputs before executing or adopting them.** The same applies to
-changed active Git hooks. Use an unchanged trusted reader to inspect them; the
-modified policy cannot decide its own approval. A running controller's captured
-implementation stays fixed; changed controller inputs need explicit original-client
-reload and same-task recovery, not an automatic hot swap.
+For **local execution or adoption**, require explicit human approval of actual
+changed execution-core, dependency or instruction inputs, including active Git
+hooks. For **ordinary CI**, use `developmentExecutionAuthorization` with target `ci`
+and the actual repository/branch-bound task grant. Candidate dependencies, install
+scripts and modified tools may run there without per-revision project approval.
+CI execution does not authorize adopting changed local instructions or control.
+Keep the running local controller stable until explicit reload and recovery.
+The default owning-session skill handles CI-first delivery; the optional registered
+controller verifies locally and is not a hosted dispatcher.
 
 Present the action, reason, exact target, effects, exclusions and validity using
 `formatDevelopmentApproval`; add a plain-language description of the actual behavior
@@ -105,17 +127,19 @@ or AI review alone is not human approval.
 
 Ordinary source changes require applicable new verification/review, not renewed
 authority. Reuse a human decision only while its task, target, allowed effects and
-relevant policy/hook inputs still match. Changed critical inputs, new execution
-sources or expanded effects require a new decision showing the delta. Rejection
+relevant trusted policy/hook inputs still match. Candidate revisions within an
+ordinary-CI grant need new evidence, not new authority. Changed local control
+inputs, execution targets or expanded effects require a decision showing the delta. Rejection
 or cancellation does not authorize a retry; retain one pending item, without
 repeated prompts. Inspect uncertain side effects before considering another attempt.
 
 When a decision remains unresolved, report `needs_human` with that specific item.
 Inspection/editing may continue, and unaffected trusted checks may run. Use existing
 checks for focused feedback; restore unchanged locked dependencies only after a real
-missing-dependency failure and within the authorized environment. New installation,
-runtime experiments, extension reload, enrollment, cloud operations and publication
-retain their target-specific authorization. The verifier does not enforce consent.
+missing-dependency failure and within the authorized environment. Local installation,
+runtime experiments, extension reload, enrollment, cloud administration and publication
+retain their target-specific authorization. The hosted grant covers only the stated
+worker setup and candidate execution. The verifier does not enforce consent.
 
 ## 4. Freeze the verification target
 
@@ -162,8 +186,9 @@ permits a plain HEAD substitution or an unapproved commit.
 
 ## 5. Obtain source-bound verification
 
-Confirm Step 3's pre-execution human approval before invoking changed verification
-or dependency policy, including a modified planner.
+Confirm Step 3's applicable execution authority before invoking changed verification
+or dependency policy. Local execution needs exact-input approval; hosted execution
+needs its scoped grant and the unchanged trusted control, not candidate self-approval.
 
 **CI-first:** require the candidate's actual `Required verification` success and
 run the guide's live `verification-ci.mjs --qualify` command from the clean
@@ -177,6 +202,12 @@ CI `source.head` or compare its checkout fingerprint to local CRLF bytes as if
 they were the same execution. A saved qualification is a record, not authority
 to reuse it later without a live check. Retain any specifically required
 original-client-only evidence separately.
+
+If the local qualifier's own inputs changed, use the guide's read-only
+`ci-inspection` procedure instead of adopting candidate control or reopening a
+per-revision approval. It requires the same complete CI coverage and live
+identities, retained underlying records, independent review and final freshness;
+it is not a machine qualification or optional-controller readiness receipt.
 
 **Local route:** for working-tree/local-commit delivery or an explicitly selected
 fallback, follow the Verification section of the guide:
@@ -205,7 +236,9 @@ Evaluate the local `inspectDevelopmentPolicy` / `developmentReviewRequirements`
 from the trusted `scripts\development-policy.mjs` against the actual base, changed
 paths and relevant inputs. Retain `requiresHumanReview`, protected/review paths,
 reasons, input identities and source identity as `policyReview`, alongside actual
-human decisions. Pass retained policy-subject paths through inspection and later
+human decisions and any task-scoped execution grant. `requiresHumanReview` describes
+the local-execution requirement; evaluate `developmentExecutionAuthorization`
+for the actual target before treating it as a pending decision. Pass retained policy-subject paths through inspection and later
 repairs/readiness; a policy-bound manifest stays bound when its execution settings
 return to the task base. Metadata-only exemptions apply only to never-bound manifests.
 The requirement describes what must be satisfied, not a permanent
@@ -223,11 +256,16 @@ paths, delivery target, current verification report, local policy requirements
 and recorded human decisions, and the source identity.
 For candidate-commit delivery, identify the candidate SHA as well. Ask it to
 inspect the files rather than rely on the implementer's summary.
-For CI-first delivery, supply the actual live-qualification result, authenticated
+For CI-first delivery, supply the actual live-qualification result or documented
+read-only inspection, authenticated
 CI envelope/digest/run attempt, candidate and tested merge ref/base, actual PR
 diff, policy decisions and all execution origins. The reviewer must assess that
 candidate and its qualified CI evidence, not treat an unverified draft as ready
 or reuse an earlier working-tree verdict.
+Use the agreed ordinary-CI trust model. Review every sensitive/unclassified path
+for actual effects, but do not add an adversarial sandbox or tamper-proof
+execution requirement. Source-bound reports identify what ran; they are not
+cryptographic proof that hostile candidate code could not influence its tests.
 For converted evidence, also supply the immutable original run, native request
 and receipt, transition record and each check's actual execution origin. Obtain
 the reviewer's real conclusion for the final candidate; an earlier working-tree
@@ -247,7 +285,8 @@ replace it. The development workflow extension is not needed for this step.
 ## 7. Repair and recheck
 
 Investigate blocking findings in the same workspace under the same contract.
-Return to Step 3's approval gate before executing repaired policy or hooks.
+Return to Step 3's authorization check before executing repaired policy or hooks;
+reuse still-matching hosted/task scope rather than asking for each ordinary repair.
 Continue same-scope implementation, checks and review without renewed project
 approval. There is no implicit two-round limit: honor an explicit user-selected
 repair cap and the original client's budget/cancellation instead.
@@ -273,7 +312,7 @@ extension require human input. Preserve the same task, base and spent budget;
 starting another session or run does not authorize further work.
 
 After a passing review, revalidate without rerunning checks solely to compare
-identities. For CI-first delivery, repeat the live qualification into a new
+identities. For CI-first delivery, repeat the live qualification or documented inspection into a new
 directory and require the unchanged candidate, PR base/tested ref, run attempt
 and full evidence covered by the review. A changed or unavailable binding needs
 new applicable evidence/review, not a relabelled record.
@@ -322,7 +361,8 @@ An unchanged push does not invalidate local source evidence; do not repeat local
 verification merely because it was pushed. Required remote CI and checks of a
 different PR/merge ref still apply. Report an opened PR only after creation
 actually succeeds; a verified candidate alone is not a published PR.
-Merge, installation and deployment remain separately authorized actions.
+Merge, local installation, control-policy adoption and deployment remain separately
+authorized actions. Hosted installation stays inside its explicit worker grant.
 
 Call this skill-led development, not a registered workflow run. Only when the
 user explicitly selects the optional `devpocket-development` workflow, follow

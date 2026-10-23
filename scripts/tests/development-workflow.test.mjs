@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import childProcess, { execFile } from "node:child_process";
 import fs, { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
@@ -7,12 +7,14 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { checkDevelopmentReadiness, parseRepairDiagnosis, parseTask, runDevelopment, taskSchema } from "../development-workflow.mjs";
-import { changedPaths, inspectWorktree, prepareCandidate, sha256, validateCandidateReceiptProof } from "../candidate-commit.mjs";
+import { changedPaths, inspectWorktree, prepareCandidate, sha256, validateCandidateReceiptProof, activeHookSnapshot } from "../candidate-commit.mjs";
 import { executeVerification, git, sourceSnapshot, validateVerificationEvidence, verificationPlan } from "../verification.mjs";
 import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "../native-candidate.mjs";
 import { syntheticExecution } from "./fixtures/verification-tools.mjs";
 import { developmentApprovalDetails, developmentApprovalRequest, developmentApprovalSatisfied, developmentReviewRequirements,
   formatDevelopmentApproval, inspectDevelopmentPolicy, isVerificationPolicyPath, obtainDevelopmentApproval } from "../development-policy.mjs";
+import { developmentTaskApprovalRequest, developmentTaskActionAllowed, developmentExecutionAuthorization } from "../development-policy.mjs";
+import { originRepository, requirePushTarget } from "../git-state.mjs";
 
 const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
@@ -45,13 +47,13 @@ async function implemented(root, summary = "Changed") {
   return { status: "implemented", summary, source, ownedFiles: await changedPaths(root, source.head) };
 }
 
-async function copiedController(root, beforeLoad) {
+async function copiedController(root, beforeLoad, directory = path.join(root, ".data", "implementation")) {
   const inputs = await captureCandidateImplementation();
-  const directory = path.join(root, ".data", "implementation");
   await mkdir(directory, { recursive: true });
   for (const input of inputs.files) {
     const bytes = await readFile(path.join(inputs.directory, input.name));
     assert.equal(sha256(bytes), input.sha256);
+    await mkdir(path.dirname(path.join(directory, input.name)), { recursive: true });
     await writeFile(path.join(directory, input.name), bytes, { flag: "wx" });
   }
   await beforeLoad?.(directory);
@@ -109,6 +111,12 @@ test("repository routing discovers the development skill without requiring workf
   assert.match(guide, /There is no additional project-default time, cost or repair-round ceiling/);
   assert.match(reviewer, /For \*\*repair diagnosis\*\*/);
   assert.match(reviewer, /Diagnosis never establishes acceptance, approval or publication readiness/);
+  assert.match(skill, /`ci-inspection` procedure instead of adopting candidate control/);
+  assert.match(guide, /It never excuses failed, partial or unavailable evidence/);
+  assert.match(reviewer, /underlying live API\/archive\/source records/);
+  assert.match(guide, /It stays local-only, including prepared runs/);
+  assert.match(optional, /controller never pushes, dispatches CI, creates PRs,\s+merges or deploys/);
+  assert.doesNotMatch(guide, /prepared hosted grant adds|hosted route may already have pushed\/dispatched/);
 });
 
 test("the skill freezes an authorized delivery candidate before final verification and review", async () => {
@@ -142,7 +150,7 @@ test("the skill freezes an authorized delivery candidate before final verificati
 function durable(ctx) {
   const journal = new Map();
   return { session: nativeSession(), phase() {}, log() {}, ...ctx, step: async (key, producer) => {
-    assert.match(key, /^(?:devpocket-development-v7|devpocket-approval-v1:[a-f0-9]{64})$/,
+    assert.match(key, /^(?:devpocket-development-v8|devpocket-approval-v1:[a-f0-9]{64}|devpocket-task-scope-v1|devpocket-task-grant-v1:[a-f0-9]{64})$/,
       "Older journals must not be replayed as current execution-policy evidence.");
     if (!journal.has(key)) journal.set(key, JSON.parse(JSON.stringify(await producer())));
     return journal.get(key);
@@ -656,7 +664,7 @@ test("cancellation after native phase results cannot become blocked verification
           return passingReview;
         }
         implementations++;
-        const file = phase === "policy" ? "extension/entry.mjs" : "README.md";
+        const file = phase === "policy" ? "scripts/verify.mjs" : "README.md";
         await mkdir(path.dirname(path.join(root, file)), { recursive: true });
         await writeFile(path.join(root, file), "// fixture task change\n");
         return implemented(root);
@@ -672,10 +680,11 @@ test("cancellation after native phase results cannot become blocked verification
       return syntheticReport(plan);
     } }), (actual) => actual === error);
     assert.equal(implementations, 1);
-    assert.equal(commits, 1, "An already completed native commit is retained, not repeated or reverted.");
-    assert.notEqual((await sourceSnapshot(root)).head, before.head);
-    assert.equal(verifications, phase === "candidate" ? 0 : 1);
-    assert.equal(reviews, ["review", "policy"].includes(phase) ? 1 : 0);
+    assert.equal(commits, phase === "policy" ? 0 : 1, "Pre-execution cancellation cannot commit; already completed commits are retained.");
+    if (phase === "policy") assert.equal((await sourceSnapshot(root)).head, before.head);
+    else assert.notEqual((await sourceSnapshot(root)).head, before.head);
+    assert.equal(verifications, ["candidate", "policy"].includes(phase) ? 0 : 1);
+    assert.equal(reviews, phase === "review" ? 1 : 0);
     await assert.rejects(readFile(path.join(root, ".data", "development", ctx.runId, "handoff.json")), { code: "ENOENT" });
   })));
 });
@@ -1227,10 +1236,27 @@ test("extension registration is inert and the starter isolates a clean primary c
   }, root);
   assert.equal(dispatched, undefined);
   assert.equal(registration.workflows[0].meta.name, "devpocket-development");
-  assert.deepEqual(registration.workflows[0].meta.phases.map((phase) => phase.title), ["Implement", "Candidate", "Verify", "Review", "Diagnose"]);
-  assert.match(registration.workflows[0].meta.description, /local candidate commit.*permission/);
-  assert.match(registration.workflows[0].meta.description, /only when the user explicitly selects this workflow/);
+  assert.deepEqual(registration.workflows[0].meta.phases.map((phase) => phase.title), ["Authorize", "Implement", "Candidate", "Verify", "Review", "Diagnose"]);
+  assert.match(registration.workflows[0].meta.description, /controller-managed local DevPocket verification/);
+  assert.match(registration.workflows[0].meta.description, /Normal CI-first work uses the owning-session skill/);
+  assert.match(registration.workflows[0].meta.description, /controller does not publish, merge or deploy/);
+  assert.match(registration.workflows[0].meta.description, /only when explicitly selected/);
   assert.equal(registration.workflows[0].meta.limits, undefined, "AI credit limits are chosen at invocation, not guessed.");
+  const snapshotStop = new Error("Stop after the registered snapshot step.");
+  let snapshot;
+  await assert.rejects(registration.workflows[0].run({ session, step: async (key, prepare) => {
+    assert.equal(key, "devpocket-controller-snapshot-v1");
+    snapshot = await prepare();
+    throw snapshotStop;
+  } }), (error) => error === snapshotStop);
+  assert.deepEqual(snapshot.implementation.files, (await captureCandidateImplementation()).files);
+  const alias = path.join(root, ".data", "snapshot-alias");
+  await symlink(snapshot.directory, alias, process.platform === "win32" ? "junction" : "dir");
+  const cancelled = new AbortController();
+  cancelled.abort(snapshotStop);
+  await assert.rejects(registration.workflows[0].run({ session, signal: cancelled.signal,
+    step: async () => ({ ...snapshot, directory: alias }),
+  }), (error) => error === snapshotStop);
   assert.match(registration.tools[0].description, /only when the user explicitly selects the workflow/);
   assert.match(registration.tools[0].description, /clean linked worktree in the current session/);
   assert.match(registration.tools[0].description, /isolate a clean primary checkout/);
@@ -1240,7 +1266,8 @@ test("extension registration is inert and the starter isolates a clean primary c
   assert.equal(dispatched.arguments.base_branch, undefined);
   assert.match(dispatched.arguments.kickoff.prompt, /run_dynamic_workflow/);
   assert.match(dispatched.arguments.kickoff.prompt, /Only the controller's candidate step/);
-  assert.match(dispatched.arguments.kickoff.prompt, /Do not independently commit, push, create a PR/);
+  assert.match(dispatched.arguments.kickoff.prompt, /unprepared workflow has no publication authority/);
+  assert.match(dispatched.arguments.kickoff.prompt, /Never merge.*without separate target authorization/);
   assert.equal(registration.tools[1].name, "devpocket_check_development_readiness");
   session.workflow = {
     getRunDetail: async () => ({ status: "completed", workflowName: "other", runId: "wrong-run" }),
@@ -1354,7 +1381,7 @@ test("tooling-only impact retains the controller's protected-policy stop before 
 
 test("local review requirements preserve trust boundaries independently of impact rules", async () => {
   const { developmentReviewRequirements } = await import("../development-policy.mjs");
-  for (const [file, requiresHumanReview, protectedPath] of [
+  for (const [file, requiresReview, protectedPath] of [
     ["README.md", false, false], ["VALIDATION.md", false, false], ["docs/policy.md", false, false],
     ["AGENTS.md", true, true], ["scripts/development-workflow.mjs", true, true],
     ["scripts/development-policy.mjs", true, true], ["scripts/candidate-commit.mjs", true, true],
@@ -1391,9 +1418,9 @@ test("local review requirements preserve trust boundaries independently of impac
     ["unclassified.txt", true, false],
   ]) {
     const result = developmentReviewRequirements([file]);
-    assert.equal(result.requiresHumanReview, requiresHumanReview, file);
+    assert.equal(result.requiresHumanReview, protectedPath, file);
     assert.deepEqual(result.protectedPaths, protectedPath ? [file] : [], file);
-    assert.deepEqual(result.reviewPaths, requiresHumanReview && !protectedPath ? [file] : [], file);
+    assert.deepEqual(result.reviewPaths, requiresReview && !protectedPath ? [file] : [], file);
     assert.ok(result.reasons.every((reason) => reason.title && reason.why && reason.paths.includes(file)));
   }
   assert.deepEqual(developmentReviewRequirements([]), { requiresHumanReview: false, protectedPaths: [], reviewPaths: [], reasons: [] });
@@ -1659,7 +1686,7 @@ test("native policy approval survives productive repairs beyond two rounds after
   assert.equal(reviews, 4);
   assert.equal(diagnoses, 2);
   assert.equal(result.round, 3);
-  assert.equal(result.version, 7);
+  assert.equal(result.version, 8);
   assert.equal(result.authorization.receipts.length, 1);
   assert.equal(result.policyReview.requiresHumanReview, true, "A satisfied requirement is not a permanent blocker.");
   assert.equal((await checkDevelopmentReadiness(root, result)).status, "ready");
@@ -1894,23 +1921,20 @@ test("changed source during a policy question cannot consume a stale approval", 
   assert.equal((await sourceSnapshot(root)).head, parent);
 });
 
-test("sensitive review accepts only a native decision after verification and independent review", isolatedCases, async (t) => {
+test("sensitive paths require verification and independent review without a human approval dialog", isolatedCases, async (t) => {
   await Promise.all(["approve", "reject"].map((decision) => t.test(decision, async (t) => {
     const { root } = await workspace(t), session = nativeSession(), order = [];
     session.capabilities = { ui: { elicitation: true } };
-    session.ui = { elicitation: async (input) => {
-      order.push("human");
-      assert.match(input.message, /Accept the listed sensitive code changes/);
-      return { action: "accept", content: { decision } };
-    } };
+    session.ui = { elicitation: async () => { assert.fail("A sensitive filename alone must not ask for human approval."); } };
     const result = await runDevelopment(documentationTask(root, { session, agent: async (_prompt, options) => {
       if (options.agent === "devpocket-reviewer") { order.push("independent"); return passingReview; }
       await mkdir(path.join(root, "extension"), { recursive: true });
       await writeFile(path.join(root, "extension", "entry.mjs"), "// sensitive fixture\n");
       return implemented(root);
     } }), { root, verify: async (_root, plan) => { order.push("verify"); return syntheticReport(plan); } });
-    assert.deepEqual(order, ["verify", "independent", "human"]);
-    assert.equal(result.status, decision === "approve" ? "ready" : "needs_human", result.reason);
+    assert.deepEqual(order, ["verify", "independent"]);
+    assert.equal(result.status, "ready", result.reason);
+    assert.deepEqual(result.policyReview.reviewPaths, ["extension/entry.mjs"]);
     assert.equal(result.verification.complete, true);
     assert.equal(result.review.verdict, "pass");
   })));
@@ -1918,7 +1942,7 @@ test("sensitive review accepts only a native decision after verification and ind
 
 test("post-review controller handoff uses local requirements even when verification carries a contrary review flag", isolatedCases, async (t) => {
   const { runDevelopment } = await import("../development-workflow.mjs");
-  await Promise.all([["backend/tests/fixture.test.ts", false], ["extension/entry.mjs", true]].map(([file, requiresHumanReview]) =>
+  await Promise.all([["backend/tests/fixture.test.ts", false], ["extension/entry.mjs", false]].map(([file, requiresHumanReview]) =>
     t.test(file, async (t) => {
       const { root } = await workspace(t), calls = [];
       let executions = 0;
@@ -2343,10 +2367,23 @@ test("candidate implementation capture includes every verification adapter and r
     assert.match(captured.files.find((file) => file.name === name)?.sha256 ?? "", /^[a-f0-9]{64}$/);
   }
   await requireCandidateImplementation(captured);
+  for (const name of ["development-controller.mjs", "owned-command.cs", "verification-ci.mjs"]) {
+    assert.ok(captured.files.some((file) => file.name === name));
+    assert.equal(isVerificationPolicyPath(`scripts/${name}`), true);
+  }
   const legacy = { ...captured, files: captured.files.filter((file) => !verificationInputs.includes(file.name)) };
   await assert.rejects(requireCandidateImplementation(legacy), /captured controller\/helper implementation/);
 });
 
+test("candidate implementation capture rejects linked execution inputs", async (t) => {
+  const { root } = await workspace(t), { directory } = await copiedController(root);
+  const original = path.join(directory, "development-policy.mjs"), saved = original + ".saved", target = path.join(directory, "alias-target");
+  await fs.rename(original, saved);
+  await mkdir(target);
+  await symlink(target, original, process.platform === "win32" ? "junction" : "dir");
+  try { await assert.rejects(captureCandidateImplementation(directory), /implementation input is unavailable/); }
+  finally { await rm(original); await fs.rename(saved, original); }
+});
 test("cached emulator recovery remains bound to both controller and verifier execution snapshots", async (t) => {
   const { root } = await workspace(t);
   const { directory } = await copiedController(root, (directory) =>
@@ -3358,19 +3395,19 @@ test("high-risk review and protected policy boundaries remain distinct from comm
         assert.equal(policy, false, "Modified protected policy never executes before authorization.");
         return syntheticReport(plan);
       } });
-      assert.equal(result.status, "needs_human");
-      assert.equal(result.policyReview.requiresHumanReview, true);
+      assert.equal(result.status, policy ? "needs_human" : "ready");
+      assert.equal(result.policyReview.requiresHumanReview, policy);
       assert.deepEqual(result.policyReview.protectedPaths, policy ? [file] : []);
       assert.deepEqual(result.policyReview.source, result.source);
       if (policy) assert.equal((await sourceSnapshot(root)).head, original);
       else {
         assert.notEqual(result.candidate.commit, original);
         assert.equal(result.review.verdict, "pass");
-        assert.equal(result.approval.stage, "review");
-        assert.match(result.reason, /interactive approval UI is unavailable/);
+        assert.equal(result.approval, undefined);
+        assert.deepEqual(result.policyReview.reviewPaths, [file]);
         assert.equal(Object.hasOwn(result.verification, "requiresHumanReview"), false);
       }
-      assert.equal((await checkDevelopmentReadiness(root, result)).status, "blocked");
+      assert.equal((await checkDevelopmentReadiness(root, result)).status, policy ? "blocked" : "ready");
     })));
 });
 
@@ -3457,4 +3494,361 @@ test("existing workflow reports remain immutable and cannot become a new ready h
   const state = JSON.parse(await readFile(path.join(root, ".data", "development", ctx.runId, "state.json"), "utf8"));
   assert.equal(state.stage, "verifying");
   assert.equal(state.result, undefined);
+});
+
+test("task grants allow ordinary CI repairs without approving changed local tools", () => {
+  const { scope, policy, hooks } = approvalFixture();
+  scope.task = { ...scope.task, mode: "autopilot", prepare: true, delivery: "pull-request" };
+  scope.ci = { repository: "owner/repo", ref: scope.workspace.branch };
+  const implementation = { version: 2, directory: "approved-controller",
+    files: [{ name: "development-policy.mjs", sha256: "5".repeat(64) }] };
+  const { request, snapshot } = developmentTaskApprovalRequest(scope, hooks, implementation);
+  const receipt = { version: 1, requestId: request.id, origin: "original-client", decision: "approved" };
+  assert.match(snapshot, /ordinary disposable runner identity without per-revision project approval/);
+  assert.match(snapshot, /ordinary CI, not an adversarial sandbox/);
+  for (const action of ["commit", "push", "create-draft-pr", "mark-pr-ready", "ordinary-ci"]) {
+    assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [], action), false);
+    assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [receipt], action), true);
+  }
+  for (const action of ["merge", "deploy", "local-install", "adopt-policy", "reload", "isolated-execution"]) {
+    assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [receipt], action), false);
+  }
+  assert.equal(developmentExecutionAuthorization(scope, policy, hooks, implementation, [receipt]).status, "needs_human");
+  assert.equal(developmentExecutionAuthorization(scope, policy, hooks, implementation, [], "ci").status, "needs_human");
+  const allowed = developmentExecutionAuthorization(scope, policy, hooks, implementation, [receipt], "ci");
+  assert.equal(allowed.route, "github-hosted");
+  assert.equal(allowed.adoption, "not-authorized");
+  const repaired = { ...policy, inputs: policy.inputs.map((input) => ({ ...input, sha256: "6".repeat(64) })) };
+  assert.equal(developmentExecutionAuthorization(scope, repaired, hooks, implementation, [receipt], "ci").status, "allowed");
+  for (const mutate of [
+    (value) => { value.base = "7".repeat(40); },
+    (value) => { value.runId = "another-task"; },
+    (value) => { value.ci.repository = "owner/another"; },
+    (value) => { value.workspace.branch = value.ci.ref = "refs/heads/another"; },
+  ]) {
+    const changed = structuredClone(scope);
+    mutate(changed);
+    assert.equal(developmentTaskActionAllowed(changed, hooks, implementation, [receipt], "ordinary-ci"), false);
+  }
+  const legacy = { ...scope, task: { ...scope.task, execution: { kind: "github-hosted",
+    repository: "owner/repo", trustedRef: "refs/heads/main", trustedSha: "4".repeat(40) } } };
+  assert.throws(() => developmentTaskApprovalRequest(legacy, hooks, implementation), /retired/);
+  assert.throws(() => parseTask(legacy.task), /Unexpected workflow fields/);
+  assert.throws(() => developmentExecutionAuthorization(scope, policy, hooks, implementation, [receipt], "unknown"),
+    /Choose local execution or ordinary CI explicitly/);
+  const localOnly = { ...scope, task: { ...scope.task, delivery: "local-commit" } };
+  assert.match(developmentExecutionAuthorization(localOnly, policy, hooks, implementation, [receipt], "ci").reason,
+    /explicit PR delivery scope/);
+});
+
+test("local-verification PR grants bind ordinary CI authority to the repository and branch", () => {
+  const { scope, hooks } = approvalFixture();
+  scope.task.delivery = "pull-request";
+  scope.ci = { repository: "owner/repo", ref: scope.workspace.branch };
+  const implementation = { version: 2, directory: "trusted-controller",
+    files: [{ name: "development-policy.mjs", sha256: "5".repeat(64) }] };
+  const { request, snapshot } = developmentTaskApprovalRequest(scope, hooks, implementation);
+  const receipt = { version: 1, requestId: request.id, origin: "original-client", decision: "approved" };
+  assert.deepEqual(request.actions, ["edit", "check", "independent-review", "repair", "commit",
+    "push", "create-draft-pr", "mark-pr-ready", "ordinary-ci"]);
+  assert.match(snapshot, /automatic repository CI for owner\/repo refs\/heads\/task/);
+  assert.doesNotMatch(snapshot, /Use existing local checks only/);
+  const question = formatDevelopmentApproval(request, "diagnostic-copy.txt", "", snapshot);
+  assert.match(question, /CI target: owner\/repo at refs\/heads\/task/);
+  assert.doesNotMatch(question, /ci\.yml only/);
+  for (const action of ["push", "create-draft-pr", "mark-pr-ready", "ordinary-ci"]) {
+    assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [receipt], action), true);
+    assert.equal(developmentTaskActionAllowed(scope, hooks, implementation, [], action), false);
+    for (const target of [{ repository: "owner/another", ref: "refs/heads/task" },
+      { repository: "owner/repo", ref: "refs/heads/another" }]) {
+      const changed = { ...scope, ci: target, workspace: { ...scope.workspace, branch: target.ref } };
+      assert.equal(developmentTaskActionAllowed(changed, hooks, implementation, [receipt], action), false);
+    }
+  }
+  for (const ci of [undefined, null, { repository: "owner/repo", ref: "refs/heads/another" },
+    { repository: "../repo", ref: scope.workspace.branch }]) {
+    assert.throws(() => developmentTaskApprovalRequest({ ...scope, ci }, hooks, implementation), /CI.*repository and branch/);
+  }
+  for (const delivery of ["working-tree", "local-commit"]) {
+    const local = { ...scope, ci: undefined, task: { ...scope.task, delivery } };
+    const localRequest = developmentTaskApprovalRequest(local, hooks, implementation).request;
+    assert.deepEqual(localRequest.actions, ["edit", "check", "independent-review", "repair",
+      ...(delivery === "local-commit" ? ["commit"] : [])]);
+    assert.match(localRequest.effects.join(" "), /Use existing local checks only/);
+  }
+});
+
+test("autopilot with missing authority returns a retained decision instead of opening a question", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  session.capabilities = { ui: { elicitation: true } };
+  session.ui = { elicitation: async () => { assert.fail("Unattended execution must not ask for missing authority."); } };
+  const ctx = durable({ runId: "unprepared", session,
+    args: { goal: "Task", acceptance: ["Behavior"], mode: "autopilot" },
+    agent: async () => { assert.fail("Missing scope must stop before implementation."); } });
+  const result = await runDevelopment(ctx, { root });
+  assert.equal(result.status, "needs_human");
+  assert.match(result.reason, /No question/);
+  const { scope, policy, hooks } = approvalFixture(), request = developmentApprovalRequest(scope, policy, "execution", hooks);
+  const details = path.join(root, ".data", "approval.txt");
+  await mkdir(path.dirname(details), { recursive: true });
+  await writeFile(details, developmentApprovalDetails(scope.base, policy, request.inputs.map((item) => item.path)));
+  const missing = await obtainDevelopmentApproval(ctx, request, details, "Candidate execution change");
+  assert.equal(missing.status, "needs_human");
+  assert.match(missing.reason, /no question/);
+});
+
+test("native preparation grants one scope then resumes the same task unattended across repairs and UI loss", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  let questions = 0, paused = false, implementations = 0, reviews = 0;
+  session.capabilities = { ui: { elicitation: true } };
+  session.ui = { elicitation: async (input) => {
+    questions++;
+    assert.match(input.message, /Authorize this task's unattended development and delivery scope/);
+    assert.match(input.message, /No merge, deployment/);
+    return { action: "accept", content: { decision: "approve" } };
+  } };
+  const ctx = durable({
+    runId: "prepared-unattended", session,
+    args: { goal: "Explain behavior", acceptance: ["Complete explanation"], mode: "autopilot", prepare: true },
+    pause: async (key) => {
+      assert.equal(key, "devpocket-authorized-task-v1");
+      if (!paused) { paused = true; throw Object.assign(new Error("Prepared and paused"), { name: "AbortError" }); }
+    },
+    agent: async (prompt, options) => {
+      if (options.agent === "devpocket-reviewer") return ++reviews === 1 ? blockingReview : passingReview;
+      assert.match(prompt, /Do not ask questions or approve permissions/);
+      assert.ok(prompt.includes(JSON.stringify(path.join((await captureCandidateImplementation()).directory, "git-state.mjs"))));
+      assert.doesNotMatch(prompt, /sourceSnapshot\(root\) exported by scripts\/verification\.mjs/);
+      await writeFile(path.join(root, "README.md"), `Complete explanation ${++implementations}\n`);
+      return implemented(root);
+    },
+  });
+  await assert.rejects(runDevelopment(ctx, { root }), { name: "AbortError" });
+  assert.equal(implementations, 0);
+  assert.equal(questions, 1);
+  session.capabilities.ui.elicitation = false;
+  delete session.ui;
+  const result = await runDevelopment(ctx, { root });
+  assert.equal(result.status, "ready", result.reason);
+  assert.equal(questions, 1);
+  assert.equal(implementations, 2);
+  assert.equal(reviews, 2);
+  assert.deepEqual(result.authorizedDeliveryActions, []);
+  assert.equal((await checkDevelopmentReadiness(root, result)).status, "ready");
+});
+
+test("changed baseline after preparation cannot consume a stale task grant", async (t) => {
+  const { root } = await workspace(t), session = nativeSession();
+  let paused = false, questions = 0;
+  session.capabilities = { ui: { elicitation: true } };
+  session.ui = { elicitation: async () => {
+    questions++;
+    return { action: "accept", content: { decision: "approve" } };
+  } };
+  const ctx = durable({ runId: "changed-preparation", session,
+    args: { goal: "Task", acceptance: ["Behavior"], mode: "autopilot", prepare: true },
+    pause: async () => { if (!paused) { paused = true; throw new Error("Prepared pause"); } },
+    agent: async () => { assert.fail("A changed preparation baseline is not authorized."); },
+  });
+  await assert.rejects(runDevelopment(ctx, { root }), /Prepared pause/);
+  await writeFile(path.join(root, "README.md"), "Concurrent work\n");
+  const result = await runDevelopment(ctx, { root });
+  assert.equal(result.status, "blocked");
+  assert.equal(questions, 1);
+  assert.match(result.reason, /baseline changed/);
+});
+
+test("starter propagates explicit autopilot selection without inventing publication authority", async (t) => {
+  const { main } = await workspace(t), fixture = await registeredStarter(main);
+  const args = { goal: "Task", acceptance: ["Behavior"], mode: "autopilot", prepare: true, delivery: "pull-request" };
+  await fixture.start(args);
+  const kickoff = fixture.calls[0].arguments.kickoff;
+  assert.equal(kickoff.mode, "autopilot");
+  assert.match(kickoff.prompt, /autopilot does not grant missing authority/);
+  assert.match(kickoff.prompt, /"prepare":true/);
+});
+
+test("frozen controller stays on the validated manifest when candidate tools change", async (t) => {
+  const { root } = await workspace(t);
+  const original = await captureCandidateImplementation();
+  await mkdir(path.join(root, "scripts"));
+  for (const file of original.files) {
+    await mkdir(path.dirname(path.join(root, "scripts", file.name)), { recursive: true });
+    await writeFile(path.join(root, "scripts", file.name), await readFile(path.join(original.directory, file.name)));
+  }
+  const { freezeDevelopmentController } = await import("../development-controller.mjs");
+  const loaded = await import(pathToFileURL(path.join(root, "scripts", "development-workflow.mjs")).href);
+  const checked = await loaded.requireDevelopmentImplementation();
+  const frozen = await freezeDevelopmentController(root, checked);
+  await writeFile(path.join(root, "scripts", "development-policy.mjs"), "throw new Error('Candidate policy must not be adopted');\n");
+  await assert.rejects(freezeDevelopmentController(root, checked), /loaded controller\/helper implementation changed/);
+  await requireCandidateImplementation(frozen.implementation);
+  const control = await import(pathToFileURL(path.join(frozen.directory, "development-policy.mjs")).href);
+  assert.equal(control.developmentReviewRequirements(["backend/src/runtime.ts"]).requiresHumanReview, false);
+  const protectedFile = path.join(frozen.directory, "development-policy.mjs");
+  await fs.chmod(protectedFile, 0o600);
+  await writeFile(protectedFile, "// altered trusted snapshot\n");
+  await assert.rejects(requireCandidateImplementation(frozen.implementation), /changed/);
+});
+
+test("registered snapshots reject a validation/capture edit and its replay after source restoration", async (t) => {
+  const { root } = await workspace(t);
+  const { directory, controller } = await copiedController(root, undefined, path.join(root, "scripts"));
+  const { registerDevelopmentExtension } = await import(pathToFileURL(path.join(directory, "workflow-extension.mjs")).href);
+  const { freezeDevelopmentController } = await import(pathToFileURL(path.join(directory, "development-controller.mjs")).href);
+  const session = { rpc: { agent: { list: async () => ({ agents: [{
+    id: "devpocket-reviewer", path: path.join(root, ".github", "agents", "devpocket-reviewer.agent.md"), tools: ["read", "search"],
+  }] }) } } };
+  let workflow;
+  await registerDevelopmentExtension({
+    defineWorkflow: (value) => value,
+    joinSession: async (registration) => { [workflow] = registration.workflows; return session; },
+  }, root);
+  const policy = path.join(directory, "development-policy.mjs"), original = await readFile(policy);
+  const marker = "__devpocketUnapprovedSnapshot";
+  const changed = Buffer.concat([original, Buffer.from(`\nglobalThis.${marker} = true;\n`)]);
+  const remaining = new Set(controller.loadedImplementation.files.map((input) =>
+    path.join(controller.loadedImplementation.directory, input.name)));
+  const open = fs.open;
+  let edited = false;
+  fs.open = async (file, ...args) => {
+    const handle = await open(file, ...args);
+    if (args[0] !== "r" || !remaining.has(file)) return handle;
+    const close = handle.close.bind(handle);
+    handle.close = async () => {
+      await close();
+      remaining.delete(file);
+      // Change only after validation has read and closed every approved input.
+      if (!remaining.size && !edited) { edited = true; await writeFile(policy, changed); }
+    };
+    return handle;
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(workflow.run({ session, step: async (_key, prepare) => prepare() }),
+      /loaded controller\/helper implementation changed/);
+    assert.equal(edited, true);
+    assert.equal(globalThis[marker], undefined);
+  } finally {
+    fs.open = open;
+    syncBuiltinESMExports();
+    await writeFile(policy, original);
+    delete globalThis[marker];
+  }
+  await writeFile(policy, changed);
+  const unapproved = await freezeDevelopmentController(root, await captureCandidateImplementation(directory));
+  await writeFile(policy, original);
+  await controller.requireDevelopmentImplementation();
+  try {
+    await assert.rejects(workflow.run({ session, step: async () => unapproved }),
+      /recorded development controller does not match the loaded approved implementation/);
+    assert.equal(globalThis[marker], undefined);
+  } finally { delete globalThis[marker]; }
+});
+
+function syntheticTaskGrant(scope, hooks, implementation) {
+  const { request } = developmentTaskApprovalRequest(scope, hooks, implementation);
+  return [{ version: 1, requestId: request.id, origin: "original-client", decision: "approved" }];
+}
+
+test("publication scope checks the actual origin and every effective push destination", async (t) => {
+  const { root } = await workspace(t);
+  await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
+  assert.equal(await originRepository(root), "owner/repo");
+  assert.equal(await requirePushTarget(root, "owner/repo"), "https://github.com/owner/repo.git");
+  await git(root, ["config", "remote.origin.pushurl", "https://github.com/other/repo.git"]);
+  await assert.rejects(requirePushTarget(root, "owner/repo"), /single authorized GitHub repository/);
+  await git(root, ["config", "--unset-all", "remote.origin.pushurl"]);
+  await git(root, ["config", "--add", "remote.origin.pushurl", "https://github.com/owner/repo.git"]);
+  await git(root, ["config", "--add", "remote.origin.pushurl", "https://github.com/other/repo.git"]);
+  await assert.rejects(requirePushTarget(root, "owner/repo"), /single authorized GitHub repository/);
+});
+
+test("prepared delivery readiness requires ordinary CI authority and rejects a changed publication target", isolatedCases, async (t) => {
+  await Promise.all(["remote.origin.url", "remote.origin.pushurl"].map((key) => t.test(key, async (t) => {
+    const { root } = await workspace(t), session = nativeSession();
+    await git(root, ["remote", "add", "origin", "https://github.com/owner/repo.git"]);
+    session.capabilities = { ui: { elicitation: true } };
+    session.ui = { elicitation: async ({ message }) => {
+      assert.match(message, /automatic repository CI for owner\/repo refs\/heads\/task/);
+      assert.match(message, /ordinary disposable runner identity/);
+      return { action: "accept", content: { decision: "approve" } };
+    } };
+    const ctx = documentationTask(root, {
+      session, args: { goal: "Explain behavior", acceptance: ["Document the behavior"], prepare: true,
+        mode: "autopilot", delivery: "pull-request" },
+      pause: async () => {},
+    });
+    const result = await runDevelopment(ctx, { root });
+    assert.equal(result.status, "ready", result.reason);
+    assert.deepEqual(result.authorization.scope.ci, { repository: "owner/repo", ref: "refs/heads/task" });
+    assert.deepEqual(result.authorizedDeliveryActions, ["push", "create-draft-pr", "mark-pr-ready", "ordinary-ci"]);
+    for (const mutate of [
+      (value) => { value.authorization.receipts = []; },
+      (value) => {
+        value.authorization.scope.ci.repository = "owner/another";
+        value.authorization.receipts = syntheticTaskGrant(value.authorization.scope, value.hooks, value.execution);
+      },
+    ]) {
+      const changed = structuredClone(result);
+      mutate(changed);
+      assert.equal((await checkDevelopmentReadiness(root, changed)).status, "blocked");
+    }
+    await git(root, ["config", key, "https://github.com/another/repo.git"]);
+    assert.equal((await checkDevelopmentReadiness(root, result)).status, "blocked",
+      "A native grant must not follow a changed publication destination.");
+  })));
+});
+
+test("prepared PR authority rejects A-to-B-to-A target discovery and approval races", async (t) => {
+  for (const phase of ["discovery", "approval"]) await t.test(phase, async (t) => {
+    const { root } = await workspace(t), session = nativeSession();
+    const origin = "https://github.com/owner/repo.git", temporary = "https://github.com/owner/another.git";
+    await git(root, ["remote", "add", "origin", origin]);
+    const before = await inspectWorktree(root), original = childProcess.execFile;
+    let changed = false, restored = false, questions = 0;
+    const restore = async () => {
+      await git(root, ["config", "remote.origin.url", origin]);
+      restored = true;
+    };
+    const intercepted = (...args) => original(...args);
+    intercepted[promisify.custom] = async (file, args, options) => {
+      const relevant = file === "git" && options?.cwd === root;
+      if (relevant && !changed && args.slice(-3).join(" ") === "remote get-url origin") {
+        await git(root, ["config", "remote.origin.url", temporary]);
+        changed = true;
+      }
+      const result = await exec(file, args, options);
+      if (relevant && changed && !restored && phase === "discovery" && args.includes("--push")) await restore();
+      return result;
+    };
+    childProcess.execFile = intercepted;
+    syncBuiltinESMExports();
+    try {
+      const { controller } = await copiedController(root);
+      session.capabilities = { ui: { elicitation: true } };
+      session.ui = { elicitation: async ({ message }) => {
+        questions++;
+        assert.match(message, /automatic repository CI for owner\/another refs\/heads\/task/);
+        await restore();
+        return { action: "accept", content: { decision: "approve" } };
+      } };
+      const ctx = documentationTask(root, {
+        session, args: { goal: "Explain behavior", acceptance: ["Document the behavior"],
+          prepare: true, mode: "autopilot", delivery: "pull-request" },
+        pause: async () => {},
+        agent: async () => { assert.fail("A mismatched publication grant must stop before implementation."); },
+      });
+      const result = await controller.runDevelopment(ctx, { root });
+      assert.equal(result.status, "blocked", result.reason);
+      assert.match(result.reason, /publication destination/i);
+      assert.equal(questions, phase === "approval" ? 1 : 0);
+      assert.equal(changed && restored, true);
+      assert.deepEqual(await inspectWorktree(root), before, "Restoring A defeats configuration-hash-only checks.");
+    } finally {
+      childProcess.execFile = original;
+      syncBuiltinESMExports();
+      await restore();
+    }
+  });
 });

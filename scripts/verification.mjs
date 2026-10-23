@@ -98,7 +98,8 @@ export function verificationFailure(error, phase = "command") {
   };
 }
 
-export async function verificationPlan(root, base, all = false) {
+export async function verificationPlan(root, base, all = false, options) {
+  if (options !== undefined) throw verificationFault("configuration");
   if (!base || base.startsWith("-")) throw verificationFault("base-invalid");
   let baseSha;
   try { baseSha = (await readOnlyGit(root, ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`])).trim(); }
@@ -160,6 +161,22 @@ export async function executeVerification(root, plan, options = {}) {
   // Planning and aggregation must not load application execution adapters.
   const executor = await import("./verification-executor.mjs");
   return executor.executeVerification(root, plan, options);
+}
+
+export function verificationProcessCleanupConfirmed(check) {
+  if (check.status === "not_run" || check.executionState === "not-started") return true;
+  return check.executionState === "exited" && check.commandOutcome?.observedProcess === "owned-command-supervisor" &&
+    check.commandOutcome.cleanupFailure === null;
+}
+
+export function verificationCleanupConfirmed(check) {
+  if (check.status === "not_run" || check.executionState === "not-started") return true;
+  if (!verificationProcessCleanupConfirmed(check)) return false;
+  if (check.id !== "android-device") return true;
+  if (check.diagnosticIssues !== undefined && !Array.isArray(check.diagnosticIssues)) return false;
+  if (check.diagnosticIssues?.some((issue) => issue?.operation === "controller-cleanup")) return false;
+  return check.cleanup === "completed" ||
+    check.cleanup === undefined && check.deviceEvidence?.cleanup === "completed";
 }
 
 export async function validateVerificationEvidence(root, plan, reports, options = {}) {

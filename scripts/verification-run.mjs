@@ -17,6 +17,7 @@ const tipPath = (root, id) => path.join(root, ".data", "verification", "local", 
 const pathKey = (value) => process.platform === "win32" ? value.toLowerCase() : value;
 
 function binding(plan, group, policy, options) {
+  if (options.trustedToolingRunner !== undefined || options.trustedTooling === true) throw diagnosticError("configuration");
   return { base: plan.base, source: plan.source, version: plan.version,
     requiredChecks: plan.requiredChecks, requiredGroups: plan.requiredGroups, layouts: plan.layouts, ciMacos: plan.ciMacos ?? false,
     trustedDeviceClasses: plan.trustedDeviceClasses ?? [], group, policy,
@@ -215,7 +216,11 @@ export async function readVerificationRun(root, file) {
   if (manifest.version !== version || manifest.kind !== "verification-run" || !uuid.test(manifest.id ?? "") ||
       !samePath(manifest.root ?? "", await realpath(root)) || !manifest.plan) throw diagnosticError("run-invalid");
   requireCheckPolicy(manifest.plan);
-  if (!equal(manifest.binding, binding(manifest.plan, manifest.binding?.group, manifest.binding?.policy, manifest.binding)) ||
+  const persistedTooling = manifest.binding?.trustedTooling;
+  if (persistedTooling !== undefined && persistedTooling !== false) throw diagnosticError("run-invalid");
+  const expected = binding(manifest.plan, manifest.binding?.group, manifest.binding?.policy, manifest.binding);
+  if (Object.hasOwn(manifest.binding, "trustedTooling")) expected.trustedTooling = false;
+  if (!equal(manifest.binding, expected) ||
       !["all", ...CHECK_GROUPS].includes(manifest.binding.group) ||
       !/^[a-f0-9]{64}$/.test(manifest.binding.policy ?? "")) throw diagnosticError("run-invalid");
   return { manifest, directory, ...await history(root, directory, manifest, signing) };

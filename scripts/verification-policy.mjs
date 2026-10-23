@@ -34,7 +34,7 @@ const rules = [
     matches: (file) => ["scripts/workflow-extension.mjs", "scripts/tests/development-workflow.test.mjs",
       ".github/extensions/devpocket-development/extension.mjs"].includes(file), checks: tooling },
   { id: "development-tooling", description: "Development orchestration, local tool setup, trust policy and candidate preparation use the complete workflow suite.",
-    matches: (file) => ["scripts/development-workflow.mjs", "scripts/development-policy.mjs",
+    matches: (file) => ["scripts/development-workflow.mjs", "scripts/development-policy.mjs", "scripts/development-controller.mjs",
       "scripts/candidate-commit.mjs", "scripts/native-candidate.mjs",
       "scripts/setup-xcode-mcp.mjs", "config/xcode-mcp.example.json", "scripts/test-workflow.mjs"].includes(file), checks: tooling },
   { id: "agent-instructions", description: "DevPocket development instructions use workflow regressions, not application checks.",

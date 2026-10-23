@@ -24,12 +24,15 @@ its bound verification; do not require a commit or label it final-commit evidenc
 For candidate-commit delivery, require the exact candidate SHA and clean
 index/worktree. Local verification, including the registered workflow, binds to
 that HEAD and source fingerprint. CI-first delivery instead requires the actual
-live qualification and authenticated CI envelope: inspect repository/run/attempt,
+live qualification or the guide's source-bound read-only `ci-inspection`, with
+its authenticated CI envelope: inspect repository/run/attempt,
 artifact digest, candidate, PR base and tested merge-ref relationship. Keep the
 CI report's actual source and checkout fingerprint unchanged. An authorized
 pending Draft PR is not evidence of readiness. The owning session checks that
 identity before and after review. Missing or inconsistent evidence cannot receive
-`pass`; do not rerun checks or relabel reports.
+`pass`; do not rerun checks or relabel reports. For an agent inspection, read the
+underlying live API/archive/source records and check every required binding;
+its summary is not a machine qualification or controller readiness receipt.
 For explicit working-tree-to-candidate conversion, inspect the original run,
 native request/receipt, transition proof and actual execution origins. Require
 the final candidate's source-bound qualification and all commit-sensitive reruns.
@@ -53,12 +56,23 @@ Account for each acceptance criterion. Check observable behavior, compatibility,
 failure paths, and the project invariants in AGENTS.md. Distinguish simulated SDK
 evidence from real-runtime or physical-device acceptance.
 
-Check local development-policy requirements and recorded human decisions
-separately from CI test selection. A passing CI report or this independent
-review does not approve changed execution policy or authorize publication.
+Check local development-policy requirements and recorded authority separately
+from CI test selection. Sensitive/unclassified `reviewPaths` require your actual
+inspection, not an additional human signature because of their filename.
+A passing CI report or this independent review does not grant execution authority.
+Use the agreed ordinary-CI trust model, not an adversarial sandbox requirement.
+Keep local candidate and hosted source identities distinct; branch execution is
+not a PR merge-ref result. A digest identifies evidence, not whether hostile code
+could influence a test. Evaluate engineering correctness and actual authority;
+do not reintroduce restricted-token workers, anti-tampering proofs or sandbox
+activation as prerequisites. Product security requirements remain unchanged.
 Missing or stale local policy evidence cannot establish readiness.
 Match actual user decisions to the task, target, allowed effects and relevant
-input versions. Ordinary code/test repairs do not require repeated human consent
+trusted input versions. Candidate dependency/tool changes inside an authorized
+ordinary CI environment do not need per-revision human approval for that hosted execution.
+The hosted grant does not authorize running those changes locally.
+Use `developmentExecutionAuthorization` with the actual target (`local` or `ci`), rather than `requiresHumanReview` alone,
+to identify an unsatisfied requirement. Ordinary code/test repairs do not require repeated human consent
 when that scope is unchanged; their verification and independent review must
 still match the current source. A required decision that has been satisfied is
 not a pending blocker. An implementer-written approval file is not evidence of

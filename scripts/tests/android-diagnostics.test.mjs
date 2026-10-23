@@ -258,6 +258,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
 
   const gate = workflow.split("\n  gate:")[1];
   assert.match(gate, /needs: \[plan, tooling, macos, backend, android, device\]\n\s+if: always\(\)/);
+  assert.doesNotMatch(gate, /ISOLATION_REQUIRED|ISOLATION_RESULT|isolated-boundary/);
   assert.match(gate, /- uses: actions\/download-artifact@v8\n\s+with:\n\s+pattern: verification-\*\n\s+path: \.data\\ci\\inputs/);
   assert.ok(gate.includes("'scripts\\verification-ci.mjs', '--base', $env:BASE_SHA, '--collect'"));
   assert.ok(gate.includes("'--inputs', '.data\\ci\\inputs'"));
@@ -269,7 +270,7 @@ test("the independent tooling CI job runs the complete workflow suite without ap
   assert.deepEqual(CHECKS.filter((check) => check.group === "tooling"),
     [{ id: "workflow-tests", group: "tooling" }]);
   const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
-  const tooling = workflow.split("\n  tooling:")[1]?.split("\n  backend:")[0];
+  const tooling = workflow.split("\n  tooling:")[1]?.split("\n  macos:")[0];
   assert.ok(tooling);
   assert.match(tooling, /needs: plan\n\s+if: needs\.plan\.outputs\.tooling == 'true'/);
   assert.match(tooling, /!\(github\.event_name == 'workflow_dispatch' && inputs\.backend_diagnostic\)/);

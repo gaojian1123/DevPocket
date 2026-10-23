@@ -13,7 +13,8 @@ function catalogue() {
     fingerprint: digest(WORKFLOW_TEST_SHARDS) };
 }
 
-export async function toolingCatalogue(root) {
+export async function toolingCatalogue(root, options) {
+  if (options !== undefined) throw diagnosticError("configuration");
   let manifest;
   try { manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")); }
   catch (error) { if (error.code === "ENOENT") return null; throw diagnosticError("configuration", error); }

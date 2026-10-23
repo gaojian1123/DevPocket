@@ -87,6 +87,7 @@ export async function prepareVerificationTransition(root, plan, options) {
 export async function candidateReusableChecks(root, plan, transition, preflight, options) {
   const original = await validateTransition(root, plan, transition), checks = new Map();
   if (original.manifest.binding.backendDiagnostics !== Boolean(options.backendDiagnostics)) fail();
+  if (original.manifest.binding.trustedTooling === true) fail();
   const eligible = preflight.groups.find((item) => item.group === "backend")?.candidateEligibility?.status === "bound"
     ? ["typecheck"] : [];
   for (const id of eligible) {

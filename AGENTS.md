@@ -22,6 +22,13 @@ Advice, explanations, planning, read-only reviews and documentation-only edits
 do not start an implementation pipeline. Both routes retain required verification,
 independent review and scoped authorization; self-review is not independent review.
 
+For unattended development, follow **Unattended execution** in
+`docs\DEVELOPMENT-WORKFLOW.md`: use ordinary hosted CI within explicit task-scoped
+authority, retaining tests, independent review and process cleanup. This workflow
+does not require an adversarial sandbox or tamper-proof test execution. Keep local
+control adoption and publication authority separate; retain missing scope instead
+of opening unattended questions. Product security requirements below are unchanged.
+
 ## Terminology
 
 Use **GitHub Copilot** for shared product/session behavior. The **original client**

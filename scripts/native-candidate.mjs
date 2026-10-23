@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 
 const nativeFiles = ["candidate-commit.mjs", "git-state.mjs"];
 const implementationFiles = [...new Set([...nativeFiles, "native-candidate.mjs", "development-workflow.mjs", "workflow-extension.mjs",
-  "development-policy.mjs", "verification.mjs", "verification-policy.mjs", "process.mjs", "device-run.mjs", "worker-diagnostics.mjs",
+  "development-policy.mjs", "development-controller.mjs",
+  "verification.mjs", "verification-policy.mjs", "process.mjs", "device-run.mjs", "worker-diagnostics.mjs",
   "device-diagnostics.mjs", "diagnostic-errors.mjs", "bounded-worker-log.mjs", "diagnostic-publication.mjs",
   "native-lifecycle.mjs", "verification-executor.mjs", "verification-backend.mjs", "verification-android.mjs",
   "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs", "verification-transition.mjs",
@@ -18,7 +19,9 @@ export async function captureCandidateImplementation(directory = fileURLToPath(n
   directory = await realpath(directory);
   const files = await Promise.all(implementationFiles.map(async (name) => {
     const file = path.join(directory, name), info = await lstat(file);
-    if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024) throw new Error("Candidate implementation input is unavailable.");
+    if (!info.isFile() || info.isSymbolicLink() || await realpath(file) !== file || info.size > 1024 * 1024) {
+      throw new Error("Candidate implementation input is unavailable.");
+    }
     const input = await open(file, "r");
     try {
       let first;
@@ -138,9 +141,12 @@ async function runFrozenCandidate(specification) {
 }
 
 export function nativeCandidateCommand(file, requestHash) {
+  if (arguments.length !== 2) throw new TypeError("The native candidate command accepts only a commit request and its hash.");
   if (!/^[a-f0-9]{64}$/.test(requestHash)) throw new Error("A bound candidate request hash is required.");
   const quote = (text) => `'${text.replaceAll("'", "''")}'`;
-  const source = `await (${runFrozenCandidate.toString()})(${JSON.stringify({ inputs: implementationFiles, native: nativeFiles })});`;
+  const source = `await (${runFrozenCandidate.toString()})(${JSON.stringify({
+    inputs: implementationFiles, native: nativeFiles,
+  })});`;
   const startup = [
     "if (-not [string]::IsNullOrEmpty($env:NODE_OPTIONS)) {",
     "  $startupReceipt = $null",

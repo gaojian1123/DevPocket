@@ -1,19 +1,47 @@
 import { createWriteStream } from "node:fs";
+import { lstat, open } from "node:fs/promises";
 import { Writable } from "node:stream";
 import { finished } from "node:stream/promises";
 
-const budget = 1024 * 1024;
+export const WORKER_LOG_BUDGET = 1024 * 1024;
 const marker = Buffer.from("\n[DevPocket private worker log truncated; beginning and end retained]\n");
-const headBudget = Math.floor((budget - marker.length) / 2);
-const tailBudget = budget - marker.length - headBudget;
+const headBudget = Math.floor((WORKER_LOG_BUDGET - marker.length) / 2);
+const tailBudget = WORKER_LOG_BUDGET - marker.length - headBudget;
 
 export function boundedDiagnosticBytes(value) {
   const bytes = Buffer.from(value);
-  if (bytes.length <= budget) return { bytes, truncated: false };
+  if (bytes.length <= WORKER_LOG_BUDGET) return { bytes, truncated: false };
   const separator = Buffer.from("\n[Private diagnostic log truncated; beginning and end retained]\n");
-  const half = Math.floor((budget - separator.length) / 2);
+  const half = Math.floor((WORKER_LOG_BUDGET - separator.length) / 2);
   return { bytes: Buffer.concat([bytes.subarray(0, half), separator,
-    bytes.subarray(bytes.length - (budget - separator.length - half))]), truncated: true };
+    bytes.subarray(bytes.length - (WORKER_LOG_BUDGET - separator.length - half))]), truncated: true };
+}
+
+export async function readWorkerLogTail(file) {
+  const info = await lstat(file);
+  if (!info.isFile() || info.isSymbolicLink() || info.size > WORKER_LOG_BUDGET) {
+    throw new Error("Worker failure log is not a bounded regular file.");
+  }
+  const same = (left, right) => ["dev", "ino", "mode", "size", "mtimeMs"].every((key) => left[key] === right[key]);
+  const handle = await open(file, "r");
+  try {
+    const opened = await handle.stat();
+    if (!same(info, opened)) throw new Error("Worker failure log changed during inspection.");
+    const bytes = Buffer.alloc(Math.min(opened.size, 16384 + 3));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const result = await handle.read(bytes, offset, bytes.length - offset, opened.size - bytes.length + offset);
+      if (!result.bytesRead) throw new Error("Worker failure log changed during inspection.");
+      offset += result.bytesRead;
+    }
+    if (!same(opened, await handle.stat()) || !same(opened, await lstat(file))) {
+      throw new Error("Worker failure log changed during inspection.");
+    }
+    const text = Buffer.from(bytes.toString("utf8"), "utf8");
+    let start = Math.max(0, text.length - 16384);
+    while (start < text.length && (text[start] & 0xc0) === 0x80) start++;
+    return text.subarray(start).toString("utf8");
+  } finally { await handle.close(); }
 }
 
 export function createBoundedWorkerLog(file) {

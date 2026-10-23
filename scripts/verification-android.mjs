@@ -5,7 +5,8 @@ import { cleanDeviceRun } from "./device-run.mjs";
 import { projectWorkerDiagnostics, readDiagnosticReport } from "./worker-diagnostics.mjs";
 import { deviceSourceCatalogue, projectDeviceDiagnostics, deviceDiagnosticsFromOutput } from "./device-diagnostics.mjs";
 import { diagnosticError, failureDetails } from "./diagnostic-errors.mjs";
-import { publicDeviceEvidence, validateDeviceEvidence, verificationFailure, verificationFault } from "./verification.mjs";
+import { publicDeviceEvidence, validateDeviceEvidence, verificationFailure, verificationFault,
+  requireVerificationOutputDirectory } from "./verification.mjs";
 import { commandCleanupConfirmed } from "./process.mjs";
 import { recoverEmulatorLease } from "./emulator-resources.mjs";
 
@@ -15,6 +16,7 @@ export async function androidVerification(root, check, plan, options) {
   const directory = path.join(options.directory, "device");
   let catalogue;
   if (device) {
+    await requireVerificationOutputDirectory(root, directory);
     check.deviceRunId = owner;
     try { catalogue = await deviceSourceCatalogue(root); }
     catch (error) {

@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationImpact } from "../verification-policy.mjs";
 import { developmentReviewRequirements, isVerificationPolicyPath } from "../development-policy.mjs";
 import { syntheticExecution, verificationTools, windowsNodeLauncher } from "./fixtures/verification-tools.mjs";
-import { combineVerification, verificationPlan } from "../verification.mjs";
+import { combineVerification, executeVerification, verificationPlan } from "../verification.mjs";
 import { openVerificationRun, readVerificationRun } from "../verification-run.mjs";
 import { emulatorInputDifference, resolveVerificationExecutable, verificationExecutionPolicy } from "../verification-preflight.mjs";
 import { capturePromotionContext, prepareVerificationTransition } from "../verification-transition.mjs";
@@ -119,6 +119,20 @@ test("storage roots accept direct reports without admitting sibling or linked di
   await symlink(real, link, process.platform === "win32" ? "junction" : "dir");
   await assert.rejects(openVerificationRun(root, plan, { directory: link }, policy),
     { diagnosticCode: "ownership-mismatch" });
+});
+
+test("retired sandbox execution options fail before starting ordinary checks", async (t) => {
+  const root = await repository(t), plan = await verificationPlan(root, "HEAD");
+  for (const option of ["evidenceRoot", "trustedToolingRunner", "isolatedTooling", "deviceDirectory", "deviceCleanup", "operationsPython"]) {
+    const directory = path.join(root, ".data", "verification", option);
+    await assert.rejects(executeVerification(root, plan, { directory, [option]: true }), { diagnosticCode: "configuration" });
+    await assert.rejects(fileSystem.stat(directory), { code: "ENOENT" });
+  }
+  await assert.rejects(verificationPlan(root, "HEAD", false, { trustedTooling: true }), { diagnosticCode: "configuration" });
+  const policy = await verificationExecutionPolicy();
+  await assert.rejects(openVerificationRun(root, plan, {
+    directory: path.join(root, ".data", "verification", "retired"), trustedToolingRunner: "retired",
+  }, policy), { diagnosticCode: "configuration" });
 });
 
 test("report destinations cannot occupy private verification control storage", async (t) => {
@@ -317,8 +331,7 @@ test("shared execution, cross-lane CI, shared dependencies and unknown paths ret
     assert.deepEqual(impact.requiredChecks, CHECKS.map((check) => check.id));
     assert.deepEqual(impact.requiredGroups, ["tooling", "backend", "android", "device"]);
     assert.equal(Object.hasOwn(impact, "requiresHumanReview"), false);
-    assert.equal(developmentReviewRequirements([file]).requiresHumanReview,
-      !(rule === "unknown" && file.startsWith("scripts/")));
+    assert.equal(developmentReviewRequirements([file]).requiresHumanReview, isVerificationPolicyPath(file));
     assert.equal(impact.layouts, true);
     assert.deepEqual(impact.selectionReasons.map((item) => item.rule), [rule]);
     assert.deepEqual(impact.selectionReasons[0].paths, [file]);
@@ -395,7 +408,9 @@ test("local Xcode setup and root ignore policy select tooling without weakening 
     assert.deepEqual(impact.requiredGroups, ["tooling"]);
     assert.equal(impact.layouts, false);
     // Tooling coverage is not an approval rule; the unclassified template still needs review.
-    assert.equal(developmentReviewRequirements(files).requiresHumanReview, files.includes("config/xcode-mcp.example.json"));
+    assert.equal(developmentReviewRequirements(files).requiresHumanReview, false);
+    assert.deepEqual(developmentReviewRequirements(files).reviewPaths,
+      files.includes("config/xcode-mcp.example.json") ? ["config/xcode-mcp.example.json"] : []);
   }
   for (const file of ["package.json", "package-lock.json", "scripts/process.mjs", ".github/workflows/ci.yml",
     "scripts/setup-xcode-mcp-extra.mjs", "config/another-mcp.example.json",
@@ -752,7 +767,7 @@ test("app, wire, unrelated skills and unknown changes cannot omit device checks"
       assert.ok(result.report.requiredChecks.includes("android-device"));
       assert.ok(result.report.requiredChecks.includes("android-build"));
       assert.equal(Object.hasOwn(result.report, "requiresHumanReview"), false);
-      if (!file.startsWith("android/")) assert.equal(developmentReviewRequirements(result.report.changedFiles).requiresHumanReview, true);
+      assert.equal(developmentReviewRequirements(result.report.changedFiles).requiresHumanReview, isVerificationPolicyPath(file));
       if (file.startsWith(".github/skills/")) {
         assert.deepEqual(result.report.requiredChecks, CHECKS.map((check) => check.id));
         assert.deepEqual(result.report.requiredGroups, CHECK_GROUPS);
@@ -2804,14 +2819,18 @@ test("a changed captured execution policy cannot resume an earlier successful ru
   const first = await recordedVerification(root, base);
   const copied = path.join(root, ".data", "implementation");
   await mkdir(copied);
-  for (const name of await readdir(path.resolve("scripts"))) {
-    if (/\.(?:mjs|ps1|py|cs)$/.test(name)) await copyFile(path.resolve("scripts", name), path.join(copied, name));
+  const { captureCandidateImplementation } = await import("../native-candidate.mjs");
+  const captured = await captureCandidateImplementation();
+  for (const { name } of captured.files) {
+    await mkdir(path.dirname(path.join(copied, name)), { recursive: true });
+    await copyFile(path.join(captured.directory, name), path.join(copied, name));
   }
   const copiedPolicy = await import(pathToFileURL(path.join(copied, "verification-preflight.mjs")).href);
   await import(pathToFileURL(path.join(copied, "verification-android.mjs")).href);
   assert.equal(await copiedPolicy.verificationExecutionPolicy(), first.policy, "The copied policy must match before mutation.");
   for (const name of ["test-workflow.mjs", "verification-tooling.mjs", "verification-admission.mjs",
-    "verification-ci.mjs", "verification-ci-artifact.ps1", "development-policy.mjs", "emulator-resources.mjs"]) await t.test(name, async () => {
+    "verification-ci.mjs", "verification-ci-artifact.ps1", "development-policy.mjs", "emulator-resources.mjs",
+    "development-controller.mjs"]) await t.test(name, async () => {
     const file = path.join(copied, name), original = await readFile(file);
     try {
       await writeFile(file, Buffer.concat([original, Buffer.from("\n")]));

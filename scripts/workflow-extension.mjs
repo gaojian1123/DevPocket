@@ -1,6 +1,9 @@
 import { realpath } from "node:fs/promises";
 import path from "node:path";
-import { checkDevelopmentReadiness, parseTask, requireDevelopmentImplementation, runDevelopment, taskSchema } from "./development-workflow.mjs";
+import { pathToFileURL } from "node:url";
+import { loadedImplementation, parseTask, requireDevelopmentImplementation, taskSchema } from "./development-workflow.mjs";
+import { freezeDevelopmentController } from "./development-controller.mjs";
+import { requireCandidateImplementation } from "./native-candidate.mjs";
 import { readOnlyGit } from "./verification.mjs";
 
 const readinessSchema = {
@@ -20,11 +23,19 @@ export async function checkRecordedReadiness(session, root, input) {
   if (run.runId !== input.runId || run.status !== "completed" || run.result?.runId !== input.runId) {
     return { status: "blocked", reason: "This is not a completed development run in the original session." };
   }
-  const result = await checkDevelopmentReadiness(root, run.result);
+  let result;
+  try {
+    await requireCandidateImplementation(run.result.execution);
+    const controller = await import(pathToFileURL(path.join(run.result.execution.directory, "development-workflow.mjs")).href);
+    result = await controller.checkDevelopmentReadiness(root, run.result);
+  } catch (error) {
+    return { status: "blocked", reason: `The recorded trusted controller is unavailable or changed: ${error.message}` };
+  }
   if (result.status !== "ready") return result;
   return { status: "ready", runId: input.runId, commit: result.candidate.commit,
     base: result.base, source: result.source,
-    reason: "The verified and independently reviewed candidate is unchanged. Publication still requires separate authorization; no verification or publication was executed." };
+    authorizedDeliveryActions: result.authorizedDeliveryActions ?? [],
+    reason: "The verified and independently reviewed candidate is unchanged. Use only recorded delivery authority through native tools; no publication was executed." };
 }
 
 async function inspectStartingWorktree(root) {
@@ -54,13 +65,24 @@ export async function registerDevelopmentExtension({ defineWorkflow, joinSession
   const workflow = defineWorkflow({
     meta: {
       name: "devpocket-development",
-      description: "Optional controller-managed DevPocket development. Use only when the user explicitly selects this workflow, or to continue its recorded run; normal implementation uses the devpocket-development skill. Make a scoped local candidate commit through original native permissions, then verify and independently review that exact clean commit. Continue same-scope repairs within native budgets and any explicit repair limit; diagnose stalled progress before stopping. No push, PR creation, merge or deployment.",
+      description: "Optional controller-managed local DevPocket verification, only when explicitly selected. Normal CI-first work uses the owning-session skill. prepare:true obtains one task-scoped native decision and pauses; resume the same run with mode:autopilot. Independent review, source-bound readiness and native permissions remain required. The controller does not publish, merge or deploy; native PR tools finish only explicitly authorized delivery.",
       argsSchema: taskSchema,
-      phases: [{ title: "Implement" }, { title: "Candidate" }, { title: "Verify" }, { title: "Review" }, { title: "Diagnose" }],
+      phases: [{ title: "Authorize" }, { title: "Implement" }, { title: "Candidate" }, { title: "Verify" }, { title: "Review" }, { title: "Diagnose" }],
     },
     run: async (ctx) => {
       await requireReadonlyReviewer(ctx.session, root);
-      return runDevelopment(ctx, { root });
+      const snapshot = await ctx.step("devpocket-controller-snapshot-v1", async () => {
+        const implementation = await requireDevelopmentImplementation();
+        return freezeDevelopmentController(root, implementation);
+      });
+      if (!snapshot || snapshot.implementation?.version !== loadedImplementation.version ||
+          JSON.stringify(snapshot.implementation.files) !== JSON.stringify(loadedImplementation.files)) {
+        throw new Error("The recorded development controller does not match the loaded approved implementation.");
+      }
+      const implementation = { ...loadedImplementation, directory: snapshot.implementation.directory };
+      await requireCandidateImplementation(implementation);
+      const controller = await import(pathToFileURL(path.join(implementation.directory, "development-workflow.mjs")).href);
+      return controller.runDevelopment(ctx, { root });
     },
   });
   session = await joinSession({
@@ -109,14 +131,15 @@ export async function registerDevelopmentExtension({ defineWorkflow, joinSession
             workspace_type: "worktree", name: "DevPocket development", notify_on_idle: "once",
             coordinate_with_creator: true,
             kickoff: {
-              mode: "interactive",
+              mode: task.mode ?? "interactive",
               prompt: [
                 "The user explicitly selected the optional devpocket-development workflow; implement that task in this new worktree.",
                 "Read AGENTS.md. Invoke run_dynamic_workflow with name devpocket-development and the JSON arguments below.",
                 "If the workflow/reviewer is not loaded, request scoped loading; do not replace the workflow with unchecked self-review.",
-                "The workflow stops at a committed, independently reviewed, source-bound handoff. Preserve any blocked/needs_human outcome.",
+                "Preparation obtains one scoped native grant and pauses. Resume that same run; do not replace its task, baseline, spent resources or authorization.",
+                "The workflow stops at a committed, independently reviewed, source-bound handoff. Preserve any blocked/needs_human outcome; autopilot does not grant missing authority.",
                 "Only the controller's candidate step may make task-scoped local commits through the original native tool/permission pipeline.",
-                "Report back to the creating session. Do not independently commit, push, create a PR, merge, install/reload runtime extensions, enroll devices, or deploy.",
+                "Report back to the creating session. Follow the verified handoff's actual delivery grant through the original native tools; an unprepared workflow has no publication authority. Never merge, install/reload runtime extensions, enroll devices or deploy without separate target authorization.",
                 `Task arguments:\n${JSON.stringify(task)}`,
               ].join("\n"),
             },

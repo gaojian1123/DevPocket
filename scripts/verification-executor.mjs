@@ -6,7 +6,7 @@ import { diagnosticError, failureDetails, commandDetails, contextualFailure } fr
 import { boundedDiagnosticBytes } from "./bounded-worker-log.mjs";
 import { CHECKS, CHECK_GROUPS } from "./verification-policy.mjs";
 import { combineVerification, requireCheckPolicy, requirePlanCollection, requireVerificationOutputDirectory,
-  verificationFailure, verificationFault } from "./verification.mjs";
+  verificationFailure, verificationFault, verificationProcessCleanupConfirmed, verificationCleanupConfirmed } from "./verification.mjs";
 import { backendVerification, prepareBackendVerification } from "./verification-backend.mjs";
 import { androidVerification } from "./verification-android.mjs";
 import { acquireVerificationLock, openVerificationRun, readVerificationRun } from "./verification-run.mjs";
@@ -23,22 +23,9 @@ function reportFor(plan, group, checks) {
     environment: { node: process.version, platform: process.platform, architecture: process.arch } };
 }
 
-function checkProcessCleanupConfirmed(check) {
-  if (check.status === "not_run" || check.executionState === "not-started") return true;
-  return check.executionState === "exited" && check.commandOutcome?.observedProcess === "owned-command-supervisor" &&
-    check.commandOutcome.cleanupFailure === null;
-}
-
-function checkCleanupConfirmed(check) {
-  if (check.status === "not_run" || check.executionState === "not-started") return true;
-  if (!checkProcessCleanupConfirmed(check)) return false;
-  if (check.id !== "android-device") return true;
-  if (check.diagnosticIssues?.some((issue) => issue.operation === "controller-cleanup")) return false;
-  return check.cleanup === "completed" ||
-    check.cleanup === undefined && check.deviceEvidence?.cleanup === "completed";
-}
-
 export async function executeVerification(root, plan, options = {}) {
+  if (["evidenceRoot", "trustedToolingRunner", "isolatedTooling", "deviceDirectory", "deviceCleanup", "operationsPython"]
+    .some((key) => Object.hasOwn(options, key))) throw verificationFault("configuration");
   requirePlanCollection(plan);
   requireCheckPolicy(plan);
   const group = options.group ?? "all";
@@ -121,8 +108,8 @@ export async function executeVerification(root, plan, options = {}) {
             safe = false;
             processesStopped = false;
             await executeCheck(root, plan, check, { ...options, admissionEnvironment: admission?.environment }, backend);
-            processesStopped = checks.every(checkProcessCleanupConfirmed);
-            safe = checks.every(checkCleanupConfirmed);
+            processesStopped = checks.every(verificationProcessCleanupConfirmed);
+            safe = checks.every(verificationCleanupConfirmed);
             if (check.status !== "passed") break;
           }
           const groupChecks = checks.map((check) => selectedChecks.includes(check) ? structuredClone(check) : { id: check.id, status: "not_run" });

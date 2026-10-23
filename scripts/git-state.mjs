@@ -22,6 +22,26 @@ export async function readOnlyGit(root, args) {
   return git(root, readOnlyGitArgs(args));
 }
 
+function githubRepositoryUrl(url) {
+  const match = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(url);
+  if (!match || match[1].split("/").some((part) => [".", ".."].includes(part))) {
+    throw new Error("The effective Git URL is not a GitHub.com repository URL.");
+  }
+  return match[1];
+}
+
+export async function originRepository(root) {
+  return githubRepositoryUrl((await readOnlyGit(root, ["remote", "get-url", "origin"])).trim());
+}
+
+export async function requirePushTarget(root, repository) {
+  const urls = (await readOnlyGit(root, ["remote", "get-url", "--push", "--all", "origin"])).trim().split(/\r?\n/);
+  if (urls.length !== 1 || githubRepositoryUrl(urls[0]) !== repository) {
+    throw new Error("Every effective push destination must be the single authorized GitHub repository.");
+  }
+  return urls[0];
+}
+
 export async function sourceSnapshot(root) {
   const head = (await git(root, ["rev-parse", "--verify", "HEAD"])).trim();
   return { head, fingerprint: digest(JSON.stringify(await sourceInputs(root))) };
