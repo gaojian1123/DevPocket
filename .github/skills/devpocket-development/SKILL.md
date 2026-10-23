@@ -119,7 +119,8 @@ authorized. The owning session handles CI-first delivery using the existing CI.
 
 Present the action, reason, exact target, effects, exclusions and validity using
 `formatDevelopmentApproval`; summarize the actual behavior change, impact and risks
-in plain language. Default to this concise summary, with the full hash-validated
+in plain language. Supply a nonblank behavior summary; summary-only requests
+without one are rejected. Default to this concise summary, with the full hash-validated
 diff/contents available on request as an immutable snapshot. Follow **Scoped
 development approvals** in the guide for on-demand details and decision binding;
 viewing details is not approval. Ask only for missing scope. A manifest filename

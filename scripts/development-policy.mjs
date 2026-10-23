@@ -290,6 +290,9 @@ export function developmentExecutionAuthorization(scope, policy, hooks, implemen
 export function formatDevelopmentApproval(request, details, summary, snapshot, showDetails = false) {
   if (typeof snapshot !== "string" || Buffer.byteLength(snapshot) !== request.detailsBytes ||
       hash(snapshot) !== request.detailsSha256) throw new TypeError("An exact immutable approval snapshot is required.");
+  if (!showDetails && (typeof summary !== "string" || !summary.trim())) {
+    throw new TypeError("A nonblank behavior summary is required when full details are hidden.");
+  }
   let contents = "Full diff/contents: available on request; viewing them does not approve this request.";
   if (showDetails) {
     let fence = "```";

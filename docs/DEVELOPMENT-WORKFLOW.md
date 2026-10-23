@@ -171,9 +171,10 @@ An approval request contains:
   Keep the full diff or original/proposed contents and command scope available
   on request; hashes identify those details but do not replace the explanation.
 
-`formatDevelopmentApproval` supplies the common format. In skill-led work, add a
-plain-language description of the actual behavioral change and use the original
-client's question tool for the real user decision. The default question shows the
+`formatDevelopmentApproval` requires a nonblank behavior summary unless full
+details are explicitly requested. Use a plain-language description of the actual
+behavioral change and the original client's question tool for the real user
+decision. The default question shows the
 summary and scope, not the full diff/contents. A user may approve that exact request
 directly or ask to inspect its full details first. Retain the hash-validated
 snapshot even when it is not displayed; the request remains bound to those exact
