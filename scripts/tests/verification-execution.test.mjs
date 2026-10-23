@@ -266,6 +266,16 @@ test("macOS CI requires its own successful upstream and source-bound native repo
     new Map([["tooling", "success"], ["macos", "skipped"]])).report.complete, true);
 });
 
+test("CI cancels superseded runs only for the same pull request", async () => {
+  const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
+  assert.ok(workflow.includes([
+    "\nconcurrency:",
+    "  group: devpocket-verification-${{ github.event.pull_request.number || github.ref }}",
+    "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+    "",
+  ].join("\n")), "Keep stable per-PR groups and do not cancel manually dispatched runs.");
+});
+
 test("macOS CI workflow is plan-selected, source-sealed and required by the final gate", async () => {
   const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
   const start = workflow.indexOf("  macos:\n");
