@@ -489,6 +489,9 @@ async function ciFixture(t, { documentation = false, macos = false } = {}) {
   await git("commit", "--quiet", "-m", "CI base");
   const originalBase = await git("rev-parse", "HEAD");
   await writeFile(path.join(root, "scripts", "verification.mjs"), "// already in the PR base\n");
+  for (const name of ["development-paths", "development-policy"]) {
+    await writeFile(path.join(root, "scripts", `${name}.mjs`), "// protected fixture input\n");
+  }
   await git("add", ".");
   await git("commit", "--quiet", "-m", "Earlier shared infrastructure change");
   const base = await git("rev-parse", "HEAD");
@@ -725,7 +728,7 @@ test("CI qualification rejects stale, foreign, incomplete and relabelled platfor
   assert.throws(() => collectCIReports(item.plan, item.context, [foreign], new Map([["tooling", "success"]])));
 });
 
-test("the qualification CLI keeps requested report names separate from authenticated evidence", async (t) => {
+test("the qualification CLI isolates approval code and keeps report names separate from authenticated evidence", async (t) => {
   const item = await ciFixture(t), workspace = path.join(item.root, ".data", "qualification-worktree");
   await exec("git", ["remote", "add", "origin", `https://github.com/${item.repository}.git`], { cwd: item.root });
   await exec("git", ["worktree", "add", "--quiet", workspace, "candidate"], { cwd: item.root });
@@ -782,7 +785,11 @@ test("the qualification CLI keeps requested report names separate from authentic
     await writeFile(fixtureData, JSON.stringify(responses));
     await writeFile(preload, [
       "import childProcess from 'node:child_process';import {readFileSync,appendFileSync} from 'node:fs';",
-      "import {promisify} from 'node:util';import {syncBuiltinESMExports} from 'node:module';",
+      "import {promisify} from 'node:util';import {syncBuiltinESMExports,registerHooks} from 'node:module';",
+      "registerHooks({resolve(specifier,context,next){",
+      " if(specifier.endsWith('/development-policy.mjs'))throw new Error('Qualification loaded approval implementation');",
+      " return next(specifier,context);",
+      "}});",
       `const fixture=JSON.parse(readFileSync(${JSON.stringify(fixtureData)},'utf8'));`,
       "const original=childProcess.execFile, native=promisify(original);",
       "const replacement=(file,...args)=>{if(file==='gh')throw new Error('Unexpected non-promisified GitHub call');return original(file,...args);};",
@@ -823,6 +830,33 @@ test("the qualification CLI keeps requested report names separate from authentic
         }
       });
     }
+    await t.test("approval presentation edits do not load candidate approval code", async () => {
+      const { captureCandidateImplementation } = await import("../native-candidate.mjs");
+      const captured = await captureCandidateImplementation(), implementation = path.join(directory, "presentation-edit");
+      await mkdir(implementation);
+      for (const { name } of captured.files) await copyFile(path.join(captured.directory, name), path.join(implementation, name));
+      await writeFile(path.join(implementation, "development-policy.mjs"),
+        "throw new Error('Candidate approval presentation must not be evaluated by qualification');\n");
+      const file = path.join(workspace, ".data", "verification", "presentation-edit", "qualification.json");
+      await exec(process.execPath, ["--import", pathToFileURL(preload).href, path.join(implementation, "verification-ci.mjs"),
+        "--qualify", "--repository", item.repository, "--pr", "11", "--run", "1234",
+        "--base", item.base, "--report", file], { cwd: workspace, env, timeout: 60000 });
+      assert.equal(JSON.parse(await readFile(file, "utf8")).status, "verified");
+    });
+    for (const name of ["development-paths", "development-policy"]) await t.test(`protected ${name} identity`, async () => {
+      const changed = structuredClone(responses);
+      const tree = changed.api[`${prefix}/git/trees/${commit.tree.sha}?recursive=1`];
+      tree.tree.find((entry) => entry.path === `scripts/${name}.mjs`).sha = "f".repeat(40);
+      await writeFile(fixtureData, JSON.stringify(changed));
+      const file = path.join(workspace, ".data", "verification", `changed-${name}`, "qualification.json");
+      try {
+        await assert.rejects(exec(process.execPath, ["--import", pathToFileURL(preload).href,
+          path.resolve("scripts/verification-ci.mjs"), "--qualify", "--repository", item.repository,
+          "--pr", "11", "--run", "1234", "--base", item.base, "--report", file],
+        { cwd: workspace, env, timeout: 60000 }), (error) => error.code === 1 && /ci-policy-mismatch/.test(error.stderr));
+        await assert.rejects(readFile(file), { code: "ENOENT" });
+      } finally { await writeFile(fixtureData, JSON.stringify(responses)); }
+    });
     for (const when of ["initial", "final", "snapshot-only"]) await t.test(`live base ${when}`, async () => {
       const changed = structuredClone(responses);
       if (when === "snapshot-only") {

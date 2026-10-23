@@ -5,11 +5,11 @@ import { pathToFileURL } from "node:url";
 export const WORKFLOW_TEST_FILES = Object.freeze([
   "verification", "verification-execution", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
   "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
-  "bounded-worker-log", "development-tools", "process", "emulator-resources", "manual-emulator",
+  "bounded-worker-log", "development-tools", "development-approval", "process", "emulator-resources", "manual-emulator",
   "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner", "macos-host",
 ].map((name) => `scripts/tests/${name}.test.mjs`));
 
-const shardFor = (file) => file.endsWith("/development-tools.test.mjs") ? "candidate"
+const shardFor = (file) => /\/development-(?:tools|approval)\.test\.mjs$/.test(file) ? "candidate"
   : /\/(?:verification[^/]*|git-state)\.test\.mjs$/.test(file) ? "verification"
     : /(?:diagnostics|bounded-worker-log)\.test\.mjs$/.test(file) ? "diagnostics" : "native";
 

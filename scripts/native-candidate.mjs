@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const nativeFiles = ["candidate-commit.mjs", "git-state.mjs"];
-const implementationFiles = [...new Set([...nativeFiles, "native-candidate.mjs", "development-policy.mjs",
+const implementationFiles = [...new Set([...nativeFiles, "native-candidate.mjs", "development-policy.mjs", "development-paths.mjs",
   "verification.mjs", "verification-policy.mjs", "process.mjs", "device-run.mjs", "worker-diagnostics.mjs",
   "device-diagnostics.mjs", "diagnostic-errors.mjs", "bounded-worker-log.mjs", "diagnostic-publication.mjs",
   "native-lifecycle.mjs", "verification-executor.mjs", "verification-backend.mjs", "verification-android.mjs",
