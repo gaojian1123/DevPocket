@@ -198,7 +198,7 @@ dependencies or time out. Existing deadlines and required coverage are unchanged
 
 The same plan emits `ciMacos` for relevant shared/native infrastructure, its
 regressions, CI policy and shared dependency changes; `--all` also selects it.
-The ARM64 `macos-15` job depends on that decision and reruns the existing
+The ARM64 `macos-latest` job depends on that decision and reruns the existing
 `native` tooling shard without provisioning an Android emulator. Its
 `verification-macos-attempt-N` artifact is additional platform evidence, not
 a replacement for the Windows native shard. Collection requires both a
@@ -312,7 +312,10 @@ detached descendants until cleanup; nested scopes register with their parent
 before executing a target and must acknowledge cleanup. Signals use the kernel's
 PID-version check. The supervisor preserves the inherited ownership link
 separately from command-level environment overrides. Unstable process snapshots
-are retried and cannot qualify an empty-tree cleanup acknowledgement.
+are retried within the original command and cleanup deadlines; an exhausted
+snapshot attempt is not a permanent failure if later observations stabilize.
+Persistent uncertainty cannot qualify an empty-tree cleanup acknowledgement.
+Inspection, signalling and nested acknowledgement failures remain failures.
 Fork/exit and zombie transitions require a new observation; two stable empty
 scans confirm completion. Nested cleanup failures are retained while the
 supervisor attempts to stop all other verifiably owned processes.
@@ -321,6 +324,8 @@ candidate/verification implementation and the verifier execution-policy fingerpr
 Unsupported native APIs, unbound parents or missing nested
 cleanup remain failures, not plain process-group fallbacks. Control receipts
 are per-command and are not supplied to the target process.
+Failed target launches remain nonzero and emit their diagnostic before the
+terminal cleanup receipt; confirmed cleanup does not make a failed command pass.
 
 The complete local gate also supports macOS Android builds and native tests.
 Apple Silicon selects the ARM64 API-35 image; Intel Macs select x86_64. Device

@@ -35,6 +35,10 @@ class ProcessInfo(ctypes.Structure):
     _fields_ = [("bsd", BsdInfo), ("identity", UniqueInfo)]
 
 
+class UnstableOwnershipError(RuntimeError):
+    pass
+
+
 class Darwin:
     def __init__(self):
         if sys.platform != "darwin":
@@ -126,7 +130,7 @@ class Darwin:
             empty = empty + 1 if stable else 0
             if empty >= 2:
                 return []
-        raise RuntimeError("macOS process ownership did not stabilize; cleanup is unconfirmed.")
+        raise UnstableOwnershipError("macOS process ownership did not stabilize; cleanup is unconfirmed.")
 
 
 def registry_lock():
@@ -324,8 +328,11 @@ class Scope:
                     pending = True
                     protected.add(entry["identity"].bsd.parent)
             owned = None
+            snapshot_error = None
             try:
                 owned = self.native.owned()
+            except UnstableOwnershipError as error:
+                snapshot_error = error
             except (OSError, ValueError, RuntimeError) as error:
                 failure = failure or error
             for info in owned or []:
@@ -339,7 +346,7 @@ class Scope:
                     raise failure
                 return
             if time.monotonic() >= deadline:
-                raise RuntimeError("Owned macOS processes did not confirm exit.") from failure
+                raise RuntimeError("Owned macOS processes did not confirm exit.") from (failure or snapshot_error)
             time.sleep(0.02)
 
     def close(self, clean):
@@ -438,13 +445,22 @@ def supervise(native, bootstrap_pid):
                 except BrokenPipeError:
                     pass
             result = child.poll()
-            if result is not None and (not request.get("persistent") or not native.owned()):
-                if not state["stop"]:
-                    code = result if result >= 0 else 128 - result
-                break
+            if result is not None:
+                try:
+                    finished = not request.get("persistent") or not native.owned()
+                except UnstableOwnershipError:
+                    finished = False
+                if finished:
+                    if not state["stop"]:
+                        code = result if result >= 0 else 128 - result
+                    break
             if stopping_at is not None and now >= stopping_at:
                 break
             time.sleep(0.02)
+    except (OSError, ValueError, RuntimeError, AttributeError) as error:
+        # The cleanup receipt must remain the final output for this command.
+        report_error(error)
+        code = 1
     finally:
         try:
             scope.cleanup(child)
@@ -460,6 +476,10 @@ def supervise(native, bootstrap_pid):
                 scope.close(clean)
         control("tree-stopped")
     return code
+
+
+def report_error(error):
+    print(f"Owned macOS command failed: {type(error).__name__}: {error}", file=sys.stderr, flush=True)
 
 
 def main():
@@ -504,5 +524,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except (OSError, ValueError, RuntimeError, AttributeError) as error:
-        print(f"Owned macOS command failed: {type(error).__name__}: {error}", file=sys.stderr, flush=True)
+        report_error(error)
         sys.exit(1)

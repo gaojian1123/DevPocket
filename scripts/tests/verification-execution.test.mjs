@@ -273,7 +273,9 @@ test("macOS CI workflow is plan-selected, source-sealed and required by the fina
   const macos = workflow.slice(start, workflow.indexOf("  backend:\n", start));
   assert.match(macos, /needs: plan/);
   assert.match(macos, /needs\.plan\.outputs\.macos == 'true'/);
-  assert.match(macos, /runs-on: macos-15/);
+  assert.match(macos, /runs-on: macos-latest/);
+  assert.match(macos, /process\.platform !== 'darwin'/);
+  assert.match(macos, /process\.arch !== 'arm64'/);
   assert.match(macos, /--tooling-shard native/);
   assert.match(macos, /--seal --unit macos/);
   assert.match(macos, /verification-macos-attempt-/);
