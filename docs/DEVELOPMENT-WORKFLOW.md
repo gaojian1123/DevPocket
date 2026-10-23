@@ -809,7 +809,9 @@ lookup (including the working directory) and CMD interpreter are bound separatel
 to the recognized adjacent npm implementation and prefix result.
 An unknown native launcher cannot supply reusable evidence even if a different
 PowerShell launcher looks familiar; discovery does not execute a project-local
-shadow merely to identify it. Ignored dependency or npm configuration
+shadow merely to identify it. Tooling shards require the same native launcher
+binding for reuse; an unbound `npm.cmd` still permits fresh execution.
+Ignored dependency or npm configuration
 changes invalidate a previously qualified native result. Local npm configuration
 uses the physical checkout root for its identity, so equivalent checkout aliases
 agree without hiding changes to the configuration bytes.

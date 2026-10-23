@@ -28,6 +28,11 @@ const policyInputs = [
   "emulator-resources.mjs",
 ];
 
+export function npmLaunchersBound(group, powershellNpm, nativeNpm) {
+  return powershellNpm?.candidateSafe === true && powershellNpm?.candidateImplementation === true &&
+    (!["tooling", "android", "device"].includes(group) || nativeNpm?.bound === true);
+}
+
 async function fileIdentity(file, { optional = false } = {}) {
   let info;
   try { info = await lstat(file); }
@@ -839,7 +844,8 @@ export async function verificationPreflight(root, plan, options = {}) {
     // shortcut: Native workspace builds cannot reuse until their loader/compiler input contract is closed.
     const workspaceBuild = java && Boolean(identities.find(([name]) => name === "root-dependencies")?.[1]?.workspaces?.length);
     const unbound = sourceHasLinks || workspaceBuild || usesNpm &&
-      (!candidateSafe || npmIdentity?.candidateImplementation !== true || injected(/^(?:TSX_|TS_NODE_|ESBUILD_)/i) ||
+      (!npmLaunchersBound(group, npmIdentity, identities.find(([name]) => name === "native-npm")?.[1]) ||
+        injected(/^(?:TSX_|TS_NODE_|ESBUILD_)/i) ||
         !samePath(identities.find(([name]) => name === "node")?.[1]?.child?.file ?? "", process.execPath) ||
         !directNode(identities.find(([name]) => name === "node-command")?.[1], "native") ||
         !directNode(npmIdentity?.powershellNode, "Application")) ||
@@ -847,7 +853,6 @@ export async function verificationPreflight(root, plan, options = {}) {
         injected(/^(?:PYTHONPATH|PYTHONHOME|PYTHONSTARTUP|PYTHONUSERBASE)$/i) ||
       java && (injected(/^(?:JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|GRADLE_OPTS|JAVA_OPTS)$/i) ||
         cache?.init || cache?.initKotlin || cache?.initDirectory ||
-        identities.find(([name]) => name === "native-npm")?.[1]?.bound !== true ||
         identities.find(([name]) => name === "native-configuration")?.[1]?.reusable !== true);
     const blocked = issues.length > 0 || notProbed.length > 0;
     results.push({ group, status: blocked ? "blocked" : "passed", issues, notProbed,

@@ -12,7 +12,7 @@ import { developmentReviewRequirements, isVerificationPolicyPath } from "../deve
 import { copyTypeScript, npmPackageDirectory, syntheticExecution, verificationTools, windowsNodeLauncher } from "./fixtures/verification-tools.mjs";
 import { combineVerification, executeVerification, verificationPlan } from "../verification.mjs";
 import { openVerificationRun, readVerificationRun } from "../verification-run.mjs";
-import { emulatorInputDifference, resolveVerificationExecutable, verificationExecutionPolicy } from "../verification-preflight.mjs";
+import { emulatorInputDifference, npmLaunchersBound, resolveVerificationExecutable, verificationExecutionPolicy } from "../verification-preflight.mjs";
 import { capturePromotionContext, prepareVerificationTransition } from "../verification-transition.mjs";
 import { WORKFLOW_TEST_FILES } from "../test-workflow.mjs";
 import { committedInputsMatch, committedSourceInputs, commitSourceProjection, sourceInputs } from "../git-state.mjs";
@@ -2792,6 +2792,24 @@ test("Android recovery binds installed Node input bytes even when source and APK
   const missing = (await preflight()).groups[0];
   assert.equal(missing.status, "blocked");
   assert.ok(missing.issues.some((item) => item.prerequisite === "root-dependencies"));
+});
+
+test("tooling cannot reuse an unbound native npm even when PowerShell npm is recognized", () => {
+  const powershell = { candidateSafe: true, candidateImplementation: true };
+  for (const group of ["tooling", "android", "device"]) {
+    assert.equal(npmLaunchersBound(group, powershell, { bound: true }), true, group);
+    for (const native of [undefined, {}, { bound: false }, { bound: "true" }]) {
+      assert.equal(npmLaunchersBound(group, powershell, native), false, group);
+    }
+  }
+  assert.equal(npmLaunchersBound("backend", powershell, { bound: false }), true);
+  assert.equal(npmLaunchersBound("backend", powershell, undefined), true);
+  for (const group of ["tooling", "backend", "android", "device"]) {
+    for (const unrecognized of [undefined, { ...powershell, candidateImplementation: false },
+      { ...powershell, candidateSafe: false }]) {
+      assert.equal(npmLaunchersBound(group, unrecognized, { bound: true }), false, group);
+    }
+  }
 });
 
 test("Android preflight binds the CMD-selected npm and refuses unknown launchers or prefix redirection",
