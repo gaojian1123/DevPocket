@@ -1,11 +1,11 @@
 param([string]$Jdk, [string]$Sdk, [switch]$Lint, [switch]$Instrumentation, [string]$GradleUserHome)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-if (-not $Jdk) { $Jdk = [IO.Path]::Combine($root, '.tools', 'jdk-21') }
+if (-not $Jdk) { $Jdk = [IO.Path]::Combine($root, '.tools', 'jdk-25') }
 if (-not $Sdk) { $Sdk = [IO.Path]::Combine($root, '.tools', 'android-sdk') }
 $javaName = if ($IsWindows) { 'java.exe' } else { 'java' }
 if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($Jdk, 'bin', $javaName)))) {
-    [Console]::Error.WriteLine('JDK 21 or 25 is required. Pass -Jdk or run prepare-android.ps1 -DownloadJdk.')
+    [Console]::Error.WriteLine('JDK 25 is required. Pass -Jdk or run prepare-android.ps1 -DownloadJdk.')
     exit 78
 }
 if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($Sdk, 'platforms', 'android-37.2', 'android.jar')))) {
@@ -14,6 +14,11 @@ if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($Sdk, 'platforms', 'android
 }
 $Jdk = (Resolve-Path -LiteralPath $Jdk).ProviderPath
 $Sdk = (Resolve-Path -LiteralPath $Sdk).ProviderPath
+$javaVersion = & ([IO.Path]::Combine($Jdk, 'bin', $javaName)) -version 2>&1
+if ($LASTEXITCODE -ne 0 -or ($javaVersion -join "`n") -notmatch '(?:openjdk|java) version "25(?:\.\d+)*"') {
+    [Console]::Error.WriteLine('JDK 25 is required. Pass -Jdk or run prepare-android.ps1 -DownloadJdk.')
+    exit 78
+}
 $GradleUserHome = if ($GradleUserHome) {
     $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($GradleUserHome)
 } else {

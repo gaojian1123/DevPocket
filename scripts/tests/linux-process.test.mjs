@@ -47,7 +47,7 @@ test("hosted preparation snapshots the JDK cache alias and trust store without c
   await mkdir(store);
   await writeFile(path.join(source, "bin", "java"), "#!/bin/sh\nexit 0\n");
   await chmod(path.join(source, "bin", "java"), 0o755);
-  await writeFile(path.join(source, "release"), 'JAVA_VERSION="21.0.12"\n');
+  await writeFile(path.join(source, "release"), 'JAVA_VERSION="25.0.1"\n');
   await writeFile(path.join(source, "lib", "src.zip"), "fixture-source");
   await symlink("lib/src.zip", path.join(source, "src.zip"));
   const certificate = path.join(store, "cacerts");
@@ -163,6 +163,7 @@ test("the real Linux PowerShell build entrypoint invokes the pinned wrapper with
   const recorder = path.join(directory, "java.mjs");
   await writeFile(recorder, [
     "import {writeFileSync} from 'node:fs';",
+    "if(process.argv.length===3 && process.argv[2]==='-version'){console.error('openjdk version \"25.0.1\"');process.exit(0);}",
     "writeFileSync('invocation.json',JSON.stringify({cwd:process.cwd(),args:process.argv.slice(2),",
     "java:process.env.JAVA_HOME,sdk:process.env.ANDROID_HOME,sdkRoot:process.env.ANDROID_SDK_ROOT,cache:process.env.GRADLE_USER_HOME}));",
     "process.exit(Number(process.env.FIXTURE_EXIT??0));",
@@ -209,7 +210,7 @@ async function nativeBuildFixture(t) {
     "#!/usr/bin/env node",
     "const fs=require('node:fs'),path=require('node:path');",
     `const root=${JSON.stringify(root)};`,
-    "if(process.argv.includes('-version')) { process.stderr.write('openjdk version \"21.0.12\"\\n'); }",
+    "if(process.argv.includes('-version')) { process.stderr.write('openjdk version \"25.0.1\"\\n'); }",
     "else {",
     " const cache=process.env.GRADLE_USER_HOME; fs.mkdirSync(cache,{recursive:true});",
     " fs.writeFileSync(path.join(cache,'build-only'),'synthetic dependency');",
@@ -290,8 +291,8 @@ test("hosted native preparation reclaims only its completed run cache and preser
 
 test("the real owned toolchain probes do not retain arbitrary version suffixes in device evidence", async (t) => {
   const fixture = await nativeBuildFixture(t);
-  const credential = `21-dpp_${"A".repeat(43)}`;
-  await writeFile(fixture.javaPath, (await readFile(fixture.javaPath, "utf8")).replace("21.0.12", credential));
+  const credential = `25-dpp_${"A".repeat(43)}`;
+  await writeFile(fixture.javaPath, (await readFile(fixture.javaPath, "utf8")).replace("25.0.1", credential));
   const report = {};
   await prepareAndroidRuntime(await ownedBuildRun(fixture, "version-projection"), report, undefined, { buildApks: false });
   assert.equal(report.toolchain.java, null);

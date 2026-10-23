@@ -137,7 +137,7 @@ export async function windowsNodeLauncher(root, base) {
 }
 
 export async function verificationTools(root, {
-  native = false, operations = false, capturePython = false, jdk, sdk, javaVersion = "21.0.1", emulatorNoise = false, emulatorVersion = "35.0.1",
+  native = false, operations = false, capturePython = false, jdk, sdk, javaVersion = "25.0.1", emulatorNoise = false, emulatorVersion = "35.0.1",
   emulatorAcceleration = process.platform === "darwin" ? "accel:\n0\nHypervisor.Framework OS X Version 15.0\naccel"
     : process.platform === "win32" ? "WHPX is installed and usable" : "KVM is installed and usable",
 } = {}) {
@@ -194,7 +194,7 @@ export async function verificationTools(root, {
     await writeFile(requirements, "cryptography==50.0.2\n");
   }
   if (native) {
-    jdk ??= path.join(root, ".tools", "jdk-21");
+    jdk ??= path.join(root, ".tools", "jdk-25");
     sdk ??= path.join(root, ".tools", "android-sdk");
     await putTool(path.join(jdk, "bin", executable("java")));
     await writeFile(path.join(jdk, "release"), `JAVA_VERSION=${JSON.stringify(javaVersion)}\n`);

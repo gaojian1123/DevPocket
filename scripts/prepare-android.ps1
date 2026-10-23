@@ -164,13 +164,13 @@ if ($Emulator) {
     }
 }
 if ($DownloadJdk) {
-    $jdk = Join-Path $tools 'jdk-21'
+    $jdk = Join-Path $tools 'jdk-25'
     if (-not (Test-Path -LiteralPath $jdk)) {
-        $asset = @(Invoke-RestMethod -Uri 'https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse' -TimeoutSec 90)[0]
+        $asset = @(Invoke-RestMethod -Uri 'https://api.adoptium.net/v3/assets/latest/25/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse' -TimeoutSec 90)[0]
         $package = $asset.binary.package
-        $zip = Join-Path $tools 'jdk-21.zip'
+        $zip = Join-Path $tools 'jdk-25.zip'
         Fetch-Verified $package.link $zip 'SHA256' $package.checksum
-        $stage = Join-Path $tools 'jdk-21.unpack'
+        $stage = Join-Path $tools 'jdk-25.unpack'
         Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
         $top = @(Get-ChildItem -LiteralPath $stage -Directory)
         if ($top.Count -ne 1) { throw 'Unexpected JDK archive layout.' }

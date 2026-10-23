@@ -2252,8 +2252,11 @@ test("selected-group preflight blocks missing dependencies and SDKs before any e
   });
 });
 
-test("Android preflight requires a JDK supported by API37 JVM tests", async (t) => {
-  for (const javaVersion of ["17.0.1", "21.0.1", "25.0.1"]) await t.test(javaVersion, async (t) => {
+test("Android preflight requires the project's stable JDK 25", async (t) => {
+  for (const [javaVersion, supported] of [
+    ["17.0.1", false], ["21.0.1", false], ["25", true],
+    ["25.0.1", true], ["25-ea", false], ["26.0.1", false],
+  ]) await t.test(javaVersion, async (t) => {
     const root = await repository(t, { native: true, javaVersion });
     await mkdir(path.join(root, "scripts"));
     await writeFile(path.join(root, "scripts", "build-android.ps1"), [
@@ -2261,8 +2264,8 @@ test("Android preflight requires a JDK supported by API37 JVM tests", async (t) 
       "Set-Content -LiteralPath '.data/native-ran' -Value 'yes'", "",
     ].join("\n"));
     const result = await verify(root, ["--group", "android"]);
-    if (javaVersion.startsWith("17.")) {
-      assert.equal(result.report.status, "blocked", "JDK17 cannot run the required API37 JVM tests.");
+    if (!supported) {
+      assert.equal(result.report.status, "blocked", "Only the project's stable JDK 25 may run native verification.");
       assert.ok(result.report.preflight.groups.some((group) => group.issues.some((issue) => issue.prerequisite === "jdk")));
       assert.equal(result.report.checks.find((check) => check.id === "android-build").executionState, "not-started");
       await assert.rejects(readFile(path.join(root, ".data", "native-ran")), { code: "ENOENT" });

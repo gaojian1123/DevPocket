@@ -750,7 +750,7 @@ export async function verificationPreflight(root, plan, options = {}) {
       const device = group === "device";
       await check("native-npm", nativeNpm, "preflight-tool", ["command-ownership", "npm"]);
       await check("android-entry", () => fileIdentity(path.join(root, "scripts", device ? "test-android.ps1" : "build-android.ps1")), "preflight-path");
-      const jdk = path.resolve(root, options.jdk ?? (device ? process.env.DEVPOCKET_JDK : undefined) ?? path.join(".tools", "jdk-21"));
+      const jdk = path.resolve(root, options.jdk ?? (device ? process.env.DEVPOCKET_JDK : undefined) ?? path.join(".tools", "jdk-25"));
       const sdk = path.resolve(root, options.sdk ?? (device ? process.env.DEVPOCKET_ANDROID_SDK : undefined) ?? path.join(".tools", "android-sdk"));
       const cacheDirectory = device && process.platform === "linux" && process.env.GITHUB_ACTIONS === "true" &&
         process.env.RUNNER_ENVIRONMENT === "github-hosted" ? path.join(options.directory, "device", "gradle-cache")
@@ -760,7 +760,7 @@ export async function verificationPreflight(root, plan, options = {}) {
         const java = path.join(jdk, "bin", executableName("java"));
         await access(java, constants.R_OK | constants.X_OK);
         const output = await probe(java, ["-version"]);
-        if (!/(?:openjdk|java) version "(?:21|25)\./.test(output)) throw diagnosticError("preflight-version");
+        if (!/(?:openjdk|java) version "25(?:\.\d+)*"/.test(output)) throw diagnosticError("preflight-version");
         return { jdk, java: await fileIdentity(java), release: await fileIdentity(path.join(jdk, "release")),
           tree: await treeIdentity(jdk), version: digest(output) };
       }), "preflight-sdk", ["command-ownership"]);

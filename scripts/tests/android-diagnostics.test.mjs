@@ -84,8 +84,8 @@ test("the diagnostic command projects SDK, compiler, JVM and lint failures witho
   assert.equal(await readFile(path.join(item.directory, "android-build.log"), "utf8"), log);
 });
 
-test("JDK diagnostics recognize the API37 requirement and historical build messages", async (t) => {
-  for (const versions of ["21 or 25", "17 or 21", "17, 21 or 25"]) {
+test("JDK diagnostics recognize the JDK 25 requirement and historical build messages", async (t) => {
+  for (const versions of ["25", "21 or 25", "17 or 21", "17, 21 or 25"]) {
     const item = await fixture(t, `JDK ${versions} is required. Pass -Jdk or run prepare-android.ps1 -DownloadJdk.\n`);
     const { report } = await collect(item);
     assert.deepEqual(report.failureKinds, ["jdk-incompatible"]);

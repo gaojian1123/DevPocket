@@ -1538,6 +1538,9 @@ to the SDK.` The minimal extra condition was an inherited `ANDROID_SDK_ROOT`
 pointing to a different existing directory; `-Jdk` and `-Sdk` selected the valid,
 already-provisioned toolchains:
 
+The JDK 21 path below belongs to that historical reproduction, not current setup
+guidance. Current native builds require JDK 25.
+
 ```powershell
 pwsh -NoProfile -NonInteractive -File scripts\build-android.ps1 `
   -Jdk C:\Projects\DevPocket\.tools\jdk-21 `
@@ -1667,7 +1670,7 @@ repaired, run full verification against the actual candidate.
 ## Android execution environment
 
 For local Windows runs, provision an isolated executor with hardware-accelerated emulation,
-JDK 21/25, SDK platform 37.2/build-tools 37.0.0, platform-tools, and an installed x86_64
+JDK 25, SDK platform 37.2/build-tools 37.0.0, platform-tools, and an installed x86_64
 system image. Licenses must already be accepted by the operator. The runner does
 not install tools, silently accept terms or change host virtualization settings.
 Explicit setup can use `scripts\prepare-android.ps1 -Emulator`; this downloads

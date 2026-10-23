@@ -188,7 +188,7 @@ export async function withAndroidEmulator(options, operation) {
   const diagnostics = options.diagnostics;
   const sdk = path.resolve(options.sdk ?? process.env.DEVPOCKET_ANDROID_SDK ?? path.join(root, ".tools", "android-sdk"));
   const emulatorSdk = path.resolve(options.emulatorSdk ?? process.env.DEVPOCKET_EMULATOR_SDK ?? sdk);
-  const jdk = path.resolve(options.jdk ?? process.env.DEVPOCKET_JDK ?? path.join(root, ".tools", "jdk-21"));
+  const jdk = path.resolve(options.jdk ?? process.env.DEVPOCKET_JDK ?? path.join(root, ".tools", "jdk-25"));
   const architecture = androidImageArchitecture();
   const image = (options.image ?? process.env.DEVPOCKET_ANDROID_IMAGE ??
     path.join("system-images", "android-37.0", "google_apis", architecture)).replaceAll("\\", path.sep);

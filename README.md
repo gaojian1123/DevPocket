@@ -762,7 +762,7 @@ Revocation closes live subscriptions and blocks new commands/uploads/downloads f
 ## Native Android build
 
 Requirements: Node.js 26 with the repository's locked npm dependencies restored,
-JDK 21 or 25, Android SDK platform 37.2/build-tools 37.0.0, and Gradle 9.8.2 (the wrapper
+JDK 25, Android SDK platform 37.2/build-tools 37.0.0, and Gradle 9.8.2 (the wrapper
 is pinned and checksum-verified). The native build compiles the portable
 component package; on a clean checkout, run `npm ci` from the repository root
 after the dependency-policy decision and before the Android build.
@@ -771,8 +771,9 @@ minSdk 26 and Java/Kotlin bytecode target 17, and targets Android 17 (API 37).
 Lint and Kotlin compiler warnings fail the project checks; release builds shrink
 unused resources as well as code.
 CI uses Temurin JDK 25. An existing Android Studio JBR 25 can be selected explicitly with `-Jdk`.
-API-37 Robolectric tests require Java 21 or newer; Java 17 bytecode remains the
-application target, not the host test-JVM requirement.
+Builds and JVM tests require stable JDK 25; the direct build entry and verification
+preflight reject other versions. Java 17 bytecode remains the application target,
+not the host build/test-JVM requirement.
 Native access is enabled only for the Gradle launcher/daemon and forked JVM
 tests that use their native libraries, not through global Java settings.
 API-37 Robolectric shared-memory initialization also needs the
@@ -792,6 +793,8 @@ One upstream Gradle deprecation warning remains with AGP 9.4.1 and Gradle 9.8.2:
 patching dependencies; update AGP when an upstream fix is released.
 
 If the SDK components/JDK are missing, the supplied preparation script downloads official packages only to `.tools`, verifies published checksums, and reuses an **already accepted** Android SDK license. It does not silently accept licenses, install system packages or change global environment variables.
+The JDK download and native entry points use `.tools\jdk-25` by default. Existing
+older JDK installations are not removed or silently used as a fallback.
 New SDK packages must have one unambiguous `channel-0` entry without a preview
 revision; metadata ordering never makes a preview the default.
 
@@ -803,7 +806,7 @@ revision; metadata ordering never makes a preview the default.
 Or pass existing installations:
 
 ```powershell
-.\scripts\build-android.ps1 -Jdk C:\YourJdk21 -Sdk C:\YourAndroidSdk -Lint
+.\scripts\build-android.ps1 -Jdk C:\YourJdk25 -Sdk C:\YourAndroidSdk -Lint
 ```
 
 The entrypoint selects `JAVA_HOME` and **both** `ANDROID_HOME` and
@@ -821,7 +824,7 @@ preparation script or automatic license acceptance.
 ### Complete local verification on macOS
 
 Use Node 26, npm 12.2.1, PowerShell 7, Python 3.12 or newer, Git with SSH signing support,
-JDK 21 or 25 and an Android SDK with platform 37.2, build-tools 37.0.0, platform-tools
+JDK 25 and an Android SDK with platform 37.2, build-tools 37.0.0, platform-tools
 and the emulator. Accept the SDK and system-image licenses yourself. Use Android
 Studio or Google's SDK manager on Mac; `prepare-android.ps1` is the Windows
 bootstrap, not a macOS installer. No Xcode simulator is involved.
