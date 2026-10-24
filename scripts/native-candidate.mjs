@@ -4,13 +4,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const nativeFiles = ["candidate-commit.mjs", "git-state.mjs"];
-const implementationFiles = [...new Set([...nativeFiles, "native-candidate.mjs", "development-policy.mjs",
+const implementationFiles = [...new Set([...nativeFiles, "native-candidate.mjs", "development-policy.mjs", "development-paths.mjs",
   "verification.mjs", "verification-policy.mjs", "process.mjs", "device-run.mjs", "worker-diagnostics.mjs",
   "device-diagnostics.mjs", "diagnostic-errors.mjs", "bounded-worker-log.mjs", "diagnostic-publication.mjs",
   "native-lifecycle.mjs", "verification-executor.mjs", "verification-backend.mjs", "verification-android.mjs",
   "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs", "verification-transition.mjs",
   "verification-tooling.mjs", "verification-admission.mjs", "verification-ci.mjs", "verification-ci-artifact.ps1",
-  "verify.mjs", "verify.ps1", "test-workflow.mjs", "owned-command-windows.mjs", "owned-command.cs", "owned-command.ps1",
+  "verify.mjs", "verify.ps1", "test-tooling.mjs", "owned-command-windows.mjs", "owned-command.cs", "owned-command.ps1",
   "owned-command-linux.py", "owned-command-darwin.py", "local-ipc.mjs", "android-platform.mjs", "emulator-resources.mjs"])].sort();
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 

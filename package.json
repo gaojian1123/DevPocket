@@ -3,11 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "npm@12.2.1",
   "workspaces": [
     "packages/components"
   ],
   "engines": {
-    "node": ">=24.0.0 <25"
+    "node": ">=26.12.1 <27",
+    "npm": ">=12.2.1 <13"
   },
   "scripts": {
     "build": "npm run build --workspace @devpocket/components && tsc -p backend/tsconfig.json && node scripts/bundle-extension.mjs",
@@ -17,7 +19,7 @@
     "typecheck": "npm run build --workspace @devpocket/components && tsc -p backend/tsconfig.json --noEmit && tsc -p backend/tsconfig.cli-proof.json",
     "test": "npm test --workspace @devpocket/components && node --import tsx --test backend/tests/*.test.ts",
     "verify": "pwsh -NoProfile -File scripts/verify.ps1",
-    "test:workflow": "node scripts/test-workflow.mjs",
+    "test:tooling": "node scripts/test-tooling.mjs",
     "emulator:status": "node scripts/emulator-resources.mjs status",
     "emulator:limit": "node scripts/emulator-resources.mjs limit",
     "test:android": "pwsh -NoProfile -File scripts/test-android.ps1",
@@ -36,16 +38,16 @@
   },
   "dependencies": {
     "@devpocket/components": "file:packages/components",
-    "ws": "8.21.3",
-    "zod": "3.25.76"
+    "ws": "8.22.0",
+    "zod": "4.6.7"
   },
   "devDependencies": {
-    "@types/node": "24.0.10",
-    "@types/ws": "8.18.1",
-    "esbuild": "0.25.5",
-    "tsx": "4.20.3",
-    "typescript": "5.8.3",
-    "zod-to-json-schema": "3.24.6"
+    "@babel/parser": "8.0.7",
+    "@types/node": "26.6.5",
+    "@types/ws": "8.18.2",
+    "esbuild": "0.28.2",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
   },
   "allowScripts": {
     "esbuild": true

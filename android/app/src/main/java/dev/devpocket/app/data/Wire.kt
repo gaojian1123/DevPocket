@@ -11,6 +11,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.JsonClassDiscriminator
 
 val WireJson = Json {
     ignoreUnknownKeys = true
@@ -33,6 +34,23 @@ data class Host(val id: String, val name: String, val online: Boolean, val lastS
 
 @Serializable
 data class Device(val id: String, val name: String)
+
+@Serializable
+@OptIn(ExperimentalSerializationApi::class)
+@JsonClassDiscriminator("provider")
+sealed interface PushRegistration {
+    @Serializable @SerialName("fcm")
+    data class Token(val token: String?) : PushRegistration {
+        init { require(token == null || token.length in 20..4096) }
+        override fun toString(): String = "Token(token=[REDACTED])"
+    }
+
+    @Serializable @SerialName("fcm-fid")
+    data class Installation(val fid: String?) : PushRegistration {
+        init { require(fid == null || Regex("[A-Za-z0-9_-]{22}").matches(fid)) }
+        override fun toString(): String = "Installation(fid=[REDACTED])"
+    }
+}
 
 @Serializable
 data class Capabilities(

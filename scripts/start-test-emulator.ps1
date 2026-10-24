@@ -5,6 +5,7 @@ param(
     [string]$Jdk = $env:DEVPOCKET_JDK,
     [string]$Image = $env:DEVPOCKET_ANDROID_IMAGE,
     [string]$RunDirectory,
+    [switch]$Visible,
     [ValidateRange(1, 86400)][int]$QueueTimeoutSeconds = 900
 )
 $ErrorActionPreference = 'Stop'
@@ -16,5 +17,6 @@ if ($EmulatorSdk) { $arguments += @('--emulator-sdk', $EmulatorSdk) }
 if ($Jdk) { $arguments += @('--jdk', $Jdk) }
 if ($Image) { $arguments += @('--image', $Image) }
 if ($RunDirectory) { $arguments += @('--directory', $RunDirectory) }
+if ($Visible) { $arguments += '--visible' }
 & node @arguments
 exit $LASTEXITCODE

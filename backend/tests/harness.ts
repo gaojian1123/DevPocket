@@ -5,11 +5,12 @@ import type { TestContext } from "node:test";
 import WebSocket from "ws";
 import { startRelay } from "../src/relay.js";
 import { provisionHost } from "../src/store.js";
+import type { PushSender } from "../src/push.js";
 
-export async function fixture(t: TestContext, now?: () => number) {
+export async function fixture(t: TestContext, now?: () => number, pushSender?: PushSender) {
   await mkdir(".data/tests", { recursive: true });
   const dataDir = await mkdtemp(path.resolve(".data/tests/protocol-"));
-  const relay = await startRelay({ dataDir, allowInsecureLoopback: true, port: 0, now });
+  const relay = await startRelay({ dataDir, allowInsecureLoopback: true, port: 0, now, pushSender });
   const sockets: WebSocket[] = [];
   t.after(async () => {
     for (const socket of sockets) socket.terminate();

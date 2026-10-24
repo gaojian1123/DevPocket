@@ -7,6 +7,7 @@ import { parseArgs, promisify } from "node:util";
 import { diagnosticDirectory } from "./diagnostic-publication.mjs";
 import { diagnosticError, failureDetails } from "./diagnostic-errors.mjs";
 import { committedInputEntries, readOnlyGit } from "./git-state.mjs";
+import { isVerificationPolicyPath } from "./development-paths.mjs";
 import { combineVerification, requireToolingShardReport, requireVerificationOutputDirectory, requireVerificationReportPath,
   verificationFailure, verificationPlan } from "./verification.mjs";
 import { CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "./verification-policy.mjs";
@@ -127,7 +128,7 @@ export function collectCIReports(plan, context, envelopes, upstream) {
     if (value.report.group !== group) throw fail();
     if (value.unit === "macos") macos = macosReport(plan, value.report);
     else if (group === "tooling") {
-      const descriptor = value.report.checks?.find((check) => check.id === "workflow-tests")?.toolingShard;
+      const descriptor = value.report.checks?.find((check) => check.id === "tooling-tests")?.toolingShard;
       if (value.unit !== `tooling-${descriptor?.id ?? "all"}`) throw fail();
     }
     if (value.unit !== "macos") reports.push(value.report);
@@ -233,7 +234,6 @@ export function validateLiveCIEnvelope(envelope, { repository, pullRequest, base
 }
 
 async function requirePolicyIdentity(root, candidate, repository, commit, api) {
-  const { isVerificationPolicyPath } = await import("./development-policy.mjs");
   const local = new Map((await committedInputEntries(root, candidate))
     .filter((entry) => isVerificationPolicyPath(entry.file)).map((entry) => [entry.file, `${entry.mode}:${entry.oid}`]));
   const tree = await api(`repos/${repository}/git/trees/${commit}?recursive=1`);

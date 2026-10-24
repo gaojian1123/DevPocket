@@ -1,8 +1,8 @@
-export const VERIFICATION_REPORT_VERSION = 5;
-export const isDiagnosticVerificationVersion = (version) => [1, 2, 3, 4, VERIFICATION_REPORT_VERSION].includes(version);
+export const VERIFICATION_REPORT_VERSION = 6;
+export const isDiagnosticVerificationVersion = (version) => [1, 2, 3, 4, 5, VERIFICATION_REPORT_VERSION].includes(version);
 
 export const CHECKS = [
-  { id: "workflow-tests", group: "tooling" },
+  { id: "tooling-tests", group: "tooling" },
   { id: "typecheck", group: "backend" },
   { id: "backend-tests", group: "backend" },
   { id: "backend-build", group: "backend" },
@@ -17,12 +17,17 @@ export const CHECKS = [
 
 export const CHECK_GROUPS = [...new Set(CHECKS.map((check) => check.group))];
 export const verificationGroups = (ids) => [...new Set(CHECKS.filter((check) => ids.includes(check.id)).map((check) => check.group))];
-export const diagnosticCheckGroup = (check, version) =>
-  version === 1 && check.id === "workflow-tests" ? "backend" : check.group;
+const diagnosticCheckId = (id, version) =>
+  [1, 2, 3, 4, 5].includes(version) && id === "tooling-tests" ? "workflow-tests" : id;
+// Historical names are diagnostic-only; acceptance uses the current CHECKS.
+export const diagnosticChecks = (version) => CHECKS.map((check) => ({
+  id: diagnosticCheckId(check.id, version),
+  group: version === 1 && check.id === "tooling-tests" ? "backend" : check.group,
+}));
 
 const allChecks = CHECKS.map((check) => check.id);
-const tooling = ["workflow-tests"];
-const backend = ["workflow-tests", "typecheck", "backend-tests", "backend-build", "schema"];
+const tooling = ["tooling-tests"];
+const backend = ["tooling-tests", "typecheck", "backend-tests", "backend-build", "schema"];
 const backendExecution = CHECKS.filter((check) => ["tooling", "backend"].includes(check.group)).map((check) => check.id);
 const android = ["android-build", "android-device"];
 const nativeExecution = { checks: [...tooling, ...android], layouts: () => true };
@@ -31,22 +36,22 @@ const rules = [
   { id: "documentation", description: "Documentation does not select application checks.",
     matches: (file) => ["README.md", "VALIDATION.md"].includes(file) || /^docs\/.*\.md$/.test(file), checks: [] },
   { id: "development-tooling", description: "Local tool setup, trust policy and candidate preparation use the complete tooling suite.",
-    matches: (file) => ["scripts/development-policy.mjs",
+    matches: (file) => ["scripts/development-policy.mjs", "scripts/development-paths.mjs",
       "scripts/candidate-commit.mjs", "scripts/native-candidate.mjs",
-      "scripts/setup-xcode-mcp.mjs", "config/xcode-mcp.example.json", "scripts/test-workflow.mjs"].includes(file), checks: tooling },
-  { id: "agent-instructions", description: "DevPocket development instructions use workflow regressions, not application checks.",
+      "scripts/setup-xcode-mcp.mjs", "config/xcode-mcp.example.json", "scripts/test-tooling.mjs"].includes(file), checks: tooling },
+  { id: "agent-instructions", description: "DevPocket development instructions use tooling regressions, not application checks.",
     matches: (file) => ["AGENTS.md", ".github/agents/devpocket-reviewer.agent.md",
       ".github/skills/devpocket-development/SKILL.md", ".github/ISSUE_TEMPLATE/ai-task.yml"].includes(file), checks: tooling },
-  { id: "verification-contract", description: "Source identity, planning, evidence validation and report projection use workflow contracts, not application builds.",
+  { id: "verification-contract", description: "Source identity, planning, evidence validation and report projection use tooling contracts, not application builds.",
     matches: (file) => [".gitignore", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
       "scripts/verify.mjs", "scripts/verify.ps1", "scripts/verification-tooling.mjs", "scripts/verification-diagnostics.mjs", "scripts/diagnostic-errors.mjs",
       "scripts/diagnostic-publication.mjs", "scripts/android-diagnostics.mjs", "scripts/device-diagnostics.mjs",
       "scripts/worker-diagnostics.mjs", "scripts/native-lifecycle.mjs"].includes(file), checks: tooling },
-  { id: "tooling-regression", description: "Named synthetic workflow regressions run the complete workflow suite without provisioning application toolchains.",
+  { id: "tooling-regression", description: "Named synthetic tooling regressions run the complete tooling suite without provisioning application toolchains.",
     matches: (file) => [
       "verification", "verification-execution", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
       "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
-      "bounded-worker-log", "development-tools", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime", "xcode-mcp", "workflow-runner", "macos-host",
+      "bounded-worker-log", "development-tools", "development-approval", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime", "xcode-mcp", "tooling-runner", "macos-host",
     ].some((name) => file === `scripts/tests/${name}.test.mjs`) ||
       ["scripts/tests/fixtures/emulator-lease-peer.mjs", "scripts/tests/fixtures/verification-tools.mjs"].includes(file), checks: tooling },
   { id: "backend-execution", description: "Backend command adaptation, builds and packaging require backend checks, not native execution.",
@@ -85,7 +90,7 @@ const rules = [
     checks: [...backend, "extension-package", "setup", ...android] },
   { id: "backend-integration", description: "Runtime integration changes require backend and native compatibility checks.",
     matches: (file) => file.startsWith("backend/integration/"), checks: [...backend, ...android] },
-  { id: "backend", description: "Backend changes require workflow regressions and backend checks.",
+  { id: "backend", description: "Backend changes require tooling regressions and backend checks.",
     matches: (file) => file.startsWith("backend/"), checks: backend },
   { id: "runtime-extension", description: "The shipped runtime extension requires backend, packaging and setup checks.",
     matches: (file) => file.startsWith("extension/"), checks: [...backend, "extension-package", "setup"] },
@@ -106,17 +111,18 @@ const otherPlatformInputs = new Set([
 ]);
 const selectsMacos = (file, rule) => !otherPlatformInputs.has(file) && (
   macosRules.has(rule.id) || rule.id === "android-execution" ||
-  rule.id === "tooling-regression" && /^scripts\/tests\/(?:verification(?:-execution|-diagnostics)?|development-tools|android-runner|android-build|native-lifecycle|process|emulator-resources|manual-emulator|xcode-mcp|workflow-runner|macos-host)\.test\.mjs$/.test(file) ||
+  rule.id === "tooling-regression" && /^scripts\/tests\/(?:verification(?:-execution|-diagnostics)?|development-(?:tools|approval)|android-runner|android-build|native-lifecycle|process|emulator-resources|manual-emulator|xcode-mcp|tooling-runner|macos-host)\.test\.mjs$/.test(file) ||
   file === "scripts/tests/fixtures/emulator-lease-peer.mjs" || file === "scripts/tests/fixtures/verification-tools.mjs");
 const orderedChecks = (ids) => allChecks.filter((id) => ids.includes(id));
 const safePath = (file) => typeof file === "string" && file.length <= 240 &&
   /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/.test(file) && !file.split("/").some((part) => [".", ".."].includes(part));
 const pathLimit = 16;
 
-function explanation(rule, files) {
+function explanation(rule, files, version = VERIFICATION_REPORT_VERSION) {
   const paths = files.filter(safePath).slice(0, pathLimit);
+  const checks = orderedChecks(rule.checks).map((id) => diagnosticCheckId(id, version));
   return { rule: rule.id, description: rule.description, paths, omittedPaths: files.length - paths.length,
-    checks: orderedChecks(rule.checks), groups: verificationGroups(rule.checks) };
+    checks, groups: [...new Set(diagnosticChecks(version).filter((check) => checks.includes(check.id)).map((check) => check.group))] };
 }
 
 export function verificationImpact(changedFiles, all = false) {
@@ -142,12 +148,12 @@ export function verificationImpact(changedFiles, all = false) {
 // Diagnostics are not evidence. Rebuild fixed descriptions/checks and only show current source-indexed paths.
 export function projectVerificationSelection(report, sourcePaths) {
   if (!Array.isArray(report?.requiredChecks)) return null;
-  const selected = CHECKS.filter((check) => report.requiredChecks.includes(check.id));
+  const selected = diagnosticChecks(report.version).filter((check) => report.requiredChecks.includes(check.id));
   const requiredChecks = selected.map((check) => check.id);
-  const reasons = [3, VERIFICATION_REPORT_VERSION].includes(report.version) && Array.isArray(report.selectionReasons) ? report.selectionReasons : [];
+  const reasons = [3, 5, VERIFICATION_REPORT_VERSION].includes(report.version) && Array.isArray(report.selectionReasons) ? report.selectionReasons : [];
   let remainingPaths = pathLimit;
   return {
-    requiredChecks, requiredGroups: [...new Set(selected.map((check) => diagnosticCheckGroup(check, report.version)))],
+    requiredChecks, requiredGroups: [...new Set(selected.map((check) => check.group))],
     layouts: typeof report.layouts === "boolean" ? report.layouts : "unknown",
     ciMacos: typeof report.ciMacos === "boolean" ? report.ciMacos : "unknown",
     ...([1, 2].includes(report.version) ? { legacyAgentReview: {
@@ -161,7 +167,7 @@ export function projectVerificationSelection(report, sourcePaths) {
         safePath(file) && sourcePaths.has(file) && ruleFor(file).id === rule.id))].sort().slice(0, remainingPaths);
       remainingPaths -= paths.length;
       const omitted = Number.isSafeInteger(input.omittedPaths) && input.omittedPaths >= 0 ? input.omittedPaths : 0;
-      return [{ ...explanation(rule, paths), omittedPaths: Math.min(1_000_000, omitted + input.paths.length - paths.length) }];
+      return [{ ...explanation(rule, paths, report.version), omittedPaths: Math.min(1_000_000, omitted + input.paths.length - paths.length) }];
     }),
   };
 }

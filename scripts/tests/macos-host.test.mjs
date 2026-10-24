@@ -57,8 +57,8 @@ test("macOS host admission retries Unix socket creation contention",
   });
 
 test("the native shard retains macOS host regressions without launching an Android emulator", async () => {
-  const { WORKFLOW_TEST_SHARDS } = await import("../test-workflow.mjs");
-  const native = WORKFLOW_TEST_SHARDS.find((part) => part.id === "native");
+  const { TOOLING_TEST_SHARDS } = await import("../test-tooling.mjs");
+  const native = TOOLING_TEST_SHARDS.find((part) => part.id === "native");
   for (const name of ["macos-host", "process", "emulator-resources", "android-runner", "android-build"]) {
     assert.ok(native.files.includes(`scripts/tests/${name}.test.mjs`));
   }

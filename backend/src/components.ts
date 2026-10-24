@@ -117,7 +117,7 @@ function projectSpec(input: unknown): { spec: ComponentSpec; redacted: boolean }
         const token = pending[index]!;
         inspect(token.content);
         inspect(markdown.utils.unescapeAll(token.info));
-        for (const [, value] of token.attrs ?? []) inspect(value);
+        for (const [, value] of token.attrs ?? []) inspect(String(value));
         if (token.children) {
           const parts: string[] = [];
           const inspectRun = () => {

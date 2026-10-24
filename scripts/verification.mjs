@@ -90,8 +90,8 @@ export function verificationFailure(error, phase = "command") {
     ...(Number.isSafeInteger(index) && index >= 0 && index < 128 ? { inputIndex: index } : {}),
     ...(["app", "instrumentation"].includes(artifact) ? { artifact } : {}),
     ...(Array.isArray(missing) ? { missingChecks: CHECKS.filter((item) => missing.includes(item.id)).map((item) => item.id) } : {}),
-    ...(["node", "command-ownership", "powershell", "output-directory", "root-dependencies", "npm", "git",
-      "ssh-keygen", "python", "azure-dependencies", "probe-python", "operations-python", "jdk", "android-platform-35",
+    ...(["node", "command-ownership", "powershell", "output-directory", "root-dependencies", "npm", "native-npm", "git",
+      "ssh-keygen", "python", "azure-dependencies", "probe-python", "operations-python", "jdk", "android-platform-35", "android-platform-37.2",
       "gradle-wrapper", "android-entry", "android-output", "backend-output", "gradle-cache", "native-configuration",
       "android-image", "adb", "emulator-acceleration", "typecheck-contract"]
       .includes(ownValue(context, "prerequisite")) ? { prerequisite: ownValue(context, "prerequisite") } : {}),
@@ -125,7 +125,7 @@ export async function verificationPlan(root, base, all = false, options) {
   }
   return {
     version: VERIFICATION_REPORT_VERSION, base: baseSha, source, changedFiles, ...impact,
-    ...(impact.requiredChecks.includes("workflow-tests") ? { toolingShards: await toolingCatalogue(root) } : {}),
+    ...(impact.requiredChecks.includes("tooling-tests") ? { toolingShards: await toolingCatalogue(root) } : {}),
     ...(device ? { trustedDeviceClasses, deviceClassCatalogueAvailable,
       deviceClassCatalogueFailure: deviceClassCatalogueFailure ?? null } : {}),
   };
@@ -193,7 +193,7 @@ export async function validateVerificationEvidence(root, plan, reports, options 
 export function requireCheckPolicy(plan) {
   if (plan.version !== VERIFICATION_REPORT_VERSION || !Array.isArray(plan.requiredChecks) ||
       plan.ciMacos !== undefined && typeof plan.ciMacos !== "boolean" ||
-      plan.ciMacos === true && !plan.requiredChecks.includes("workflow-tests") ||
+      plan.ciMacos === true && !plan.requiredChecks.includes("tooling-tests") ||
       JSON.stringify(plan.requiredChecks) !== JSON.stringify(CHECKS.filter((check) => plan.requiredChecks.includes(check.id)).map((check) => check.id)) ||
       JSON.stringify(plan.requiredGroups) !== JSON.stringify(verificationGroups(plan.requiredChecks))) {
     throw verificationFault("policy-mismatch");
@@ -216,7 +216,7 @@ export function combineVerification(plan, reports) {
           execution: checkExecution(check, plan.source, plan) });
         continue;
       }
-      if (passed.has(check.id) || check.id === "workflow-tests" && toolingParts.size) {
+      if (passed.has(check.id) || check.id === "tooling-tests" && toolingParts.size) {
         throw verificationFault("check-duplicate", { ...context, check: check.id });
       }
       passed.set(check.id, {
@@ -231,9 +231,9 @@ export function combineVerification(plan, reports) {
   if (toolingParts.size) {
     const expected = requireToolingCatalogue(plan.toolingShards).parts;
     if (expected.length !== toolingParts.size || expected.some((part) => !toolingParts.has(part.id))) {
-      throw verificationFault("shard-missing", { missing: ["workflow-tests"] });
+      throw verificationFault("shard-missing", { missing: ["tooling-tests"] });
     }
-    passed.set("workflow-tests", { id: "workflow-tests", status: "passed", exitCode: 0,
+    passed.set("tooling-tests", { id: "tooling-tests", status: "passed", exitCode: 0,
       execution: { kind: "tooling-shards", source: structuredClone(plan.source),
         parts: expected.map((part) => toolingParts.get(part.id)) } });
   }
@@ -246,7 +246,7 @@ export function combineVerification(plan, reports) {
 function checkExecution(check, source, plan) {
   const value = check.execution;
   if (value?.kind === "tooling-shards") {
-    if (check.id !== "workflow-tests" || check.toolingShard || !Array.isArray(value.parts) ||
+    if (check.id !== "tooling-tests" || check.toolingShard || !Array.isArray(value.parts) ||
         value.source?.head !== source.head || value.source?.fingerprint !== source.fingerprint) {
       throw verificationFault("execution-origin", { check: check.id });
     }
@@ -311,9 +311,9 @@ function validatedReportChecks(plan, report, inputIndex, allowToolingShard = fal
     if (report.group !== "all" && definition.group !== report.group) throw verificationFault("check-group", { ...context, check: check.id });
     if (check.status !== "passed" || check.exitCode !== 0) throw verificationFault("check-failed", { ...context, check: check.id });
     if (check.toolingShard) {
-      if (!allowToolingShard || check.id !== "workflow-tests" || report.group !== "tooling" ||
+      if (!allowToolingShard || check.id !== "tooling-tests" || report.group !== "tooling" ||
           report.status !== "partial" || report.complete !== false) {
-        throw verificationFault("shard-missing", { ...context, missing: ["workflow-tests"] });
+        throw verificationFault("shard-missing", { ...context, missing: ["tooling-tests"] });
       }
       requireToolingShard(plan, check.toolingShard);
     }

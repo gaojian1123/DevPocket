@@ -13,7 +13,7 @@ import { toolingCatalogue, toolingShardDescriptor } from "../verification-toolin
 import { combineVerification, verificationPlan } from "../verification.mjs";
 import { VERIFICATION_REPORT_VERSION, verificationImpact } from "../verification-policy.mjs";
 import { sdkPreparationFixture, syntheticExecution } from "./fixtures/verification-tools.mjs";
-import { WORKFLOW_TEST_FILES, WORKFLOW_TEST_SHARDS } from "../test-workflow.mjs";
+import { TOOLING_TEST_FILES, TOOLING_TEST_SHARDS } from "../test-tooling.mjs";
 import { ciReportEnvelope, collectCIReports, githubVerificationContext, qualifyGitHubCI, validateLiveCIEnvelope } from "../verification-ci.mjs";
 import { dependencies, verificationArtifacts } from "../verification-preflight.mjs";
 
@@ -98,7 +98,7 @@ test("SDK preparation initializes matching package metadata without accepting li
   const run = () => exec("pwsh", ["-NoProfile", "-NonInteractive", "-File", entry], { timeout: 30000 });
   const models = JSON.parse((await run()).stdout);
   assert.ok(models.every((item) => item.exists), "Archive extraction alone must not leave SDK package metadata missing.");
-  assert.deepEqual(models.map((item) => item.path), ["platforms;android-35", "build-tools;35.0.0"]);
+  assert.deepEqual(models.map((item) => item.path), ["platforms;android-37.2", "build-tools;37.0.0"]);
   assert.ok(models.every((item) => item.rootNamespace === "http://schemas.android.com/repository/android/common/02" &&
     item.remoteNodes === 0 && item.license === "android-sdk-license"));
   assert.deepEqual(models.map((item) => item.typeNamespace), [
@@ -110,7 +110,7 @@ test("SDK preparation initializes matching package metadata without accepting li
   await run();
   assert.deepEqual(await Promise.all(metadata.map((file) => readFile(file))), bytes);
   assert.equal(await readFile(path.join(root, ".tools", "android-sdk", "licenses", "android-sdk-license"), "utf8"), "fixture-already-accepted\n");
-  await writeFile(path.join(root, ".tools", "android-sdk", "build-tools", "35.0.0", "source.properties"), "Pkg.Revision=34.0.0\n");
+  await writeFile(path.join(root, ".tools", "android-sdk", "build-tools", "37.0.0", "source.properties"), "Pkg.Revision=34.0.0\n");
   await rm(metadata[1]);
   await assert.rejects(run(), (error) => error.code === 1 && /revision/.test(error.stderr));
   await assert.rejects(readFile(metadata[1]), { code: "ENOENT" });
@@ -126,10 +126,10 @@ test("tooling shards partition the complete declared suite and preserve every ex
   assert.equal(new Set(files).size, files.length);
   const plan = { version: VERIFICATION_REPORT_VERSION, base: "a".repeat(40),
     source: { head: "b".repeat(40), fingerprint: "c".repeat(64) },
-    requiredChecks: ["workflow-tests"], requiredGroups: ["tooling"], toolingShards: catalogue };
+    requiredChecks: ["tooling-tests"], requiredGroups: ["tooling"], toolingShards: catalogue };
   const reports = catalogue.parts.map((part) => ({
     ...plan, group: "tooling", status: "partial", complete: false,
-    checks: [{ id: "workflow-tests", status: "passed", exitCode: 0,
+    checks: [{ id: "tooling-tests", status: "passed", exitCode: 0,
       toolingShard: toolingShardDescriptor(plan, part.id), execution: syntheticExecution(plan.source) }],
   }));
   const combined = combineVerification(plan, reports);
@@ -146,6 +146,9 @@ test("tooling shards partition the complete declared suite and preserve every ex
     (rows) => { rows[0].checks[0].toolingShard.catalogue = "d".repeat(64); },
     (rows) => { rows[0].checks[0].execution.source.head = "d".repeat(40); },
     (rows) => { rows[0].version = 4; },
+    (rows) => { rows[0].version = 5; },
+    (rows) => { rows[0].requiredChecks = ["workflow-tests"]; },
+    (rows) => { rows[0].checks[0].id = "workflow-tests"; },
   ]) {
     const altered = structuredClone(reports); change(altered);
     assert.throws(() => combineVerification(plan, altered));
@@ -159,14 +162,14 @@ test("macOS CI selection includes shared infrastructure without adding a local d
   for (const file of [
     "scripts/owned-command-darwin.py", "scripts/process.mjs", "scripts/local-ipc.mjs",
     "scripts/emulator-resources.mjs", "scripts/verification-preflight.mjs",
-    "scripts/verification-policy.mjs", "scripts/verification-ci.mjs", "scripts/test-workflow.mjs",
+    "scripts/verification-policy.mjs", "scripts/verification-ci.mjs", "scripts/test-tooling.mjs",
     "scripts/tests/process.test.mjs", "scripts/tests/emulator-resources.test.mjs",
     "scripts/tests/macos-host.test.mjs", "scripts/tests/android-runner.test.mjs",
     "package.json", "package-lock.json", ".github/workflows/ci.yml", "scripts/unknown-owner.mjs",
   ]) {
     const plan = verificationImpact([file]);
     assert.equal(plan.ciMacos, true, file);
-    assert.ok(plan.requiredChecks.includes("workflow-tests"), file);
+    assert.ok(plan.requiredChecks.includes("tooling-tests"), file);
   }
   for (const files of [
     [], ["README.md"], ["docs/guide.md"], ["backend/src/store.ts"],
@@ -175,7 +178,7 @@ test("macOS CI selection includes shared infrastructure without adding a local d
     ["scripts/tests/linux-runtime.test.mjs"],
   ]) assert.equal(verificationImpact(files).ciMacos, false, JSON.stringify(files));
   const focused = verificationImpact(["scripts/tests/process.test.mjs"]);
-  assert.deepEqual(focused.requiredChecks, ["workflow-tests"]);
+  assert.deepEqual(focused.requiredChecks, ["tooling-tests"]);
   assert.deepEqual(focused.requiredGroups, ["tooling"]);
   assert.equal(focused.layouts, false);
   assert.equal(verificationImpact(["README.md"], true).ciMacos, true);
@@ -185,7 +188,7 @@ test("macOS CI selection includes shared infrastructure without adding a local d
 test("macOS CI requires its own successful upstream and source-bound native report", async () => {
   const plan = { version: VERIFICATION_REPORT_VERSION, base: "a".repeat(40),
     source: { head: "b".repeat(40), fingerprint: "c".repeat(64) }, ciMacos: true,
-    requiredChecks: ["workflow-tests"], requiredGroups: ["tooling"], toolingShards: await toolingCatalogue(process.cwd()) };
+    requiredChecks: ["tooling-tests"], requiredGroups: ["tooling"], toolingShards: await toolingCatalogue(process.cwd()) };
   const context = { repository: "fixture/verification", runId: "1234", attempt: 1, event: "pull_request",
     candidate: "d".repeat(40), pullRequest: 11, pullRequestBase: plan.base,
     tested: { head: plan.source.head, tree: "e".repeat(40) }, workflowSha: plan.source.head,
@@ -193,7 +196,7 @@ test("macOS CI requires its own successful upstream and source-bound native repo
   const reports = plan.toolingShards.parts.map((part) => ({
     ...plan, group: "tooling", status: "partial", complete: false,
     environment: { platform: "win32", architecture: "x64" },
-    checks: [{ id: "workflow-tests", status: "passed", exitCode: 0,
+    checks: [{ id: "tooling-tests", status: "passed", exitCode: 0,
       toolingShard: toolingShardDescriptor(plan, part.id), execution: syntheticExecution(plan.source),
       executionState: "exited", commandOutcome: {
         observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0, cleanupFailure: null,
@@ -206,6 +209,11 @@ test("macOS CI requires its own successful upstream and source-bound native repo
   const macos = structuredClone(reports.find((report) => report.checks[0].toolingShard.id === "native"));
   macos.environment = { platform: "darwin", architecture: "arm64" };
   const leaf = ciReportEnvelope(macos, context, "macos");
+  assert.throws(() => ciReportEnvelope({ ...macos, version: 5 }, context, "macos"));
+  const legacyReport = { ...leaf.report, version: 5 };
+  assert.throws(() => collectCIReports(plan, context, [...windows, {
+    ...leaf, report: legacyReport, reportDigest: createHash("sha256").update(JSON.stringify(legacyReport)).digest("hex"),
+  }], upstream));
   const combined = collectCIReports(plan, context, [...windows, leaf], upstream);
   assert.equal(combined.report.complete, true);
   assert.deepEqual(combined.macos.environment, macos.environment);
@@ -266,6 +274,16 @@ test("macOS CI requires its own successful upstream and source-bound native repo
     new Map([["tooling", "success"], ["macos", "skipped"]])).report.complete, true);
 });
 
+test("CI cancels superseded runs only for the same pull request", async () => {
+  const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
+  assert.ok(workflow.includes([
+    "\nconcurrency:",
+    "  group: devpocket-verification-${{ github.event.pull_request.number || github.ref }}",
+    "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+    "",
+  ].join("\n")), "Keep stable per-PR groups and do not cancel manually dispatched runs.");
+});
+
 test("macOS CI workflow is plan-selected, source-sealed and required by the final gate", async () => {
   const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
   const start = workflow.indexOf("  macos:\n");
@@ -273,7 +291,9 @@ test("macOS CI workflow is plan-selected, source-sealed and required by the fina
   const macos = workflow.slice(start, workflow.indexOf("  backend:\n", start));
   assert.match(macos, /needs: plan/);
   assert.match(macos, /needs\.plan\.outputs\.macos == 'true'/);
-  assert.match(macos, /runs-on: macos-15/);
+  assert.match(macos, /runs-on: macos-latest/);
+  assert.match(macos, /process\.platform !== 'darwin'/);
+  assert.match(macos, /process\.arch !== 'arm64'/);
   assert.match(macos, /--tooling-shard native/);
   assert.match(macos, /--seal --unit macos/);
   assert.match(macos, /verification-macos-attempt-/);
@@ -290,14 +310,14 @@ test("the actual shard CLI executes only its assigned files and cannot independe
   const root = await fixture(t), scripts = path.join(root, "scripts");
   await mkdir(path.join(scripts, "tests"), { recursive: true });
   await mkdir(path.join(root, ".data"));
-  await copyFile(path.resolve("scripts", "test-workflow.mjs"), path.join(scripts, "test-workflow.mjs"));
-  for (const [index, file] of WORKFLOW_TEST_FILES.entries()) {
+  await copyFile(path.resolve("scripts", "test-tooling.mjs"), path.join(scripts, "test-tooling.mjs"));
+  for (const [index, file] of TOOLING_TEST_FILES.entries()) {
     await writeFile(path.join(root, file),
       `import {test} from 'node:test';import {appendFileSync} from 'node:fs';test('part-${index}',()=>appendFileSync('.data/counts','${index}\\n'));\n`);
   }
   await writeFile(path.join(root, ".gitignore"), ".data/\n");
   await writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module", scripts: {
-    "test:workflow": "node scripts/test-workflow.mjs",
+    "test:tooling": "node scripts/test-tooling.mjs",
   } }));
   await exec("git", ["init", "--quiet"], { cwd: root });
   await exec("git", ["add", "."], { cwd: root });
@@ -307,7 +327,7 @@ test("the actual shard CLI executes only its assigned files and cannot independe
   const reports = [];
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
-  for (const { id: part } of WORKFLOW_TEST_SHARDS) {
+  for (const { id: part } of TOOLING_TEST_SHARDS) {
     const report = path.join(root, ".data", "verification", part, "report.json");
     await exec(process.execPath, [path.resolve("scripts/verify.mjs"), "--repo", root, "--base", "HEAD",
       "--group", "tooling", "--tooling-shard", part, "--report", report], { timeout: 120000, env });
@@ -316,10 +336,10 @@ test("the actual shard CLI executes only its assigned files and cannot independe
     assert.equal(reports.at(-1).complete, false);
   }
   const counts = (await readFile(path.join(root, ".data", "counts"), "utf8")).trim().split("\n").map(Number).sort((a, b) => a - b);
-  assert.deepEqual(counts, WORKFLOW_TEST_FILES.map((_, index) => index));
+  assert.deepEqual(counts, TOOLING_TEST_FILES.map((_, index) => index));
   const combined = combineVerification(reports[0], reports);
   assert.equal(combined.complete, true);
-  assert.equal(combined.checks[0].execution.parts.length, WORKFLOW_TEST_SHARDS.length);
+  assert.equal(combined.checks[0].execution.parts.length, TOOLING_TEST_SHARDS.length);
   await assert.rejects(exec(process.execPath, [path.resolve("scripts/verify.mjs"), "--repo", root, "--base", "HEAD",
     "--group", "tooling", "--resume", path.join(root, reports[0].run.manifest),
     "--report", path.join(root, ".data", "verification", "wrong-scope", "report.json")], { timeout: 120000, env }));
@@ -477,9 +497,9 @@ async function ciFixture(t, { documentation = false, macos = false } = {}) {
   await mkdir(path.join(root, "scripts"));
   await writeFile(path.join(root, ".gitignore"), ".data/\n");
   await writeFile(path.join(root, "package.json"), JSON.stringify({
-    scripts: { "test:workflow": macos ? "node scripts/test-workflow.mjs" : 'node -e "process.exit(0)"' },
+    scripts: { "test:tooling": macos ? "node scripts/test-tooling.mjs" : 'node -e "process.exit(0)"' },
   }) + "\n");
-  if (macos) await copyFile("scripts/test-workflow.mjs", path.join(root, "scripts", "test-workflow.mjs"));
+  if (macos) await copyFile("scripts/test-tooling.mjs", path.join(root, "scripts", "test-tooling.mjs"));
   await git("init", "--quiet");
   await git("config", "user.name", "Fixture");
   await git("config", "user.email", "fixture@example.invalid");
@@ -487,6 +507,9 @@ async function ciFixture(t, { documentation = false, macos = false } = {}) {
   await git("commit", "--quiet", "-m", "CI base");
   const originalBase = await git("rev-parse", "HEAD");
   await writeFile(path.join(root, "scripts", "verification.mjs"), "// already in the PR base\n");
+  for (const name of ["development-paths", "development-policy"]) {
+    await writeFile(path.join(root, "scripts", `${name}.mjs`), "// protected fixture input\n");
+  }
   await git("add", ".");
   await git("commit", "--quiet", "-m", "Earlier shared infrastructure change");
   const base = await git("rev-parse", "HEAD");
@@ -512,7 +535,7 @@ async function ciFixture(t, { documentation = false, macos = false } = {}) {
   delete env.NODE_TEST_CONTEXT;
   const context = await githubVerificationContext(root, env), plan = await verificationPlan(root, base);
   const report = { ...plan, group: documentation ? "all" : "tooling", status: "passed", complete: true, fixtureEvidence: true,
-    checks: documentation ? [] : [{ id: "workflow-tests", status: "passed", exitCode: 0, execution: syntheticExecution(plan.source) }] };
+    checks: documentation ? [] : [{ id: "tooling-tests", status: "passed", exitCode: 0, execution: syntheticExecution(plan.source) }] };
   return { root, base, originalBase, candidate, repository, pullRequest, env, context, plan, report };
 }
 
@@ -522,7 +545,7 @@ test("the CI collector CLI cannot qualify selected macOS coverage from Windows a
   const reports = item.plan.toolingShards.parts.map((part) => ({
     ...item.plan, fixtureEvidence: true, group: "tooling", status: "partial", complete: false,
     environment: { platform: "win32", architecture: "x64" },
-    checks: [{ id: "workflow-tests", status: "passed", exitCode: 0,
+    checks: [{ id: "tooling-tests", status: "passed", exitCode: 0,
       toolingShard: toolingShardDescriptor(item.plan, part.id), execution: syntheticExecution(item.plan.source),
       executionState: "exited", commandOutcome: {
         observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0, cleanupFailure: null,
@@ -723,7 +746,7 @@ test("CI qualification rejects stale, foreign, incomplete and relabelled platfor
   assert.throws(() => collectCIReports(item.plan, item.context, [foreign], new Map([["tooling", "success"]])));
 });
 
-test("the qualification CLI keeps requested report names separate from authenticated evidence", async (t) => {
+test("the qualification CLI isolates approval code and keeps report names separate from authenticated evidence", async (t) => {
   const item = await ciFixture(t), workspace = path.join(item.root, ".data", "qualification-worktree");
   await exec("git", ["remote", "add", "origin", `https://github.com/${item.repository}.git`], { cwd: item.root });
   await exec("git", ["worktree", "add", "--quiet", workspace, "candidate"], { cwd: item.root });
@@ -780,7 +803,11 @@ test("the qualification CLI keeps requested report names separate from authentic
     await writeFile(fixtureData, JSON.stringify(responses));
     await writeFile(preload, [
       "import childProcess from 'node:child_process';import {readFileSync,appendFileSync} from 'node:fs';",
-      "import {promisify} from 'node:util';import {syncBuiltinESMExports} from 'node:module';",
+      "import {promisify} from 'node:util';import {syncBuiltinESMExports,registerHooks} from 'node:module';",
+      "registerHooks({resolve(specifier,context,next){",
+      " if(specifier.endsWith('/development-policy.mjs'))throw new Error('Qualification loaded approval implementation');",
+      " return next(specifier,context);",
+      "}});",
       `const fixture=JSON.parse(readFileSync(${JSON.stringify(fixtureData)},'utf8'));`,
       "const original=childProcess.execFile, native=promisify(original);",
       "const replacement=(file,...args)=>{if(file==='gh')throw new Error('Unexpected non-promisified GitHub call');return original(file,...args);};",
@@ -821,6 +848,33 @@ test("the qualification CLI keeps requested report names separate from authentic
         }
       });
     }
+    await t.test("approval presentation edits do not load candidate approval code", async () => {
+      const { captureCandidateImplementation } = await import("../native-candidate.mjs");
+      const captured = await captureCandidateImplementation(), implementation = path.join(directory, "presentation-edit");
+      await mkdir(implementation);
+      for (const { name } of captured.files) await copyFile(path.join(captured.directory, name), path.join(implementation, name));
+      await writeFile(path.join(implementation, "development-policy.mjs"),
+        "throw new Error('Candidate approval presentation must not be evaluated by qualification');\n");
+      const file = path.join(workspace, ".data", "verification", "presentation-edit", "qualification.json");
+      await exec(process.execPath, ["--import", pathToFileURL(preload).href, path.join(implementation, "verification-ci.mjs"),
+        "--qualify", "--repository", item.repository, "--pr", "11", "--run", "1234",
+        "--base", item.base, "--report", file], { cwd: workspace, env, timeout: 60000 });
+      assert.equal(JSON.parse(await readFile(file, "utf8")).status, "verified");
+    });
+    for (const name of ["development-paths", "development-policy"]) await t.test(`protected ${name} identity`, async () => {
+      const changed = structuredClone(responses);
+      const tree = changed.api[`${prefix}/git/trees/${commit.tree.sha}?recursive=1`];
+      tree.tree.find((entry) => entry.path === `scripts/${name}.mjs`).sha = "f".repeat(40);
+      await writeFile(fixtureData, JSON.stringify(changed));
+      const file = path.join(workspace, ".data", "verification", `changed-${name}`, "qualification.json");
+      try {
+        await assert.rejects(exec(process.execPath, ["--import", pathToFileURL(preload).href,
+          path.resolve("scripts/verification-ci.mjs"), "--qualify", "--repository", item.repository,
+          "--pr", "11", "--run", "1234", "--base", item.base, "--report", file],
+        { cwd: workspace, env, timeout: 60000 }), (error) => error.code === 1 && /ci-policy-mismatch/.test(error.stderr));
+        await assert.rejects(readFile(file), { code: "ENOENT" });
+      } finally { await writeFile(fixtureData, JSON.stringify(responses)); }
+    });
     for (const when of ["initial", "final", "snapshot-only"]) await t.test(`live base ${when}`, async () => {
       const changed = structuredClone(responses);
       if (when === "snapshot-only") {

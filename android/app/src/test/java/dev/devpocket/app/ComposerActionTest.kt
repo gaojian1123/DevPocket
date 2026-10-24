@@ -4,15 +4,20 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasContentDescription
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -56,7 +61,7 @@ class ComposerActionTest {
     private val sent = mutableListOf<String>()
     private var stopRequests = 0
 
-    private fun show(value: PocketUi = initial) {
+    private fun show(value: PocketUi = initial, modifier: Modifier = Modifier, inputModifier: Modifier = Modifier) {
         state = value
         compose.setContent {
             MaterialTheme {
@@ -68,10 +73,21 @@ class ComposerActionTest {
                     attach = {},
                     models = {},
                     stop = { stopRequests++ },
+                    modifier = modifier,
                     removeComponentReference = { state = state.copy(draft = state.draft.copy(componentReference = null)) },
+                    inputModifier = inputModifier,
                 )
             }
         }
+    }
+
+    @Test fun containerModifierPreservesTheSeparateInputFocusTarget() {
+        val focus = FocusRequester()
+        show(modifier = Modifier.testTag("composer_container"), inputModifier = Modifier.focusRequester(focus))
+        compose.onNodeWithTag("composer_container").assertIsDisplayed()
+        compose.runOnIdle { focus.requestFocus() }
+        compose.onNodeWithTag("message_input").assertIsFocused().performTextInput("Still editable")
+        assertEquals("Still editable", state.draft.text)
     }
 
     @Test fun idleWithoutTextHasOnlyADisabledSendButton() {

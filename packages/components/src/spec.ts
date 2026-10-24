@@ -1,5 +1,5 @@
 import { z } from "zod";
-import MarkdownIt from "markdown-it";
+import MarkdownIt, { type MarkdownIt as MarkdownItInstance } from "markdown-it";
 
 export const COMPONENT_VERSION = 1;
 export const MAX_COMPONENT_BYTES = 256 * 1024;
@@ -8,7 +8,13 @@ export const MAX_TABLE_COLUMNS = 20;
 export const MAX_CHART_POINTS = 1000;
 const MAX_LINK_LENGTH = 2000;
 
-export function createComponentMarkdown(): MarkdownIt {
+// Native clients and protocol v1 bound UTF-16 units; Zod 4 counts Unicode code points.
+export function utf16String(maximum: number, schema = z.string()): z.ZodString {
+  return schema.max(maximum).refine((value) => value.length <= maximum,
+    `Text exceeds ${maximum} UTF-16 code units.`);
+}
+
+export function createComponentMarkdown(): MarkdownItInstance {
   return new MarkdownIt({ html: false, linkify: false, typographer: false, breaks: true });
 }
 
@@ -22,35 +28,40 @@ export class ComponentError extends Error {
 }
 
 const own = (value: object, key: string): boolean => Object.prototype.hasOwnProperty.call(value, key);
-const field = z.string().min(1).max(120)
+const field = utf16String(120).min(1)
   .refine((value) => !/[\u0000-\u001f\u007f]/.test(value) &&
     !["__proto__", "prototype", "constructor"].includes(value), "Unsupported field name.");
-const scalar = z.union([z.string().max(8000), z.number().finite(), z.boolean(), z.null()]);
-const row = z.record(field, scalar);
+const scalar = z.union([utf16String(8000), z.number().finite(), z.boolean(), z.null()]);
+const row = z.preprocess((value, context) => {
+  // Zod 4 skips __proto__ during record parsing; this contract must reject it, not discard it.
+  if (value !== null && typeof value === "object" && own(value, "__proto__"))
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "Unsupported field name." });
+  return value;
+}, z.record(field, scalar));
 const metadata = {
-  title: z.string().max(200).optional(),
-  source: z.string().max(2000).optional(),
-  query: z.string().max(12_000).optional(),
+  title: utf16String(200).optional(),
+  source: utf16String(2000).optional(),
+  query: utf16String(12_000).optional(),
 };
 const chart = {
   ...metadata,
   xAxisKey: field,
-  yAxisLabel: z.string().max(200).optional(),
+  yAxisLabel: utf16String(200).optional(),
   data: z.array(row).max(MAX_CHART_POINTS),
   series: z.array(z.object({
     dataKey: field,
-    name: z.string().min(1).max(200),
+    name: utf16String(200).min(1),
     color: z.string().regex(/^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i).optional(),
   }).strict()).min(1).max(MAX_CHART_POINTS),
 };
 
 const column = z.object({
   key: field,
-  label: z.string().min(1).max(200),
+  label: utf16String(200).min(1),
   type: z.enum(["string", "number", "date", "link"]).optional(),
   align: z.enum(["left", "right", "center"]).optional(),
   hrefKey: field.optional(),
-  href: z.string().max(MAX_LINK_LENGTH).optional(),
+  href: utf16String(MAX_LINK_LENGTH).optional(),
 }).strict();
 
 const shape = z.discriminatedUnion("type", [
@@ -66,7 +77,7 @@ const shape = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("markdown"),
     title: metadata.title,
-    content: z.string().max(MAX_COMPONENT_BYTES),
+    content: utf16String(MAX_COMPONENT_BYTES),
   }).strict(),
 ]);
 

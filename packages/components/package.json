@@ -18,7 +18,8 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=24.0.0 <25"
+    "node": ">=26.12.1 <27",
+    "npm": ">=12.2.1 <13"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node build.mjs",
@@ -27,14 +28,13 @@
   },
   "dependencies": {
     "chart.js": "4.5.1",
-    "markdown-it": "14.3.2",
-    "zod": "3.25.76"
+    "markdown-it": "15.0.3",
+    "zod": "4.6.7"
   },
   "devDependencies": {
-    "@types/markdown-it": "14.1.2",
-    "@types/node": "24.0.10",
-    "esbuild": "0.25.5",
-    "tsx": "4.20.3",
-    "typescript": "5.8.3"
+    "@types/node": "26.6.5",
+    "esbuild": "0.28.2",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
   }
 }

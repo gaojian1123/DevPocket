@@ -1,7 +1,7 @@
 package dev.devpocket.app
 
 import androidx.compose.ui.test.*
-import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.devpocket.app.data.*
 import java.util.UUID
@@ -24,8 +24,29 @@ class NativeFlowTest {
         compose.onNodeWithText("HTTPS 中转地址").performTextInput("https://relay.example.test")
         compose.onNodeWithText("一次性配对码").performTextInput("one-time-value")
         compose.onNodeWithText("设备名称").performTextReplacement("我的原生安卓")
+        compose.onNodeWithTag("pairing_fields").performScrollToNode(hasText("取消"))
         compose.onNodeWithText("取消").performClick()
         compose.onNodeWithText("开始配对").assertIsDisplayed()
+    }
+
+    @Test fun localNetworkPermissionIsExplicitAndPairingInputSurvivesRecreation() {
+        compose.waitUntil(15_000) { compose.onAllNodesWithText("开始配对").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("开始配对").performClick()
+        compose.onNodeWithText("HTTPS 中转地址").performTextInput("https://relay.example.test")
+        compose.onNodeWithText("一次性配对码").performTextInput("keep-this-code")
+        if (android.os.Build.VERSION.SDK_INT >= 37) {
+            assertEquals(android.content.pm.PackageManager.PERMISSION_DENIED,
+                androidx.core.content.ContextCompat.checkSelfPermission(compose.activity, android.Manifest.permission.ACCESS_LOCAL_NETWORK))
+            compose.onNodeWithTag("pairing_fields").performScrollToNode(hasTestTag("local_network_permission_request"))
+            compose.onNodeWithTag("local_network_permission_request").assertIsDisplayed()
+        } else compose.onNodeWithTag("local_network_permission_request").assertDoesNotExist()
+        compose.activityRule.scenario.recreate()
+        compose.onNodeWithTag("pairing_fields").performScrollToNode(hasText("HTTPS 中转地址"))
+        compose.onNode(hasText("HTTPS 中转地址")).assertTextContains("https://relay.example.test")
+        compose.onNodeWithTag("pairing_fields").performScrollToNode(hasText("一次性配对码"))
+        compose.onNode(hasText("一次性配对码")).assertTextContains("keep-this-code")
+        compose.onNodeWithTag("pairing_fields").performScrollToNode(hasText("取消"))
+        compose.onNodeWithText("取消").performClick()
     }
 
     @Test fun keystoreCredentialRoundTripAndBackupDisabled() {

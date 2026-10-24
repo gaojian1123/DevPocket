@@ -1,8 +1,11 @@
 package dev.devpocket.app
 
 import androidx.compose.ui.test.*
-import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.devpocket.app.data.*
@@ -30,6 +33,7 @@ class ConnectedFlowTest {
         compose.onNodeWithText("HTTPS 中转地址").performTextInput(relay)
         compose.onNodeWithText("一次性配对码").performTextInput(code)
         compose.onNodeWithText("设备名称").performTextReplacement("Android emulator proof")
+        compose.onNodeWithTag("pairing_fields").performScrollToNode(hasText("配对", substring = false))
         compose.onNodeWithText("配对", substring = false).performClick()
         compose.waitUntil(25_000) { compose.onAllNodesWithTag("native_pair_form").fetchSemanticsNodes().isEmpty() }
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -192,7 +196,18 @@ class ConnectedFlowTest {
             assertEquals(origin, card.originatingMessageId)
         }
         fun open(card: ComponentCard) {
-            androidx.test.espresso.Espresso.closeSoftKeyboard()
+            compose.runOnIdle {
+                val window = compose.activity.window
+                WindowCompat.getInsetsController(window, window.decorView).hide(WindowInsetsCompat.Type.ime())
+            }
+            compose.waitUntil(20_000) {
+                var hidden = false
+                compose.runOnIdle {
+                    hidden = ViewCompat.getRootWindowInsets(compose.activity.window.decorView)
+                        ?.isVisible(WindowInsetsCompat.Type.ime()) == false
+                }
+                hidden
+            }
             compose.onNodeWithTag("chat_history").performScrollToNode(hasTestTag("component_${card.componentId}"))
             compose.onNode(hasText("展开查看完整内容") and hasAnyAncestor(hasTestTag("component_${card.componentId}")))
                 .performScrollTo().performClick()

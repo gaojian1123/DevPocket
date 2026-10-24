@@ -23,7 +23,7 @@ env:
 
 concurrency:
   group: devpocket-verification-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   plan:
@@ -43,7 +43,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26.12.1
       - id: plan
         shell: pwsh
         env:
@@ -61,7 +61,7 @@ jobs:
           if ($plan.ciMacos -isnot [bool]) { throw 'CI requires an explicit macOS coverage decision from the planner.' }
           "macos=$($plan.ciMacos)".ToLowerInvariant() >> $env:GITHUB_OUTPUT
           if (($plan.requiredGroups -contains 'tooling') -and !$plan.toolingShards) {
-            throw 'CI requires the reviewed complete test-workflow.mjs entry without replacement scripts or lifecycle hooks.'
+            throw 'CI requires the reviewed complete test-tooling.mjs entry without replacement scripts or lifecycle hooks.'
           }
           if ($plan.ciMacos -and -not ($plan.toolingShards.parts.id -contains 'native')) {
             throw 'Selected macOS coverage requires the native tooling shard.'
@@ -101,13 +101,14 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26.12.1
           cache: npm
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - run: npm install --global npm@12.2.1 --ignore-scripts --no-audit --no-fund
       - run: npm ci --no-audit --no-fund
-      - name: Verify complete workflow regression suite
+      - name: Verify complete tooling regression suite
         id: verify
         shell: pwsh
         env:
@@ -154,7 +155,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.macos == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic)
     name: macOS regressions
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -163,13 +164,14 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26.12.1
           cache: npm
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Require the intended native host
         run: node -e "if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('macOS regressions require an ARM64 Mac runner.');"
+      - run: npm install --global npm@12.2.1 --ignore-scripts --no-audit --no-fund
       - run: npm ci --no-audit --no-fund
       - name: Verify macOS native infrastructure
         id: verify
@@ -221,11 +223,12 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26.12.1
           cache: npm
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - run: npm install --global npm@12.2.1 --ignore-scripts --no-audit --no-fund
       - run: npm ci --no-audit --no-fund
       - run: npm --prefix deployment\azure ci --no-audit --no-fund
       - run: python -m pip install -r deployment\azure\probe\requirements-test.txt
@@ -317,13 +320,14 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26.12.1
+      - run: npm install --global npm@12.2.1 --ignore-scripts --no-audit --no-fund
       - name: Install locked component build dependencies
         run: npm ci --no-audit --no-fund
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '25'
       - name: Prepare project-local SDK using already accepted runner licenses
         shell: pwsh
         run: .\scripts\prepare-android.ps1 -ExistingSdk $env:ANDROID_HOME
@@ -399,7 +403,7 @@ jobs:
           BASE_SHA: ${{ needs.plan.outputs.base }}
         run: |
           ./scripts/verify.ps1 -Base $env:BASE_SHA -Group device -Jdk $env:JAVA_HOME -Sdk $env:ANDROID_HOME `
-            -Image system-images/android-35/google_apis/x86_64 -Report .data/ci/device/report.json
+            -Image system-images/android-37.0/google_apis/x86_64 -Report .data/ci/device/report.json
           exit $LASTEXITCODE
       - name: Bind device evidence to this CI attempt
         if: always() && hashFiles('scripts/verification-ci.mjs') != ''
@@ -478,7 +482,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26.12.1
       - uses: actions/download-artifact@v8
         with:
           pattern: verification-*

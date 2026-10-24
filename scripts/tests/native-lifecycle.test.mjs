@@ -89,13 +89,13 @@ test("startup projection rejects arbitrary toolchain, path and process fields", 
   const value = projectStartupReport({
     status: "failed", phase: "launch", runId: "11111111-1111-4111-8111-111111111111",
     base: "a".repeat(40), source: { head: "b".repeat(40), fingerprint: "c".repeat(64), private: "secret-value" },
-    toolchain: { java: "21.0.12", emulator: "37-ghp_secret_value" },
+    toolchain: { java: "25.0.1", emulator: "37-ghp_secret_value" },
     image: "/private/secret-value", argv: ["secret-value"], environment: { token: "secret-value" },
     availableDiskBytes: { beforePreparation: -1, afterPreparation: 1234 },
   });
 
   assert.equal(value.acceptance, false);
-  assert.equal(value.toolchain.java, "21.0.12");
+  assert.equal(value.toolchain.java, "25.0.1");
   assert.equal(value.toolchain.emulator, "unknown");
   assert.equal(value.image, "unknown");
   assert.equal(value.availableDiskBytes.beforePreparation, "unknown");

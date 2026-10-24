@@ -1,14 +1,14 @@
 package dev.devpocket.app
 
 import androidx.compose.ui.test.*
-import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.text.AnnotatedString
 import androidx.lifecycle.ViewModelProvider
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.test.core.app.ActivityScenario
-import androidx.test.espresso.Espresso
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.devpocket.app.data.*
 import kotlinx.serialization.json.jsonArray
@@ -24,6 +24,17 @@ class FixtureFlowTest {
         val relay = requireNotNull(args.getString("relayUrl")) { "Automated relay fixture is required." }
         val code = requireNotNull(args.getString("pairingCode")) { "Fixture pairing is required; this test cannot skip." }
         val title = requireNotNull(args.getString("sessionTitle"))
+        if (android.os.Build.VERSION.SDK_INT >= 37) {
+            val instrumentation = InstrumentationRegistry.getInstrumentation()
+            instrumentation.uiAutomation.grantRuntimePermission(instrumentation.targetContext.packageName,
+                android.Manifest.permission.ACCESS_LOCAL_NETWORK)
+            compose.runOnIdle {
+                val model = ViewModelProvider(compose.activity)[PocketViewModel::class.java]
+                model.localNetworkPermissionChanged()
+                assertEquals(true, model.ui.value.localNetworkAllowed)
+                assertTrue("Granting network access must not pair automatically.", model.ui.value.accounts.isEmpty())
+            }
+        }
         fun windowMetadata(): String {
             val instrumentation = InstrumentationRegistry.getInstrumentation()
             fun fields(command: String, names: List<String>): String {
@@ -45,18 +56,21 @@ class FixtureFlowTest {
                 fields("dumpsys activity activities", listOf("topResumedActivity=", "mResumedActivity:"))
         }
         fun closeKeyboardForHistory() {
-            try {
-                Espresso.closeSoftKeyboard()
-            } catch (error: RuntimeException) {
-                throw AssertionError("Keyboard dismissal did not have an actionable app window: ${windowMetadata()}", error)
+            compose.runOnIdle {
+                val window = compose.activity.window
+                WindowCompat.getInsetsController(window, window.decorView).hide(WindowInsetsCompat.Type.ime())
             }
-            compose.waitUntil(20_000) {
-                var hidden = false
-                compose.runOnIdle {
-                    hidden = ViewCompat.getRootWindowInsets(compose.activity.window.decorView)
-                        ?.isVisible(WindowInsetsCompat.Type.ime()) == false
+            try {
+                compose.waitUntil(20_000) {
+                    var hidden = false
+                    compose.runOnIdle {
+                        hidden = ViewCompat.getRootWindowInsets(compose.activity.window.decorView)
+                            ?.isVisible(WindowInsetsCompat.Type.ime()) == false
+                    }
+                    hidden
                 }
-                hidden
+            } catch (error: ComposeTimeoutException) {
+                throw AssertionError("Keyboard dismissal was not confirmed by window insets: ${windowMetadata()}", error)
             }
         }
         fun answerControl(tag: String, kind: String): SemanticsNodeInteraction {
@@ -101,6 +115,7 @@ class FixtureFlowTest {
         compose.onNodeWithText("HTTPS 中转地址").performTextInput(relay)
         compose.onNodeWithText("一次性配对码").performTextInput(code)
         compose.onNodeWithText("设备名称").performTextReplacement("Automated Android fixture")
+        compose.onNodeWithTag("pairing_fields").performScrollToNode(hasText("配对", substring = false))
         compose.onNodeWithText("配对", substring = false).performClick()
         compose.waitUntil(30_000) { compose.onAllNodesWithText(title).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText(title).performClick()

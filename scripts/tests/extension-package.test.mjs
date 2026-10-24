@@ -27,7 +27,8 @@ test("standalone archive installs without a checkout and connects all projects t
     await relay?.close();
     await rm(root, { recursive: true, force: true });
   });
-  const version = JSON.parse(await readFile(path.join(repo, "package.json"), "utf8")).version;
+  const pkg = JSON.parse(await readFile(path.join(repo, "package.json"), "utf8"));
+  const version = pkg.version;
   const output = path.join(root, "packages"), extracted = path.join(root, "distribution with spaces");
   const archive = path.join(output, `DevPocket-extension-${version}.zip`);
   const packageArgs = ["-NoProfile", "-File", path.join(repo, "scripts", "package-extension.ps1"), "-OutputDirectory", output];
@@ -42,7 +43,7 @@ test("standalone archive installs without a checkout and connects all projects t
   });
   const manifest = JSON.parse(await readFile(path.join(extracted, "manifest.json"), "utf8"));
   assert.equal(manifest.version, version);
-  assert.equal(manifest.node, "24.x");
+  assert.equal(manifest.node, pkg.engines.node);
   const expected = ["README.md", "THIRD-PARTY-NOTICES.txt", "devpocket.mjs", "extension/bridge.mjs", "extension/extension.mjs",
     "setup-assets/cloud-host.mjs", "setup-assets/guest.py", "setup-assets/private-directory.ps1", "setup.mjs"];
   assert.deepEqual(manifest.files.map((file) => file.path).sort(), expected);

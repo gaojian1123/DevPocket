@@ -4,7 +4,7 @@ import { z } from "zod";
 import { canonical, requireValue } from "./handoff.mjs";
 
 const exec = promisify(execFile);
-const uuid = z.string().uuid();
+const uuid = z.guid();
 const armOrigin = "https://management.azure.com";
 const vmPattern = /^\/subscriptions\/([a-f0-9-]{36})\/resourceGroups\/([A-Za-z0-9_.()-]+)\/providers\/Microsoft\.Compute\/virtualMachines\/([A-Za-z0-9_.-]+)$/i;
 

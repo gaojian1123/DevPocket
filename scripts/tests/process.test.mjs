@@ -21,17 +21,23 @@ test("macOS commands use the native owner without changing Windows or Linux laun
   assert.throws(() => ownedCommandLaunch("freebsd"), /requires/);
 });
 
-test("macOS binds nested ownership and confirms cleanup without leaking control frames",
+test("macOS concurrent nested owners confirm cleanup without leaking control frames",
   { skip: process.platform !== "darwin" }, async () => {
     const source = `import {runCommand} from ${JSON.stringify(pathToFileURL(path.resolve("scripts/process.mjs")).href)};
       const result=await runCommand(process.execPath,["-e","process.stderr.write('literal\\\\nDEVPOCKET_OWNED_TREE_STOPPED\\\\n');process.stdout.write('nested')"],
         {timeoutMs:10000});
       if(!result.processTreeStopped)throw new Error("Unconfirmed nested cleanup");
       process.stdout.write(result.stdout);process.stderr.write(result.stderr);`;
-    const result = await runCommand(process.execPath, ["--input-type=module", "-e", source], { timeoutMs: 15000 });
-    assert.equal(result.stdout, "nested");
-    assert.equal(result.stderr, "literal\nDEVPOCKET_OWNED_TREE_STOPPED\n");
-    assert.equal(result.processTreeStopped, true);
+    for (let round = 0; round < 3; round++) {
+      const results = await Promise.allSettled(Array.from({ length: 4 }, () =>
+        runCommand(process.execPath, ["--input-type=module", "-e", source], { timeoutMs: 15000 })));
+      for (const result of results) {
+        assert.equal(result.status, "fulfilled", result.reason?.stderr ?? result.reason?.message);
+        assert.equal(result.value.stdout, "nested");
+        assert.equal(result.value.stderr, "literal\nDEVPOCKET_OWNED_TREE_STOPPED\n");
+        assert.equal(result.value.processTreeStopped, true);
+      }
+    }
   });
 
 test("macOS nested cleanup remains bound when the target environment is sanitized",
@@ -100,6 +106,35 @@ test("macOS refuses expired and pre-cancelled startup before creating its target
     }
   });
 
+test("macOS failed launches retain their failure and final cleanup receipt",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    await mkdir(".data/tests", { recursive: true });
+    const directory = await mkdtemp(path.resolve(".data/tests/darwin-missing-command-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const file = path.join(directory, "missing-program");
+    const child = spawnOwnedCommand(file, [], { timeoutMs: 10000 });
+    let stderr = "";
+    child.stdout.resume();
+    child.stderr.on("data", (bytes) => { stderr += bytes; });
+    child.stdin.on("error", (error) => { if (error.code !== "EPIPE") throw error; });
+    const [code] = await once(child, "close");
+    assert.equal(code, 1);
+    assert.ok(stderr.includes("Owned macOS command failed: FileNotFoundError:"));
+    assert.equal(ownedProcessCleanupConfirmed(child), true);
+    assert.ok(/\u001eDEVPOCKET:[a-f0-9-]{36}:tree-stopped\u001f$/.test(stderr),
+      "Diagnostics must precede the terminal cleanup receipt.");
+    await assert.rejects(runCommand(file, [], { timeoutMs: 10000 }), (error) => {
+      assert.equal(error.code, 1);
+      assert.equal(error.processTreeStopped, true);
+      assert.equal(error.commandOutcome.cleanupFailure, null);
+      assert.equal(commandCleanupConfirmed(error, { file, args: [], cwd: process.cwd() }), true);
+      assert.match(error.stderr, /Owned macOS command failed: FileNotFoundError:/);
+      assert.doesNotMatch(error.stderr, /\u001eDEVPOCKET:/);
+      return true;
+    });
+    await assert.rejects(access(file), { code: "ENOENT" });
+  });
+
 test("cleanup recovery accepts only the original observed outcome and exact command",
   { skip: process.platform !== "darwin" }, async () => {
     const command = { file: process.execPath, args: ["-e", "process.exit(0)"], cwd: process.cwd() };
@@ -147,6 +182,105 @@ print(json.dumps(results))
       recycled: { completed: true, signals: [[2, 1]] },
       unstable: { completed: false, signals: [] },
     });
+  });
+
+test("macOS cleanup recovers after snapshot exhaustion but retains hard failures",
+  { skip: process.platform !== "darwin" }, async () => {
+    const script = `import json,os,runpy,sys
+module=runpy.run_path(sys.argv[1],run_name="fixture")
+module["time"].sleep=lambda _:None
+class Fixture:
+ def __init__(self,mode):self.mode=mode;self.scans=0;self.calls=0;self.stable=False
+ def processes(self):
+  self.scans+=1
+  if self.mode=="transient" and self.scans>8:return []
+  if self.mode=="inspection" and self.scans>1:return []
+  if self.mode=="interrupted-empty" and self.scans%9==0:return []
+  return [os.getpid()+1]
+ def identity(self,pid):
+  if self.mode=="inspection":raise RuntimeError("fixture inspection denied")
+  return None
+ def owned(self):
+  self.calls+=1
+  result=module["Darwin"].owned(self)
+  self.stable=result==[]
+  return result
+ def send(self,info,number):raise AssertionError("No fixture process is owned")
+results={}
+for mode in ["transient","persistent","interrupted-empty","inspection"]:
+ clock=iter(range(1000));module["time"].monotonic=lambda:next(clock)
+ native=Fixture(mode)
+ scope=module["Scope"].__new__(module["Scope"]);scope.native=native;scope.nested={};scope.poll=lambda:None
+ failure=None
+ try:scope.cleanup(None);completed=True
+ except RuntimeError as error:completed=False;failure=str(error)
+ results[mode]={"completed":completed,"stableEmpty":native.stable,"rechecked":native.calls>1,
+                "bounded":native.calls<=16,"failure":failure}
+print(json.dumps(results))
+`;
+    const result = await exec("python3", ["-B", "-c", script, path.resolve("scripts/owned-command-darwin.py")],
+      { timeout: 10000 });
+    const timedOut = { completed: false, stableEmpty: false, rechecked: true, bounded: true,
+      failure: "Owned macOS processes did not confirm exit." };
+    assert.deepEqual(JSON.parse(result.stdout), {
+      transient: { completed: true, stableEmpty: true, rechecked: true, bounded: true, failure: null },
+      persistent: timedOut,
+      "interrupted-empty": timedOut,
+      inspection: { completed: false, stableEmpty: true, rechecked: true, bounded: true, failure: "fixture inspection denied" },
+    });
+  });
+
+test("macOS persistent owners retry exhausted snapshots without hiding inspection failures",
+  { skip: process.platform !== "darwin" }, async () => {
+    const script = `import io,json,os,runpy,sys,time
+from types import SimpleNamespace as S
+module=runpy.run_path(sys.argv[1],run_name="fixture")
+context=module["supervise"].__globals__
+class Fixture:
+ def __init__(self,mode):self.mode=mode;self.scans=0
+ def processes(self):
+  self.scans+=1
+  return [os.getpid()+1000000] if self.mode=="persistent" or self.scans<=(8 if self.mode=="transient" else 1) else []
+ def identity(self,pid):
+  if pid==os.getpid()+1000000:
+   if self.mode=="inspection":raise RuntimeError("fixture inspection denied")
+   return None
+  return S(bsd=S(pid=pid,parent=os.getpid()),identity=S(unique=pid,version=1))
+ def responsible(self,pid):return os.getpid()
+ def live(self,info):return True
+ def owned(self):return module["Darwin"].owned(self)
+ def send(self,info,number):raise AssertionError("No fixture process is owned")
+class Scope:
+ def __init__(self,native):self.native=native;self.nested={}
+ def join_parent(self,pid):pass
+ def poll(self):pass
+ def environment(self):return {}
+ cleanup=module["Scope"].cleanup
+ def close(self,clean):closed.append(clean)
+context["Scope"]=Scope
+context["select"].select=lambda *args:([],[],[])
+context["subprocess"].Popen=lambda *args,**kwargs:S(stdin=io.BytesIO(),poll=lambda:0)
+context["time"].sleep=lambda _:None
+results={}
+for mode in ["transient","persistent","inspection"]:
+ clock=iter(range(1000));context["time"].monotonic=lambda:next(clock)
+ request={"ownerPid":os.getpid(),"file":"unused","arguments":[],"persistent":True,"graceMs":0,
+          "deadlineUnixMs":int(time.time()*1000)+60000,"receiptId":"11111111-1111-4111-8111-111111111111"}
+ context["read_request"]=lambda:request
+ native=Fixture(mode);closed=[];code=None;failure=None
+ try:code=module["supervise"](native,os.getppid())
+ except RuntimeError as error:failure=str(error)
+ results[mode]={"code":code,"clean":closed,"failure":failure}
+print(json.dumps(results))
+`;
+    const result = await exec("python3", ["-B", "-c", script, path.resolve("scripts/owned-command-darwin.py")],
+      { timeout: 10000 });
+    assert.deepEqual(JSON.parse(result.stdout), {
+      transient: { code: 0, clean: [true], failure: null },
+      persistent: { code: null, clean: [false], failure: "Owned macOS processes did not confirm exit." },
+      inspection: { code: 1, clean: [true], failure: null },
+    });
+    assert.match(result.stderr, /Owned macOS command failed: RuntimeError: fixture inspection denied/);
   });
 
 test("macOS identity reads retry transient kernel refusal without accepting permanent denial",
@@ -1107,6 +1241,8 @@ test("a changed compiler toolchain cannot reuse a previously successful native a
     const entry = path.join(root, "changed-toolchain.mjs");
     await writeFile(entry, [
       "import childProcess from 'node:child_process';import {syncBuiltinESMExports} from 'node:module';",
+      // OpenSSL initializes its Windows entropy provider using the real system directory.
+      "import {randomUUID} from 'node:crypto';randomUUID();",
       "const operatingSystemEnvironment={...process.env};const spawn=childProcess.spawn;",
       `process.env.SystemRoot=${JSON.stringify(systemRoot)};`,
       // Only toolchain discovery sees the fixture; OS processes still need the real system directory.

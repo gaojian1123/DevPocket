@@ -1,11 +1,26 @@
 # Development workflow
 
+Read the branch that applies; this guide owns the full rules, while the skill
+keeps the ordered steps and their completion criteria:
+
+- **Task scope or limits:** [Task-scoped autonomy](#task-scoped-autonomy);
+  unattended work also reads [Unattended execution](#unattended-execution).
+- **Execution or installation authority:** [Scoped development approvals](#scoped-development-approvals),
+  including workspace-local prerequisites and approval presentation.
+- **Working-tree/local-commit delivery:** [Delivery targets and candidate preparation](#delivery-targets-and-candidate-preparation),
+  then [Local verification and acceptance](#local-verification-and-acceptance).
+- **PR delivery:** [CI-first delivery and live qualification](#ci-first-delivery-and-live-qualification),
+  including read-only inspection when local qualifier inputs changed.
+- **Final review/publication:** [Independent review and delivery freshness](#independent-review-and-delivery-freshness).
+- **Failure or interruption:** [Stops and recovery](#stops-and-recovery) and
+  [Selected-group preflight and explicit recovery](#selected-group-preflight-and-explicit-recovery).
+- **Already verified working tree becoming a commit:** [Working-tree evidence to an authorized candidate](#working-tree-evidence-to-an-authorized-candidate).
+
 ## Skill-led development
 
 `AGENTS.md` routes ordinary implementation requests to the **devpocket-development
-skill** at `.github\skills\devpocket-development\SKILL.md`. That file is the
-authoritative recipe for the task contract, workspace selection, implementation,
-verification, independent review, progress-aware repair and recovery. Invoke the skill
+skill** at `.github\skills\devpocket-development\SKILL.md`. That file is the short
+recipe; its conditional links select this guide's authoritative rules. Invoke the skill
 when available; otherwise read the same file directly. A clean linked worktree
 stays in the current session. Follow-ups retain their task/workspace and evidence.
 
@@ -19,8 +34,7 @@ the stated authority for subsequent native-tool delivery.
 
 Development uses the owning session's original tools, the existing verifier and read/search-only
 `devpocket-reviewer`; unavailable required checks or independent review still
-block completion. The former registered Dynamic Workflow, development extension
-and starter/readiness tools have been removed. The skill is agent guidance, not a
+block completion. The skill is agent guidance, not a
 guarantee that an agent cannot skip a step. Verification remains executable;
 required CI and independent review guard normal delivery. Adding the skill does
 not configure repository rules.
@@ -80,9 +94,11 @@ Product authorization, session ownership and credential protection are unchanged
 Autopilot selects interaction behavior, not authority. Prepare delivery scope
 once: local commits, the named task-branch push, Draft PR, ordinary CI and ready
 delivery after acceptance can share one original-client decision. Merge,
-deployment, production access, local installation and extension activation remain
-separate. A missing scope is retained as a specific blocker without opening a
-question in unattended mode. Native permissions and user-selected limits remain.
+deployment, production access, installation outside workspace-local prerequisite
+setup and extension activation remain separate. Required workspace-local setup
+does not need another project approval, including in unattended mode. A missing
+scope is retained as a specific blocker without opening a question in unattended
+mode. Native permissions and user-selected limits remain.
 
 Keep production credentials and publication permissions out of candidate
 execution. CI uses read-only repository permissions and checkouts without
@@ -109,10 +125,10 @@ sign-off. Legacy isolated-execution requests are rejected rather than reinterpre
 Local authorization is separate from verification selection, independent review
 and the original client's tool permissions. `scripts\development-policy.mjs`
 is the shared decision/description module, not a sandbox or a source of consent.
-An implementation request covers ordinary edits, existing local checks and agreed
-repairs in its worktree. A request for a local commit or PR adds only its stated
-delivery scope; installation, runtime control, cloud operations and merging remain
-separate actions.
+An implementation request covers ordinary edits, existing local checks, agreed
+repairs and required workspace-local prerequisite setup. A request for a local
+commit or PR adds only its stated delivery scope; installation outside that setup
+scope, runtime control, cloud operations and merging remain separate actions.
 
 `developmentReviewRequirements` returns protected execution paths, sensitive review
 paths and concrete reasons. Ordinary test scripts, routine business code, issue
@@ -129,12 +145,39 @@ Standard `.github\copilot-instructions.md` and path-specific
 `.github\instructions\*.instructions.md` are execution instructions, not ordinary
 GitHub Markdown documentation.
 
+Retain the actual requirements as source-bound `policyReview`: `requiresHumanReview`,
+protected/review paths, reasons, input identities and source head/fingerprint,
+alongside original-client decisions and the task grant. Use the trusted pre-edit
+implementation, not candidate policy, for local authorization. Recompute this
+record for the current source before publication; CI does not supply it.
+
 Path classification screens code roles; it cannot prove the effects of arbitrary
 programs. Before using task authorization, inspect changed commands, execution
 sources, data access, network destinations and shared-resource effects. Newly
 introduced effects or unresolved scope need a concrete decision, including when
 the code is named a test. Use existing tools and locked dependencies only within
 the authorized environment. This module does not grant an allow-all permission.
+
+### Workspace-local prerequisites
+
+Restore declared dependencies and install task-required tools in the worktree
+without another project approval, including in unattended work. Do this after a
+relevant dependency-manifest change or an actual missing-prerequisite failure,
+not speculatively. Preserve lockfiles; use pinned, integrity-verified releases for
+standalone tools. Installation destinations are workspace-local, such as
+`node_modules`, `.tools` or a private virtual environment. Reuse configured
+package-manager caches and keep task-specific environment changes command-scoped.
+
+Inspect package sources and installer/lifecycle effects before running them.
+An installation directory alone does not establish scope: global or user-profile
+installation, administrator privileges, persistent PATH/system/shared settings,
+Git hooks and extension activation retain separate authorization. Native tool
+permission prompts remain enforced. This setup scope does not approve changed
+dependency/build inputs, agent instructions or execution policy; their applicable
+local execution/adoption decisions still apply. It does not authorize deployment,
+runtime control, enrollment or publication.
+
+### Approval requests
 
 An approval request contains:
 
@@ -144,18 +187,26 @@ An approval request contains:
   actions remain unauthorized.
 - **Validity:** task, target, allowed effects and relevant input versions; identify
   changes since a prior decision instead of asking again about unchanged scope.
-- **Details:** the actual diff or original/proposed contents and command scope.
-  Hashes identify those details but do not replace the explanation.
+- **Summary:** the actual behavior change, impact and risks in plain language.
+  Keep the full diff or original/proposed contents and command scope available
+  on request; hashes identify those details but do not replace the explanation.
 
-`formatDevelopmentApproval` supplies the common format. In skill-led work, add a
-plain-language description of the actual behavioral change and use the original
-client's question tool for the real user decision. The question contains the exact
-hash-validated contents as an immutable text snapshot; local files are reference
-copies, not an approval source. Markdown fences cannot escape the snapshot block.
-Retain that actual response in
-session evidence. A copied JSON file, implementer assertion or AI review does not
-authenticate approval. GitHub's separately configured required human reviews
-still apply; independent review does not bypass repository rules.
+`formatDevelopmentApproval` requires a nonblank behavior summary unless full
+details are explicitly requested. Use a plain-language description of the actual
+behavioral change and the original client's question tool for the real user
+decision. The default question shows the
+summary and scope, not the full diff/contents. A user may approve that exact request
+directly or ask to inspect its full details first. Retain the hash-validated
+snapshot even when it is not displayed; the request remains bound to those exact
+input versions. On demand, present that snapshot as immutable text using the
+formatter's `showDetails` argument, then obtain an explicit approval or rejection
+of the same request. Viewing details grants no authority. Local files are reference
+copies, not an approval source, and Markdown fences cannot escape the snapshot
+block. Independent review still inspects the full actual changes.
+Retain the actual approval response in session evidence. A copied JSON file,
+implementer assertion or AI review does not authenticate approval. GitHub's
+separately configured required human reviews still apply; independent review
+does not bypass repository rules.
 
 For CI-first policy decisions, `scope.ci` names the exact GitHub repository and
 the task's attached branch. It adds the reviewed workflow's hosted setup/checks,
@@ -174,12 +225,56 @@ every applicable actual decision. `requiresHumanReview` describes a requirement,
 not a permanent stop after it is satisfied. Session records do not authenticate
 consent or configure GitHub rulesets.
 
+## Delivery targets and candidate preparation
+
+An implementation request defaults to reviewed **working-tree changes**, without
+commit or upload authority. A **local-commit** request stops at the verified
+local candidate. **PR delivery** adds only the explicitly granted commit,
+push, Draft PR, ordinary CI and ready actions; reuse a matching combined decision
+rather than asking at every phase. A goal, mode switch, issue or agent-written
+record is not that decision. Publication always needs the actual repository and
+every effective push destination to match the grant.
+
+Before the first edit, retain an explicit task base and actual workspace identity:
+root, HEAD, resolved Git/common directories and branch. Equal Git directories
+mean the primary checkout; a `.git` file or session label alone is insufficient.
+Use the clean linked worktree in the owning session. A new task in a clean primary
+checkout uses native `create_session` once; include an explicitly requested branch
+or in-progress dependency. Preserve unrelated edits and resolve ownership or
+failed inspection before changing workspaces. Follow-ups retain the original base,
+even after commits or when local work becomes a publication request.
+
+For working-tree delivery, freeze the intended tracked and non-ignored inputs
+without committing. Verification and independent review bind that snapshot, not
+a claimed final commit.
+
+For authorized commit delivery, run permitted focused checks first. Confirm
+separate commit authority and matching active hook inputs before invoking Git;
+commit permission does not approve changed hooks, and disabling hooks is not a
+substitute. Use existing `inspectWorktree`, `activeHookSnapshot`,
+`captureCandidateImplementation`, `prepareCandidate` and `nativeCandidateCommand`
+APIs to retain the exact native request/receipt. Keep the pre-edit trusted helper
+copy stable when candidate control changes are destined for ordinary CI.
+Include every intended file and test; preserve unrelated changes rather than
+committing, moving or deleting them implicitly. Check again after hooks: require
+a clean tracked and non-ignored working tree, then record `CANDIDATE_COMMIT`.
+Create this candidate before final verification and independent review.
+Keep `BASE_COMMIT` at the original task baseline; replacing it with candidate
+HEAD could hide all task changes from selection.
+
+A missing decision or unresolved dirty candidate pauses that delivery path.
+The [CI-first route](#ci-first-delivery-and-live-qualification) permits an
+authorized pending draft before the full gate, not a claim of acceptance.
+If already verified working-tree evidence is to be reused, follow the explicit
+[conversion route](#working-tree-evidence-to-an-authorized-candidate).
+Otherwise verify the new candidate normally; an earlier working-tree report
+cannot be converted by changing its source fields.
+
 ## CI-first delivery and live qualification
 
 Use this route for authorized PR delivery, not as an implicit upload of a
 working-tree-only task. Keep implementation, commits, GitHub operations and
-recovery in the owning session. The existing CI workflow remains the executor;
-there is no new scheduling service or registered workflow.
+recovery in the owning session. The existing CI workflow remains the executor.
 
 After approved focused local checks, freeze the native candidate with all intended
 inputs and retain its request/receipt. Confirm a clean index/worktree, the original
@@ -198,7 +293,7 @@ dependencies or time out. Existing deadlines and required coverage are unchanged
 
 The same plan emits `ciMacos` for relevant shared/native infrastructure, its
 regressions, CI policy and shared dependency changes; `--all` also selects it.
-The ARM64 `macos-15` job depends on that decision and reruns the existing
+The ARM64 `macos-latest` job depends on that decision and reruns the existing
 `native` tooling shard without provisioning an Android emulator. Its
 `verification-macos-attempt-N` artifact is additional platform evidence, not
 a replacement for the Windows native shard. Collection requires both a
@@ -295,9 +390,80 @@ the existing draft ready within the user's delivery authorization. Changed,
 missing or incomplete evidence remains pending; do not create a duplicate PR or
 turn old review/test records into a new source by editing their fields.
 
+## Independent review and delivery freshness
+
+Request final acceptance only after complete source-bound verification.
+Use the configured read/search-only `devpocket-reviewer` in a separate context;
+an unavailable agent or unestablished read-only profile is a specific setup/loading
+blocker. Self-review does not replace it. Repair diagnosis may inspect incomplete
+evidence when a concrete diagnostic question needs independent assessment;
+that mode is not final acceptance.
+
+Supply the fixed contract and non-goals, original base, delivery target, actual
+diff and all added/untracked changed paths, current source identity, full
+verification evidence, `policyReview` and actual user decisions. The reviewer
+must inspect the files, not accept the implementation summary. For committed
+delivery include the exact candidate SHA and clean index/worktree. For CI-first
+delivery include the live qualification or documented inspection, underlying
+API/archive/source records, envelope/digest, run attempt, candidate/tested merge
+ref/base, actual PR diff and every execution origin. For converted evidence,
+also include the immutable original run, native request/receipt and transition.
+
+Request `verdict: pass | changes_requested | needs_human`, reviewed source
+head/fingerprint, and findings with `severity: blocking | advisory`,
+repository-relative `file`, `line`, `impact` and `reproduction`. Retain the agent's
+actual conclusion. A `pass` with blockers, `changes_requested` without a blocker,
+missing identity or inconsistent evidence is not valid acceptance.
+An earlier working-tree verdict, execution consent or human approval is not
+automatically a review of the final candidate.
+
+Use the ordinary-CI trust model from this guide. Sensitive/unclassified paths
+need inspection of actual effects, not blanket human signatures or an adversarial
+sandbox. Execution authority and independent code review remain distinct; one
+human decision satisfies both only when its stated scope covers both.
+
+Repair blockers in the same task/workspace. Recheck execution scope before using
+repaired control or hooks; reuse matching hosted scope, not old test/review results.
+A source-changing repair requires fresh applicable verification and independent
+review. Authorized candidate repairs use a new follow-up commit; amend only if
+the user explicitly requests it. Follow Task-scoped autonomy for cycling, budgets
+and cancellation, preserving earlier failures and attempted approaches.
+
+After a passing review, compare identities without rerunning tests just for
+comparison. **CI-first:** repeat live qualification or read-only inspection into
+a new directory; require the same candidate, live PR base/tested ref, run attempt,
+artifact and complete evidence covered by the review. **Local:** reaggregate:
+
+```powershell
+node scripts\verify.mjs --base BASE_COMMIT --combine `
+  --input VERIFICATION_REPORT --report .data\verification\NEW_ID\reviewed.json
+```
+
+Require a complete passing aggregate whose source identity matches the review.
+Converted reports also need `--candidate-evidence` and the same applicable tool
+settings, as described in the conversion section. This authenticates neither an
+AI verdict nor new human authority. Any edit or commit/ref change invalidates
+mismatched evidence; obtain applicable new evidence/review rather than relabelling.
+Recompute `policyReview` and recheck decisions, hooks, clean index/worktree and
+HEAD at `CANDIDATE_COMMIT` before publishing.
+
+Hand off the requested target, workspace, original base, exact candidate, evidence
+paths and actual verdict. `ready` requires complete unchanged acceptance and all
+applicable decisions; technical/evidence gaps are `blocked`, specific unresolved
+product/authority decisions are `needs_human`. A satisfied requirement is not a
+pending blocker merely because `requiresHumanReview` remains true.
+Stop at reviewed edits or the local commit when that is the target. For PR delivery,
+mark the same authorized draft ready only after freshness; do not create a duplicate.
+Missing execution consent blocks CI-triggering publication; pending final review
+blocks ready delivery, not an otherwise authorized pending draft.
+An unchanged push does not invalidate local source evidence. Required remote CI
+and checks of a different PR/merge ref still apply. Report an opened PR only after
+creation succeeds. Merge, deployment, external installation and local control
+adoption remain separately authorized.
+
 ## Verification
 
-Run from the checkout with Node 24 and PowerShell 7. The complete workflow
+Run from the checkout with Node 26, npm 12.2.1 and PowerShell 7. The complete tooling
 regression suite also needs Git with SSH signing support (`ssh-keygen` for
 disposable signing fixtures), Python 3.12 (standard-library checks), the
 root npm dependencies (including TypeScript/tsx), and, on Windows, the existing
@@ -312,7 +478,10 @@ detached descendants until cleanup; nested scopes register with their parent
 before executing a target and must acknowledge cleanup. Signals use the kernel's
 PID-version check. The supervisor preserves the inherited ownership link
 separately from command-level environment overrides. Unstable process snapshots
-are retried and cannot qualify an empty-tree cleanup acknowledgement.
+are retried within the original command and cleanup deadlines; an exhausted
+snapshot attempt is not a permanent failure if later observations stabilize.
+Persistent uncertainty cannot qualify an empty-tree cleanup acknowledgement.
+Inspection, signalling and nested acknowledgement failures remain failures.
 Fork/exit and zombie transitions require a new observation; two stable empty
 scans confirm completion. Nested cleanup failures are retained while the
 supervisor attempts to stop all other verifiably owned processes.
@@ -321,9 +490,11 @@ candidate/verification implementation and the verifier execution-policy fingerpr
 Unsupported native APIs, unbound parents or missing nested
 cleanup remain failures, not plain process-group fallbacks. Control receipts
 are per-command and are not supplied to the target process.
+Failed target launches remain nonzero and emit their diagnostic before the
+terminal cleanup receipt; confirmed cleanup does not make a failed command pass.
 
 The complete local gate also supports macOS Android builds and native tests.
-Apple Silicon selects the ARM64 API-35 image; Intel Macs select x86_64. Device
+Apple Silicon selects the ARM64 API-37 image; Intel Macs select x86_64. Device
 evidence retains macOS, host architecture and usable HVF acceleration, alongside
 the existing source/APK identities, instrumentation cases and cleanup evidence.
 The account-local emulator pool keeps its default single slot. After a native
@@ -352,6 +523,11 @@ recorded repository/branch-bound task grant. Active hooks and local control
 adoption still require their applicable authority. Self-review or AI review cannot
 create authority; the standalone verifier checks evidence, not consent.
 
+### Local verification and acceptance
+
+For local delivery or an explicitly selected local fallback, use the prerequisites
+and execution-authority rules in [Verification](#verification), then:
+
 ```powershell
 npm run verify -- -Base BASE_COMMIT -Plan
 npm run verify -- -Base BASE_COMMIT
@@ -365,6 +541,16 @@ are shared by local verification and CI. Each
 selected check defines its group; `requiredGroups` is derived from those
 definitions, never from "non-Android means backend."
 
+Read the new report: require `status: passed`, `complete: true` and every required
+check, platform/device result and per-shard execution origin. A plan, focused
+check, build-only result, preflight or partial shard is not completed verification.
+Retain the report path, original base, `source.head` and `source.fingerprint`.
+Local candidate evidence must have `source.head === CANDIDATE_COMMIT`; CI uses
+its separate qualification of the tested merge ref instead.
+For cleanup-confirmed environment failures on unchanged source, use the explicit
+recovery route below. For missing tools, use workspace-local prerequisite scope.
+Unconfirmed owners and uncertain outcomes need inspection, not automatic retry.
+
 ### Responsibility-based impact
 
 `scripts\verification-policy.mjs` contains the ordered impact rules and the
@@ -376,9 +562,9 @@ adding a new file does not silently inherit a tooling exemption.
 | Responsibility | Representative inputs | Required checks |
 | --- | --- | --- |
 | Documentation | `README.md`, `VALIDATION.md`, `docs/**/*.md` | None |
-| Development tooling | `development-policy.mjs`, `candidate-commit.mjs`, `native-candidate.mjs`, `setup-xcode-mcp.mjs`, `config/xcode-mcp.example.json`, `test-workflow.mjs` | Complete `workflow-tests` in `tooling` |
-| Agent instructions | `AGENTS.md`, the DevPocket skill/reviewer and AI task template | Complete `workflow-tests` |
-| Source/verification contracts | Root `.gitignore`, `git-state.mjs`, `verification.mjs`, `verification-policy.mjs`, `verify.mjs`, `verify.ps1`; named diagnostic/evidence projections and workflow regressions | Complete `workflow-tests` |
+| Development tooling | `development-paths.mjs`, `development-policy.mjs`, `candidate-commit.mjs`, `native-candidate.mjs`, `setup-xcode-mcp.mjs`, `config/xcode-mcp.example.json`, `test-tooling.mjs` | Complete `tooling-tests` in `tooling` |
+| Agent instructions | `AGENTS.md`, the DevPocket skill/reviewer and AI task template | Complete `tooling-tests` |
+| Source/verification contracts | Root `.gitignore`, `git-state.mjs`, `verification.mjs`, `verification-policy.mjs`, `verify.mjs`, `verify.ps1`; named diagnostic/evidence projections and tooling regressions | Complete `tooling-tests` |
 | Backend execution/build | `verification-backend.mjs`, extension bundle/package helpers, CLI-proof launcher, backend TypeScript configs, extension distribution workflow | Tooling and backend checks; no Android provisioning |
 | Native execution/build | `verification-android.mjs`, Android runner/build/emulator helpers, owned device cleanup, Gradle inputs/wrappers, native preparation action | Tooling, Android build, device cases and all layouts |
 | Shared execution | `verification-executor.mjs`, `process.mjs`, `owned-command*`, bounded command logs, shared backend/native diagnostic preflight | Every check and layouts |
@@ -394,8 +580,8 @@ product checks just because they are protected policy.
 
 The optional Xcode MCP initializer and its named template/regression are local
 development tooling. Root `.gitignore` participates in source selection and is
-covered by the workflow/source-identity contracts. The Xcode regression is a peer
-in the explicit `test-workflow.mjs` list, not an import from another test file.
+covered by the tooling/source-identity contracts. The Xcode regression is a peer
+in the explicit `test-tooling.mjs` list, not an import from another test file.
 Root npm/lock changes (including changes to test script commands), unknown MCP files,
 nested ignore files and mixed application changes still retain their existing
 conservative coverage; there is no general MCP or dependency exemption.
@@ -404,7 +590,7 @@ Existing backend source, runtime integration, runtime-extension and wire/fixture
 rules retain their downstream coverage. Runtime/wire changes (including the
 schema generator) still require native compatibility evidence; Android product
 changes require build and device checks, with layouts for UI/resource changes.
-Named synthetic workflow tests run the whole existing suite, not a selected
+Named synthetic tooling tests run the whole existing suite, not a selected
 subset. The separate Linux process regression belongs to hosted native
 preparation and continues to select native execution.
 
@@ -448,8 +634,15 @@ fields cannot become explanation text.
 The verifier reuses the commands in `package.json`. Android changes and affected
 runtime/wire changes require JVM/build checks **and** native emulator evidence.
 Protection is separate from impact selection. `scripts\development-policy.mjs`
-owns `isVerificationPolicyPath`, `developmentReviewRequirements(changedFiles)` and
-actual-input inspection. Its scoped approvals above replace directory-wide
+owns `developmentReviewRequirements(changedFiles)`, actual-input inspection and
+approval requests/presentation. The pure `scripts\development-paths.mjs` owns
+`classifyDevelopmentPath` and `isVerificationPolicyPath`; the policy module
+re-exports the latter for existing callers. CI qualification imports only that
+classification interface, so it does not evaluate candidate approval code.
+Both modules remain protected execution inputs, captured by the native helper
+and included in the verifier execution fingerprint. Candidate/tested/workflow
+tree identity checks still bind both; splitting the implementation is not an
+authority exemption. The scoped approvals above replace directory-wide
 script/backend stops, without changing any selected checks. Execution-core,
 instruction and dependency/build authorization remains explicit. Sensitive
 review paths focus independent review rather than a human signature.
@@ -469,7 +662,7 @@ are not a completed source-bound gate or independent-review approval.
 
 For CI shards, use `-Group tooling`, `-Group backend`, `-Group android` or
 `-Group device` with a separate `-Report` for each. The tooling check remains
-the **complete** `npm run test:workflow` suite. Its CI parts are derived from the
+the **complete** `npm run test:tooling` suite. Its CI parts are derived from the
 same explicit catalogue; individual parts never substitute for the whole check.
 A successful shard is `partial` unless it covers the whole plan. For a full
 plan, aggregate all four reports using:
@@ -502,19 +695,22 @@ still requires all selected checks. A documentation-only plan needs no shards.
 
 Aggregation rejects missing checks, failed/blocked/planned evidence, duplicate
 results, wrong-group checks, mismatched policy, and stale base/source identities.
-Verification reports are now **version 5**. Every directly executed passing check
+Verification reports are **version 6**, with `tooling-tests` as the tooling check
+ID. Every directly executed passing check
 requires its actual `execution.source`, `startedAt` and `completedAt`. A complete
 tooling aggregate instead carries `execution.kind: tooling-shards` and every
 part's original execution. It does not invent one full-suite start/end interval.
 Aggregates preserve these fields through subsequent aggregation. Removing origins,
 reversing timestamps or changing only an aggregate's HEAD cannot qualify.
 `requiredGroups` must match the catalogue and there is no `requiresHumanReview`
-decision. Version-1/2/3/4 reports, absent origin/group policy and reports that place
-`workflow-tests` in backend cannot qualify; rerun rather than relabel old evidence.
-Non-acceptance diagnostic exporters still read historical versions: version 1
-retains its backend workflow-test group, versions 2/3 retain tooling, and version
-3 retains its selection explanations. Historical check selections remain intact.
-Version 4 retains its historical direct execution origins for diagnostics.
+decision. Version-1/2/3/4/5 reports, old check IDs, absent origin/group policy and
+reports that place `tooling-tests` in backend cannot qualify; rerun rather than
+relabel old evidence. Non-acceptance diagnostic exporters still read versions
+1 through 5 using their original `workflow-tests` check ID and log filename.
+Version 1 retains its backend group; versions 2 through 5 retain tooling.
+Versions 3 and 5 retain their selection explanations, and versions 4 and 5
+retain their recorded direct execution origins. Historical check selections
+and evidence files remain unchanged.
 An old version-1/2 review flag is projected only under
 `legacyAgentReview`, with `approval: "not-established"` even when the old flag
 was false. Current diagnostics ignore injected review/approval fields.
@@ -576,7 +772,7 @@ remain rejected. This support does not reduce selected checks, grant dependency
 execution consent or substitute for the task's source fingerprint.
 
 Every execution first checks the groups selected by the planner and `--group`.
-The read-only probes cover Node 24, PowerShell 7 and command ownership; selected
+The read-only probes cover Node 26, PowerShell 7 and command ownership; selected
 Node checks also inspect npm, declared installed dependencies and effective npm
 configuration. Tooling adds Git/SSH and standard-library Python prerequisites,
 not Java, an Android SDK, an emulator or operational Python packages. Backend
@@ -590,13 +786,33 @@ license acceptance, cache reset, Git/config change or real Copilot runtime
 startup is a preflight operation. The existing owned-command helper may prepare
 its source-bound local executable cache.
 
+Independent checks continue after an unrelated failure: missing PowerShell or
+root dependencies no longer hide the selected Python/Git/SSH requirements.
+The version-1 preflight report retains actual failures in `issues` and adds
+`notProbed` entries with a prerequisite name and its `blockedBy` dependencies.
+An unrun probe is neither passed nor a confirmed missing tool. npm discovery
+needs Node and PowerShell, not installed project dependencies; compiler-input
+probing also needs the dependency and launcher checks. All executable probes
+need command ownership. Unconfirmed process cleanup prevents later commands,
+including in other selected groups, while independent file inspections continue.
+Blocked groups have no reusable environment fingerprint. Existing failure,
+terminal qualification and recovery invalidation rules apply to the whole group.
+
+npm metadata is parsed from stdout alone. Nonfatal stderr diagnostics are hashed
+into its identity and disable reuse rather than corrupting the JSON payload.
+Fresh checks may proceed with valid metadata and a zero exit code; nonzero exits
+and malformed metadata still block preflight. Prefix redirection to an older npm
+does not require removing inherited npm configuration or trusting a new distribution.
+
 Android-build qualification also binds the portable renderer's installed Node
 dependencies and npm/environment inputs. The Gradle task's actual `npm.cmd`
 lookup (including the working directory) and CMD interpreter are bound separately
 to the recognized adjacent npm implementation and prefix result.
 An unknown native launcher cannot supply reusable evidence even if a different
 PowerShell launcher looks familiar; discovery does not execute a project-local
-shadow merely to identify it. Ignored dependency or npm configuration
+shadow merely to identify it. Tooling shards require the same native launcher
+binding for reuse; an unbound `npm.cmd` still permits fresh execution.
+Ignored dependency or npm configuration
 changes invalidate a previously qualified native result. Local npm configuration
 uses the physical checkout root for its identity, so equivalent checkout aliases
 agree without hiding changes to the configuration bytes.
@@ -650,7 +866,7 @@ therefore read their large installed images as well; tooling-only checks do not.
 Per-prerequisite digests locate observed drift without exposing configuration
 values or private paths, and a changed prerequisite still blocks qualification.
 The execution identity also binds the canonical tooling entry, shard/admission
-and CI helpers, including their shared development policy. This is local applicability
+and CI helpers, including the shared path classifier and development policy. This is local applicability
 evidence, not protection from an administrator able to alter the verifier and
 its private storage together.
 
@@ -865,7 +1081,7 @@ typecheck reuse. They do not qualify merely by reporting a version or keeping
 configuration strings unchanged. Such environments can still run fresh checks;
 the verifier neither installs a different npm nor rewrites prefix configuration.
 Other platforms, changed compilers/configuration, unresolved inputs and unknown
-launchers rerun normally. Backend builds/schema generation, workflow regressions,
+launchers rerun normally. Backend builds/schema generation, tooling regressions,
 backend/operational tests, packaging, Android JVM tests/lint and device checks
 remain conservatively unproven or commit-sensitive and rerun.
 The original selected checks are never reduced. Current environment and retained
@@ -922,8 +1138,10 @@ Human policy review, runtime permissions, push/PR authority and remote CI remain
 independent. CI does not receive the private local receipt key and continues to
 execute its selected lanes and aggregate their ordinary reports.
 
-Controller and publication consumers must import local trust helpers from
-`scripts\development-policy.mjs`. The former `isVerificationPolicyPath` exports
+Controller and publication consumers import local authorization helpers from
+`scripts\development-policy.mjs`; pure protected-path checks can import
+`scripts\development-paths.mjs`. The policy module retains its compatible
+`isVerificationPolicyPath` re-export. The former exports
 from the verification modules are removed, so an unmigrated named import fails
 explicitly rather than silently dropping protection. Replace reads of
 `plan.requiresHumanReview` in **both** final-status and publication-freshness
@@ -938,14 +1156,30 @@ identity, hook approval, independent review or source-bound evidence checks.
 
 ### Tooling regression scheduling
 
-`npm run test:workflow` remains the complete default regression gate. Its dedicated
-entry, `scripts/test-workflow.mjs`, exports the explicit `WORKFLOW_TEST_FILES`
+`npm run test:tooling` is the complete default regression gate. Its dedicated
+entry, `scripts/test-tooling.mjs`, exports the explicit `TOOLING_TEST_FILES`
 catalogue and passes that full list to a child `node --test` invocation. Tests and
 CI contracts read the same catalogue rather than parse a package script. The
 impact policy independently names the approved tooling paths; unknown tests and
 runner lookalikes still require all checks.
-The command, `workflow-tests` check ID, catalogue exports and shard IDs remain
-compatible verification interfaces; none registers or launches a Dynamic Workflow.
+The command, check ID, catalogue exports and shard selector use the `tooling`
+name without legacy command aliases. Shard IDs remain `candidate`,
+`verification`, `diagnostics` and `native`.
+
+For lightweight approval-contract feedback, run:
+
+```powershell
+node --test scripts/tests/development-approval.test.mjs
+```
+
+This pure Node entry covers path policy, approval summaries/details, invalid
+summaries, native decision identity and task/CI authority without Git repositories,
+signing, hooks, PowerShell or candidate execution fixtures. It is a peer in
+`TOOLING_TEST_FILES`, in the existing `candidate` shard beside
+`development-tools.test.mjs`. The latter retains filesystem, Git, signing, hook,
+candidate and documentation contracts. Every old and new test remains in
+`npm run test:tooling` and Required verification. The fast entry is focused
+feedback, never a replacement for that complete gate or local execution authority.
 
 The tooling command has a 60-minute watchdog for both the complete entry and
 each formal shard. The expanded candidate suite can exceed the former
@@ -954,17 +1188,17 @@ Backend and native command deadlines remain unchanged at 30 minutes.
 This is a per-command bound, not a task budget or permission to skip scenarios;
 queue waiting stays separate and cancellation still requires owned cleanup.
 
-`WORKFLOW_TEST_SHARDS` is derived from that catalogue, not a second list. CI runs
+`TOOLING_TEST_SHARDS` is derived from that catalogue, not a second list. CI runs
 the candidate, verification, diagnostics and native parts independently with
 `--tooling-shard PART` on the verifier. The verifier calls the same npm entry with
-`--workflow-shard PART`; this mode rejects additional filters. The canonical
+`--tooling-shard PART`; this mode rejects additional filters. The canonical
 runner identity and catalogue are bound, and unknown startup/lifecycle settings
 cannot qualify formal shard execution. A replacement package script does not
 become a complete CI tooling gate.
 
 Each part reports `partial`, including on a tooling-only plan. Aggregation needs
 every exact part once, with matching source, base, catalogue and execution origins.
-Missing, failed, duplicated or mismatched parts block `workflow-tests`. Parts
+Missing, failed, duplicated or mismatched parts block `tooling-tests`. Parts
 cannot seed a successful local group receipt; normal full-group recovery keeps
 its positive terminal qualification rule. The CI matrix disables fail-fast so
 one failure does not discard unrelated successful jobs.
@@ -973,7 +1207,7 @@ Each listed file runs in its own process with Node's default file concurrency.
 The wrapper adds no concurrency, isolation, reporter or filtering flags by default,
 inherits standard input/output/error, propagates exit codes and termination signals,
 and reports launch failures as failures. Node test options can be passed after
-`npm run test:workflow --`; filtered runs are focused feedback, not the complete
+`npm run test:tooling --`; filtered runs are focused feedback, not the complete
 verification gate. No test-directory glob is used: extension packaging and the
 separate Linux process regression remain outside this list. Xcode setup is an
 ordinary peer entry, with fixture environment restoration asserted in that file.
@@ -1028,10 +1262,10 @@ The failure-surface audit and validation contract are:
 
 | Surface | Failure information and verification |
 | --- | --- |
-| Checkout, Node/JDK/Python setup and their post steps | Keep the named official Action's native error log and platform outcome; no duplicate wrapper. Current workflow contracts retain versions, read permissions and credential isolation. |
+| Checkout, Node/JDK/Python setup and their post steps | Keep the named official Action's native error log and platform outcome; no duplicate wrapper. Current CI contracts retain versions, read permissions and credential isolation. |
 | npm/Python dependency restoration | Keep direct command errors and exit status. The summary distinguishes an unstarted verifier and an unproduced report; it does not invent a check pass. |
 | Plan and explicit base resolution | Native Git/PowerShell errors identify base resolution; controller planning/report errors emit fixed structured reasons. Invalid-base and illegal-destination CLI cases remain nonzero. |
-| `workflow-tests` | Exact check/exit, private-log availability and bounded source-indexed declaration hints. Controlled predecessor, log-init, cancellation and collector regressions exercise the real controller. |
+| `tooling-tests` | Exact check/exit, private-log availability and bounded source-indexed declaration hints. Controlled predecessor, log-init, cancellation and collector regressions exercise the real controller. |
 | `typecheck`, `backend-build` | Exact check/exit plus bounded compiler codes and existing repository source positions. A real synthetic TypeScript compilation checks that private values are excluded. |
 | `backend-tests` | Existing protected source-mapped Node reporter, catalogue/nonce binding and guarded artifact, plus the common check summary. Original invocation/default concurrency and preflight privacy regressions remain. |
 | `schema` | Separate command failure and source-changed outcome. Source mutation cannot be accepted as an unchanged green result. |
@@ -1169,7 +1403,7 @@ selected-test proxy. Before any predecessor runs, diagnostic preflight checks
 inherited Node/npm options and reads effective project/user npm `node-options`
 with a bounded owned `npm config get node-options` command. Conflicting
 reporter settings are refused before they can affect predecessors, including
-workflow regressions in a local all-group run. CI runs those regressions in
+tooling regressions in a local all-group run. CI runs those regressions in
 the independent tooling job; the backend job no longer executes them.
 For the backend check only, the effective benign options are retained and the
 reporter is appended through npm's own configuration channel, so npm cannot
@@ -1229,7 +1463,7 @@ non-URL output. These fixed categories do not disclose the child output or
 assertion operands, perform no lookup of its path, and never establish runtime
 ownership or replace the failing assertion.
 
-The workflow suite's schema newline regression compiles the actual portable
+The tooling suite's schema newline regression compiles the actual portable
 contract in its own isolated package fixture. It verifies the missing-export
 failure before compilation and then compares the regenerated schema bytes;
 parent-worktree build outputs cannot satisfy that prerequisite.
@@ -1313,6 +1547,9 @@ On an isolated worktree of that base, the pre-fix command below failed with
 to the SDK.` The minimal extra condition was an inherited `ANDROID_SDK_ROOT`
 pointing to a different existing directory; `-Jdk` and `-Sdk` selected the valid,
 already-provisioned toolchains:
+
+The JDK 21 path below belongs to that historical reproduction, not current setup
+guidance. Current native builds require JDK 25.
 
 ```powershell
 pwsh -NoProfile -NonInteractive -File scripts\build-android.ps1 `
@@ -1443,20 +1680,20 @@ repaired, run full verification against the actual candidate.
 ## Android execution environment
 
 For local Windows runs, provision an isolated executor with hardware-accelerated emulation,
-JDK 17/21, SDK platform/build-tools 35, platform-tools, and an installed x86_64
+JDK 25, SDK platform 37.2/build-tools 37.0.0, platform-tools, and an installed x86_64
 system image. Licenses must already be accepted by the operator. The runner does
 not install tools, silently accept terms or change host virtualization settings.
 Explicit setup can use `scripts\prepare-android.ps1 -Emulator`; this downloads
-checksum-verified tools and the API-35 image into `.tools`, reusing an already
+checksum-verified tools and the API-37 image into `.tools`, reusing an already
 accepted SDK license. Hosted Linux CI setup is described below and does not
 change this local Windows installation.
 
 Set process/runner environment variables to the provisioned paths:
 
 - `DEVPOCKET_JDK`: JDK directory.
-- `DEVPOCKET_ANDROID_SDK`: SDK containing platform/build-tools 35.
+- `DEVPOCKET_ANDROID_SDK`: SDK containing platform 37.2/build-tools 37.0.0.
 - `DEVPOCKET_ANDROID_IMAGE`: relative system-image directory, normally
-  `system-images\android-35\google_apis\x86_64`.
+  `system-images\android-37.0\google_apis\x86_64`.
 - `DEVPOCKET_EMULATOR_SDK`: optional separate SDK containing emulator,
   platform-tools and the image, when the build SDK is separate.
 
@@ -1515,7 +1752,7 @@ before targeted cleanup; never delete another run or a retained trial AVD.
 The CI `device` job uses the standard x64 `ubuntu-24.04` VM, not `ubuntu-slim`,
 ARM or a job container. GitHub supports
 [hardware-accelerated Android testing on standard Linux runners](https://github.blog/changelog/2024-04-02-github-actions-hardware-accelerated-android-virtualization-now-available/).
-The job selects Node 24 and Temurin JDK 21 and uses the image's PowerShell 7,
+The job selects Node 26, npm 12.2.1 and Temurin JDK 25 and uses the image's PowerShell 7,
 Python 3 and Android command-line tools. The
 [runner image inventory](https://github.com/actions/runner-images/blob/8197087fc536320d1441203fdb5da9ae1b44b863/images/ubuntu/Ubuntu2404-Readme.md)
 is a snapshot, not proof of any future job's installed versions.
@@ -1528,7 +1765,7 @@ Setup does not grant world access, modify local developer virtualization or
 install a self-hosted runner. Failed post-run access is never silently repaired
 by the verifier or accepted as a successful environment check.
 `sdkmanager --channel=0` installs the required stable platform/build tools,
-emulator and API-35 Google APIs x86_64 image into the disposable VM's existing
+emulator and API-37 Google APIs x86_64 image into the disposable VM's existing
 SDK. Stdin is closed: no `yes`, `--licenses` or invented acceptance hash is used.
 Existing license records must suffice, and required files are checked afterward
 because a refused package may be skipped. Missing licenses, SDK tools or
@@ -1594,7 +1831,7 @@ Linux token option; no unauthenticated listener is enabled.
 
 The job also runs `scripts/tests/linux-process.test.mjs` against real Linux
 processes and the actual PowerShell build interface. Portable lease/ownership
-parsing checks run in the existing Windows workflow suite as well. Neither
+parsing checks run in the existing Windows tooling suite as well. Neither
 those tests nor a Windows emulator pass substitutes for the actual Ubuntu/KVM
 native gate. An incremental Gradle invocation may reuse JVM/lint outputs;
 `UP-TO-DATE` is not a claim those tests executed again.
@@ -1632,6 +1869,12 @@ device. Run the starter in one terminal and keep it open:
 ```powershell
 .\scripts\start-test-emulator.ps1
 ```
+
+Add `-Visible` for an interactive emulator window. This is an explicit manual
+opt-in; automated checks and omitted switches remain headless. Port leases,
+private AVD/ADB data, live ownership checks and scoped shutdown are unchanged.
+Use `-Sdk`, `-Jdk` and `-Image` to select existing shared tools without copying
+or updating them.
 
 It prints a new owned run directory after readiness. From the same checkout
 in another terminal, supply that exact directory:
@@ -1714,7 +1957,7 @@ GitHub provisions the hosted VM; this does not install a local runner. The
 [checkout container credential requirement](https://github.com/actions/checkout/blob/v7.0.1/README.md)
 is 2.329.0 or newer for authenticated Git inside Docker container actions; this
 workflow has no job container and keeps `persist-credentials: false`.
-Project toolchains remain Node 24, Temurin JDK 21 and Python 3.12. The Windows
+Project toolchains use Node 26, npm 12.2.1, Temurin JDK 25 and Python 3.12. The Windows
 Android job passes its explicit project-local SDK; the Linux device job passes
 the explicit hosted SDK path after the required stable packages are available.
 
@@ -1729,6 +1972,12 @@ An empty download cannot satisfy a nonempty required-check plan; a
 documentation-only plan legitimately needs no check artifacts.
 These compatibility checks do not prove a remote Actions run succeeded or that
 its warnings disappeared. The separate extension-release workflow is unchanged.
+
+New PR-triggered verification runs cancel earlier in-progress runs for the same
+PR through its stable concurrency group. Different PRs remain independent.
+Manually dispatched verification runs retain their non-cancelling behavior;
+the separate native-startup diagnostic and extension-release workflows are unchanged.
+Cancellation does not qualify incomplete reports as acceptance.
 
 `ci.yml` plans every PR and runs selected tooling, backend and Android checks
 in separate hosted Windows jobs. The tooling job installs only Node/root npm
@@ -1801,13 +2050,9 @@ failed commits and reports; never replay an uncertain mutation. Inspect the
 recorded owner before recovering a retained lock. Existing or replaced locks
 are not removed automatically.
 
-Historical Dynamic Workflow records and snapshots are retained in ignored
-storage, not executed or upgraded by this route. Before reloading a session with
-an old in-flight run, finish or stop that run through the original client.
 For unfinished work, inspect its original task/base, actual Git state, decisions
 and process ownership, then continue in its owning session using the skill.
 Re-establish verification and independent review for the current source.
-Old handoffs and manifests containing retired modules are not current readiness
-or candidate-conversion proof; never rewrite their version, HEAD or input list
-to make them pass. The separate shipped phone/runtime extension is not retired
-by this change.
+Retain historical reports and snapshots unchanged. Evidence must match the
+current source and execution inputs; never rewrite its version, HEAD or input
+list to make it qualify.

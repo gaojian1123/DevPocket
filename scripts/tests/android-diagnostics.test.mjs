@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { LINUX_PLATFORM_TESTS } from "../backend-diagnostics.mjs";
-import { WORKFLOW_TEST_FILES } from "../test-workflow.mjs";
+import { TOOLING_TEST_FILES } from "../test-tooling.mjs";
 
 const exec = promisify(execFile);
 const entry = path.resolve("scripts/android-diagnostics.mjs");
@@ -82,6 +82,25 @@ test("the diagnostic command projects SDK, compiler, JVM and lint failures witho
   }
   assert.equal(await readFile(path.join(item.directory, "report.json"), "utf8"), '{"preserved":"machine report"}\n');
   assert.equal(await readFile(path.join(item.directory, "android-build.log"), "utf8"), log);
+});
+
+test("JDK diagnostics recognize the JDK 25 requirement and historical build messages", async (t) => {
+  for (const versions of ["25", "21 or 25", "17 or 21", "17, 21 or 25"]) {
+    const item = await fixture(t, `JDK ${versions} is required. Pass -Jdk or run prepare-android.ps1 -DownloadJdk.\n`);
+    const { report } = await collect(item);
+    assert.deepEqual(report.failureKinds, ["jdk-incompatible"]);
+  }
+});
+
+test("SDK diagnostics recognize decimal platforms and historical integer messages", async (t) => {
+  const build = await readFile(path.resolve("scripts/build-android.ps1"), "utf8");
+  const current = /WriteLine\('(Android SDK platform [^']+)'\)/.exec(build)?.[1];
+  assert.ok(current, "Exercise the actual native build prerequisite message.");
+  for (const message of [current, "Android SDK platform 35 is missing.", "Android SDK platform 37 is missing."]) {
+    const item = await fixture(t, `${message}\n`);
+    const { report } = await collect(item);
+    assert.deepEqual(report.failureKinds, ["sdk-missing"], message);
+  }
 });
 
 test("the public Android exporter indexes standard build-type resources without losing the original failure", async (t) => {
@@ -185,7 +204,7 @@ test("CI publishes only the diagnostic projection alongside the original Android
   assert.match(android, /if: always\(\) && steps\.android_diagnostics\.outputs\.report_ready == 'true'/);
   assert.match(android, /name: android-test-diagnostics-attempt-\$\{\{ github\.run_attempt \}\}\r?\n\s+path: \.data\/ci\/android\/android-diagnostics\.json/);
   for (const testFile of ["android-build.test.mjs", "android-diagnostics.test.mjs"]) {
-    assert.ok(WORKFLOW_TEST_FILES.includes(`scripts/tests/${testFile}`));
+    assert.ok(TOOLING_TEST_FILES.includes(`scripts/tests/${testFile}`));
   }
 });
 
@@ -208,9 +227,13 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
     /- uses: actions\/checkout@v7\n\s+with:\n\s+fetch-depth: 0\n\s+persist-credentials: false/g,
   )].length, 7);
   assert.equal([...expandedNormal.matchAll(
-    /- uses: actions\/setup-node@v7\n\s+with:\n\s+node-version: 24\n/g,
+    /- uses: actions\/setup-node@v7\n\s+with:\n\s+node-version: 26\.12\.1\n/g,
   )].length, 7);
-  assert.equal([...expandedNormal.matchAll(/- uses: actions\/setup-java@v6\n\s+with:\n\s+distribution: temurin\n\s+java-version: '21'/g)].length, 2);
+  assert.equal([...expandedNormal.matchAll(/- uses: actions\/setup-java@v6\n\s+with:\n\s+distribution: temurin\n\s+java-version: '25'/g)].length, 2);
+  const androidBuild = await readFile("android/app/build.gradle.kts", "utf8");
+  assert.match(androidBuild, /sourceCompatibility = JavaVersion\.VERSION_17/);
+  assert.match(androidBuild, /targetCompatibility = JavaVersion\.VERSION_17/);
+  assert.match(androidBuild, /jvmTarget\.set\(org\.jetbrains\.kotlin\.gradle\.dsl\.JvmTarget\.JVM_17\)/);
   assert.match(workflow, /- uses: actions\/setup-python@v7\n\s+with:\n\s+python-version: '3\.12'/);
   assert.match(workflow, /^permissions:\n  contents: read\n/m);
   assert.doesNotMatch(workflow, /continue-on-error:|FORCE_JAVASCRIPT_ACTIONS_TO_NODE20|ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION/);
@@ -236,7 +259,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.ok(preparation.includes("</dev/null"));
   assert.doesNotMatch(preparation, /yes\s*\||--licenses|chmod\s+666/);
   assert.match(device, /scripts\/verify\.ps1 -Base \$env:BASE_SHA -Group device -Jdk \$env:JAVA_HOME -Sdk \$env:ANDROID_HOME/);
-  assert.match(device, /-Image system-images\/android-35\/google_apis\/x86_64 -Report \.data\/ci\/device\/report\.json/);
+  assert.match(device, /-Image system-images\/android-37\.0\/google_apis\/x86_64 -Report \.data\/ci\/device\/report\.json/);
   assert.match(preparation, /node scripts\/linux-runtime\.mjs\n\s+exit \$LASTEXITCODE/);
   assert.match(preparation, /node scripts\/platform-diagnostics\.mjs --github/);
   assert.deepEqual(LINUX_PLATFORM_TESTS, [
@@ -265,17 +288,17 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(gate, /node @arguments\n\s+if \(\$LASTEXITCODE -ne 0\) \{ throw /);
 });
 
-test("the independent tooling CI job runs the complete workflow suite without application or device provisioning", async () => {
+test("the independent tooling CI job runs the complete tooling suite without application or device provisioning", async () => {
   const { CHECKS } = await import("../verification-policy.mjs");
   assert.deepEqual(CHECKS.filter((check) => check.group === "tooling"),
-    [{ id: "workflow-tests", group: "tooling" }]);
+    [{ id: "tooling-tests", group: "tooling" }]);
   const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
   const tooling = workflow.split("\n  tooling:")[1]?.split("\n  macos:")[0];
   assert.ok(tooling);
   assert.match(tooling, /needs: plan\n\s+if: needs\.plan\.outputs\.tooling == 'true'/);
   assert.match(tooling, /!\(github\.event_name == 'workflow_dispatch' && inputs\.backend_diagnostic\)/);
   assert.match(tooling, /runs-on: windows-latest/);
-  assert.match(tooling, /actions\/setup-node@v7\n\s+with:\n\s+node-version: 24/);
+  assert.match(tooling, /actions\/setup-node@v7\n\s+with:\n\s+node-version: 26\.12\.1/);
   assert.match(tooling, /actions\/setup-python@v7\n\s+with:\n\s+python-version: '3\.12'/);
   assert.match(tooling, /- run: npm ci --no-audit --no-fund/);
   assert.ok(tooling.includes("'scripts\\verify.mjs', '--base', $env:BASE_SHA, '--group', 'tooling'"));
@@ -294,14 +317,15 @@ test("the independent tooling CI job runs the complete workflow suite without ap
   assert.ok(gate.includes("TOOLING_RESULT: ${{ needs.tooling.result }}"));
   assert.match(gate, /pattern: verification-\*/);
   const manifest = JSON.parse(await readFile("package.json", "utf8"));
-  assert.equal(manifest.scripts["test:workflow"], "node scripts/test-workflow.mjs");
-  assert.ok(WORKFLOW_TEST_FILES.includes("scripts/tests/xcode-mcp.test.mjs"));
-  assert.ok(WORKFLOW_TEST_FILES.includes("scripts/tests/workflow-runner.test.mjs"));
+  assert.equal(manifest.scripts["test:tooling"], "node scripts/test-tooling.mjs");
+  assert.ok(TOOLING_TEST_FILES.includes("scripts/tests/xcode-mcp.test.mjs"));
+  assert.ok(TOOLING_TEST_FILES.includes("scripts/tests/tooling-runner.test.mjs"));
   const executor = await readFile("scripts/verification-executor.mjs", "utf8");
   const adapter = executor.split('definition.group === "tooling" ? {')[1]?.split('} : definition.group === "backend"')[0];
   assert.ok(adapter);
-  assert.ok(adapter.includes('"& npm run test:workflow; exit $LASTEXITCODE"'));
-  assert.ok(adapter.includes("& npm run test:workflow -- --workflow-shard ${check.toolingShard.id}; exit $LASTEXITCODE"));
+  assert.ok(executor.includes('const npm = process.platform === "win32" ? "npm.cmd" : "npm"'));
+  assert.ok(adapter.includes("& ${npm} run test:tooling; exit $LASTEXITCODE"));
+  assert.ok(adapter.includes("& ${npm} run test:tooling -- --tooling-shard ${check.toolingShard.id}; exit $LASTEXITCODE"));
 });
 
 test("native startup diagnostics are manual-only, reuse the owned entry and never become a verification shard", async () => {
@@ -325,7 +349,7 @@ test("native startup diagnostics are manual-only, reuse the owned entry and neve
   assert.ok(startup.includes("BASE_SHA: ${{ steps.base.outputs.sha }}"));
   assert.ok(startup.includes("STARTUP_VARIANT: ${{ inputs.variant }}"));
   assert.match(startup, /uses: \.\/\.github\/actions\/prepare-native/);
-  assert.match(startup, /node scripts\/native-startup\.mjs --base \$env:BASE_SHA --variant \$env:STARTUP_VARIANT `\n\s+--directory \.data\/ci\/native-startup --jdk \$env:JAVA_HOME --sdk \$env:ANDROID_HOME `\n\s+--image system-images\/android-35\/google_apis\/x86_64 --github\n\s+exit \$LASTEXITCODE/);
+  assert.match(startup, /node scripts\/native-startup\.mjs --base \$env:BASE_SHA --variant \$env:STARTUP_VARIANT `\n\s+--directory \.data\/ci\/native-startup --jdk \$env:JAVA_HOME --sdk \$env:ANDROID_HOME `\n\s+--image system-images\/android-37\.0\/google_apis\/x86_64 --github\n\s+exit \$LASTEXITCODE/);
   assert.ok(startup.includes("CURRENT_OWNER: ${{ steps.probe.outputs.startup_run_id }}"));
   assert.match(startup, /--job startup --step-result \$env:STEP_RESULT --owner=\$env:CURRENT_OWNER --github/);
   assert.match(startup, /uses: actions\/upload-artifact@v7\n\s+if: always\(\) && steps\.diagnostics\.outputs\.startup_report_ready == 'true'/);

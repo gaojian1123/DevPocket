@@ -14,7 +14,7 @@ both require extension loading and a compatible bundled SDK.
 
 ## Install on a new Dev Box
 
-You need Node.js **24.x** and a compatible GitHub Copilot runtime in either client.
+You need Node.js **26.12.1 or newer within 26.x** and a compatible GitHub Copilot runtime in either client.
 The runtime adapter checks each capability through read-only live probes, the
 runtime-bundled SDK and supported protocol shapes, not a version allowlist.
 Missing evidence disables the affected controls; an unfamiliar or missing
@@ -48,6 +48,8 @@ Run this on the new Windows Dev Box, in an interactive terminal:
 node .\devpocket-extension\devpocket.mjs setup
 ```
 
+PowerShell 7 (`pwsh` on `PATH`) is required for the private-directory ACL checks.
+Setup does not change execution policies or fall back to Windows PowerShell 5.1.
 Azure Developer CLI (`azd`) must already be installed and signed in to the intended
 directory. Setup does not log in, switch a global account, install tools, change
 RBAC or create Azure resources. If needed, sign in explicitly first:

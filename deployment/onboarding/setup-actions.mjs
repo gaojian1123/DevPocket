@@ -1,10 +1,11 @@
 import { z } from "zod";
+import { utf16String } from "@devpocket/components";
 import { canonical, requireValue, sha } from "./handoff.mjs";
 import { AzureRequestNotAdmittedError } from "./setup-azure.mjs";
 
 export const MAX_SETUP_REQUEST = 36369;
 const marker = "DEVPOCKET_HOST_RESULT=";
-const id = z.string().uuid();
+const id = z.guid();
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const targetSchema = z.object({
   vmVerified: z.literal(true), ownerVerified: z.literal(true), releaseId: digest,
@@ -17,8 +18,8 @@ const envelopeSchema = z.object({
     operationId: id, nonce: digest, recipientSha256: digest, expiresAt: z.number(),
     hostId: id, configSha256: digest,
   }).strict(),
-  nonce: z.string().max(4096), tag: z.string().max(4096),
-  wrappedKey: z.string().max(4096), ciphertext: z.string().max(4096),
+  nonce: utf16String(4096), tag: utf16String(4096),
+  wrappedKey: utf16String(4096), ciphertext: utf16String(4096),
 }).strict();
 const results = z.discriminatedUnion("status", [
   z.object({ status: z.literal("relay_discovered"), scopeHash: digest, target: targetSchema,

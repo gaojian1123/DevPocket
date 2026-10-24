@@ -9,7 +9,7 @@ The **original client** means the CLI terminal or desktop app hosting that sessi
 ```text
 Native Android (Kotlin / Compose / OkHttp / Keystore)
         | HTTPS commands + WSS user-facing events
-DevPocket relay (Node 24 / TypeScript / SQLite)
+DevPocket relay (Node 26 / TypeScript / SQLite)
         ^
         | outbound authenticated WSS only
 Dev Box extension -> joinSession() -> original GitHub Copilot runtime (CLI or desktop app)
@@ -308,130 +308,68 @@ After the user finished the trial, its dedicated local emulator, ADB server and 
 ## AI development workflow
 
 The repository's **devpocket-development skill** is the default agent route for
-feature implementation and bug fixes under `AGENTS.md`. It keeps implementation
-in the current session when already in a suitable linked worktree, runs the
-existing source-bound verifier and requests an independent read-only reviewer.
-The recipe lives in `.github\skills\devpocket-development\SKILL.md`; an agent can
-read it directly when skill discovery has not refreshed. Development uses the
-owning session's original tools; the former Dynamic Workflow and development
-extension have been removed. Discussion, planning
-and documentation-only tasks do not start the implementation pipeline.
+feature implementation and bug fixes under `AGENTS.md`. The
+[short recipe](.github/skills/devpocket-development/SKILL.md) keeps the owning
+session in its linked worktree and points to the
+[authoritative development guide](docs/DEVELOPMENT-WORKFLOW.md).
+Discussion, planning, read-only review and documentation-only tasks do not start
+the implementation pipeline. Use the original client's tools and existing CI.
 
-The skill distinguishes reviewed working-tree changes from authorized commit/PR
-delivery. **PR delivery is CI-first:** approved focused checks precede an
-authorized candidate commit and Draft PR; the existing grouped CI supplies the
-complete gate instead of repeating it locally before publication. A draft is
-pending evidence, not verified readiness. Independent review and live CI
-qualification still precede ready delivery, and the original task base remains
-fixed. Working-tree-only work does not gain upload permission; local full
-verification remains available when that is the authorized route.
+**Choose the delivery route:** reviewed working-tree changes are the default.
+[Local delivery](docs/DEVELOPMENT-WORKFLOW.md#delivery-targets-and-candidate-preparation)
+does not acquire upload authority. [CI-first PR delivery](docs/DEVELOPMENT-WORKFLOW.md#ci-first-delivery-and-live-qualification)
+uses permitted focused checks, an authorized candidate and pending Draft PR,
+then the complete hosted gate, independent review and live freshness before ready.
+The original task base stays fixed. Neither route authorizes merge or deployment.
 
-There is no default two-round cap or separate time/credit budget.
-Same-scope work continues under the original client's limits and any explicit
-user cap. Repeated failures get diagnosis and a different approach before a
-no-progress stop; normal repair rounds do not require renewed project approval.
-See **Task-scoped autonomy** in `docs\DEVELOPMENT-WORKFLOW.md`.
-Native PR tools finish only the recorded delivery scope; development does not
-authorize merging or deployment. The skill retains verification requirements
-and scoped authorization; it is
-guidance, not a replacement for programmatic evidence checks or protected CI.
+**Execution scope:** [Scoped approvals](docs/DEVELOPMENT-WORKFLOW.md#scoped-development-approvals)
+separate local control adoption from ordinary hosted CI and publication.
+[Workspace-local setup](docs/DEVELOPMENT-WORKFLOW.md#workspace-local-prerequisites)
+covers required locked dependencies/tools after a manifest change or actual
+missing-prerequisite failure, not global installation or changed control adoption.
+[Unattended execution](docs/DEVELOPMENT-WORKFLOW.md#unattended-execution) reuses an
+explicit task grant; autopilot does not create one. The
+[autonomy rules](docs/DEVELOPMENT-WORKFLOW.md#task-scoped-autonomy) preserve user
+limits/cancellation without a project-default time, credit or repair-round cap.
 
-**Unattended development** reuses one explicit task-scoped grant rather than
-requesting approval at every phase. Sensitive/unclassified filenames focus
-independent review, not mandatory human sign-off. Autopilot never supplies
-missing authority: it retains a concrete blocker without opening a question.
-Candidate dependencies, installation scripts and modified tools can execute on
-authorized disposable GitHub-hosted runners with their normal execution identity.
-Public internet and ordinary CI caches are allowed. This protects the developer
-machine and keeps production credentials/publication permissions outside candidate
-execution; it does not promise that hostile code cannot influence tests.
-No restricted-token worker, temporary supervisor service or adversarial sandbox
-is required or reserved as a future mode. Normal platform checks, independent
-review, deadlines and cleanup remain mandatory, as does DevPocket's product security.
-See **Unattended execution** in `docs\DEVELOPMENT-WORKFLOW.md` for task-scoped
-ordinary CI authority and separate local tool adoption.
+**Checks:** use `npm run verify -- -Base BASE_COMMIT` for the diff-selected gate;
+`-Plan` explains [impact selection](docs/DEVELOPMENT-WORKFLOW.md#responsibility-based-impact)
+without acceptance. Shared execution, CI/dependencies and unknown paths retain
+conservative coverage; mixed changes take the union. Preflight reports independent
+missing prerequisites together and distinguishes safely unrun dependent probes.
+For failed runs or verified edits becoming a commit, follow the guide's
+[recovery](docs/DEVELOPMENT-WORKFLOW.md#selected-group-preflight-and-explicit-recovery)
+or [conversion](docs/DEVELOPMENT-WORKFLOW.md#working-tree-evidence-to-an-authorized-candidate)
+route without rewriting old evidence.
 
-Verification classifies changed paths centrally and derives CI lanes from the
-selected check definitions, independently of local Agent trust requirements.
-Development policy, candidate preparation, source identity, planning,
-evidence aggregation and their named contract regressions select the complete
-tooling suite in the independent **tooling** lane, without application builds
-or Android provisioning. `AGENTS.md` and the named DevPocket skill/reviewer
-instructions select it too; README, validation and docs Markdown alone select
-no checks. The verifier's compatibility entry separates these contracts from
-the backend and Android execution adapters. Backend build/command inputs select
-backend checks; native build/device inputs select build, device and layouts.
-Shared process execution, cross-lane CI, shared dependencies and unknown paths
-remain conservative full impact. Runtime/wire compatibility coverage is retained,
-and mixed changes take the union. Plans explain responsibilities, not approval.
+For lightweight approval feedback:
 
-Verification now preflights only selected groups before expensive checks and
-retains immutable, checkout-local run receipts. Explicit `-Resume RUN_JSON`
-continues failed or unfinished groups while reusing still-valid successful
-groups; source/policy changes, unconfirmed cleanup and interrupted owners remain
-blocking. A separately authorized native candidate commit can use `-Promote`
-with its bound request/receipt to qualify eligible content-only checks for the
-candidate without rewriting their original execution HEAD or time. Supported
-Git text normalization is proved separately from unchanged execution bytes;
-CRLF/LF storage conversion alone no longer invalidates an otherwise proven
-transition. Unknown filters/encodings and unproven command contracts still
-refuse reuse. Ordinary
-aggregation, human approvals, independent review and remote CI remain separate.
-See the recovery and candidate-conversion sections in the development guide;
-these are local verification operations, not an App wake-up scheduler or a
-cross-commit cache.
+```powershell
+node --test scripts/tests/development-approval.test.mjs
+```
 
-`npm run test:workflow` uses `scripts/test-workflow.mjs`, which owns the complete
-explicit tooling test list, including Xcode setup and the runner's own contracts.
-The command, `workflow-tests` check ID and shard IDs are retained verification
-interfaces, not a registered Dynamic Workflow. Shared skill, policy and native
-candidate regressions live in `scripts/tests/development-tools.test.mjs`.
-It launches Node's test runner with separate file processes and Node's default
-concurrency, inherits the terminal streams, and preserves failures and exit status.
-It does not import the tests into one process or discover the entire test directory;
-extension packaging and the separate Linux process gate keep their own entries.
-Derived `WORKFLOW_TEST_SHARDS` use that same entry and catalogue. CI runs them
-independently; every required part must pass before `workflow-tests` qualifies.
-Version-5 aggregates retain each part's actual execution origin instead of
-inventing one full-suite execution.
+This pure Node entry is also part of the complete `npm run test:tooling`
+catalogue and existing `candidate` shard. Git/signing/hooks/candidate fixtures
+remain in `development-tools.test.mjs`. The fast entry cannot substitute for
+`tooling-tests` or Required verification; every formal shard and its actual
+execution origin remain mandatory. See
+[tooling regression scheduling](docs/DEVELOPMENT-WORKFLOW.md#tooling-regression-scheduling).
 
-Updated local verifier entrypoints share one per-user host admission slot for
-heavy checks. Queue time is separate from command deadlines, and owned nested
-verifiers can borrow a live parent ticket. This is cooperative admission, not an
-OS throttle: older entrypoints and direct focused commands are unaffected.
-Interrupted ownership remains explicit; no lock is reclaimed merely from a PID.
+Required Android evidence includes emulator instrumentation, not just APK build.
+The ordinary hosted Ubuntu/KVM device route and Windows/macOS coverage are
+described in [CI activation and trust](docs/DEVELOPMENT-WORKFLOW.md#ci-activation-and-trust);
+missing reports or acceleration remain blockers, and historical failures remain
+history. Repository files do not configure branch protection or grant runtime,
+cloud, publication or installation authority outside the stated setup scope.
+Local heavy verification uses [host admission](docs/DEVELOPMENT-WORKFLOW.md#host-wide-local-admission);
+queueing does not consume command deadlines or justify removing retained owners.
 
-Local execution trust and human-review requirements belong to
-`scripts\development-policy.mjs`. Ordinary code/test changes and same-scope repairs reuse the task's
-local-development authorization; entire script/backend directories are not
-automatic human-review gates. Protected local execution/adoption retains exact
-approval; an ordinary-CI task grant permits candidate execution in its named
-repository/ref without per-revision project approval. Sensitive/unclassified product changes retain independent
-inspection, independently of CI impact.
-Requests describe the action, reason, target, effects, exclusions and validity,
-with actual changes available as details. Retain original-client user decisions
-for the same task and trusted input versions;
-ordinary candidate repairs reuse that authority while refreshing evidence.
-Passing tests and independent AI review do not create authority. See
-**Scoped development approvals** in `docs\DEVELOPMENT-WORKFLOW.md`.
-GitHub merge review is enforced separately by repository rulesets/required
-reviews/CODEOWNERS when configured; this tooling does not configure them.
-Android-affecting changes require actual emulator
-instrumentation against a local test adapter, not just a successful APK build.
-CI runs this device gate on a standard GitHub-hosted Ubuntu 24.04 VM with KVM;
-no self-hosted runner registration, runner-enable variable or custom environment
-is needed. Windows local/manual emulator entry points retain their shared
-resource pool. Missing acceleration, failed fixtures and missing reports still
-block the required gate; moving CI does not repair historical Windows UI failures.
-See [development workflow](docs/DEVELOPMENT-WORKFLOW.md) for the skill-led route,
-`npm run verify`, CI-first draft/qualification steps, runner prerequisites and CI
-rules. Missing required device evidence blocks acceptance. Repository files do
-not by themselves enable a runner, enforce branch protection or authorize
-installation, runtime control, cloud operations, merging or publication.
 Automatic and manual emulator entry points share an account-wide resource pool
 across worktrees (one emulator by default). Use `npm run emulator:status` to
 inspect it; manual layout/stop commands require the run directory printed by
 `scripts\start-test-emulator.ps1`, never a fixed ADB port or retained AVD name.
+
+### Command ownership
 
 Windows command deadlines include supervisor startup, ownership-helper
 preparation, execution and shutdown. A late zero exit or `completed` output
@@ -478,7 +416,7 @@ remain unconfirmed, not successful command execution.
 
 `config/xcode-mcp.example.json` is a template, not an automatically loaded MCP
 configuration. Windows and Linux checkouts do not configure or launch Xcode.
-On a Mac with Node 24 and Xcode providing `mcpbridge`, review
+On a Mac with Node 26 and Xcode providing `mcpbridge`, review
 `scripts/setup-xcode-mcp.mjs` and the template, then opt in once per local clone:
 
 ```sh
@@ -538,7 +476,7 @@ Focused checks use `node --test scripts/tests/xcode-mcp.test.mjs`. On a supporte
 Mac they exercise real Git worktree creation and read-only Xcode lookup, not an
 MCP connection or an App session. They also cover simulated unsupported
 platforms, missing Xcode, configuration preservation and hook conflicts.
-The same file runs as a peer in the complete `npm run test:workflow` list, in its
+The same file runs as a peer in the complete `npm run test:tooling` list, in its
 own Node test process. Its Git fixtures still restore and check their inherited
 environment. The named initializer/template/tests and root ignore policy
 select tooling checks, not application builds; shared dependencies and unknown
@@ -546,7 +484,29 @@ paths remain conservatively classified.
 
 ## Backend build and local development
 
-Use Node 24.x and PowerShell. Commands are run from the DevPocket folder.
+Use Node 26.12.1 or newer within 26.x, npm 12.2.1, and PowerShell 7 (`pwsh`).
+Commands are run from the DevPocket folder.
+
+On Windows, use `npm.cmd` when forwarding arguments after `--`, for
+example `npm.cmd run verify -- -Base BASE_COMMIT`. The `npm.ps1` launcher consumes
+that separator before npm 12 can forward the arguments.
+
+Follow the npm source/version rule in `AGENTS.md` when selecting or restoring
+dependencies. Keep npm's canonical `registry.npmjs.org` tarball URLs in the
+lockfiles: npm maps these to the configured registry. Microsoft's metadata can
+return a different backing host, which npm 12 otherwise rejects as a remote URL.
+The current baseline uses TypeScript 7 and Zod 4. TypeScript's native compiler
+uses platform-specific optional packages, so do not omit optional dependencies
+when restoring the lockfile. Schema export uses Zod's built-in Draft-7 input
+projection; explicit UTF-16 text bounds, protocol-v1 ID shapes, message defaults
+and JSON validation remain compatible. This checkout does not upgrade an
+installed extension or running relay.
+
+TypeScript 7 supplies the native compiler. Bounded test diagnostics use
+`@babel/parser` for syntax-only declaration locations; they do not load a
+TypeScript project, follow imports or evaluate test source.
+The older content-only compiler-reuse contract is not assumed to cover this
+native compiler; unbound toolchains run fresh verification instead.
 
 ```powershell
 npm ci
@@ -579,12 +539,12 @@ On the Android pairing screen enter the independent relay origin, one-time code 
 
 Use the standalone ZIP and checksum from an extension release; follow
 [`extension\README.md`](extension/README.md) to verify and extract them. The target
-needs Node 24.x and a compatible GitHub Copilot runtime in the CLI or desktop app
+needs Node 26.12.1 or newer within 26.x and a compatible GitHub Copilot runtime in the CLI or desktop app
 that can load the extension and provide its bundled SDK. It does not need this
 repository, npm dependencies, the Android toolchain or a local relay.
 
-For an existing Azure relay managed by this project, install Azure Developer CLI
-(`azd`) and sign in to its directory if not already authenticated. Run this from
+For an existing Azure relay managed by this project, have PowerShell 7 (`pwsh`) on
+`PATH`, install Azure Developer CLI (`azd`) and sign in to its directory if not already authenticated. Run this from
 the extracted package **on the new Windows Dev Box**:
 
 ```powershell
@@ -820,14 +780,42 @@ Revocation closes live subscriptions and blocks new commands/uploads/downloads f
 
 ## Native Android build
 
-Requirements: Node.js 24 with the repository's locked npm dependencies restored,
-JDK 17 or 21, Android SDK platform/build-tools 35, and Gradle 8.11.1 (the wrapper
+Requirements: Node.js 26 with the repository's locked npm dependencies restored,
+JDK 25, Android SDK platform 37.2/build-tools 37.0.0, and Gradle 9.8.2 (the wrapper
 is pinned and checksum-verified). The native build compiles the portable
 component package; on a clean checkout, run `npm ci` from the repository root
 after the dependency-policy decision and before the Android build.
-Existing Studio JBR 25 is not selected for this build.
+AGP 9 uses built-in Kotlin with Kotlin/Compose compiler 2.4.21. The app retains
+minSdk 26 and Java/Kotlin bytecode target 17, and targets Android 17 (API 37).
+Lint and Kotlin compiler warnings fail the project checks; release builds shrink
+unused resources as well as code.
+CI uses Temurin JDK 25. An existing Android Studio JBR 25 can be selected explicitly with `-Jdk`.
+Builds and JVM tests require stable JDK 25; the direct build entry and verification
+preflight reject other versions. Java 17 bytecode remains the application target,
+not the host build/test-JVM requirement.
+Native access is enabled only for the Gradle launcher/daemon and forked JVM
+tests that use their native libraries, not through global Java settings.
+API-37 Robolectric shared-memory initialization also needs the
+`java.base/jdk.internal.access` export in forked test JVMs only, not in the app
+or Gradle daemon.
+Compose tests use the v2 rule factories and their standard test dispatcher.
+Both JVM and instrumentation test scopes explicitly select the current AndroidX
+test stack; Compose's transitive minimum versions do not suffice for API 37.
+Native keyboard checks request hiding through `WindowInsetsControllerCompat`
+and wait for observed IME insets, rather than relying on the deprecated result
+callback.
+The two packaged AndroidX JNI libraries are already stripped; packaging keeps
+those exact vendor binaries rather than attempting an unnecessary NDK strip.
+One upstream Gradle deprecation warning remains with AGP 9.4.1 and Gradle 9.8.2: AGP's
+`BasePlugin.createAndroidJdkImageConfiguration` calls the deprecated
+`Configuration.setVisible(boolean)`. It is not suppressed or worked around by
+patching dependencies; update AGP when an upstream fix is released.
 
 If the SDK components/JDK are missing, the supplied preparation script downloads official packages only to `.tools`, verifies published checksums, and reuses an **already accepted** Android SDK license. It does not silently accept licenses, install system packages or change global environment variables.
+The JDK download and native entry points use `.tools\jdk-25` by default. Existing
+older JDK installations are not removed or silently used as a fallback.
+New SDK packages must have one unambiguous `channel-0` entry without a preview
+revision; metadata ordering never makes a preview the default.
 
 ```powershell
 .\scripts\prepare-android.ps1 -DownloadJdk
@@ -837,7 +825,7 @@ If the SDK components/JDK are missing, the supplied preparation script downloads
 Or pass existing installations:
 
 ```powershell
-.\scripts\build-android.ps1 -Jdk C:\YourJdk21 -Sdk C:\YourAndroidSdk -Lint
+.\scripts\build-android.ps1 -Jdk C:\YourJdk25 -Sdk C:\YourAndroidSdk -Lint
 ```
 
 The entrypoint selects `JAVA_HOME` and **both** `ANDROID_HOME` and
@@ -854,14 +842,14 @@ preparation script or automatic license acceptance.
 
 ### Complete local verification on macOS
 
-Use Node 24, PowerShell 7, Python 3.12 or newer, Git with SSH signing support,
-JDK 21 and an Android SDK with platform 35, build-tools 35.0.0, platform-tools
+Use Node 26, npm 12.2.1, PowerShell 7, Python 3.12 or newer, Git with SSH signing support,
+JDK 25 and an Android SDK with platform 37.2, build-tools 37.0.0, platform-tools
 and the emulator. Accept the SDK and system-image licenses yourself. Use Android
 Studio or Google's SDK manager on Mac; `prepare-android.ps1` is the Windows
 bootstrap, not a macOS installer. No Xcode simulator is involved.
 
-Apple Silicon uses `system-images;android-35;google_apis;arm64-v8a`; Intel Macs
-use `system-images;android-35;google_apis;x86_64`. The device gate requires a
+Apple Silicon uses `system-images;android-37.0;google_apis;arm64-v8a`; Intel Macs
+use `system-images;android-37.0;google_apis;x86_64`. The device gate requires a
 successful `emulator -accel-check` with Hypervisor.Framework. It creates a
 disposable AVD, private ADB server and loopback fixture, runs instrumentation and
 the selected layouts, and confirms owned-process cleanup before releasing them.
@@ -883,8 +871,8 @@ The same entry runs tooling, backend, Android build/unit/lint and actual device
 checks. Platform-specific Windows/Linux tests retain their native hosts; a Mac
 run is not evidence that those OS implementations were exercised.
 
-Hosted CI uses the same planner's `ciMacos` decision to select an ARM64
-`macos-15` job for shared verification infrastructure and relevant native changes.
+Hosted CI uses the same planner's `ciMacos` decision to select the rolling ARM64
+`macos-latest` image for shared verification infrastructure and relevant native changes.
 It reruns the existing `native` tooling shard, including macOS process cleanup,
 registry locks, IPC/admission and Python-path regressions. `Required verification`
 requires its successful job result and separate source-bound macOS evidence;
@@ -897,12 +885,16 @@ hardware acceptance.
 The macOS command owner uses kernel responsibility scopes and PID-version-bound
 signals, including nested command ownership; missing native APIs fail closed.
 Command-level environment overrides cannot discard the inherited supervision
-link. Unstable process observations are retried; if they cannot be established,
-cleanup remains unconfirmed rather than being treated as an empty process tree.
+link. Unstable process observations are retried within the existing command and
+cleanup deadlines. Exhausting one snapshot attempt does not permanently fail
+cleanup if later observations stabilize; persistent uncertainty still cannot
+be treated as an empty process tree.
 Kernel inspection refusals get bounded retries, not an assumed process exit.
 Empty-tree confirmation requires consecutive stable scans, including after a
-parent disappears or becomes a zombie. A failed nested supervisor still triggers
+parent disappears or becomes a zombie. Unconfirmed nested cleanup still triggers
 cleanup of other verifiably owned processes, but never a successful receipt.
+A failed target launch stays nonzero; its diagnostic precedes the terminal
+cleanup receipt so confirmed cleanup is not confused with command success.
 CI diagnostics project fixed macOS owner error categories from the existing
 private log, not raw exception messages, paths or receipt tokens. These hints
 do not prove a leaf cause or establish successful cleanup.
@@ -1106,14 +1098,45 @@ notification presentation and unattended runtime have not been accepted.
 This mode targets a powered-on, connected head unit, not waking a parked vehicle.
 Only interact with approvals or session controls while safely parked.
 
+### Android 17 local network access
+
+On Android 17, connections to a local-network relay require the system's
+`ACCESS_LOCAL_NETWORK` permission. Pairing and Settings expose an explicit
+permission action and a system-settings recovery path; public internet relays
+do not require it. Denial does not discard pairing input or silently retry an
+uncertain operation. The app refreshes permission state when it returns to the
+foreground, and never scans the LAN or prompts for this permission at startup.
+For a separately authorized real-client test against a local relay, grant it
+through the app before starting that opt-in test. Automated fixture tests grant
+it only on their disposable API-37 device.
+
 ### Optional FCM
 
 1. An authorized operator must create/select an **independent** Firebase project, enable the HTTP v1 FCM API, and register the Android package (`dev.devpocket.app.debug` for debug; `dev.devpocket.app` for release). Cloud/account actions are not performed by this project.
 2. Populate the public Android Firebase fields shown in `config\push.properties.example` through private Gradle properties or `-P` arguments. These are not GitHub credentials and not a server service-account private key.
 3. Store the server service-account JSON outside source, grant only the needed FCM sending role, and pass `--fcm-credentials <private-path>` or `DEVPOCKET_FCM_CREDENTIALS` to the relay.
-4. Grant Android notification permission, then use Settings -> re-register. The relay must report `pushConfigured=true`. Test foreground, background, Doze and lock-screen delivery on the actual target Android distribution/network; Google Play Services is required for this FCM path.
+4. Upgrade the relay before registering a new Android client. Grant Android notification permission, then use Settings -> re-register. The relay must report `pushConfigured=true`. Test foreground, background, Doze and lock-screen delivery on the actual target Android distribution/network; Google Play Services is required for this FCM path.
 
-Push payloads contain opaque routing IDs and a generic update/attention notice, not chat, tool commands, approvals or GitHub secrets. Push is best-effort, is not proof of task success, and opening the app re-authorizes/synchronizes from the relay. Stale tokens are removed when FCM reports `UNREGISTERED`. Revoked devices are not selected for later notifications.
+New clients use Firebase Installation IDs through `register()` and
+`onRegistered()`. Automatic Firebase initialization remains disabled; the
+existing explicit, configured application initialization is retained. The
+authenticated `PUT /v1/push-token` path remains unchanged: new clients send
+`{"provider":"fcm-fid","fid":"..."}` (or an explicit `null` to clear it).
+The relay also accepts legacy `{"provider":"fcm","token":"..."}` registrations
+and sends them through FCM's legacy `token` field, never guessing the identifier
+kind from its contents. FIDs use the FCM `fid` field. An old relay rejects the
+new request visibly; the client does not silently fall back to deprecated APIs.
+The FID service narrowly suppresses `MissingFirebaseInstanceTokenRefresh`:
+Android Lint still requires the obsolete `onNewToken()` callback instead of
+recognizing `onRegistered()`. Other lint checks remain enabled.
+
+Opening an existing relay database adds nullable `push_fid` and a registration
+revision to device records in one transaction, retaining existing tokens,
+device identities and grants. This migration happens in the relay, not in the
+read-only-schema onboarding helper. Do not downgrade a relay with FID records
+to an older binary that cannot manage them.
+
+Push payloads contain opaque routing IDs and a generic update/attention notice, not chat, tool commands, approvals or GitHub secrets. Push is best-effort, is not proof of task success, and opening the app re-authorizes/synchronizes from the relay. An `UNREGISTERED` response removes only the exact registration revision that was sent, so a late failure cannot erase a newer registration, even for the same FID. Revoked devices are not selected for later notifications.
 
 ## Deployment
 

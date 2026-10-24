@@ -33,7 +33,7 @@ export async function executeVerification(root, plan, options = {}) {
   if (options.toolingShard && (group !== "tooling" || options.promote)) throw verificationFault("configuration");
   const checks = plan.requiredChecks.map((id) => ({ id, status: "not_run" }));
   if (options.toolingShard) {
-    const check = checks.find((check) => check.id === "workflow-tests");
+    const check = checks.find((check) => check.id === "tooling-tests");
     if (!check) throw verificationFault("configuration");
     check.toolingShard = toolingShardDescriptor(plan, options.toolingShard);
   }
@@ -239,10 +239,11 @@ export async function executeVerification(root, plan, options = {}) {
 
 async function executeCheck(root, plan, check, options, backend) {
   const definition = CHECKS.find((item) => item.id === check.id);
+  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
   const adapter = definition.group === "tooling" ? {
     args: ["-NoProfile", "-NonInteractive", "-Command", check.toolingShard
-      ? `& npm run test:workflow -- --workflow-shard ${check.toolingShard.id}; exit $LASTEXITCODE`
-      : "& npm run test:workflow; exit $LASTEXITCODE"],
+      ? `& ${npm} run test:tooling -- --tooling-shard ${check.toolingShard.id}; exit $LASTEXITCODE`
+      : `& ${npm} run test:tooling; exit $LASTEXITCODE`],
     timeoutMs: 60 * 60_000, graceMs: 5000,
   } : definition.group === "backend" ? backendVerification(root, check, backend)
     : await androidVerification(root, check, plan, options);

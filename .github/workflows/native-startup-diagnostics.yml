@@ -56,7 +56,7 @@ jobs:
         run: |
           node scripts/native-startup.mjs --base $env:BASE_SHA --variant $env:STARTUP_VARIANT `
             --directory .data/ci/native-startup --jdk $env:JAVA_HOME --sdk $env:ANDROID_HOME `
-            --image system-images/android-35/google_apis/x86_64 --github
+            --image system-images/android-37.0/google_apis/x86_64 --github
           exit $LASTEXITCODE
       - name: Explain native startup outcome
         id: diagnostics
