@@ -39,7 +39,7 @@ the final candidate's source-bound qualification and all commit-sensitive reruns
 Issue your own conclusion for that candidate; a prior working-tree verdict or
 approval does not automatically transfer. Ordinary aggregation cannot accept
 forged conversion fields or an old report with an edited HEAD.
-Require version-5 per-check execution origins to survive aggregation, including
+Require version-6 per-check execution origins to survive aggregation, including
 every required tooling part under a sharded execution. A partial tooling part
 cannot qualify the whole group. For reused
 checks, verify the actual compiler/launcher and input contract, not just a declared

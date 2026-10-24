@@ -96,7 +96,7 @@ and run `npm run verify -- -Base BASE_COMMIT`. For a cleanup-confirmed environme
 failure, read [Selected-group preflight and explicit recovery](../../../docs/DEVELOPMENT-WORKFLOW.md#selected-group-preflight-and-explicit-recovery)
 before `-Resume`; preflight or recovered partial groups are not acceptance.
 
-**Complete when:** the actual version-5 report is complete and passing with every
+**Complete when:** the actual version-6 report is complete and passing with every
 required check, shard origin and selected platform/device result. Local candidate
 evidence binds `source.head` to `CANDIDATE_COMMIT`; CI keeps candidate and tested
 merge ref distinct. Retain original-client-only evidence when required.

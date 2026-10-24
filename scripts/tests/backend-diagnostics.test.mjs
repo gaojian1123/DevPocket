@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { runCommand } from "../process.mjs";
-import { WORKFLOW_TEST_FILES } from "../test-workflow.mjs";
+import { TOOLING_TEST_FILES } from "../test-tooling.mjs";
 
 const runId = "11111111-1111-4111-8111-111111111111";
 const exec = promisify(execFile);
@@ -387,7 +387,7 @@ test("backend-only CI reuses the normal job, conditionally exports validated dia
   assert.equal(manifest.scripts.test, "npm test --workspace @devpocket/components && node --import tsx --test backend/tests/*.test.ts");
   const components = JSON.parse(await readFile("packages/components/package.json", "utf8"));
   assert.equal(components.scripts.test, "npm run build && node --import tsx --test tests/*.test.ts");
-  assert.ok(WORKFLOW_TEST_FILES.includes("scripts/tests/backend-diagnostics.test.mjs"));
+  assert.ok(TOOLING_TEST_FILES.includes("scripts/tests/backend-diagnostics.test.mjs"));
 });
 
 test("an actual reporter catalogue exception remains failed after the test command restores catalogue health", async (t) => {
@@ -398,7 +398,7 @@ test("an actual reporter catalogue exception remains failed after the test comma
   }
   await writeFile(path.join(item.root, ".gitignore"), ".data/\nbackend/tests/ignored.test.ts\n");
   await writeFile(path.join(item.root, "package.json"), JSON.stringify({ type: "module", scripts: {
-    "test:workflow": 'node -e "process.exit(0)"', typecheck: 'node -e "process.exit(0)"',
+    "test:tooling": 'node -e "process.exit(0)"', typecheck: 'node -e "process.exit(0)"',
     test: 'node --import tsx --test backend/tests/*.test.ts && node -e "require(\'node:fs\').unlinkSync(\'backend/tests/ignored.test.ts\')"',
     build: 'node -e "process.exit(0)"', schema: 'node -e "process.exit(0)"',
   } }));

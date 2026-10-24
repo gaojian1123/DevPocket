@@ -2,7 +2,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { readOnlyGit } from "./verification.mjs";
-import { CHECKS, CHECK_GROUPS, diagnosticCheckGroup, isDiagnosticVerificationVersion, projectVerificationSelection } from "./verification-policy.mjs";
+import { CHECK_GROUPS, diagnosticChecks, isDiagnosticVerificationVersion, projectVerificationSelection } from "./verification-policy.mjs";
 import { readDiagnosticReport } from "./worker-diagnostics.mjs";
 import { readBoundedLog } from "./android-diagnostics.mjs";
 import { commandDetails, diagnosticError, failureDetails, ownValue, projectFailureDetails } from "./diagnostic-errors.mjs";
@@ -34,19 +34,19 @@ const macosOwnerReasons = new Map([
   ["The parent did not register this macOS scope.", "registration-failed"],
 ]);
 
-function projectedFailure(value) {
+function projectedFailure(value, definitions) {
   const result = projectFailureDetails(value);
   const phase = ownValue(value, "phase"), check = ownValue(value, "check"), group = ownValue(value, "group");
   const index = ownValue(value, "inputIndex"), artifact = ownValue(value, "artifact"), missing = ownValue(value, "missingChecks");
   const outcome = ownValue(value, "outcome");
   return {
     ...result, phase: phases.includes(phase) ? phase : "unknown",
-    ...(CHECKS.some((item) => item.id === check) ? { check } : {}),
+    ...(definitions.some((item) => item.id === check) ? { check } : {}),
     ...(["all", ...CHECK_GROUPS].includes(group) ? { group } : {}),
     ...(["success", "failure", "cancelled", "skipped", "unknown"].includes(outcome) ? { outcome } : {}),
     ...(Number.isInteger(index) && index >= 0 && index < 32 ? { inputIndex: index } : {}),
     ...(["app", "instrumentation"].includes(artifact) ? { artifact } : {}),
-    ...(Array.isArray(missing) ? { missingChecks: CHECKS.filter((item) => missing.includes(item.id)).map((item) => item.id) } : {}),
+    ...(Array.isArray(missing) ? { missingChecks: definitions.filter((item) => missing.includes(item.id)).map((item) => item.id) } : {}),
   };
 }
 
@@ -113,7 +113,8 @@ export function checkLogHints(text, root, sources, check = "unknown") {
       const source = location(scriptFrame[1], Number(scriptFrame[2]), Number(scriptFrame[3]));
       if (source) add({ kind: "source-frame", ...source });
     }
-    const test = check === "workflow-tests" ? /^test at (.+\.mjs):(\d{1,6}):(\d{1,6})$/.exec(line.trim()) : undefined;
+    const test = ["tooling-tests", "workflow-tests"].includes(check)
+      ? /^test at (.+\.mjs):(\d{1,6}):(\d{1,6})$/.exec(line.trim()) : undefined;
     if (test) {
       const source = location(test[1], Number(test[2]), Number(test[3]));
       if (source) add({ kind: "test-declaration-hint", ...source });
@@ -170,10 +171,10 @@ export async function collectVerificationDiagnostics(root, directory, job, stepR
   if (report?.deviceClassCatalogueFailure) {
     collectionErrors.push({ operation: "plan-catalogue", failure: projectFailureDetails(report.deviceClassCatalogueFailure) });
   }
-  const checks = [];
-  for (const definition of CHECKS) {
+  const checks = [], definitions = diagnosticChecks(report?.version);
+  for (const definition of definitions) {
     const selected = Array.isArray(report?.checks) ? report.checks.filter((item) => item?.id === definition.id) : [];
-    const group = diagnosticCheckGroup(definition, report?.version);
+    const group = definition.group;
     if (!selected.length || (!["gate", "plan"].includes(job) && group !== job)) continue;
     if (selected.length !== 1) { collectorFailure = failureDetails(diagnosticError("report-invalid")); continue; }
     const input = selected[0], issues = ownValue(input, "diagnosticIssues");
@@ -186,7 +187,7 @@ export async function collectVerificationDiagnostics(root, directory, job, stepR
         ? input.reportedDeviceExecutionStatus : "unknown",
       recordedCollectionStatus: input.collectionStatus === "failed" || input.reportedDeviceCollectionStatus === "failed" ||
         input.deviceDiagnostics?.collectionStatus === "failed" || input.workerDiagnostics?.collectionStatus === "failed" ? "failed" : "unknown",
-      failure: input.failure ? projectedFailure(input.failure) : null,
+      failure: input.failure ? projectedFailure(input.failure, definitions) : null,
       commandOutcome: commandDetails(input.commandOutcome),
       diagnosticIssues: (Array.isArray(issues) ? issues.slice(0, 8) : []).map((issue) => ({
         operation: issueOperations.includes(ownValue(issue, "operation")) ? ownValue(issue, "operation") : "unknown",
@@ -254,9 +255,9 @@ export async function collectVerificationDiagnostics(root, directory, job, stepR
       startup?.collectionStatus === "failed"
       ? "failed" : report ? "completed" : "unavailable",
     collectionErrors,
-    failure: report?.failure ? projectedFailure(report.failure) : null,
+    failure: report?.failure ? projectedFailure(report.failure, definitions) : null,
     sourceValidation: report?.sourceValidation?.status === "failed"
-      ? { status: "failed", failure: projectedFailure(report.sourceValidation.failure) } : null,
+      ? { status: "failed", failure: projectedFailure(report.sourceValidation.failure, definitions) } : null,
     sourceHintsAvailable: sources.size > 0,
     sourceHintsFailure: sourceHintsFailure ?? null,
     selection: projectVerificationSelection(report, sourcePaths),

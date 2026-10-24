@@ -19,7 +19,7 @@ test("an actual compiler check exposes its trusted source/code through the publi
   await exec("git", ["init", "--quiet"], { cwd: root });
   const compiler = path.resolve("node_modules/typescript/bin/tsc");
   await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: {
-    "test:workflow": "node -e \"process.exit(0)\"",
+    "test:tooling": "node -e \"process.exit(0)\"",
     typecheck: `node "${compiler}" --noEmit --pretty false --skipLibCheck backend/src/failure.ts`,
   } }));
   await exec("git", ["add", "."], { cwd: root });
@@ -49,7 +49,7 @@ test("tooling failures and plan causes survive public diagnostics without raw re
   t.after(() => rm(root, { recursive: true, force: true }));
   await writeFile(path.join(root, ".gitignore"), ".data/\n");
   await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: {
-    "test:workflow": "node --test --test-reporter=spec scripts/tests/development-tools.test.mjs",
+    "test:tooling": "node --test --test-reporter=spec scripts/tests/development-tools.test.mjs",
   } }));
   await exec("git", ["init", "--quiet"], { cwd: root });
   await exec("git", ["add", "."], { cwd: root });
@@ -67,7 +67,7 @@ test("tooling failures and plan causes survive public diagnostics without raw re
     "--group", "tooling", "--report", reportFile], { env, timeout: 45000 }), (error) => error.code === 1);
   const report = JSON.parse(await readFile(reportFile, "utf8"));
   assert.equal(report.status, "failed");
-  assert.deepEqual(report.requiredChecks, ["workflow-tests"]);
+  assert.deepEqual(report.requiredChecks, ["tooling-tests"]);
   const exporter = path.resolve("scripts/verification-diagnostics.mjs");
   const commands = path.join(root, ".data", "commands", "_runner_file_commands");
   await mkdir(commands, { recursive: true });
@@ -85,7 +85,7 @@ test("tooling failures and plan causes survive public diagnostics without raw re
   assert.equal(Object.hasOwn(diagnostics.selection, "requiresHumanReview"), false);
   assert.equal(Object.hasOwn(diagnostics.selection, "legacyAgentReview"), false);
   assert.deepEqual(diagnostics.selection.selectionReasons[0].paths, ["scripts/tests/development-tools.test.mjs"]);
-  assert.equal(diagnostics.checks[0].id, "workflow-tests");
+  assert.equal(diagnostics.checks[0].id, "tooling-tests");
   assert.equal(diagnostics.checks[0].status, "failed");
   assert.equal(diagnostics.checks[0].failure.reason, "command-failed");
   assert.ok(diagnostics.checks[0].hints.some((hint) => hint.kind === "test-declaration-hint"));
@@ -108,7 +108,7 @@ test("tooling failures and plan causes survive public diagnostics without raw re
   assert.equal(gate.failure.group, "tooling");
   assert.equal(gate.failure.outcome, "skipped");
   assert.equal(gate.selection.selectionReasons[0].omittedPaths, 1);
-  assert.deepEqual(gate.selection.selectionReasons[0].checks, ["workflow-tests"]);
+  assert.deepEqual(gate.selection.selectionReasons[0].checks, ["tooling-tests"]);
   assert.ok(!projected.stdout.includes("PRIVATE_TOOLING_REPORT_CANARY"));
   assert.ok(!JSON.stringify(gate).includes("PRIVATE_TOOLING_REPORT_CANARY"));
 });
@@ -163,17 +163,18 @@ test("historical local review flags are diagnostic-only and cannot manufacture a
   const file = "scripts/development-policy.mjs";
   await mkdir(path.join(root, "scripts"));
   await writeFile(path.join(root, file), "// fixture\n");
-  for (const version of [1, 2, 3, VERIFICATION_REPORT_VERSION]) {
+  for (const version of [1, 2, 3, 4, 5, VERIFICATION_REPORT_VERSION]) {
     for (const [label, requirement] of [["true", true], ["false", false], ["absent", undefined], ["invalid", "PRIVATE_REVIEW_CANARY"]]) {
       await t.test(`${version}: ${label}`, async () => {
         const directory = path.join(root, ".data", "ci", `review-${version}-${label}`);
         await mkdir(directory, { recursive: true });
-        const current = [3, VERIFICATION_REPORT_VERSION].includes(version);
-        const checks = current ? ["workflow-tests"] : CHECKS.map((check) => check.id);
+        const explained = [3, 5, VERIFICATION_REPORT_VERSION].includes(version);
+        const toolingId = version === VERIFICATION_REPORT_VERSION ? "tooling-tests" : "workflow-tests";
+        const checks = explained ? [toolingId] : CHECKS.map((check) => check.id === "tooling-tests" ? toolingId : check.id);
         await writeFile(path.join(directory, "plan.json"), JSON.stringify({
           version, status: "planned", complete: false, checks: [], requiredChecks: checks,
           requiresHumanReview: requirement, approval: "approved", review: { verdict: "pass" },
-          selectionReasons: [{ rule: current ? "development-tooling" : "verification-infrastructure",
+          selectionReasons: [{ rule: explained ? "development-tooling" : "verification-infrastructure",
             paths: [file], description: "PRIVATE_REVIEW_CANARY", checks: ["PRIVATE_REVIEW_CANARY"] }],
         }));
         const projected = await exec(process.execPath, [path.resolve("scripts/verification-diagnostics.mjs"),
@@ -183,24 +184,75 @@ test("historical local review flags are diagnostic-only and cannot manufacture a
         assert.equal(output.acceptance, false);
         assert.equal(output.status, "planned");
         assert.deepEqual(output.selection.requiredChecks, checks);
-        assert.deepEqual(output.selection.requiredGroups, current ? ["tooling"]
+        assert.deepEqual(output.selection.requiredGroups, explained ? ["tooling"]
           : version === 1 ? ["backend", "android", "device"] : CHECK_GROUPS);
         assert.equal(Object.hasOwn(output.selection, "requiresHumanReview"), false);
-        if (current) {
-          assert.equal(Object.hasOwn(output.selection, "legacyAgentReview"), false);
+        if (explained) {
           assert.deepEqual(output.selection.selectionReasons[0].paths, [file]);
-          assert.deepEqual(output.selection.selectionReasons[0].checks, ["workflow-tests"]);
-        } else {
+          assert.deepEqual(output.selection.selectionReasons[0].checks, [toolingId]);
+          assert.deepEqual(output.selection.selectionReasons[0].groups, ["tooling"]);
+        } else assert.deepEqual(output.selection.selectionReasons, [], "Old full-impact explanations must not be rebuilt as tooling-only.");
+        if ([1, 2].includes(version)) {
           assert.deepEqual(output.selection.legacyAgentReview, {
             requiresHumanReview: typeof requirement === "boolean" ? requirement : "unknown", approval: "not-established",
           });
-          assert.deepEqual(output.selection.selectionReasons, [], "Old full-impact explanations must not be rebuilt as tooling-only.");
-        }
+        } else assert.equal(Object.hasOwn(output.selection, "legacyAgentReview"), false);
         assert.ok(!projected.stdout.includes("PRIVATE_REVIEW_CANARY"));
         assert.ok(!JSON.stringify(output).includes('"approved"'));
         assert.ok(!JSON.stringify(output).includes('"verdict"'));
       });
     }
+  }
+});
+
+test("diagnostics preserve each report version's tooling identity, failures and private log without rewriting evidence", async (t) => {
+  const { collectVerificationDiagnostics } = await import("../verification-diagnostics.mjs");
+  await mkdir(".data/tests", { recursive: true });
+  const root = await mkdtemp(path.resolve(".data/tests/tooling-history-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, ".gitignore"), ".data/\n");
+  await exec("git", ["init", "--quiet"], { cwd: root });
+  const file = "scripts/tests/known.test.mjs";
+  await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+  await writeFile(path.join(root, file), "// fixture\n");
+  const source = { head: "a".repeat(40), fingerprint: "b".repeat(64) };
+  const execution = { source, startedAt: "2026-10-01T00:00:00.000Z", completedAt: "2026-10-01T00:00:01.000Z" };
+  for (const version of [1, 2, 3, 4, 5, VERIFICATION_REPORT_VERSION]) {
+    await t.test(`version ${version}`, async () => {
+      const id = version === VERIFICATION_REPORT_VERSION ? "tooling-tests" : "workflow-tests";
+      const group = version === 1 ? "backend" : "tooling";
+      const directory = path.join(root, ".data", "ci", `version-${version}`);
+      await mkdir(directory, { recursive: true });
+      const failure = { reason: "command-failed", phase: "command", check: id, group,
+        missingChecks: [id, "PRIVATE_CHECK_CANARY"], summary: "PRIVATE_REPORT_CANARY" };
+      const report = JSON.stringify({
+        version, source, status: "failed", group, requiredChecks: [id], failure,
+        sourceValidation: { status: "failed", failure },
+        checks: [{ id, status: "failed", exitCode: 1, failure, privateLog: { availability: "retained" },
+          ...(version >= 4 ? { execution } : {}) }],
+      });
+      const log = `test at ${file}:1:1\nPRIVATE_LOG_CANARY\n`;
+      await writeFile(path.join(directory, "report.json"), report);
+      await writeFile(path.join(directory, `${id}.log`), log);
+      const output = await collectVerificationDiagnostics(root, directory, group, "failure");
+      assert.equal(output.acceptance, false);
+      assert.equal(output.collectionStatus, "completed");
+      assert.deepEqual(output.selection.requiredChecks, [id]);
+      assert.deepEqual(output.selection.requiredGroups, [group]);
+      assert.equal(output.checks[0].id, id);
+      assert.equal(output.checks[0].failure.check, id);
+      assert.equal(output.failure.check, id);
+      assert.equal(output.sourceValidation.failure.check, id);
+      assert.deepEqual(output.failure.missingChecks, [id]);
+      assert.equal(output.checks[0].privateLog.availability, "available");
+      assert.deepEqual(output.checks[0].hints, [{ kind: "test-declaration-hint", file, line: 1, column: 1 }]);
+      if (version >= 4) assert.deepEqual(output.checks[0].executionEvidence,
+        { kind: "executed", ...execution, approval: "not-established" });
+      else assert.equal(Object.hasOwn(output.checks[0], "executionEvidence"), false);
+      assert.ok(!JSON.stringify(output).includes("PRIVATE_"));
+      assert.equal(await readFile(path.join(directory, "report.json"), "utf8"), report);
+      assert.equal(await readFile(path.join(directory, `${id}.log`), "utf8"), log);
+    });
   }
 });
 
@@ -252,7 +304,7 @@ test("macOS owner log hints distinguish fixed terminal failures without publishi
     ["AttributeError", "PRIVATE_NATIVE_SYMBOL_CANARY", "unclassified"],
   ]) {
     const line = `Owned macOS command failed: ${type}: ${message}`;
-    assert.deepEqual(checkLogHints(line, process.cwd(), new Set(), "workflow-tests"),
+    assert.deepEqual(checkLogHints(line, process.cwd(), new Set(), "tooling-tests"),
       [{ kind: "macos-owner-failure", type, reason }]);
   }
   const findings = checkLogHints([
@@ -260,7 +312,7 @@ test("macOS owner log hints distinguish fixed terminal failures without publishi
     "Owned macOS command failed: ValueError: /private/PRIVATE_PATH_CANARY receipt=PRIVATE_RECEIPT_CANARY",
     "Owned macOS command failed: PRIVATE_TYPE_CANARY: PRIVATE_MESSAGE_CANARY",
     `Owned macOS command failed: RuntimeError: ${"PRIVATE_LONG_CANARY".repeat(300)}`,
-  ].join("\n"), process.cwd(), new Set(), "workflow-tests");
+  ].join("\n"), process.cwd(), new Set(), "tooling-tests");
   assert.deepEqual(findings, [
     { kind: "macos-owner-failure", type: "RuntimeError", reason: "unclassified" },
     { kind: "macos-owner-failure", type: "ValueError", reason: "unclassified" },
@@ -275,11 +327,11 @@ test("the public collector preserves failed cleanup while projecting only a fixe
   const source = { head: "a".repeat(40), fingerprint: "b".repeat(64) };
   await writeFile(path.join(directory, "report.json"), JSON.stringify({
     version: VERIFICATION_REPORT_VERSION, source, status: "failed",
-    checks: [{ id: "workflow-tests", status: "failed", exitCode: 1, executionState: "exited",
+    checks: [{ id: "tooling-tests", status: "failed", exitCode: 1, executionState: "exited",
       failure: { reason: "cleanup-failed", processTreeStopped: false },
       privateLog: { availability: "retained", truncated: false } }],
   }));
-  await writeFile(path.join(directory, "workflow-tests.log"),
+  await writeFile(path.join(directory, "tooling-tests.log"),
     "Owned macOS command failed: RuntimeError: Nested macOS cleanup was not confirmed.\nPRIVATE_NATIVE_LOG_CANARY\n");
   const result = await exec(process.execPath, ["scripts/verification-diagnostics.mjs",
     "--directory", directory, "--job", "tooling", "--step-result", "failure"], { cwd: process.cwd() });
@@ -306,22 +358,24 @@ test("actual source-index and log-read collector exceptions publish safe descrip
   const emptyPath = path.join(root, ".data", "empty-bin");
   await mkdir(emptyPath, { recursive: true });
   const exporter = path.resolve("scripts/verification-diagnostics.mjs");
-  for (const kind of ["source", "log"]) {
-    const directory = path.join(root, ".data", "ci", kind);
-    await mkdir(directory, { recursive: true });
-    await writeFile(path.join(directory, "report.json"), JSON.stringify({
-      version: 1, status: kind === "source" ? "passed" : "failed", group: "backend",
-      checks: kind === "source" ? [] : [{ id: "workflow-tests", status: "failed", exitCode: 1, privateLog: { availability: "retained" } }],
-    }));
-    if (kind === "log") await mkdir(path.join(directory, "workflow-tests.log"));
-    await assert.rejects(exec(process.execPath, [exporter, "--directory", directory, "--job", "backend"],
-      { cwd: root, env: kind === "source" ? { ...process.env, PATH: emptyPath } : process.env, timeout: 20000 }),
-    (error) => error.code === 1);
-    const output = JSON.parse(await readFile(path.join(directory, "verification-diagnostics.json"), "utf8"));
-    assert.equal(output.collectionStatus, "failed");
-    assert.equal(output.status, kind === "source" ? "passed" : "failed");
-    assert.ok(output.collectionErrors.length > 0);
-    assert.equal(output.acceptance, false);
+  for (const [version, id, group] of [[1, "workflow-tests", "backend"], [VERIFICATION_REPORT_VERSION, "tooling-tests", "tooling"]]) {
+    for (const kind of ["source", "log"]) await t.test(`${version}: ${kind}`, async () => {
+      const directory = path.join(root, ".data", "ci", `${version}-${kind}`);
+      await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, "report.json"), JSON.stringify({
+        version, status: kind === "source" ? "passed" : "failed", group,
+        checks: kind === "source" ? [] : [{ id, status: "failed", exitCode: 1, privateLog: { availability: "retained" } }],
+      }));
+      if (kind === "log") await mkdir(path.join(directory, `${id}.log`));
+      await assert.rejects(exec(process.execPath, [exporter, "--directory", directory, "--job", group],
+        { cwd: root, env: kind === "source" ? { ...process.env, PATH: emptyPath } : process.env, timeout: 20000 }),
+      (error) => error.code === 1);
+      const output = JSON.parse(await readFile(path.join(directory, "verification-diagnostics.json"), "utf8"));
+      assert.equal(output.collectionStatus, "failed");
+      assert.equal(output.status, kind === "source" ? "passed" : "failed");
+      assert.ok(output.collectionErrors.length > 0);
+      assert.equal(output.acceptance, false);
+    });
   }
 });
 

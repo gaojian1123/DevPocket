@@ -61,7 +61,7 @@ jobs:
           if ($plan.ciMacos -isnot [bool]) { throw 'CI requires an explicit macOS coverage decision from the planner.' }
           "macos=$($plan.ciMacos)".ToLowerInvariant() >> $env:GITHUB_OUTPUT
           if (($plan.requiredGroups -contains 'tooling') -and !$plan.toolingShards) {
-            throw 'CI requires the reviewed complete test-workflow.mjs entry without replacement scripts or lifecycle hooks.'
+            throw 'CI requires the reviewed complete test-tooling.mjs entry without replacement scripts or lifecycle hooks.'
           }
           if ($plan.ciMacos -and -not ($plan.toolingShards.parts.id -contains 'native')) {
             throw 'Selected macOS coverage requires the native tooling shard.'
@@ -108,7 +108,7 @@ jobs:
           python-version: '3.12'
       - run: npm install --global npm@12.2.1 --ignore-scripts --no-audit --no-fund
       - run: npm ci --no-audit --no-fund
-      - name: Verify complete workflow regression suite
+      - name: Verify complete tooling regression suite
         id: verify
         shell: pwsh
         env:

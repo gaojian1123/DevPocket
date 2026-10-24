@@ -13,8 +13,7 @@ contract and completion criteria, with conditional links to the full rules in
 
 Continue the existing task and workspace for follow-ups. Dispatched implementers
 and reviewers perform their assigned step, rather than starting another pipeline.
-Use the owning session's original tools and existing CI, not a registered
-Dynamic Workflow or development extension.
+Use the owning session's original tools and existing CI.
 Advice, explanations, planning, read-only reviews and documentation-only edits
 do not start an implementation pipeline. Development retains required verification,
 independent review and scoped authorization; self-review is not independent review.
@@ -49,6 +48,7 @@ Preserve protocol identifiers such as `cliVersion`, `terminal` and
 
 ## Checks and operations
 
+- Select npm dependencies from the latest stable versions actually downloadable from the Microsoft registry (`https://packagefeedproxy.microsoft.io/npm/`). Pin direct versions and respect upstream ranges for transitive dependencies. Regenerate lockfiles with npm and verify `npm ci` against that registry using command-scoped configuration.
 - Use `npm run verify -- -Base BASE_COMMIT` for the diff-selected gate; planning, partial shards and skipped required tests are not completed verification. For authorized commit delivery, create the candidate after focused checks and before final verification and independent review.
 - Use the relevant checks in `package.json` for backend changes and `scripts\build-android.ps1 -Lint` for Android changes. Documentation-only edits need no application build.
 - Restore dependencies and install task-required tools within the worktree without another project approval after a relevant manifest change or an actual missing-prerequisite failure. Follow **Workspace-local prerequisites** in `docs\DEVELOPMENT-WORKFLOW.md`; native tool permissions and authorization for effects outside that scope remain unchanged.

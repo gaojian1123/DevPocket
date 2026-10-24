@@ -19,7 +19,7 @@ const directNode = (value, kind) => value?.kind === kind && /\.(?:com|exe)$/i.te
 const policyInputs = [
   "verify.mjs", "verify.ps1", "verification.mjs", "verification-policy.mjs", "verification-executor.mjs", "verification-preflight.mjs",
   "verification-run.mjs", "verification-transition.mjs", "verification-backend.mjs", "verification-android.mjs",
-  "test-workflow.mjs", "verification-tooling.mjs", "verification-admission.mjs", "verification-ci.mjs",
+  "test-tooling.mjs", "verification-tooling.mjs", "verification-admission.mjs", "verification-ci.mjs",
   "verification-ci-artifact.ps1", "development-policy.mjs", "development-paths.mjs",
   "candidate-commit.mjs", "native-candidate.mjs", "git-state.mjs", "process.mjs",
   "owned-command-windows.mjs", "owned-command.cs", "owned-command.ps1", "owned-command-linux.py", "owned-command-darwin.py", "local-ipc.mjs",
@@ -606,7 +606,7 @@ export async function verificationPreflight(root, plan, options = {}) {
       candidateImplementation, candidateSafe, prefixResolution, powershellNode };
   });
   const nativeNpm = () => once("native-npm", async () => {
-    // Gradle and workflow shards use npm.cmd to preserve forwarded arguments on Windows.
+    // Gradle and tooling shards use npm.cmd to preserve forwarded arguments on Windows.
     const windows = process.platform === "win32";
     const file = await resolveVerificationExecutable(root, windows ? "npm.cmd" : "npm", { shell: windows });
     const actual = await realpath(file), binary = await fileIdentity(actual), identity = await npm();

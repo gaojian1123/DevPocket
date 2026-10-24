@@ -1,6 +1,6 @@
 const executionScripts = new Set([
   "development-paths", "development-policy", "candidate-commit", "native-candidate",
-  "git-state", "verification", "verification-policy", "verify", "verification-executor", "test-workflow",
+  "git-state", "verification", "verification-policy", "verify", "verification-executor", "test-tooling",
   "verification-backend", "verification-android", "process", "owned-command", "owned-command-windows",
   "verification-preflight", "verification-run", "verification-transition",
   "verification-tooling", "verification-admission", "verification-ci", "verification-ci-artifact",

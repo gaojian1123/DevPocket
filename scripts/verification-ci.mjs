@@ -128,7 +128,7 @@ export function collectCIReports(plan, context, envelopes, upstream) {
     if (value.report.group !== group) throw fail();
     if (value.unit === "macos") macos = macosReport(plan, value.report);
     else if (group === "tooling") {
-      const descriptor = value.report.checks?.find((check) => check.id === "workflow-tests")?.toolingShard;
+      const descriptor = value.report.checks?.find((check) => check.id === "tooling-tests")?.toolingShard;
       if (value.unit !== `tooling-${descriptor?.id ?? "all"}`) throw fail();
     }
     if (value.unit !== "macos") reports.push(value.report);

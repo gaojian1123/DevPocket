@@ -14,7 +14,7 @@ import { combineVerification, executeVerification, verificationPlan } from "../v
 import { openVerificationRun, readVerificationRun } from "../verification-run.mjs";
 import { emulatorInputDifference, npmLaunchersBound, resolveVerificationExecutable, verificationExecutionPolicy } from "../verification-preflight.mjs";
 import { capturePromotionContext, prepareVerificationTransition } from "../verification-transition.mjs";
-import { WORKFLOW_TEST_FILES } from "../test-workflow.mjs";
+import { TOOLING_TEST_FILES } from "../test-tooling.mjs";
 import { committedInputsMatch, committedSourceInputs, commitSourceProjection, sourceInputs } from "../git-state.mjs";
 import { androidImageArchitecture } from "../android-platform.mjs";
 
@@ -29,7 +29,7 @@ async function repository(t, tools) {
   await writeFile(path.join(root, ".gitignore"), ".data/\n.tools/\nnode_modules/\ndist/\n**/build/\n");
   await writeFile(path.join(root, "README.md"), "Original documentation\n");
   await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: {
-    "test:workflow": "node -e \"process.exit(0)\"",
+    "test:tooling": "node -e \"process.exit(0)\"",
     typecheck: "node -e \"process.exit(23)\"",
     test: "node -e \"process.exit(0)\"",
     build: "node -e \"process.exit(0)\"",
@@ -191,7 +191,7 @@ test("skill-led tooling selects only its complete regression suite, independentl
       }
       const result = await verify(root, ["--plan"]);
       assert.equal(result.exitCode, 0);
-      assert.deepEqual(result.report.requiredChecks, ["workflow-tests"]);
+      assert.deepEqual(result.report.requiredChecks, ["tooling-tests"]);
       assert.deepEqual(result.report.requiredGroups, ["tooling"]);
       assert.equal(Object.hasOwn(result.report, "requiresHumanReview"), false);
       assert.equal(developmentReviewRequirements(result.report.changedFiles).requiresHumanReview,
@@ -213,13 +213,13 @@ test("development policy and named agent instructions remain protected without s
   const tooling = ["scripts/development-policy.mjs", "scripts/development-paths.mjs", "scripts/candidate-commit.mjs",
     "scripts/native-candidate.mjs", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
     "scripts/verify.mjs", "scripts/verify.ps1", "scripts/tests/verification.test.mjs",
-    "scripts/test-workflow.mjs", "scripts/tests/workflow-runner.test.mjs",
+    "scripts/test-tooling.mjs", "scripts/tests/tooling-runner.test.mjs",
     "scripts/tests/development-tools.test.mjs", "scripts/tests/development-approval.test.mjs", ".github/ISSUE_TEMPLATE/ai-task.yml",
     ".github/agents/devpocket-reviewer.agent.md", ".github/skills/devpocket-development/SKILL.md"];
   for (const files of [...tooling.map((file) => [file]), [...tooling, "README.md", "docs/DEVELOPMENT-WORKFLOW.md"]]) {
     await t.test(files.join(", "), () => {
       const impact = verificationImpact(files);
-      assert.deepEqual(impact.requiredChecks, ["workflow-tests"]);
+      assert.deepEqual(impact.requiredChecks, ["tooling-tests"]);
       assert.deepEqual(impact.requiredGroups, ["tooling"]);
       assert.equal(impact.layouts, false);
       assert.equal(Object.hasOwn(impact, "requiresHumanReview"), false);
@@ -248,7 +248,7 @@ test("the actual CI planner does not load local development trust policy", async
     ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(guard).href}`,
   });
   assert.equal(result.exitCode, 0);
-  assert.deepEqual(result.report.requiredChecks, ["workflow-tests"]);
+  assert.deepEqual(result.report.requiredChecks, ["tooling-tests"]);
   assert.deepEqual(result.report.requiredGroups, ["tooling"]);
 });
 
@@ -319,8 +319,8 @@ test("shared execution, cross-lane CI, shared dependencies and unknown paths ret
       "scripts/bounded-worker-log.mjs", "scripts/backend-diagnostics.mjs"].map((file) => [file, "shared-execution"]),
     ...[".github/workflows/ci.yml", ".github/CODEOWNERS", "package.json", "package-lock.json", ".npmrc",
       "new-package/package.json"].map((file) => [file, "verification-infrastructure"]),
-    ...["scripts/workflow-extension.mjs", "scripts/development-workflow.mjs", "scripts/development-controller.mjs",
-      ".github/extensions/devpocket-development/extension.mjs", "scripts/tests/development-workflow.test.mjs",
+    ...["scripts/unclassified-runner.mjs", ".github/extensions/unclassified/extension.mjs",
+      "scripts/tests/unlisted-regression.test.mjs",
       "scripts/tests/development-tools-extra.test.mjs", "scripts/development-policy-extra.mjs", "scripts/candidate-commit-extra.mjs",
       "scripts/native-candidate-extra.mjs", "scripts/git-state-extra.mjs", "scripts/verification-extra.mjs",
       ".github/agents/another-reviewer.agent.md", ".github/skills/another-skill/SKILL.md",
@@ -341,7 +341,7 @@ test("shared execution, cross-lane CI, shared dependencies and unknown paths ret
 
 test("backend and native execution inputs select their actual side, including build and device evidence", async (t) => {
   const backend = CHECKS.filter((check) => ["tooling", "backend"].includes(check.group)).map((check) => check.id);
-  const native = ["workflow-tests", "android-build", "android-device"];
+  const native = ["tooling-tests", "android-build", "android-device"];
   for (const [files, checks, groups, layouts, rule] of [
     [["scripts/verification-backend.mjs", "scripts/bundle-extension.mjs", "scripts/package-extension.ps1",
       "scripts/launch-cli-proof.ps1", "scripts/tests/extension-package.test.mjs", "backend/tsconfig.json",
@@ -357,7 +357,7 @@ test("backend and native execution inputs select their actual side, including bu
       "android/gradle/wrapper/gradle-wrapper.properties", "android/gradle/wrapper/gradle-wrapper.jar"],
     native, ["tooling", "android", "device"], true, "android-execution"],
     [["deployment/azure/package.json", "deployment/azure/package-lock.json", "deployment/azure/probe/requirements-test.txt"],
-    ["workflow-tests", "typecheck", "backend-tests", "backend-build", "schema", "setup", "azure-tests", "operations-tests"],
+    ["tooling-tests", "typecheck", "backend-tests", "backend-build", "schema", "setup", "azure-tests", "operations-tests"],
     ["tooling", "backend"], false, "operations"],
   ]) for (const file of files) await t.test(file, () => {
     const impact = verificationImpact([file]);
@@ -369,12 +369,12 @@ test("backend and native execution inputs select their actual side, including bu
   });
 });
 
-test("the complete workflow suite and pure evidence modules are tooling, not application execution", async () => {
+test("the complete tooling suite and pure evidence modules are tooling, not application execution", async () => {
   const contracts = ["verification-diagnostics", "diagnostic-errors", "diagnostic-publication", "android-diagnostics",
     "device-diagnostics", "worker-diagnostics", "native-lifecycle"].map((name) => `scripts/${name}.mjs`);
-  for (const file of [...WORKFLOW_TEST_FILES, "scripts/test-workflow.mjs", ...contracts]) {
+  for (const file of [...TOOLING_TEST_FILES, "scripts/test-tooling.mjs", ...contracts]) {
     const impact = verificationImpact([file]);
-    assert.deepEqual(impact.requiredChecks, ["workflow-tests"], file);
+    assert.deepEqual(impact.requiredChecks, ["tooling-tests"], file);
     assert.deepEqual(impact.requiredGroups, ["tooling"], file);
     assert.equal(impact.layouts, false, file);
     const requirements = developmentReviewRequirements([file]);
@@ -387,10 +387,10 @@ test("the complete workflow suite and pure evidence modules are tooling, not app
     "The impact catalogue cannot carry executable commands or arguments.");
 });
 
-test("the workflow entry does not exempt shared dependencies, unknown tests or mixed application changes", () => {
-  const entry = ["scripts/test-workflow.mjs", "scripts/tests/workflow-runner.test.mjs"];
+test("the tooling entry does not exempt shared dependencies, unknown tests or mixed application changes", () => {
+  const entry = ["scripts/test-tooling.mjs", "scripts/tests/tooling-runner.test.mjs"];
   for (const file of ["package.json", "package-lock.json", ".npmrc", ".github/workflows/ci.yml",
-    "scripts/test-workflow-extra.mjs", "scripts/tests/workflow-runner-extra.test.mjs", "scripts/tests/unlisted.test.mjs"]) {
+    "scripts/test-tooling-extra.mjs", "scripts/tests/tooling-runner-extra.test.mjs", "scripts/tests/unlisted.test.mjs"]) {
     const impact = verificationImpact([...entry, file]);
     assert.deepEqual(impact.requiredChecks, CHECKS.map((check) => check.id), file);
     assert.equal(impact.layouts, true, file);
@@ -405,7 +405,7 @@ test("local Xcode setup and root ignore policy select tooling without weakening 
     "scripts/tests/xcode-mcp.test.mjs"];
   for (const files of [...setup.map((file) => [file]), [...setup, "README.md", "docs/DEVELOPMENT-WORKFLOW.md"]]) {
     const impact = verificationImpact(files);
-    assert.deepEqual(impact.requiredChecks, ["workflow-tests"]);
+    assert.deepEqual(impact.requiredChecks, ["tooling-tests"]);
     assert.deepEqual(impact.requiredGroups, ["tooling"]);
     assert.equal(impact.layouts, false);
     // Tooling coverage is not an approval rule; the unclassified template still needs review.
@@ -425,7 +425,7 @@ test("local Xcode setup and root ignore policy select tooling without weakening 
 });
 
 test("mixed development tooling and application changes select the union from the single check catalogue", async (t) => {
-  const core = ["workflow-tests", "typecheck", "backend-tests", "backend-build", "schema"];
+  const core = ["tooling-tests", "typecheck", "backend-tests", "backend-build", "schema"];
   const tooling = ["scripts/native-candidate.mjs", "scripts/development-policy.mjs",
     "scripts/candidate-commit.mjs", ".github/agents/devpocket-reviewer.agent.md"];
   for (const [file, checks, groups, layouts = false] of [
@@ -436,14 +436,14 @@ test("mixed development tooling and application changes select the union from th
     ["test-fixtures/fixture.ts", [...core, "android-build", "android-device"], CHECK_GROUPS],
     ["extension/bridge.mjs", [...core, "extension-package", "setup"], ["tooling", "backend"]],
     ["deployment/azure/src/fixture.ts", [...core, "setup", "azure-tests", "operations-tests"], ["tooling", "backend"]],
-    ["android/app/src/main/java/dev/devpocket/app/ui/Screen.kt", ["workflow-tests", "android-build", "android-device"],
+    ["android/app/src/main/java/dev/devpocket/app/ui/Screen.kt", ["tooling-tests", "android-build", "android-device"],
       ["tooling", "android", "device"], true],
-    ["scripts/verification.mjs", ["workflow-tests"], ["tooling"]],
-    ["scripts/git-state.mjs", ["workflow-tests"], ["tooling"]],
-    ["scripts/tests/verification.test.mjs", ["workflow-tests"], ["tooling"]],
+    ["scripts/verification.mjs", ["tooling-tests"], ["tooling"]],
+    ["scripts/git-state.mjs", ["tooling-tests"], ["tooling"]],
+    ["scripts/tests/verification.test.mjs", ["tooling-tests"], ["tooling"]],
     ["scripts/verification-backend.mjs", CHECKS.filter((check) => ["tooling", "backend"].includes(check.group)).map((check) => check.id),
       ["tooling", "backend"]],
-    ["scripts/verification-android.mjs", ["workflow-tests", "android-build", "android-device"], ["tooling", "android", "device"], true],
+    ["scripts/verification-android.mjs", ["tooling-tests", "android-build", "android-device"], ["tooling", "android", "device"], true],
     ["scripts/verification-executor.mjs", CHECKS.map((check) => check.id), CHECK_GROUPS, true],
     [".github/workflows/ci.yml", CHECKS.map((check) => check.id), CHECK_GROUPS, true],
     ["unknown.txt", CHECKS.map((check) => check.id), CHECK_GROUPS, true],
@@ -465,13 +465,13 @@ test("mixed development tooling and application changes select the union from th
 test("real added, staged, deleted, renamed and mixed paths select a deterministic conservative union", async (t) => {
   const tools = ["scripts/git-state.mjs", "scripts/native-candidate.mjs", "scripts/verification.mjs", "scripts/tests/verification.test.mjs"];
   const backend = CHECKS.filter((check) => ["tooling", "backend"].includes(check.group)).map((check) => check.id);
-  const native = ["workflow-tests", "android-build", "android-device"], all = CHECKS.map((check) => check.id);
+  const native = ["tooling-tests", "android-build", "android-device"], all = CHECKS.map((check) => check.id);
   for (const scenario of [
-    { name: "untracked tools", add: tools, checks: ["workflow-tests"] },
-    { name: "staged tools", add: tools, staged: true, checks: ["workflow-tests"] },
-    { name: "modified tools", initial: tools, add: tools, checks: ["workflow-tests"] },
-    { name: "deleted tools", initial: tools, remove: tools, checks: ["workflow-tests"] },
-    { name: "staged deletions", initial: tools, remove: tools, staged: true, checks: ["workflow-tests"] },
+    { name: "untracked tools", add: tools, checks: ["tooling-tests"] },
+    { name: "staged tools", add: tools, staged: true, checks: ["tooling-tests"] },
+    { name: "modified tools", initial: tools, add: tools, checks: ["tooling-tests"] },
+    { name: "deleted tools", initial: tools, remove: tools, checks: ["tooling-tests"] },
+    { name: "staged deletions", initial: tools, remove: tools, staged: true, checks: ["tooling-tests"] },
     { name: "native renamed to source helper", initial: ["scripts/verification-android.mjs"],
       rename: ["scripts/verification-android.mjs", "scripts/git-state.mjs"], checks: native, layouts: true },
     { name: "source helper renamed to backend executor", initial: ["scripts/git-state.mjs"],
@@ -517,12 +517,12 @@ test("plan explanations are deterministic and bounded without truncating actual 
   const first = (await verify(root, ["--plan"])).report;
   const second = (await verify(root, ["--plan"])).report;
   assert.deepEqual(first.selectionReasons, second.selectionReasons);
-  assert.deepEqual(first.requiredChecks, ["workflow-tests"]);
+  assert.deepEqual(first.requiredChecks, ["tooling-tests"]);
   const reason = first.selectionReasons.find((item) => item.rule === "documentation");
   assert.deepEqual(reason.paths, [...docs].sort().slice(0, 16));
   assert.equal(reason.omittedPaths, 25);
   assert.ok(reason.description.length > 0);
-  assert.deepEqual(first.selectionReasons.find((item) => item.rule === "development-tooling").checks, ["workflow-tests"]);
+  assert.deepEqual(first.selectionReasons.find((item) => item.rule === "development-tooling").checks, ["tooling-tests"]);
   const forced = (await verify(root, ["--plan", "--all"])).report;
   assert.deepEqual(forced.requiredChecks, CHECKS.map((check) => check.id));
   assert.deepEqual(forced.requiredGroups, CHECK_GROUPS);
@@ -567,14 +567,14 @@ test("the CLI and PowerShell tooling shard run no application checks", async (t)
   assert.equal(result.report.version, VERIFICATION_REPORT_VERSION);
   assert.equal(result.report.group, "tooling");
   assert.equal(result.report.complete, true);
-  assert.deepEqual(result.report.checks.map((check) => [check.id, check.status]), [["workflow-tests", "passed"]]);
+  assert.deepEqual(result.report.checks.map((check) => [check.id, check.status]), [["tooling-tests", "passed"]]);
   const report = path.join(root, ".data", "verification", "powershell", "report.json");
   await exec("pwsh", ["-NoProfile", "-NonInteractive", "-File", path.resolve("scripts/verify.ps1"),
     "-Base", "HEAD", "-Group", "tooling", "-Report", report], { cwd: root, timeout: 30000 });
   const wrapper = JSON.parse(await readFile(report, "utf8"));
   assert.equal(wrapper.group, "tooling");
   assert.equal(wrapper.complete, true);
-  assert.deepEqual(wrapper.requiredChecks, ["workflow-tests"]);
+  assert.deepEqual(wrapper.requiredChecks, ["tooling-tests"]);
   const invalid = await verify(root, ["--plan", "--group", "not-a-group"]);
   assert.equal(invalid.exitCode, 1);
   assert.equal(invalid.report.failure.reason, "configuration");
@@ -607,18 +607,18 @@ test("tooling aggregation accepts only complete current evidence and ignores uns
   assert.deepEqual(success.report.requiredGroups, ["tooling"]);
   for (const [name, change, reason] of [
     ["missing tooling", { checks: [] }, "shard-missing"],
-    ["unrun tooling", { checks: [{ id: "workflow-tests", status: "not_run" }] }, "shard-missing"],
+    ["unrun tooling", { checks: [{ id: "tooling-tests", status: "not_run" }] }, "shard-missing"],
     ["failed report", { status: "failed" }, "check-failed"],
     ["blocked report", { status: "blocked" }, "check-failed"],
     ["cancelled report", { status: "cancelled" }, "check-failed"],
     ["planned report", { status: "planned" }, "check-failed"],
-    ["skipped check", { checks: [{ id: "workflow-tests", status: "skipped", exitCode: 0 }] }, "check-failed"],
-    ["cancelled check", { checks: [{ id: "workflow-tests", status: "cancelled", exitCode: 0 }] }, "check-failed"],
+    ["skipped check", { checks: [{ id: "tooling-tests", status: "skipped", exitCode: 0 }] }, "check-failed"],
+    ["cancelled check", { checks: [{ id: "tooling-tests", status: "cancelled", exitCode: 0 }] }, "check-failed"],
     ["duplicate check", { checks: [current.checks[0], current.checks[0]] }, "check-duplicate"],
     ["wrong group", { group: "backend" }, "check-group"],
     ["unknown group", { group: "unrecognized" }, "check-group"],
     ["unexpected check", { checks: [{ id: "backend-tests", status: "passed", exitCode: 0 }] }, "check-unexpected"],
-    ["nonzero exit", { checks: [{ id: "workflow-tests", status: "passed", exitCode: 1 }] }, "check-failed"],
+    ["nonzero exit", { checks: [{ id: "tooling-tests", status: "passed", exitCode: 1 }] }, "check-failed"],
     ["stale base", { base: "a".repeat(40) }, "source-mismatch"],
     ["stale head", { source: { ...current.source, head: "b".repeat(40) } }, "source-mismatch"],
     ["stale fingerprint", { source: { ...current.source, fingerprint: "c".repeat(64) } }, "source-mismatch"],
@@ -628,6 +628,11 @@ test("tooling aggregation accepts only complete current evidence and ignores uns
     ["legacy report", { version: 1 }, "policy-mismatch"],
     ["coupled impact and review report", { version: 2 }, "policy-mismatch"],
     ["origin-optional report", { version: 3 }, "policy-mismatch"],
+    ["old direct-origin report", { version: 4 }, "policy-mismatch"],
+    ["old tooling identity report", { version: 5, requiredChecks: ["workflow-tests"],
+      checks: [{ ...current.checks[0], id: "workflow-tests" }] }, "policy-mismatch"],
+    ["relabeled old selection", { requiredChecks: ["workflow-tests"] }, "policy-mismatch"],
+    ["old check under current policy", { checks: [{ ...current.checks[0], id: "workflow-tests" }] }, "check-unexpected"],
     ["missing execution", { checks: [{ ...current.checks[0], execution: undefined }] }, "execution-origin"],
     ["missing execution source", { checks: [{ ...current.checks[0], execution: {} }] }, "execution-origin"],
     ["invalid execution time", { checks: [{ ...current.checks[0], execution: {
@@ -803,7 +808,7 @@ test("the backend adapter runs every fixed npm entry with the correct working di
   ];
   const script = (id) => `node "${recorder}" ${id}`;
   await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: {
-    ...Object.fromEntries(entries.map(([name, id]) => [name, script(id)])), "test:workflow": script("must-not-run"),
+    ...Object.fromEntries(entries.map(([name, id]) => [name, script(id)])), "test:tooling": script("must-not-run"),
   } }));
   const azure = path.join(root, "deployment", "azure");
   await mkdir(azure, { recursive: true });
@@ -821,7 +826,7 @@ test("the backend adapter runs every fixed npm entry with the correct working di
     expected.map((id) => ({ id, cwd: id === "azure-tests" ? azure : root })));
   assert.deepEqual(result.report.checks.filter((check) => check.status === "passed").map((check) => check.id), expected);
   assert.equal(result.report.checks[0].status, "not_run");
-  assert.ok(result.report.checks.every((check) => check.id === "workflow-tests" ||
+  assert.ok(result.report.checks.every((check) => check.id === "tooling-tests" ||
     check.commandOutcome?.reason === "exit" && check.commandOutcome.exitCode === 0 &&
       check.commandOutcome.cleanupFailure === null), JSON.stringify(result.report.checks));
 });
@@ -894,7 +899,7 @@ test("backend diagnostics observe the ordered backend entry without running the 
   delete env.NODE_TEST_CONTEXT;
   const result = await verify(root, ["--group", "backend", "--backend-diagnostics"], env);
   assert.equal(result.exitCode, 1);
-  assert.equal(result.report.checks.find((check) => check.id === "workflow-tests").status, "not_run");
+  assert.equal(result.report.checks.find((check) => check.id === "tooling-tests").status, "not_run");
   assert.equal(result.report.checks.find((check) => check.id === "typecheck").status, "passed");
   const backend = result.report.checks.find((check) => check.id === "backend-tests");
   assert.equal(backend.status, "failed");
@@ -910,13 +915,13 @@ test("backend diagnostics observe the ordered backend entry without running the 
   assert.throws(() => combineVerification(result.report, [result.report]), /failed, blocked/);
 });
 
-test("diagnostic preflight rejects raw reporter configuration before workflow-test predecessors can write artifacts", async (t) => {
+test("diagnostic preflight rejects raw reporter configuration before tooling-test predecessors can write artifacts", async (t) => {
   const root = await repository(t);
   const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
   manifest.type = "module";
-  manifest.scripts["test:workflow"] = "node --test workflow-canary.test.mjs";
+  manifest.scripts["test:tooling"] = "node --test tooling-canary.test.mjs";
   await writeFile(path.join(root, "package.json"), JSON.stringify(manifest));
-  await writeFile(path.join(root, "workflow-canary.test.mjs"), [
+  await writeFile(path.join(root, "tooling-canary.test.mjs"), [
     'import {test} from "node:test";import assert from "node:assert/strict";import {writeFileSync} from "node:fs";',
     'test("synthetic raw predecessor",()=>{writeFileSync("predecessor-ran","yes");',
     'assert.fail("PRIVATE_PREDECESSOR_CANARY".repeat(1024));});',
@@ -1130,14 +1135,14 @@ test("a planning catalogue exception cannot qualify an otherwise valid current a
 test("log initialization failure is a visible blocked check and never runs its command", async (t) => {
   const root = await repository(t);
   const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
-  manifest.scripts["test:workflow"] = "node -e \"require('fs').writeFileSync('must-not-run','unsafe')\"";
+  manifest.scripts["test:tooling"] = "node -e \"require('fs').writeFileSync('must-not-run','unsafe')\"";
   await writeFile(path.join(root, "package.json"), JSON.stringify(manifest));
   const directory = path.join(root, ".data", "verification", "log-init");
-  await mkdir(path.join(directory, "workflow-tests.log"), { recursive: true });
+  await mkdir(path.join(directory, "tooling-tests.log"), { recursive: true });
   const report = path.join(directory, "report.json");
   await assert.rejects(exec(process.execPath, [entry, "--repo", root, "--base", "HEAD", "--group", "tooling", "--report", report],
     { timeout: 20000 }), (error) => error.code === 1);
-  const value = JSON.parse(await readFile(report, "utf8")), check = value.checks.find((item) => item.id === "workflow-tests");
+  const value = JSON.parse(await readFile(report, "utf8")), check = value.checks.find((item) => item.id === "tooling-tests");
   assert.equal(check.status, "blocked");
   assert.equal(check.executionState, "not-started");
   assert.equal(check.failure.phase, "log");
@@ -1632,7 +1637,7 @@ async function recoveryFixture(t, { candidate = false, sensitive = false } = {})
   ].join("\n"));
   const script = (id) => `node fixture.mjs ${id}`;
   const manifest = { scripts: {
-    "test:workflow": script("tooling"), typecheck: script("typecheck"), test: script("backend-tests"),
+    "test:tooling": script("tooling"), typecheck: script("typecheck"), test: script("backend-tests"),
     build: script("backend-build"), schema: script("schema"),
   } };
   if (candidate) {
@@ -1803,7 +1808,7 @@ test("failed or unknown device-data cleanup retains the owner and blocks recover
     const independent = await verify(other, ["--group", "tooling"], env);
     assert.equal(independent.exitCode, 0, JSON.stringify(independent.report));
     assert.equal(independent.report.status, "partial");
-    assert.equal(independent.report.checks.find((item) => item.id === "workflow-tests").status, "passed");
+    assert.equal(independent.report.checks.find((item) => item.id === "tooling-tests").status, "passed");
     assert.equal(independent.report.admission.state, "released");
   });
 });
@@ -1882,11 +1887,11 @@ test("preflight preserves cancellation and owned-process cleanup evidence rather
 test("late cancellation blocks partial groups and tooling shards before terminal qualification", async (t) => {
   const root = await repository(t), scripts = path.join(root, "scripts");
   await mkdir(path.join(scripts, "tests"), { recursive: true });
-  await copyFile(path.resolve("scripts", "test-workflow.mjs"), path.join(scripts, "test-workflow.mjs"));
-  for (const [index, file] of WORKFLOW_TEST_FILES.entries()) await writeFile(path.join(root, file),
+  await copyFile(path.resolve("scripts", "test-tooling.mjs"), path.join(scripts, "test-tooling.mjs"));
+  for (const [index, file] of TOOLING_TEST_FILES.entries()) await writeFile(path.join(root, file),
     `import {test} from 'node:test';test('fixture-${index}',()=>{});\n`);
   await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: {
-    "test:workflow": "node scripts/test-workflow.mjs", typecheck: "node -e \"console.log('completed fixture')\"",
+    "test:tooling": "node scripts/test-tooling.mjs", typecheck: "node -e \"console.log('completed fixture')\"",
   } }));
   const program = path.join(root, ".data", "late-cancellation.mjs");
   await mkdir(path.dirname(program), { recursive: true });
@@ -1894,7 +1899,7 @@ test("late cancellation blocks partial groups and tooling shards before terminal
     "import fs from 'node:fs/promises';import path from 'node:path';import {syncBuiltinESMExports} from 'node:module';",
     `import {executeVerification,verificationPlan} from ${JSON.stringify(pathToFileURL(path.resolve("scripts/verification.mjs")).href)};`,
     "const group=process.argv[2], root=process.cwd(), controller=new AbortController();",
-    "const plan={...await verificationPlan(root,'HEAD'),requiredChecks:['workflow-tests','typecheck'],requiredGroups:['tooling','backend'],layouts:false};",
+    "const plan={...await verificationPlan(root,'HEAD'),requiredChecks:['tooling-tests','typecheck'],requiredGroups:['tooling','backend'],layouts:false};",
     "const directory=path.join(root,'.data','verification',group);await fs.mkdir(directory,{recursive:true});",
     "const original=fs.open;let intercepted=false;",
     "fs.open=async(file,...args)=>{const handle=await original(file,...args);",
@@ -1912,7 +1917,7 @@ test("late cancellation blocks partial groups and tooling shards before terminal
     const { stdout } = await exec(process.execPath, [program, group], { cwd: root, env, timeout: 120000 });
     const { plan, report, intercepted } = JSON.parse(stdout.trim());
     assert.equal(intercepted, true);
-    assert.equal(report.checks.find((check) => check.id === (group === "backend" ? "typecheck" : "workflow-tests")).status, "passed");
+    assert.equal(report.checks.find((check) => check.id === (group === "backend" ? "typecheck" : "tooling-tests")).status, "passed");
     assert.equal(report.status, "blocked");
     assert.equal(report.complete, false);
     assert.equal(report.failure.reason, "command-cancelled");
@@ -2069,12 +2074,12 @@ test("observed environment drift cannot be erased by restoring the initial depen
   const flag = path.join(dependency, "flag");
   await writeFile(flag, "fail");
   await writeFile(path.join(root, "package.json"), JSON.stringify({
-    dependencies: { fixture: "1.0.0" }, scripts: { "test:workflow": "node workflow.mjs" },
+    dependencies: { fixture: "1.0.0" }, scripts: { "test:tooling": "node tooling.mjs" },
   }));
   await writeFile(path.join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages: {
     "": { dependencies: { fixture: "1.0.0" } }, "node_modules/fixture": { version: "1.0.0" },
   } }));
-  await writeFile(path.join(root, "workflow.mjs"), [
+  await writeFile(path.join(root, "tooling.mjs"), [
     "import {appendFileSync,existsSync,readFileSync,writeFileSync} from 'node:fs';",
     "appendFileSync('.data/count','called\\n');writeFileSync('.data/ready','yes');",
     "while(!existsSync('.data/release'))await new Promise(resolve=>setTimeout(resolve,20));",
@@ -3220,7 +3225,7 @@ test("a changed captured execution policy cannot resume an earlier successful ru
   const copiedPolicy = await import(pathToFileURL(path.join(copied, "verification-preflight.mjs")).href);
   await import(pathToFileURL(path.join(copied, "verification-android.mjs")).href);
   assert.equal(await copiedPolicy.verificationExecutionPolicy(), first.policy, "The copied policy must match before mutation.");
-  for (const name of ["test-workflow.mjs", "verification-tooling.mjs", "verification-admission.mjs",
+  for (const name of ["test-tooling.mjs", "verification-tooling.mjs", "verification-admission.mjs",
     "verification-ci.mjs", "verification-ci-artifact.ps1", "development-policy.mjs", "development-paths.mjs", "emulator-resources.mjs",
     "native-candidate.mjs"]) await t.test(name, async () => {
     const file = path.join(copied, name), original = await readFile(file);
