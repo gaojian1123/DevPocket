@@ -34,8 +34,7 @@ the stated authority for subsequent native-tool delivery.
 
 Development uses the owning session's original tools, the existing verifier and read/search-only
 `devpocket-reviewer`; unavailable required checks or independent review still
-block completion. The former registered Dynamic Workflow, development extension
-and starter/readiness tools have been removed. The skill is agent guidance, not a
+block completion. The skill is agent guidance, not a
 guarantee that an agent cannot skip a step. Verification remains executable;
 required CI and independent review guard normal delivery. Adding the skill does
 not configure repository rules.
@@ -275,8 +274,7 @@ cannot be converted by changing its source fields.
 
 Use this route for authorized PR delivery, not as an implicit upload of a
 working-tree-only task. Keep implementation, commits, GitHub operations and
-recovery in the owning session. The existing CI workflow remains the executor;
-there is no new scheduling service or registered workflow.
+recovery in the owning session. The existing CI workflow remains the executor.
 
 After approved focused local checks, freeze the native candidate with all intended
 inputs and retain its request/receipt. Confirm a clean index/worktree, the original
@@ -465,7 +463,7 @@ adoption remain separately authorized.
 
 ## Verification
 
-Run from the checkout with Node 26, npm 12.2.1 and PowerShell 7. The complete workflow
+Run from the checkout with Node 26, npm 12.2.1 and PowerShell 7. The complete tooling
 regression suite also needs Git with SSH signing support (`ssh-keygen` for
 disposable signing fixtures), Python 3.12 (standard-library checks), the
 root npm dependencies (including TypeScript/tsx), and, on Windows, the existing
@@ -564,9 +562,9 @@ adding a new file does not silently inherit a tooling exemption.
 | Responsibility | Representative inputs | Required checks |
 | --- | --- | --- |
 | Documentation | `README.md`, `VALIDATION.md`, `docs/**/*.md` | None |
-| Development tooling | `development-paths.mjs`, `development-policy.mjs`, `candidate-commit.mjs`, `native-candidate.mjs`, `setup-xcode-mcp.mjs`, `config/xcode-mcp.example.json`, `test-workflow.mjs` | Complete `workflow-tests` in `tooling` |
-| Agent instructions | `AGENTS.md`, the DevPocket skill/reviewer and AI task template | Complete `workflow-tests` |
-| Source/verification contracts | Root `.gitignore`, `git-state.mjs`, `verification.mjs`, `verification-policy.mjs`, `verify.mjs`, `verify.ps1`; named diagnostic/evidence projections and workflow regressions | Complete `workflow-tests` |
+| Development tooling | `development-paths.mjs`, `development-policy.mjs`, `candidate-commit.mjs`, `native-candidate.mjs`, `setup-xcode-mcp.mjs`, `config/xcode-mcp.example.json`, `test-tooling.mjs` | Complete `tooling-tests` in `tooling` |
+| Agent instructions | `AGENTS.md`, the DevPocket skill/reviewer and AI task template | Complete `tooling-tests` |
+| Source/verification contracts | Root `.gitignore`, `git-state.mjs`, `verification.mjs`, `verification-policy.mjs`, `verify.mjs`, `verify.ps1`; named diagnostic/evidence projections and tooling regressions | Complete `tooling-tests` |
 | Backend execution/build | `verification-backend.mjs`, extension bundle/package helpers, CLI-proof launcher, backend TypeScript configs, extension distribution workflow | Tooling and backend checks; no Android provisioning |
 | Native execution/build | `verification-android.mjs`, Android runner/build/emulator helpers, owned device cleanup, Gradle inputs/wrappers, native preparation action | Tooling, Android build, device cases and all layouts |
 | Shared execution | `verification-executor.mjs`, `process.mjs`, `owned-command*`, bounded command logs, shared backend/native diagnostic preflight | Every check and layouts |
@@ -582,8 +580,8 @@ product checks just because they are protected policy.
 
 The optional Xcode MCP initializer and its named template/regression are local
 development tooling. Root `.gitignore` participates in source selection and is
-covered by the workflow/source-identity contracts. The Xcode regression is a peer
-in the explicit `test-workflow.mjs` list, not an import from another test file.
+covered by the tooling/source-identity contracts. The Xcode regression is a peer
+in the explicit `test-tooling.mjs` list, not an import from another test file.
 Root npm/lock changes (including changes to test script commands), unknown MCP files,
 nested ignore files and mixed application changes still retain their existing
 conservative coverage; there is no general MCP or dependency exemption.
@@ -592,7 +590,7 @@ Existing backend source, runtime integration, runtime-extension and wire/fixture
 rules retain their downstream coverage. Runtime/wire changes (including the
 schema generator) still require native compatibility evidence; Android product
 changes require build and device checks, with layouts for UI/resource changes.
-Named synthetic workflow tests run the whole existing suite, not a selected
+Named synthetic tooling tests run the whole existing suite, not a selected
 subset. The separate Linux process regression belongs to hosted native
 preparation and continues to select native execution.
 
@@ -664,7 +662,7 @@ are not a completed source-bound gate or independent-review approval.
 
 For CI shards, use `-Group tooling`, `-Group backend`, `-Group android` or
 `-Group device` with a separate `-Report` for each. The tooling check remains
-the **complete** `npm run test:workflow` suite. Its CI parts are derived from the
+the **complete** `npm run test:tooling` suite. Its CI parts are derived from the
 same explicit catalogue; individual parts never substitute for the whole check.
 A successful shard is `partial` unless it covers the whole plan. For a full
 plan, aggregate all four reports using:
@@ -697,19 +695,22 @@ still requires all selected checks. A documentation-only plan needs no shards.
 
 Aggregation rejects missing checks, failed/blocked/planned evidence, duplicate
 results, wrong-group checks, mismatched policy, and stale base/source identities.
-Verification reports are now **version 5**. Every directly executed passing check
+Verification reports are **version 6**, with `tooling-tests` as the tooling check
+ID. Every directly executed passing check
 requires its actual `execution.source`, `startedAt` and `completedAt`. A complete
 tooling aggregate instead carries `execution.kind: tooling-shards` and every
 part's original execution. It does not invent one full-suite start/end interval.
 Aggregates preserve these fields through subsequent aggregation. Removing origins,
 reversing timestamps or changing only an aggregate's HEAD cannot qualify.
 `requiredGroups` must match the catalogue and there is no `requiresHumanReview`
-decision. Version-1/2/3/4 reports, absent origin/group policy and reports that place
-`workflow-tests` in backend cannot qualify; rerun rather than relabel old evidence.
-Non-acceptance diagnostic exporters still read historical versions: version 1
-retains its backend workflow-test group, versions 2/3 retain tooling, and version
-3 retains its selection explanations. Historical check selections remain intact.
-Version 4 retains its historical direct execution origins for diagnostics.
+decision. Version-1/2/3/4/5 reports, old check IDs, absent origin/group policy and
+reports that place `tooling-tests` in backend cannot qualify; rerun rather than
+relabel old evidence. Non-acceptance diagnostic exporters still read versions
+1 through 5 using their original `workflow-tests` check ID and log filename.
+Version 1 retains its backend group; versions 2 through 5 retain tooling.
+Versions 3 and 5 retain their selection explanations, and versions 4 and 5
+retain their recorded direct execution origins. Historical check selections
+and evidence files remain unchanged.
 An old version-1/2 review flag is projected only under
 `legacyAgentReview`, with `approval: "not-established"` even when the old flag
 was false. Current diagnostics ignore injected review/approval fields.
@@ -1080,7 +1081,7 @@ typecheck reuse. They do not qualify merely by reporting a version or keeping
 configuration strings unchanged. Such environments can still run fresh checks;
 the verifier neither installs a different npm nor rewrites prefix configuration.
 Other platforms, changed compilers/configuration, unresolved inputs and unknown
-launchers rerun normally. Backend builds/schema generation, workflow regressions,
+launchers rerun normally. Backend builds/schema generation, tooling regressions,
 backend/operational tests, packaging, Android JVM tests/lint and device checks
 remain conservatively unproven or commit-sensitive and rerun.
 The original selected checks are never reduced. Current environment and retained
@@ -1155,14 +1156,15 @@ identity, hook approval, independent review or source-bound evidence checks.
 
 ### Tooling regression scheduling
 
-`npm run test:workflow` remains the complete default regression gate. Its dedicated
-entry, `scripts/test-workflow.mjs`, exports the explicit `WORKFLOW_TEST_FILES`
+`npm run test:tooling` is the complete default regression gate. Its dedicated
+entry, `scripts/test-tooling.mjs`, exports the explicit `TOOLING_TEST_FILES`
 catalogue and passes that full list to a child `node --test` invocation. Tests and
 CI contracts read the same catalogue rather than parse a package script. The
 impact policy independently names the approved tooling paths; unknown tests and
 runner lookalikes still require all checks.
-The command, `workflow-tests` check ID, catalogue exports and shard IDs remain
-compatible verification interfaces; none registers or launches a Dynamic Workflow.
+The command, check ID, catalogue exports and shard selector use the `tooling`
+name without legacy command aliases. Shard IDs remain `candidate`,
+`verification`, `diagnostics` and `native`.
 
 For lightweight approval-contract feedback, run:
 
@@ -1173,10 +1175,10 @@ node --test scripts/tests/development-approval.test.mjs
 This pure Node entry covers path policy, approval summaries/details, invalid
 summaries, native decision identity and task/CI authority without Git repositories,
 signing, hooks, PowerShell or candidate execution fixtures. It is a peer in
-`WORKFLOW_TEST_FILES`, in the existing `candidate` shard beside
+`TOOLING_TEST_FILES`, in the existing `candidate` shard beside
 `development-tools.test.mjs`. The latter retains filesystem, Git, signing, hook,
 candidate and documentation contracts. Every old and new test remains in
-`npm run test:workflow` and Required verification. The fast entry is focused
+`npm run test:tooling` and Required verification. The fast entry is focused
 feedback, never a replacement for that complete gate or local execution authority.
 
 The tooling command has a 60-minute watchdog for both the complete entry and
@@ -1186,17 +1188,17 @@ Backend and native command deadlines remain unchanged at 30 minutes.
 This is a per-command bound, not a task budget or permission to skip scenarios;
 queue waiting stays separate and cancellation still requires owned cleanup.
 
-`WORKFLOW_TEST_SHARDS` is derived from that catalogue, not a second list. CI runs
+`TOOLING_TEST_SHARDS` is derived from that catalogue, not a second list. CI runs
 the candidate, verification, diagnostics and native parts independently with
 `--tooling-shard PART` on the verifier. The verifier calls the same npm entry with
-`--workflow-shard PART`; this mode rejects additional filters. The canonical
+`--tooling-shard PART`; this mode rejects additional filters. The canonical
 runner identity and catalogue are bound, and unknown startup/lifecycle settings
 cannot qualify formal shard execution. A replacement package script does not
 become a complete CI tooling gate.
 
 Each part reports `partial`, including on a tooling-only plan. Aggregation needs
 every exact part once, with matching source, base, catalogue and execution origins.
-Missing, failed, duplicated or mismatched parts block `workflow-tests`. Parts
+Missing, failed, duplicated or mismatched parts block `tooling-tests`. Parts
 cannot seed a successful local group receipt; normal full-group recovery keeps
 its positive terminal qualification rule. The CI matrix disables fail-fast so
 one failure does not discard unrelated successful jobs.
@@ -1205,7 +1207,7 @@ Each listed file runs in its own process with Node's default file concurrency.
 The wrapper adds no concurrency, isolation, reporter or filtering flags by default,
 inherits standard input/output/error, propagates exit codes and termination signals,
 and reports launch failures as failures. Node test options can be passed after
-`npm run test:workflow --`; filtered runs are focused feedback, not the complete
+`npm run test:tooling --`; filtered runs are focused feedback, not the complete
 verification gate. No test-directory glob is used: extension packaging and the
 separate Linux process regression remain outside this list. Xcode setup is an
 ordinary peer entry, with fixture environment restoration asserted in that file.
@@ -1260,10 +1262,10 @@ The failure-surface audit and validation contract are:
 
 | Surface | Failure information and verification |
 | --- | --- |
-| Checkout, Node/JDK/Python setup and their post steps | Keep the named official Action's native error log and platform outcome; no duplicate wrapper. Current workflow contracts retain versions, read permissions and credential isolation. |
+| Checkout, Node/JDK/Python setup and their post steps | Keep the named official Action's native error log and platform outcome; no duplicate wrapper. Current CI contracts retain versions, read permissions and credential isolation. |
 | npm/Python dependency restoration | Keep direct command errors and exit status. The summary distinguishes an unstarted verifier and an unproduced report; it does not invent a check pass. |
 | Plan and explicit base resolution | Native Git/PowerShell errors identify base resolution; controller planning/report errors emit fixed structured reasons. Invalid-base and illegal-destination CLI cases remain nonzero. |
-| `workflow-tests` | Exact check/exit, private-log availability and bounded source-indexed declaration hints. Controlled predecessor, log-init, cancellation and collector regressions exercise the real controller. |
+| `tooling-tests` | Exact check/exit, private-log availability and bounded source-indexed declaration hints. Controlled predecessor, log-init, cancellation and collector regressions exercise the real controller. |
 | `typecheck`, `backend-build` | Exact check/exit plus bounded compiler codes and existing repository source positions. A real synthetic TypeScript compilation checks that private values are excluded. |
 | `backend-tests` | Existing protected source-mapped Node reporter, catalogue/nonce binding and guarded artifact, plus the common check summary. Original invocation/default concurrency and preflight privacy regressions remain. |
 | `schema` | Separate command failure and source-changed outcome. Source mutation cannot be accepted as an unchanged green result. |
@@ -1401,7 +1403,7 @@ selected-test proxy. Before any predecessor runs, diagnostic preflight checks
 inherited Node/npm options and reads effective project/user npm `node-options`
 with a bounded owned `npm config get node-options` command. Conflicting
 reporter settings are refused before they can affect predecessors, including
-workflow regressions in a local all-group run. CI runs those regressions in
+tooling regressions in a local all-group run. CI runs those regressions in
 the independent tooling job; the backend job no longer executes them.
 For the backend check only, the effective benign options are retained and the
 reporter is appended through npm's own configuration channel, so npm cannot
@@ -1461,7 +1463,7 @@ non-URL output. These fixed categories do not disclose the child output or
 assertion operands, perform no lookup of its path, and never establish runtime
 ownership or replace the failing assertion.
 
-The workflow suite's schema newline regression compiles the actual portable
+The tooling suite's schema newline regression compiles the actual portable
 contract in its own isolated package fixture. It verifies the missing-export
 failure before compilation and then compares the regenerated schema bytes;
 parent-worktree build outputs cannot satisfy that prerequisite.
@@ -1829,7 +1831,7 @@ Linux token option; no unauthenticated listener is enabled.
 
 The job also runs `scripts/tests/linux-process.test.mjs` against real Linux
 processes and the actual PowerShell build interface. Portable lease/ownership
-parsing checks run in the existing Windows workflow suite as well. Neither
+parsing checks run in the existing Windows tooling suite as well. Neither
 those tests nor a Windows emulator pass substitutes for the actual Ubuntu/KVM
 native gate. An incremental Gradle invocation may reuse JVM/lint outputs;
 `UP-TO-DATE` is not a claim those tests executed again.
@@ -2048,13 +2050,9 @@ failed commits and reports; never replay an uncertain mutation. Inspect the
 recorded owner before recovering a retained lock. Existing or replaced locks
 are not removed automatically.
 
-Historical Dynamic Workflow records and snapshots are retained in ignored
-storage, not executed or upgraded by this route. Before reloading a session with
-an old in-flight run, finish or stop that run through the original client.
 For unfinished work, inspect its original task/base, actual Git state, decisions
 and process ownership, then continue in its owning session using the skill.
 Re-establish verification and independent review for the current source.
-Old handoffs and manifests containing retired modules are not current readiness
-or candidate-conversion proof; never rewrite their version, HEAD or input list
-to make them pass. The separate shipped phone/runtime extension is not retired
-by this change.
+Retain historical reports and snapshots unchanged. Evidence must match the
+current source and execution inputs; never rewrite its version, HEAD or input
+list to make it qualify.

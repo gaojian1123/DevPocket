@@ -14,7 +14,7 @@ test("local review requirements preserve trust boundaries independently of impac
     ["scripts/development-policy.mjs", true, true], ["scripts/development-paths.mjs", true, true],
     ["scripts/candidate-commit.mjs", true, true],
     ["scripts/tests/development-tools.test.mjs", false, false], ["scripts/tests/development-approval.test.mjs", false, false],
-    ["scripts/test-workflow.mjs", true, true], ["scripts/tests/workflow-runner.test.mjs", false, false],
+    ["scripts/test-tooling.mjs", true, true], ["scripts/tests/tooling-runner.test.mjs", false, false],
     ["scripts/build-android.ps1", true, true], ["scripts/test-android.ps1", true, true],
     ["scripts/android-runner.mjs", true, true], ["scripts/package-extension.ps1", true, true],
     ["scripts/bundle-extension.mjs", true, true], ["scripts/export-schema.ts", true, true],

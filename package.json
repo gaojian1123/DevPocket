@@ -19,7 +19,7 @@
     "typecheck": "npm run build --workspace @devpocket/components && tsc -p backend/tsconfig.json --noEmit && tsc -p backend/tsconfig.cli-proof.json",
     "test": "npm test --workspace @devpocket/components && node --import tsx --test backend/tests/*.test.ts",
     "verify": "pwsh -NoProfile -File scripts/verify.ps1",
-    "test:workflow": "node scripts/test-workflow.mjs",
+    "test:tooling": "node scripts/test-tooling.mjs",
     "emulator:status": "node scripts/emulator-resources.mjs status",
     "emulator:limit": "node scripts/emulator-resources.mjs limit",
     "test:android": "pwsh -NoProfile -File scripts/test-android.ps1",

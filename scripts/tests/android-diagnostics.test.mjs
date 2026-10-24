@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { LINUX_PLATFORM_TESTS } from "../backend-diagnostics.mjs";
-import { WORKFLOW_TEST_FILES } from "../test-workflow.mjs";
+import { TOOLING_TEST_FILES } from "../test-tooling.mjs";
 
 const exec = promisify(execFile);
 const entry = path.resolve("scripts/android-diagnostics.mjs");
@@ -204,7 +204,7 @@ test("CI publishes only the diagnostic projection alongside the original Android
   assert.match(android, /if: always\(\) && steps\.android_diagnostics\.outputs\.report_ready == 'true'/);
   assert.match(android, /name: android-test-diagnostics-attempt-\$\{\{ github\.run_attempt \}\}\r?\n\s+path: \.data\/ci\/android\/android-diagnostics\.json/);
   for (const testFile of ["android-build.test.mjs", "android-diagnostics.test.mjs"]) {
-    assert.ok(WORKFLOW_TEST_FILES.includes(`scripts/tests/${testFile}`));
+    assert.ok(TOOLING_TEST_FILES.includes(`scripts/tests/${testFile}`));
   }
 });
 
@@ -288,10 +288,10 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(gate, /node @arguments\n\s+if \(\$LASTEXITCODE -ne 0\) \{ throw /);
 });
 
-test("the independent tooling CI job runs the complete workflow suite without application or device provisioning", async () => {
+test("the independent tooling CI job runs the complete tooling suite without application or device provisioning", async () => {
   const { CHECKS } = await import("../verification-policy.mjs");
   assert.deepEqual(CHECKS.filter((check) => check.group === "tooling"),
-    [{ id: "workflow-tests", group: "tooling" }]);
+    [{ id: "tooling-tests", group: "tooling" }]);
   const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
   const tooling = workflow.split("\n  tooling:")[1]?.split("\n  macos:")[0];
   assert.ok(tooling);
@@ -317,15 +317,15 @@ test("the independent tooling CI job runs the complete workflow suite without ap
   assert.ok(gate.includes("TOOLING_RESULT: ${{ needs.tooling.result }}"));
   assert.match(gate, /pattern: verification-\*/);
   const manifest = JSON.parse(await readFile("package.json", "utf8"));
-  assert.equal(manifest.scripts["test:workflow"], "node scripts/test-workflow.mjs");
-  assert.ok(WORKFLOW_TEST_FILES.includes("scripts/tests/xcode-mcp.test.mjs"));
-  assert.ok(WORKFLOW_TEST_FILES.includes("scripts/tests/workflow-runner.test.mjs"));
+  assert.equal(manifest.scripts["test:tooling"], "node scripts/test-tooling.mjs");
+  assert.ok(TOOLING_TEST_FILES.includes("scripts/tests/xcode-mcp.test.mjs"));
+  assert.ok(TOOLING_TEST_FILES.includes("scripts/tests/tooling-runner.test.mjs"));
   const executor = await readFile("scripts/verification-executor.mjs", "utf8");
   const adapter = executor.split('definition.group === "tooling" ? {')[1]?.split('} : definition.group === "backend"')[0];
   assert.ok(adapter);
   assert.ok(executor.includes('const npm = process.platform === "win32" ? "npm.cmd" : "npm"'));
-  assert.ok(adapter.includes("& ${npm} run test:workflow; exit $LASTEXITCODE"));
-  assert.ok(adapter.includes("& ${npm} run test:workflow -- --workflow-shard ${check.toolingShard.id}; exit $LASTEXITCODE"));
+  assert.ok(adapter.includes("& ${npm} run test:tooling; exit $LASTEXITCODE"));
+  assert.ok(adapter.includes("& ${npm} run test:tooling -- --tooling-shard ${check.toolingShard.id}; exit $LASTEXITCODE"));
 });
 
 test("native startup diagnostics are manual-only, reuse the owned entry and never become a verification shard", async () => {

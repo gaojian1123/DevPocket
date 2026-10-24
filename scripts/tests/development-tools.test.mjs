@@ -17,7 +17,7 @@ import { originRepository, requirePushTarget } from "../git-state.mjs";
 const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
   "verification-android.mjs", "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs",
-  "verification-transition.mjs", "test-workflow.mjs", "verification-tooling.mjs",
+  "verification-transition.mjs", "test-tooling.mjs", "verification-tooling.mjs",
   "verification-admission.mjs", "verification-ci.mjs", "verification-ci-artifact.ps1", "development-paths.mjs",
   "owned-command-darwin.py", "local-ipc.mjs", "android-platform.mjs", "emulator-resources.mjs"];
 // Top-level tests stay serial; only fresh-workspace cases without shared environment writes use this limit.
@@ -68,7 +68,7 @@ async function runFixtureCandidate(prepared, env = process.env) {
   return { ...receipt, nativeExitCode: failure?.code ?? 0, stderr: failure?.stderr ?? "" };
 }
 
-test("repository development uses the skill and shared tools without a registered workflow", async () => {
+test("repository development uses the skill and shared tools", async () => {
   const [agents, skill, readme, issue, guide, reviewer] = await Promise.all([
     "../../AGENTS.md", "../../.github/skills/devpocket-development/SKILL.md",
     "../../README.md", "../../.github/ISSUE_TEMPLATE/ai-task.yml", "../../docs/DEVELOPMENT-WORKFLOW.md",
@@ -122,13 +122,6 @@ test("repository development uses the skill and shared tools without a registere
         item[1].toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s/g, "-"));
       assert.ok(headings.includes(anchor), `Missing skill reference: ${match[1]}`);
     }
-  }
-  for (const text of [agents, skill, readme, issue, guide, reviewer]) {
-    assert.doesNotMatch(text, /devpocket_start_development|devpocket_check_development_readiness|run_dynamic_workflow/);
-  }
-  for (const file of ["../development-workflow.mjs", "../workflow-extension.mjs", "../development-controller.mjs",
-    "../../.github/extensions/devpocket-development/extension.mjs"]) {
-    await assert.rejects(readFile(new URL(file, import.meta.url)), { code: "ENOENT" });
   }
   assert.ok((await fs.stat(new URL("../../extension", import.meta.url))).isDirectory());
 });
@@ -479,10 +472,8 @@ test("candidate implementation capture includes every verification adapter and r
   }
   const legacy = { ...captured, files: captured.files.filter((file) => !verificationInputs.includes(file.name)) };
   await assert.rejects(requireCandidateImplementation(legacy), /captured candidate\/verification implementation/);
-  const retired = ["development-workflow.mjs", "workflow-extension.mjs", "development-controller.mjs"];
-  assert.ok(captured.files.every((file) => !retired.includes(file.name)));
   await assert.rejects(requireCandidateImplementation({ ...captured,
-    files: [...captured.files, ...retired.map((name) => ({ name, sha256: "0".repeat(64) }))].sort((a, b) => a.name.localeCompare(b.name)),
+    files: [...captured.files, { name: "unlisted-control.mjs", sha256: "0".repeat(64) }].sort((a, b) => a.name.localeCompare(b.name)),
   }), /current captured candidate\/verification implementation/);
 });
 

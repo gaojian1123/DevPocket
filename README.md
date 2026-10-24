@@ -295,8 +295,7 @@ feature implementation and bug fixes under `AGENTS.md`. The
 session in its linked worktree and points to the
 [authoritative development guide](docs/DEVELOPMENT-WORKFLOW.md).
 Discussion, planning, read-only review and documentation-only tasks do not start
-the implementation pipeline. The former development extension and Dynamic
-Workflow are retired; use the original client's tools and existing CI.
+the implementation pipeline. Use the original client's tools and existing CI.
 
 **Choose the delivery route:** reviewed working-tree changes are the default.
 [Local delivery](docs/DEVELOPMENT-WORKFLOW.md#delivery-targets-and-candidate-preparation)
@@ -331,10 +330,10 @@ For lightweight approval feedback:
 node --test scripts/tests/development-approval.test.mjs
 ```
 
-This pure Node entry is also part of the complete `npm run test:workflow`
+This pure Node entry is also part of the complete `npm run test:tooling`
 catalogue and existing `candidate` shard. Git/signing/hooks/candidate fixtures
 remain in `development-tools.test.mjs`. The fast entry cannot substitute for
-`workflow-tests` or Required verification; every formal shard and its actual
+`tooling-tests` or Required verification; every formal shard and its actual
 execution origin remain mandatory. See
 [tooling regression scheduling](docs/DEVELOPMENT-WORKFLOW.md#tooling-regression-scheduling).
 
@@ -459,7 +458,7 @@ Focused checks use `node --test scripts/tests/xcode-mcp.test.mjs`. On a supporte
 Mac they exercise real Git worktree creation and read-only Xcode lookup, not an
 MCP connection or an App session. They also cover simulated unsupported
 platforms, missing Xcode, configuration preservation and hook conflicts.
-The same file runs as a peer in the complete `npm run test:workflow` list, in its
+The same file runs as a peer in the complete `npm run test:tooling` list, in its
 own Node test process. Its Git fixtures still restore and check their inherited
 environment. The named initializer/template/tests and root ignore policy
 select tooling checks, not application builds; shared dependencies and unknown
@@ -474,8 +473,10 @@ On Windows, use `npm.cmd` when forwarding arguments after `--`, for
 example `npm.cmd run verify -- -Base BASE_COMMIT`. The `npm.ps1` launcher consumes
 that separator before npm 12 can forward the arguments.
 
-New dependencies should prefer the latest stable release, with reviewed exact
-versions and regenerated lockfiles rather than floating `latest` declarations.
+Follow the npm source/version rule in `AGENTS.md` when selecting or restoring
+dependencies. Keep npm's canonical `registry.npmjs.org` tarball URLs in the
+lockfiles: npm maps these to the configured registry. Microsoft's metadata can
+return a different backing host, which npm 12 otherwise rejects as a remote URL.
 The current baseline uses TypeScript 7 and Zod 4. TypeScript's native compiler
 uses platform-specific optional packages, so do not omit optional dependencies
 when restoring the lockfile. Schema export uses Zod's built-in Draft-7 input
