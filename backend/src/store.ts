@@ -6,8 +6,8 @@ import { z } from "zod";
 import { Fault, hash, secret } from "./security.js";
 import { createHostRecord } from "./host-record.js";
 import {
-  Receipt, SessionSummary, UserEvent, finalStatus,
-  type Command, type EventPage, type SessionInfo, type WireEvent,
+  Receipt, SessionSummary, UserEvent, finalStatus, utf16String,
+  type Command, type EventPage, type PushTarget, type SessionInfo, type WireEvent,
 } from "./protocol.js";
 
 const hostRow = z.object({ id: z.string(), name: z.string(), last_seen: z.number() });
@@ -30,7 +30,7 @@ export class RelayStore {
       );
       CREATE TABLE IF NOT EXISTS devices (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
-        created_at INTEGER NOT NULL, push_token TEXT
+        created_at INTEGER NOT NULL, push_token TEXT, push_fid TEXT, push_revision INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS grants (
         device_id TEXT NOT NULL REFERENCES devices(id), host_id TEXT NOT NULL REFERENCES hosts(id),
@@ -63,12 +63,24 @@ export class RelayStore {
         body BLOB NOT NULL, created_at INTEGER NOT NULL
       );
     `);
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      if (!this.db.prepare("PRAGMA table_info(devices)").all().some((column) => column.name === "push_fid"))
+        this.db.exec("ALTER TABLE devices ADD COLUMN push_fid TEXT");
+      if (!this.db.prepare("PRAGMA table_info(devices)").all().some((column) => column.name === "push_revision"))
+        this.db.exec("ALTER TABLE devices ADD COLUMN push_revision INTEGER NOT NULL DEFAULT 0");
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try { if (this.db.isTransaction) this.db.exec("ROLLBACK"); }
+      finally { this.db.close(); }
+      throw error;
+    }
   }
 
   close(): void { this.db.close(); }
 
   createHost(name: string): { hostId: string; token: string; name: string } {
-    const cleanName = z.string().trim().min(1).max(80).parse(name);
+    const cleanName = utf16String(80, z.string().trim()).min(1).parse(name);
     return createHostRecord(this.db, cleanName);
   }
 
@@ -299,14 +311,32 @@ export class RelayStore {
         z.object({ id: z.string(), name: z.string(), mime: z.string(), size: z.number(), sha256: z.string() }).parse(row));
   }
 
-  pushToken(deviceId: string, token: string | null): void {
-    this.db.prepare("UPDATE devices SET push_token=? WHERE id=?").run(token, deviceId);
+  setPushTarget(deviceId: string, target: PushTarget | null): void {
+    // Re-registering the same FID must also supersede an in-flight UNREGISTERED response.
+    const result = this.db.prepare("UPDATE devices SET push_token=?,push_fid=?,push_revision=push_revision+1 WHERE id=?")
+      .run(target?.kind === "token" ? target.value : null, target?.kind === "fid" ? target.value : null, deviceId);
+    if (result.changes === 0 || result.changes === 0n)
+      throw new Fault("UNAUTHORIZED", "This device registration no longer exists.", 401);
   }
 
-  pushTargets(hostId: string): { id: string; token: string }[] {
-    return this.db.prepare(`SELECT d.id,d.push_token AS token FROM devices d
-      JOIN grants g ON d.id=g.device_id WHERE g.host_id=? AND d.push_token IS NOT NULL`).all(hostId)
-      .map((row) => z.object({ id: z.string(), token: z.string() }).parse(row));
+  clearPushTarget(deviceId: string, target: PushTarget, revision: number): void {
+    const column = target.kind === "fid" ? "push_fid" : "push_token";
+    this.db.prepare(`UPDATE devices SET push_token=NULL,push_fid=NULL WHERE id=? AND ${column}=? AND push_revision=?`)
+      .run(deviceId, target.value, revision);
+  }
+
+  pushTargets(hostId: string): { id: string; target: PushTarget; revision: number }[] {
+    return this.db.prepare(`SELECT d.id,d.push_token AS token,d.push_fid AS fid,d.push_revision AS revision FROM devices d
+      JOIN grants g ON d.id=g.device_id WHERE g.host_id=? AND (d.push_token IS NOT NULL OR d.push_fid IS NOT NULL)`).all(hostId)
+      .map((value): { id: string; target: PushTarget; revision: number } => {
+        const row = z.object({ id: z.string(), token: z.string().nullable(), fid: z.string().nullable(),
+          revision: z.number().int().nonnegative() }).parse(value);
+        if (row.fid !== null && row.token === null)
+          return { id: row.id, target: { kind: "fid", value: row.fid }, revision: row.revision };
+        if (row.token !== null && row.fid === null)
+          return { id: row.id, target: { kind: "token", value: row.token }, revision: row.revision };
+        throw new Fault("PUSH_TARGET_INVALID", "Stored push registration is ambiguous.", 500);
+      });
   }
 }
 

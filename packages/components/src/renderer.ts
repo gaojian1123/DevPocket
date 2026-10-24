@@ -218,7 +218,8 @@ function renderMarkdown(parent: HTMLElement, content: string, options: RenderOpt
     ((tokens, index, settings, _environment, renderer) => renderer.renderToken(tokens, index, settings));
   parser.renderer.rules.link_open = (tokens, index, settings, environment, renderer) => {
     const token = tokens[index]!;
-    const url = safeLink(token.attrGet("href") ?? "");
+    const href = token.attrGet("href");
+    const url = typeof href === "string" ? safeLink(href) : null;
     token.attrSet("href", "#");
     if (url) token.attrSet("data-url", url);
     else {

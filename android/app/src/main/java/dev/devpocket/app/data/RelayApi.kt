@@ -70,8 +70,9 @@ class RelayApi(val account: Account) : SessionEventSource {
         json(request(path("v1", "grants", hostId), "DELETE"))
     }
 
-    suspend fun registerPush(token: String?) {
-        json(request(path("v1", "push-token"), "PUT", buildJsonObject { put("provider", "fcm"); put("token", token) }))
+    suspend fun registerPush(fid: String?) {
+        val registration: PushRegistration = PushRegistration.Installation(fid)
+        json(request(path("v1", "push-token"), "PUT", WireJson.encodeToJsonElement(registration).jsonObject))
     }
 
     suspend fun attachments(scope: Scope): List<Attachment> {
@@ -190,7 +191,7 @@ class RelayApi(val account: Account) : SessionEventSource {
                 override fun onResponse(call: Call, response: Response) {
                     val result = runCatching {
                         response.use {
-                            val body = it.body ?: throw IOException("中转返回了空响应。")
+                            val body = it.body
                             if (body.contentLength() > maxBytes) throw IOException("响应超过安全大小限制。")
                             val output = ByteArrayOutputStream()
                             body.byteStream().use { input ->

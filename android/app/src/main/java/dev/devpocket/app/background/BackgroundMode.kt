@@ -34,7 +34,9 @@ class BackgroundMode(private val context: Context) {
     fun start() {
         if (mutable.value.enabled) return
         Notifications.backgroundUnavailable(context)?.let { throw IllegalStateException(it) }
-        if (!prefs.edit().putBoolean("requested", true).commit()) throw IOException("无法保存后台模式状态，未启动连接。")
+        val editor = prefs.edit()
+        editor.putBoolean("requested", true)
+        if (!editor.commit()) throw IOException("无法保存后台模式状态，未启动连接。")
         runId++
         requested = true
         mutable.value = BackgroundState(enabled = true, starting = true, message = "正在启动后台连接")
@@ -52,7 +54,9 @@ class BackgroundMode(private val context: Context) {
         cancelMonitoring = null
         runId++
         context.stopService(Intent(context, BackgroundService::class.java))
-        val error = if (prefs.edit().putBoolean("requested", false).commit()) null else "连接已停止，但无法保存关闭状态。"
+        val editor = prefs.edit()
+        editor.putBoolean("requested", false)
+        val error = if (editor.commit()) null else "连接已停止，但无法保存关闭状态。"
         if (error != null) Log.e("DevPocketBackground", error)
         mutable.value = BackgroundState(message = "后台模式已关闭；不会停止原始 GitHub Copilot 会话。", error = error)
     }

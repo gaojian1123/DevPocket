@@ -1,11 +1,46 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
+import { verificationTools } from "./fixtures/verification-tools.mjs";
 
 const exec = promisify(execFile);
+
+test("SDK preparation selects the stable channel and rejects unavailable or ambiguous stable packages", async () => {
+  const harness = [
+    "$ErrorActionPreference = 'Stop'",
+    "$tokens = $null; $errors = $null",
+    "$ast = [Management.Automation.Language.Parser]::ParseFile($env:SDK_PREPARATION_SOURCE, [ref]$tokens, [ref]$errors)",
+    "if ($errors.Count) { throw 'SDK preparation did not parse.' }",
+    "$selector = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-StablePackage'}, $true)",
+    "if ($selector) { . ([scriptblock]::Create($selector.Extent.Text)) }",
+    "$assignment = $ast.Find({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and $node.Left.VariablePath.UserPath -eq 'pkg'}, $true)",
+    "if (-not $assignment) { throw 'SDK package-selection call site is missing.' }",
+    "$select = [scriptblock]::Create($assignment.Right.Extent.Text)",
+    "$spec = @{ Package = 'emulator' }",
+    "$preview = '<remotePackage path=\"emulator\"><revision><major>99</major></revision><channelRef ref=\"channel-2\"/></remotePackage>'",
+    "$stable = '<remotePackage path=\"emulator\"><revision><major>37</major></revision><channelRef ref=\"channel-0\"/></remotePackage>'",
+    "[xml]$repo = '<repository>' + $preview + $stable + '</repository>'",
+    "$selected = & $select",
+    "$rejected = @()",
+    "foreach ($body in @($preview, ($stable + $stable), $stable.Replace('channel-0', 'channel-unknown'), $stable.Replace('</major>', '</major><preview>1</preview>'))) {",
+    "  [xml]$repo = '<repository>' + $body + '</repository>'",
+    "  try { $null = & $select; $rejected += $false } catch {",
+    "    if ($_.Exception.Message -notmatch 'Stable SDK package') { throw }",
+    "    $rejected += $true",
+    "  }",
+    "}",
+    "@{ channel = $selected.channelRef.ref; revision = $selected.revision.major; rejected = $rejected } | ConvertTo-Json -Compress",
+  ].join("\n");
+  const result = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", harness],
+    { env: { ...process.env, SDK_PREPARATION_SOURCE: path.resolve("scripts/prepare-android.ps1") }, timeout: 20_000 });
+  const selected = JSON.parse(result.stdout);
+  assert.equal(selected.channel, "channel-0", "A preview listed first must not be selected.");
+  assert.equal(selected.revision, "37");
+  assert.deepEqual(selected.rejected, [true, true, true, true]);
+});
 
 test("the clean Android CI job restores locked Node inputs before invoking the component-aware native build", async () => {
   const workflow = (await readFile(".github/workflows/ci.yml", "utf8")).replaceAll("\r\n", "\n");
@@ -16,28 +51,49 @@ test("the clean Android CI job restores locked Node inputs before invoking the c
   assert.ok(node >= 0 && install > node && build > install);
   const gradle = await readFile("android/app/build.gradle.kts", "utf8");
   assert.match(gradle, /commandLine\(npm \+ listOf\("run", "build", "--workspace", "@devpocket\/components"\)\)/);
+  assert.match(gradle, /addGeneratedSourceDirectory\(copyAssets, CopyComponentAssets::outputDirectory\)/);
+  assert.match(gradle, /from\(inputDirectory\) \{ into\("components"\) \}/);
+  assert.doesNotMatch(gradle, /assets\.srcDir|android\.sourceset\.disallowProvider/);
   const preparation = await readFile(".github/actions/prepare-native/action.yml", "utf8");
   assert.ok(preparation.includes("npm ci --no-audit --no-fund"));
 });
 
-async function buildFixture(t) {
+test("native defaults and the JDK download select JDK 25 without a legacy fallback", async () => {
+  for (const file of ["build-android.ps1", "android-emulator.mjs", "verification-preflight.mjs", "prepare-android.ps1"]) {
+    const source = await readFile(path.join("scripts", file), "utf8");
+    assert.match(source, /["']jdk-25["']/, file);
+    assert.doesNotMatch(source, /jdk-21/, file);
+  }
+  const preparation = await readFile("scripts/prepare-android.ps1", "utf8");
+  assert.match(preparation, /api\.adoptium\.net\/v3\/assets\/latest\/25\/hotspot\?/);
+  assert.match(preparation, /'jdk-25\.zip'/);
+  assert.match(preparation, /'jdk-25\.unpack'/);
+});
+
+async function buildFixture(t, javaVersion = "25.0.1") {
   await mkdir(".data/tests", { recursive: true });
   const root = await mkdtemp(path.resolve(".data/tests/android-build-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const directory of [
     "scripts", "android/gradle/wrapper", "selected jdk/bin", "inherited jdk/bin",
-    "selected sdk/platforms/android-35", "inherited sdk/platforms/android-35",
+    "selected sdk/platforms/android-37.2", "inherited sdk/platforms/android-37.2",
   ]) await mkdir(path.join(root, directory), { recursive: true });
   await writeFile(path.join(root, "scripts", "build-android.ps1"), await readFile("scripts/build-android.ps1"));
+  if (process.platform === "win32") await verificationTools(root, {
+    native: true, jdk: path.join(root, "selected jdk"), sdk: path.join(root, "selected sdk"), javaVersion,
+  });
   const wrapper = path.join(root, "android", "gradle", "wrapper", "gradle-wrapper.jar");
   await writeFile(wrapper, "synthetic wrapper");
   for (const name of ["selected", "inherited"]) {
     const java = path.join(root, `${name} jdk`, "bin", process.platform === "win32" ? "java.exe" : "java");
     const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
-    await writeFile(java, process.platform === "win32" ? "" :
-      `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(path.join(root, "android", "gradle-fixture.mjs"))} "$@"\n`);
-    if (process.platform !== "win32") await chmod(java, 0o755);
-    await writeFile(path.join(root, `${name} sdk`, "platforms", "android-35", "android.jar"), "");
+    if (process.platform === "win32") {
+      if (name === "inherited") await copyFile(path.join(root, "selected jdk", "bin", "java.exe"), java);
+    } else {
+      await writeFile(java, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(path.join(root, "android", "gradle-fixture.mjs"))} "$@"\n`);
+      await chmod(java, 0o755);
+    }
+    await writeFile(path.join(root, `${name} sdk`, "platforms", "android-37.2", "android.jar"), "");
   }
   await writeFile(path.join(root, "android", "gradlew.bat"),
     `@echo off\r\n"${process.execPath}" "%~dp0gradle-fixture.mjs" %*\r\nexit /b %ERRORLEVEL%\r\n`);
@@ -45,7 +101,8 @@ async function buildFixture(t) {
     "import {writeFileSync} from 'node:fs';",
     "import assert from 'node:assert/strict';",
     "const args=process.argv.slice(2);",
-    `if(process.platform!=="win32") assert.deepEqual(args.splice(0,4),["-Dorg.gradle.appname=gradlew","-classpath",${JSON.stringify(wrapper)},"org.gradle.wrapper.GradleWrapperMain"]);`,
+    `if(args.length===1 && args[0]==="-version"){console.error(${JSON.stringify(`openjdk version "${javaVersion}"`)});process.exit(0);}`,
+    `if(process.platform!=="win32") assert.deepEqual(args.splice(0,5),["--enable-native-access=ALL-UNNAMED","-Dorg.gradle.appname=gradlew","-classpath",${JSON.stringify(wrapper)},"org.gradle.wrapper.GradleWrapperMain"]);`,
     "writeFileSync('invocation.json', JSON.stringify({",
     "  cwd: process.cwd(), args,",
     "  java: process.env.JAVA_HOME, sdk: process.env.ANDROID_HOME,",
@@ -66,6 +123,17 @@ async function buildFixture(t) {
     },
   };
 }
+
+test("the direct build entrypoint rejects non-project JDKs before starting Gradle", async (t) => {
+  for (const version of ["21.0.1", "25-ea", "26.0.1"]) await t.test(version, async (t) => {
+    const fixture = await buildFixture(t, version);
+    await assert.rejects(exec("pwsh", ["-NoProfile", "-NonInteractive", "-File",
+      path.join(fixture.root, "scripts", "build-android.ps1"), "-Jdk", fixture.jdk, "-Sdk", fixture.sdk],
+    { cwd: fixture.root, env: fixture.env, timeout: 20_000 }),
+    (error) => error.code === 78 && /JDK 25 is required/.test(error.stderr));
+    await assert.rejects(readFile(path.join(fixture.root, "android", "invocation.json")), { code: "ENOENT" });
+  });
+});
 
 test("the build entrypoint applies explicit JDK and SDK despite conflicting inherited variables", async (t) => {
   const fixture = await buildFixture(t);

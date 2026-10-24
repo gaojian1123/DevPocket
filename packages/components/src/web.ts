@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ComponentError, COMPONENT_VERSION, MAX_COMPONENT_BYTES } from "./spec.js";
+import { ComponentError, COMPONENT_VERSION, MAX_COMPONENT_BYTES, utf16String } from "./spec.js";
 import { renderComponent, type RenderedComponent } from "./renderer.js";
 
 declare global {
@@ -11,7 +11,7 @@ declare global {
 const request = z.object({
   version: z.literal(COMPONENT_VERSION),
   type: z.literal("render"),
-  requestId: z.string().min(1).max(200),
+  requestId: utf16String(200).min(1),
   view: z.enum(["inline", "detail"]),
   theme: z.enum(["light", "dark"]),
   spec: z.unknown(),

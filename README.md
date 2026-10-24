@@ -9,7 +9,7 @@ The **original client** means the CLI terminal or desktop app hosting that sessi
 ```text
 Native Android (Kotlin / Compose / OkHttp / Keystore)
         | HTTPS commands + WSS user-facing events
-DevPocket relay (Node 24 / TypeScript / SQLite)
+DevPocket relay (Node 26 / TypeScript / SQLite)
         ^
         | outbound authenticated WSS only
 Dev Box extension -> joinSession() -> original GitHub Copilot runtime (CLI or desktop app)
@@ -399,7 +399,7 @@ remain unconfirmed, not successful command execution.
 
 `config/xcode-mcp.example.json` is a template, not an automatically loaded MCP
 configuration. Windows and Linux checkouts do not configure or launch Xcode.
-On a Mac with Node 24 and Xcode providing `mcpbridge`, review
+On a Mac with Node 26 and Xcode providing `mcpbridge`, review
 `scripts/setup-xcode-mcp.mjs` and the template, then opt in once per local clone:
 
 ```sh
@@ -467,7 +467,27 @@ paths remain conservatively classified.
 
 ## Backend build and local development
 
-Use Node 24.x and PowerShell. Commands are run from the DevPocket folder.
+Use Node 26.12.1 or newer within 26.x, npm 12.2.1, and PowerShell 7 (`pwsh`).
+Commands are run from the DevPocket folder.
+
+On Windows, use `npm.cmd` when forwarding arguments after `--`, for
+example `npm.cmd run verify -- -Base BASE_COMMIT`. The `npm.ps1` launcher consumes
+that separator before npm 12 can forward the arguments.
+
+New dependencies should prefer the latest stable release, with reviewed exact
+versions and regenerated lockfiles rather than floating `latest` declarations.
+The current baseline uses TypeScript 7 and Zod 4. TypeScript's native compiler
+uses platform-specific optional packages, so do not omit optional dependencies
+when restoring the lockfile. Schema export uses Zod's built-in Draft-7 input
+projection; explicit UTF-16 text bounds, protocol-v1 ID shapes, message defaults
+and JSON validation remain compatible. This checkout does not upgrade an
+installed extension or running relay.
+
+TypeScript 7 supplies the native compiler. Bounded test diagnostics use
+`@babel/parser` for syntax-only declaration locations; they do not load a
+TypeScript project, follow imports or evaluate test source.
+The older content-only compiler-reuse contract is not assumed to cover this
+native compiler; unbound toolchains run fresh verification instead.
 
 ```powershell
 npm ci
@@ -500,12 +520,12 @@ On the Android pairing screen enter the independent relay origin, one-time code 
 
 Use the standalone ZIP and checksum from an extension release; follow
 [`extension\README.md`](extension/README.md) to verify and extract them. The target
-needs Node 24.x and a compatible GitHub Copilot runtime in the CLI or desktop app
+needs Node 26.12.1 or newer within 26.x and a compatible GitHub Copilot runtime in the CLI or desktop app
 that can load the extension and provide its bundled SDK. It does not need this
 repository, npm dependencies, the Android toolchain or a local relay.
 
-For an existing Azure relay managed by this project, install Azure Developer CLI
-(`azd`) and sign in to its directory if not already authenticated. Run this from
+For an existing Azure relay managed by this project, have PowerShell 7 (`pwsh`) on
+`PATH`, install Azure Developer CLI (`azd`) and sign in to its directory if not already authenticated. Run this from
 the extracted package **on the new Windows Dev Box**:
 
 ```powershell
@@ -741,14 +761,42 @@ Revocation closes live subscriptions and blocks new commands/uploads/downloads f
 
 ## Native Android build
 
-Requirements: Node.js 24 with the repository's locked npm dependencies restored,
-JDK 17 or 21, Android SDK platform/build-tools 35, and Gradle 8.11.1 (the wrapper
+Requirements: Node.js 26 with the repository's locked npm dependencies restored,
+JDK 25, Android SDK platform 37.2/build-tools 37.0.0, and Gradle 9.8.2 (the wrapper
 is pinned and checksum-verified). The native build compiles the portable
 component package; on a clean checkout, run `npm ci` from the repository root
 after the dependency-policy decision and before the Android build.
-Existing Studio JBR 25 is not selected for this build.
+AGP 9 uses built-in Kotlin with Kotlin/Compose compiler 2.4.21. The app retains
+minSdk 26 and Java/Kotlin bytecode target 17, and targets Android 17 (API 37).
+Lint and Kotlin compiler warnings fail the project checks; release builds shrink
+unused resources as well as code.
+CI uses Temurin JDK 25. An existing Android Studio JBR 25 can be selected explicitly with `-Jdk`.
+Builds and JVM tests require stable JDK 25; the direct build entry and verification
+preflight reject other versions. Java 17 bytecode remains the application target,
+not the host build/test-JVM requirement.
+Native access is enabled only for the Gradle launcher/daemon and forked JVM
+tests that use their native libraries, not through global Java settings.
+API-37 Robolectric shared-memory initialization also needs the
+`java.base/jdk.internal.access` export in forked test JVMs only, not in the app
+or Gradle daemon.
+Compose tests use the v2 rule factories and their standard test dispatcher.
+Both JVM and instrumentation test scopes explicitly select the current AndroidX
+test stack; Compose's transitive minimum versions do not suffice for API 37.
+Native keyboard checks request hiding through `WindowInsetsControllerCompat`
+and wait for observed IME insets, rather than relying on the deprecated result
+callback.
+The two packaged AndroidX JNI libraries are already stripped; packaging keeps
+those exact vendor binaries rather than attempting an unnecessary NDK strip.
+One upstream Gradle deprecation warning remains with AGP 9.4.1 and Gradle 9.8.2: AGP's
+`BasePlugin.createAndroidJdkImageConfiguration` calls the deprecated
+`Configuration.setVisible(boolean)`. It is not suppressed or worked around by
+patching dependencies; update AGP when an upstream fix is released.
 
 If the SDK components/JDK are missing, the supplied preparation script downloads official packages only to `.tools`, verifies published checksums, and reuses an **already accepted** Android SDK license. It does not silently accept licenses, install system packages or change global environment variables.
+The JDK download and native entry points use `.tools\jdk-25` by default. Existing
+older JDK installations are not removed or silently used as a fallback.
+New SDK packages must have one unambiguous `channel-0` entry without a preview
+revision; metadata ordering never makes a preview the default.
 
 ```powershell
 .\scripts\prepare-android.ps1 -DownloadJdk
@@ -758,7 +806,7 @@ If the SDK components/JDK are missing, the supplied preparation script downloads
 Or pass existing installations:
 
 ```powershell
-.\scripts\build-android.ps1 -Jdk C:\YourJdk21 -Sdk C:\YourAndroidSdk -Lint
+.\scripts\build-android.ps1 -Jdk C:\YourJdk25 -Sdk C:\YourAndroidSdk -Lint
 ```
 
 The entrypoint selects `JAVA_HOME` and **both** `ANDROID_HOME` and
@@ -775,14 +823,14 @@ preparation script or automatic license acceptance.
 
 ### Complete local verification on macOS
 
-Use Node 24, PowerShell 7, Python 3.12 or newer, Git with SSH signing support,
-JDK 21 and an Android SDK with platform 35, build-tools 35.0.0, platform-tools
+Use Node 26, npm 12.2.1, PowerShell 7, Python 3.12 or newer, Git with SSH signing support,
+JDK 25 and an Android SDK with platform 37.2, build-tools 37.0.0, platform-tools
 and the emulator. Accept the SDK and system-image licenses yourself. Use Android
 Studio or Google's SDK manager on Mac; `prepare-android.ps1` is the Windows
 bootstrap, not a macOS installer. No Xcode simulator is involved.
 
-Apple Silicon uses `system-images;android-35;google_apis;arm64-v8a`; Intel Macs
-use `system-images;android-35;google_apis;x86_64`. The device gate requires a
+Apple Silicon uses `system-images;android-37.0;google_apis;arm64-v8a`; Intel Macs
+use `system-images;android-37.0;google_apis;x86_64`. The device gate requires a
 successful `emulator -accel-check` with Hypervisor.Framework. It creates a
 disposable AVD, private ADB server and loopback fixture, runs instrumentation and
 the selected layouts, and confirms owned-process cleanup before releasing them.
@@ -1031,14 +1079,45 @@ notification presentation and unattended runtime have not been accepted.
 This mode targets a powered-on, connected head unit, not waking a parked vehicle.
 Only interact with approvals or session controls while safely parked.
 
+### Android 17 local network access
+
+On Android 17, connections to a local-network relay require the system's
+`ACCESS_LOCAL_NETWORK` permission. Pairing and Settings expose an explicit
+permission action and a system-settings recovery path; public internet relays
+do not require it. Denial does not discard pairing input or silently retry an
+uncertain operation. The app refreshes permission state when it returns to the
+foreground, and never scans the LAN or prompts for this permission at startup.
+For a separately authorized real-client test against a local relay, grant it
+through the app before starting that opt-in test. Automated fixture tests grant
+it only on their disposable API-37 device.
+
 ### Optional FCM
 
 1. An authorized operator must create/select an **independent** Firebase project, enable the HTTP v1 FCM API, and register the Android package (`dev.devpocket.app.debug` for debug; `dev.devpocket.app` for release). Cloud/account actions are not performed by this project.
 2. Populate the public Android Firebase fields shown in `config\push.properties.example` through private Gradle properties or `-P` arguments. These are not GitHub credentials and not a server service-account private key.
 3. Store the server service-account JSON outside source, grant only the needed FCM sending role, and pass `--fcm-credentials <private-path>` or `DEVPOCKET_FCM_CREDENTIALS` to the relay.
-4. Grant Android notification permission, then use Settings -> re-register. The relay must report `pushConfigured=true`. Test foreground, background, Doze and lock-screen delivery on the actual target Android distribution/network; Google Play Services is required for this FCM path.
+4. Upgrade the relay before registering a new Android client. Grant Android notification permission, then use Settings -> re-register. The relay must report `pushConfigured=true`. Test foreground, background, Doze and lock-screen delivery on the actual target Android distribution/network; Google Play Services is required for this FCM path.
 
-Push payloads contain opaque routing IDs and a generic update/attention notice, not chat, tool commands, approvals or GitHub secrets. Push is best-effort, is not proof of task success, and opening the app re-authorizes/synchronizes from the relay. Stale tokens are removed when FCM reports `UNREGISTERED`. Revoked devices are not selected for later notifications.
+New clients use Firebase Installation IDs through `register()` and
+`onRegistered()`. Automatic Firebase initialization remains disabled; the
+existing explicit, configured application initialization is retained. The
+authenticated `PUT /v1/push-token` path remains unchanged: new clients send
+`{"provider":"fcm-fid","fid":"..."}` (or an explicit `null` to clear it).
+The relay also accepts legacy `{"provider":"fcm","token":"..."}` registrations
+and sends them through FCM's legacy `token` field, never guessing the identifier
+kind from its contents. FIDs use the FCM `fid` field. An old relay rejects the
+new request visibly; the client does not silently fall back to deprecated APIs.
+The FID service narrowly suppresses `MissingFirebaseInstanceTokenRefresh`:
+Android Lint still requires the obsolete `onNewToken()` callback instead of
+recognizing `onRegistered()`. Other lint checks remain enabled.
+
+Opening an existing relay database adds nullable `push_fid` and a registration
+revision to device records in one transaction, retaining existing tokens,
+device identities and grants. This migration happens in the relay, not in the
+read-only-schema onboarding helper. Do not downgrade a relay with FID records
+to an older binary that cannot manage them.
+
+Push payloads contain opaque routing IDs and a generic update/attention notice, not chat, tool commands, approvals or GitHub secrets. Push is best-effort, is not proof of task success, and opening the app re-authorizes/synchronizes from the relay. An `UNREGISTERED` response removes only the exact registration revision that was sent, so a late failure cannot erase a newer registration, even for the same FID. Revoked devices are not selected for later notifications.
 
 ## Deployment
 

@@ -15,12 +15,16 @@ class BackgroundCheckpoints(context: Context) : NoticeCheckpointStore {
     }
 
     override suspend fun save(scope: Scope, checkpoint: NoticeCheckpoint) = withContext(Dispatchers.IO) {
-        if (!prefs.edit().putString(scope.key, WireJson.encodeToString(checkpoint)).commit())
+        val editor = prefs.edit()
+        editor.putString(scope.key, WireJson.encodeToString(checkpoint))
+        if (!editor.commit())
             throw IOException("无法保存后台提醒游标，提醒可能重复；请检查本机存储。")
     }
 
     override suspend fun remove(scope: Scope) = withContext(Dispatchers.IO) {
-        if (!prefs.edit().remove(scope.key).commit()) throw IOException("无法清除后台提醒游标。")
+        val editor = prefs.edit()
+        editor.remove(scope.key)
+        if (!editor.commit()) throw IOException("无法清除后台提醒游标。")
     }
 
     suspend fun retainAccounts(accountIds: Set<String>) = withContext(Dispatchers.IO) {

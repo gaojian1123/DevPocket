@@ -35,10 +35,10 @@ export function privateAcl(directory, create = false) {
   const args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-File",
     path.join(root, "deployment", "onboarding", "private-directory.ps1"), "-Directory", directory];
   if (!create) args.push("-CheckOnly");
-  // Windows PowerShell must not inherit PowerShell 7's incompatible module search path.
+  // Use the selected PowerShell's module path, not another runtime's inherited one.
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
-  try { return JSON.parse(execFileSync("powershell.exe", args, { env, encoding: "utf8", windowsHide: true, stdio: "pipe", timeout: 20000 })); }
-  catch { throw new Error("PRIVATE_DIRECTORY_ACL_FAILED"); }
+  try { return JSON.parse(execFileSync("pwsh", args, { env, encoding: "utf8", windowsHide: true, stdio: "pipe", timeout: 20000 })); }
+  catch { throw new Error("PRIVATE_DIRECTORY_ACL_FAILED: PowerShell 7 (pwsh) and a private directory ACL are required."); }
 }
 function directoryPath(value) {
   const directory = path.resolve(value ?? "");

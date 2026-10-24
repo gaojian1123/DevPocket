@@ -1,10 +1,27 @@
 import { execFile } from "node:child_process";
-import { chmod, copyFile, mkdir, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { androidImageArchitecture } from "../../android-platform.mjs";
 
 const exec = promisify(execFile);
+
+export async function copyTypeScript(root) {
+  const manifest = JSON.parse(await readFile(path.resolve("node_modules", "typescript", "package.json"), "utf8"));
+  for (const dependency of ["typescript", "@typescript"])
+    await cp(path.resolve("node_modules", dependency), path.join(root, "node_modules", dependency),
+      { recursive: true, verbatimSymlinks: true });
+  return manifest.version;
+}
+
+export async function npmPackageDirectory(launcher) {
+  for (const directory of [path.join(path.dirname(launcher), "node_modules", "npm"), path.resolve(path.dirname(launcher), "..")]) {
+    try {
+      if (JSON.parse(await readFile(path.join(directory, "package.json"), "utf8")).name === "npm") return directory;
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  throw new Error("The selected npm launcher has no matching installed package.");
+}
 
 export const syntheticExecution = (source) => ({
   source: { ...source }, startedAt: "2026-01-01T00:00:00.000Z", completedAt: "2026-01-01T00:00:01.000Z",
@@ -21,8 +38,8 @@ export async function sdkPreparationFixture(root) {
   await writeFile(entry, String.raw`$ErrorActionPreference = 'Stop'
 $global:FixtureRoot = $PSScriptRoot
 $packages = @(
-    @{ Path='platforms;android-35'; Revision='2'; Archive='platform.zip'; Type='sdk:platformDetailsType'; Details='<api-level>35</api-level><layoutlib api="15"/>' },
-    @{ Path='build-tools;35.0.0'; Revision='35.0.0'; Archive='build-tools.zip'; Type='generic:genericDetailsType'; Details='' }
+    @{ Path='platforms;android-37.2'; Revision='2'; Archive='platform.zip'; Type='sdk:platformDetailsType'; Details='<api-level>37.2</api-level><layoutlib api="15"/>' },
+    @{ Path='build-tools;37.0.0'; Revision='37.0.0'; Archive='build-tools.zip'; Type='generic:genericDetailsType'; Details='' }
 )
 $nodes = foreach ($package in $packages) {
     $directory = Join-Path $PSScriptRoot ('fixtures\' + $package.Archive + '.source\package')
@@ -32,7 +49,7 @@ $nodes = foreach ($package in $packages) {
     $zip = Join-Path $PSScriptRoot ('fixtures\' + $package.Archive)
     if (-not (Test-Path -LiteralPath $zip)) { Compress-Archive -LiteralPath $directory -DestinationPath $zip }
     $checksum = (Get-FileHash -LiteralPath $zip -Algorithm SHA1).Hash
-    $revision = if ($package.Revision -eq '2') { '<major>2</major>' } else { '<major>35</major><minor>0</minor><micro>0</micro>' }
+    $revision = if ($package.Revision -eq '2') { '<major>2</major>' } else { '<major>37</major><minor>0</minor><micro>0</micro>' }
     @"
 <remotePackage path="$($package.Path)">
   <type-details xsi:type="$($package.Type)">$($package.Details)</type-details>
@@ -56,13 +73,13 @@ function Invoke-WebRequest {
     if ($Uri -eq 'https://dl.google.com/android/repository/repository2-3.xml') {
         return @{Content=$global:FixtureRepository}
     }
-    if ($Uri -eq 'https://services.gradle.org/distributions/gradle-8.11.1-wrapper.jar.sha256') {
+    if ($Uri -eq 'https://services.gradle.org/distributions/gradle-9.8.2-wrapper.jar.sha256') {
         return @{Content=(Get-FileHash -LiteralPath (Join-Path $global:FixtureRoot 'fixtures\wrapper.jar') -Algorithm SHA256).Hash}
     }
     $name = switch ($Uri) {
         'https://dl.google.com/android/repository/platform.zip' { 'platform.zip' }
         'https://dl.google.com/android/repository/build-tools.zip' { 'build-tools.zip' }
-        'https://raw.githubusercontent.com/gradle/gradle/v8.11.1/gradle/wrapper/gradle-wrapper.jar' { 'wrapper.jar' }
+        'https://raw.githubusercontent.com/gradle/gradle/v9.8.2/gradle/wrapper/gradle-wrapper.jar' { 'wrapper.jar' }
         default { throw 'Unexpected network request in fixture.' }
     }
     if (-not $OutFile) { throw 'Unexpected download shape in fixture.' }
@@ -70,7 +87,7 @@ function Invoke-WebRequest {
 }
 function Invoke-RestMethod { throw 'Unexpected network request in fixture.' }
 & (Join-Path $PSScriptRoot 'scripts\prepare-android.ps1') -ExistingSdk (Join-Path $PSScriptRoot 'existing-sdk') | Out-Null
-$result = foreach ($relative in @('platforms\android-35', 'build-tools\35.0.0')) {
+$result = foreach ($relative in @('platforms\android-37.2', 'build-tools\37.0.0')) {
     $file = Join-Path $PSScriptRoot ('.tools\android-sdk\' + $relative + '\package.xml')
     if (-not (Test-Path -LiteralPath $file)) { @{path=$relative;exists=$false}; continue }
     [xml]$xml = Get-Content -LiteralPath $file -Raw
@@ -120,7 +137,7 @@ export async function windowsNodeLauncher(root, base) {
 }
 
 export async function verificationTools(root, {
-  native = false, operations = false, capturePython = false, jdk, sdk, emulatorNoise = false, emulatorVersion = "35.0.1",
+  native = false, operations = false, capturePython = false, jdk, sdk, javaVersion = "25.0.1", emulatorNoise = false, emulatorVersion = "35.0.1",
   emulatorAcceleration = process.platform === "darwin" ? "accel:\n0\nHypervisor.Framework OS X Version 15.0\naccel"
     : process.platform === "win32" ? "WHPX is installed and usable" : "KVM is installed and usable",
 } = {}) {
@@ -136,7 +153,7 @@ export async function verificationTools(root, {
       ...(capturePython ? ['if(name=="python" && args.Length==3 && args[0]=="-B" && args[1]=="-c") File.WriteAllText(".data/python-probe.py",args[2]);'] : []),
       'if(name=="emulator" && args.Length>0 && args[0]=="-accel-check" && File.Exists(".data/emulator-permission-lost")){Console.Error.WriteLine("PRIVATE_KVM_PERMISSION_CANARY");Environment.Exit(11);}',
       ...(emulatorNoise ? ['if(name=="emulator") Console.Error.WriteLine("INFO | Storing crashdata in: PRIVATE_PROBE_PATH, detection is enabled for process: "+Process.GetCurrentProcess().Id);'] : []),
-      "if(name==\"java\") Console.Error.WriteLine(\"openjdk version \\\"21.0.1\\\"\");",
+      `if(name=="java") Console.Error.WriteLine(${JSON.stringify(`openjdk version "${javaVersion}"`)});`,
       "else if(name==\"adb\") Console.WriteLine(\"Android Debug Bridge version 1.0.41\");",
       `else if(name=="emulator") Console.WriteLine(args.Length>0 && args[0]=="-accel-check" ? ${JSON.stringify(emulatorAcceleration)} : ${JSON.stringify(`Android emulator version ${emulatorVersion}`)});`,
       "else if(args.Length>0 && args[0]==\"--version\") Console.WriteLine(\"Python 3.12.0\");",
@@ -152,7 +169,7 @@ export async function verificationTools(root, {
       'if [ "$(basename "$0")" = emulator ] && [ "$1" = "-accel-check" ] && [ -f .data/emulator-permission-lost ]; then echo PRIVATE_KVM_PERMISSION_CANARY >&2; exit 11; fi',
       ...(emulatorNoise ? ['if [ "$(basename "$0")" = emulator ]; then echo "INFO | Storing crashdata in: PRIVATE_PROBE_PATH, detection is enabled for process: $$" >&2; fi'] : []),
       "case \"$(basename \"$0\")\" in",
-      "java) echo 'openjdk version \"21.0.1\"' >&2 ;;",
+      `java) printf '%s\\n' '${`openjdk version "${javaVersion}"`.replaceAll("'", "'\\''")}' >&2 ;;`,
       "adb) echo 'Android Debug Bridge version 1.0.41' ;;",
       `emulator) if [ "$1" = '-accel-check' ]; then printf '%s\\n' '${emulatorAcceleration.replaceAll("'", "'\\''")}'; else printf '%s\\n' '${`Android emulator version ${emulatorVersion}`.replaceAll("'", "'\\''")}'; fi ;;`,
       "*) if [ \"$1\" = '--version' ]; then echo 'Python 3.12.0'; else echo '{\"version\":[3,12,0],\"executable\":\"synthetic-python\",\"dependencies\":\"synthetic\"}'; fi ;;",
@@ -174,20 +191,20 @@ export async function verificationTools(root, {
     env.DEVPOCKET_PROBE_PYTHON = python;
     const requirements = path.join(root, "deployment", "azure", "probe", "requirements-test.txt");
     await mkdir(path.dirname(requirements), { recursive: true });
-    await writeFile(requirements, "cryptography==50.0.1\n");
+    await writeFile(requirements, "cryptography==50.0.2\n");
   }
   if (native) {
-    jdk ??= path.join(root, ".tools", "jdk-21");
+    jdk ??= path.join(root, ".tools", "jdk-25");
     sdk ??= path.join(root, ".tools", "android-sdk");
     await putTool(path.join(jdk, "bin", executable("java")));
-    await writeFile(path.join(jdk, "release"), 'JAVA_VERSION="21.0.1"\n');
-    for (const name of ["aapt2", "zipalign"]) await putTool(path.join(sdk, "build-tools", "35.0.0", executable(name)));
+    await writeFile(path.join(jdk, "release"), `JAVA_VERSION=${JSON.stringify(javaVersion)}\n`);
+    for (const name of ["aapt2", "zipalign"]) await putTool(path.join(sdk, "build-tools", "37.0.0", executable(name)));
     await putTool(path.join(sdk, "platform-tools", executable("adb")));
     await putTool(path.join(sdk, "emulator", executable("emulator")));
-    for (const relative of ["platforms/android-35/android.jar", "platforms/android-35/package.xml",
-      "build-tools/35.0.0/package.xml", "licenses/android-sdk-license",
-      `system-images/android-35/google_apis/${androidImageArchitecture()}/system.img`,
-      `system-images/android-35/google_apis/${androidImageArchitecture()}/source.properties`]) {
+    for (const relative of ["platforms/android-37.2/android.jar", "platforms/android-37.2/package.xml",
+      "build-tools/37.0.0/package.xml", "licenses/android-sdk-license",
+      `system-images/android-37.0/google_apis/${androidImageArchitecture()}/system.img`,
+      `system-images/android-37.0/google_apis/${androidImageArchitecture()}/source.properties`]) {
       const file = path.join(sdk, ...relative.split("/"));
       await mkdir(path.dirname(file), { recursive: true });
       await writeFile(file, "synthetic SDK input\n");

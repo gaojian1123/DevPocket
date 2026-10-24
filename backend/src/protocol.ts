@@ -1,41 +1,51 @@
 import { z } from "zod";
-import { COMPONENT_VERSION, MAX_COMPONENT_BYTES, ComponentError, parseComponentSpec, type ComponentSpec } from "@devpocket/components";
+import { COMPONENT_VERSION, MAX_COMPONENT_BYTES, ComponentError, parseComponentSpec, utf16String, type ComponentSpec } from "@devpocket/components";
 import { hash } from "./security.js";
+
+export { utf16String };
 
 export const VERSION = "0.1.0";
 export const PROTOCOL = 1;
 export const MAX_UPLOAD = 2 * 1024 * 1024;
 export const MAX_PREVIEW = 256 * 1024;
-export const Id = z.string().uuid();
-export const RequestId = z.string().min(1).max(200);
-export const ErrorInfo = z.object({ code: z.string().max(80), message: z.string().max(2000) }).strict();
+// Protocol v1 accepts UUID-shaped IDs without restricting version or variant bits.
+export const Id = z.guid();
+export const RequestId = utf16String(200).min(1);
+export const ErrorInfo = z.object({ code: utf16String(80), message: utf16String(2000) }).strict();
+export const FirebaseInstallationId = z.string().regex(/^[A-Za-z0-9_-]{22}$/);
+export const PushRegistration = z.discriminatedUnion("provider", [
+  z.object({ provider: z.literal("fcm"), token: utf16String(4096).min(20).nullable() }).strict(),
+  z.object({ provider: z.literal("fcm-fid"), fid: FirebaseInstallationId.nullable() }).strict(),
+]);
+export type PushRegistration = z.infer<typeof PushRegistration>;
+export type PushTarget = { kind: "token" | "fid"; value: string };
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 export const Json: z.ZodType<JsonValue> = z.lazy(() => z.union([
-  z.string(), z.number().finite(), z.boolean(), z.null(), z.array(Json), z.record(Json),
+  z.string(), z.number().finite(), z.boolean(), z.null(), z.array(Json), z.record(z.string(), Json),
 ]));
-export const JsonObject = z.record(Json);
+export const JsonObject = z.record(z.string(), Json);
 export const Capabilities = z.object({
   messages: z.boolean(), abort: z.boolean(), permissions: z.boolean(), questions: z.boolean(),
   models: z.boolean(), files: z.boolean(), git: z.boolean(),
 }).strict();
 export const RuntimeState = z.enum(["idle", "running", "waiting", "cancel_requested", "unsupported", "offline"]);
 export const Workspace = z.object({
-  name: z.string().min(1).max(120),
-  branch: z.string().max(200),
+  name: utf16String(120).min(1),
+  branch: utf16String(200),
 }).strict();
 export const SessionSummary = z.object({
   sessionId: Id,
-  projectId: z.string().min(1).max(120),
-  projectName: z.string().min(1).max(120),
+  projectId: utf16String(120).min(1),
+  projectName: utf16String(120).min(1),
   workspace: Workspace.optional(),
-  title: z.string().max(160),
-  cliVersion: z.string().max(80),
+  title: utf16String(160),
+  cliVersion: utf16String(80),
   state: RuntimeState,
-  permissionMode: z.string().max(80),
-  modelId: z.string().max(200),
-  reasoningEffort: z.string().max(60),
+  permissionMode: utf16String(80),
+  modelId: utf16String(200),
+  reasoningEffort: utf16String(60),
   capabilities: Capabilities,
-  warnings: z.array(z.string().max(500)).max(20),
+  warnings: z.array(utf16String(500)).max(20),
   registeredAt: z.number().int().nonnegative(),
   componentVersion: z.literal(COMPONENT_VERSION).optional(),
 }).strict();
@@ -53,10 +63,10 @@ export const RelayReady = z.object({
 export const PendingRequest = z.object({
   requestId: RequestId,
   type: z.enum(["permission", "question", "terminal"]),
-  title: z.string().max(500),
-  detail: z.string().max(12_000),
-  permissionKind: z.string().max(80).optional(),
-  choices: z.array(z.string().max(1000)).max(50),
+  title: utf16String(500),
+  detail: utf16String(12_000),
+  permissionKind: utf16String(80).optional(),
+  choices: z.array(utf16String(1000)).max(50),
   allowFreeform: z.boolean(),
   supported: z.boolean(),
 }).strict();
@@ -69,7 +79,7 @@ const questionBase = {
 export const QuestionRecord = z.discriminatedUnion("status", [
   z.object({ ...questionBase, status: z.literal("pending") }).strict(),
   z.object({ ...questionBase, status: z.literal("unknown") }).strict(),
-  z.object({ ...questionBase, status: z.literal("confirmed"), answer: z.string().min(1).max(8000),
+  z.object({ ...questionBase, status: z.literal("confirmed"), answer: utf16String(8000).min(1),
     commandId: Id.optional() }).strict(),
 ]);
 export type QuestionRecord = z.infer<typeof QuestionRecord>;
@@ -105,7 +115,7 @@ const componentBase = {
 export const ComponentRecord = z.discriminatedUnion("status", [
   z.object({
     ...componentBase, status: z.literal("ready"), sha256: ComponentReference.shape.sha256,
-    encoding: z.literal("base64-json"), payload: z.string().max(MAX_COMPONENT_PAYLOAD), redacted: z.boolean(),
+    encoding: z.literal("base64-json"), payload: utf16String(MAX_COMPONENT_PAYLOAD), redacted: z.boolean(),
   }).strict(),
   z.object({
     ...componentBase, status: z.literal("unavailable"), error: ErrorInfo,
@@ -120,17 +130,17 @@ export const ComponentRecord = z.discriminatedUnion("status", [
 });
 export type ComponentRecord = z.infer<typeof ComponentRecord>;
 
-const filePath = z.string().max(1000);
+const filePath = utf16String(1000);
 export const Action = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("message"), text: z.string().min(1).max(32_000),
+  z.object({ type: z.literal("message"), text: utf16String(32_000).min(1),
     attachmentIds: z.array(Id).max(4).default([]), componentReference: ComponentReference.optional() }).strict(),
   z.object({ type: z.literal("abort") }).strict(),
   z.object({ type: z.literal("permission"), requestId: RequestId,
     decision: z.enum(["approve-once", "reject"]) }).strict(),
-  z.object({ type: z.literal("answer"), requestId: RequestId, answer: z.string().min(1).max(8000) }).strict(),
+  z.object({ type: z.literal("answer"), requestId: RequestId, answer: utf16String(8000).min(1) }).strict(),
   z.object({ type: z.literal("models") }).strict(),
-  z.object({ type: z.literal("model.set"), modelId: z.string().min(1).max(200),
-    reasoningEffort: z.string().min(1).max(60).nullable().optional() }).strict(),
+  z.object({ type: z.literal("model.set"), modelId: utf16String(200).min(1),
+    reasoningEffort: utf16String(60).min(1).nullable().optional() }).strict(),
   z.object({ type: z.literal("files.list"), path: filePath }).strict(),
   z.object({ type: z.literal("files.read"), path: filePath.min(1) }).strict(),
   z.object({ type: z.literal("git.status") }).strict(),
@@ -158,22 +168,22 @@ export type Receipt = z.infer<typeof Receipt>;
 const eventBase = { id: RequestId, at: z.string().datetime() };
 export const UserEvent = z.discriminatedUnion("kind", [
   z.object({ ...eventBase, kind: z.literal("user.message"), data: z.object({
-    messageId: RequestId, content: z.string().max(64_000),
-    attachments: z.array(z.string().max(200)).max(20),
+    messageId: RequestId, content: utf16String(64_000),
+    attachments: z.array(utf16String(200)).max(20),
   }).strict() }).strict(),
   z.object({ ...eventBase, kind: z.literal("assistant.message"), data: z.object({
-    messageId: RequestId, content: z.string().max(64_000), originatingMessageId: RequestId.optional(),
+    messageId: RequestId, content: utf16String(64_000), originatingMessageId: RequestId.optional(),
     toolCallIds: z.array(RequestId).max(128).optional(),
   }).strict() }).strict(),
   z.object({ ...eventBase, kind: z.literal("assistant.delta"), data: z.object({
-    messageId: RequestId, content: z.string().max(16_000),
+    messageId: RequestId, content: utf16String(16_000),
   }).strict() }).strict(),
   z.object({ ...eventBase, kind: z.literal("tool.start"), data: z.object({
-    toolCallId: RequestId, name: z.string().max(200), text: z.string().max(12_000),
+    toolCallId: RequestId, name: utf16String(200), text: utf16String(12_000),
     originatingMessageId: RequestId.optional(),
   }).strict() }).strict(),
   z.object({ ...eventBase, kind: z.literal("tool.output"), data: z.object({
-    toolCallId: RequestId, text: z.string().max(32_000), complete: z.boolean(), success: z.boolean().optional(),
+    toolCallId: RequestId, text: utf16String(32_000), complete: z.boolean(), success: z.boolean().optional(),
     originatingMessageId: RequestId.optional(),
   }).strict() }).strict(),
   z.object({ ...eventBase, kind: z.literal("requests"), data: z.object({
@@ -186,7 +196,7 @@ export const UserEvent = z.discriminatedUnion("kind", [
   }).strict() }).strict(),
   z.object({ ...eventBase, kind: z.literal("delivery"), data: Receipt }).strict(),
   z.object({ ...eventBase, kind: z.literal("notice"), data: z.object({
-    code: z.string().max(80), message: z.string().max(2000),
+    code: utf16String(80), message: utf16String(2000),
   }).strict() }).strict(),
 ]);
 export type UserEvent = z.infer<typeof UserEvent>;
@@ -199,7 +209,7 @@ export const HostFrame = z.discriminatedUnion("type", [
   z.object({ type: z.literal("result"), ...Receipt.shape }).strict(),
 ]);
 export const MetadataPatch = z.object({
-  title: z.string().trim().min(1).max(160).optional(),
+  title: utf16String(160, z.string().trim()).min(1).optional(),
   pinned: z.boolean().optional(), archived: z.boolean().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0);
 export const allowedMime = new Set(["text/plain", "application/json", "application/pdf", "image/png", "image/jpeg", "image/webp"]);

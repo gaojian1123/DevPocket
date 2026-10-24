@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { Action, PendingRequest, Receipt, type WireEvent } from "../src/protocol.js";
+import { Action, PendingRequest, Receipt, utf16String, type WireEvent } from "../src/protocol.js";
 import { readHistory } from "./history.js";
 import {
   beginCliCheck, cliProofRequest, proofArguments, readCliIdentity, readCliProof, requireExactShellPermission,
@@ -16,7 +16,7 @@ if (positionals.length) throw new Error("Unexpected positional arguments.");
 if (typeof values.model !== "string" || typeof values.reasoning !== "string") {
   throw new Error("Select an explicit --model and --reasoning for this disposable runtime. No model check is silently skipped.");
 }
-const modelId = z.string().min(1).max(200).parse(values.model), reasoningEffort = z.string().min(1).max(60).parse(values.reasoning);
+const modelId = utf16String(200).min(1).parse(values.model), reasoningEffort = utf16String(60).min(1).parse(values.reasoning);
 const proof = await readCliProof(directory);
 const request = cliProofRequest(proof);
 const scoped = `/v1/hosts/${proof.hostId}/sessions/${proof.sessionId}`;

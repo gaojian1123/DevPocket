@@ -47,10 +47,10 @@ export async function protectDirectory(directory, script, create) {
   if (!create) args.push("-CheckOnly");
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
   try {
-    const result = await exec("powershell.exe", args, { env, encoding: "utf8", windowsHide: true, timeout: 20_000 });
+    const result = await exec("pwsh", args, { env, encoding: "utf8", windowsHide: true, timeout: 20_000 });
     requireValue(JSON.parse(result.stdout).protected === true, "PRIVATE_DIRECTORY_ACL_FAILED");
   } catch {
-    throw new Error("PRIVATE_DIRECTORY_ACL_FAILED: Setup requires a private directory owned by the current Windows user and SYSTEM.");
+    throw new Error("PRIVATE_DIRECTORY_ACL_FAILED: Setup requires PowerShell 7 (pwsh) and a private directory owned by the current Windows user and SYSTEM.");
   }
 }
 

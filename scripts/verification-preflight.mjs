@@ -28,6 +28,11 @@ const policyInputs = [
   "emulator-resources.mjs",
 ];
 
+export function npmLaunchersBound(group, powershellNpm, nativeNpm) {
+  return powershellNpm?.candidateSafe === true && powershellNpm?.candidateImplementation === true &&
+    (!["tooling", "android", "device"].includes(group) || nativeNpm?.bound === true);
+}
+
 async function fileIdentity(file, { optional = false } = {}) {
   let info;
   try { info = await lstat(file); }
@@ -524,7 +529,7 @@ export async function verificationPreflight(root, plan, options = {}) {
     ["-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"], (text) => /^7\./.test(text)));
   const npm = () => once("npm", async () => {
     const shell = await powershell();
-    const output = JSON.parse(await probe(shell.file, ["-NoProfile", "-NonInteractive", "-Command",
+    const probeResult = await runCommand(shell.file, ["-NoProfile", "-NonInteractive", "-Command",
       "$ErrorActionPreference='Stop'; $command=Get-Command npm -CommandType Application,ExternalScript | Select-Object -First 1; " +
       "$nodeCommand=Get-Command node -CommandType Application,ExternalScript | Select-Object -First 1; " +
       "$version=& npm --version; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}; " +
@@ -534,7 +539,9 @@ export async function verificationPreflight(root, plan, options = {}) {
       "if($settings.ContainsKey($Matches[1])){throw 'Duplicate npm configuration output.'}; $settings[$Matches[1]]=$Matches[2] }; " +
       "if($settings.Count -ne 4){throw 'Incomplete npm configuration output.'}; " +
       "@{file=$command.Source;nodeFile=$nodeCommand.Source;nodeType=$nodeCommand.CommandType.ToString();version=\"$version\";nodeOptions=$settings['node-options'];scriptShell=$settings['script-shell'];" +
-      "userConfig=$settings['userconfig'];globalConfig=$settings['globalconfig']} | ConvertTo-Json -Compress"]));
+      "userConfig=$settings['userconfig'];globalConfig=$settings['globalconfig']} | ConvertTo-Json -Compress"],
+    { cwd: root, timeoutMs: 30000, signal: options.signal });
+    const output = JSON.parse(probeResult.stdout);
     if (!/^\d+\.\d+\.\d+$/.test(output.version) || !path.isAbsolute(output.file) || !path.isAbsolute(output.nodeFile) ||
         !["Application", "ExternalScript"].includes(output.nodeType)) {
       throw diagnosticError("preflight-version");
@@ -565,7 +572,8 @@ export async function verificationPreflight(root, plan, options = {}) {
       !process.execArgv.some((value) => /^--(?:import|require|loader|experimental-loader)(?:=|$)|^-r$/.test(value)) &&
       !Object.entries(process.env).some(([name, value]) =>
         /^(?:NODE_OPTIONS|NODE_PATH|NPM_CONFIG_NODE_OPTIONS|NPM_CONFIG_SCRIPT_SHELL)$/i.test(name) && value);
-    let candidateImplementation = process.platform === "win32" && candidateSafe && output.version === "11.16.0" &&
+    let candidateImplementation = process.platform === "win32" && candidateSafe && !probeResult.stderr.trim() &&
+      output.version === "11.16.0" &&
       samePath(path.resolve(output.file), actual) &&
       packageIdentity === "0f3af07d0eef7aeeeadb0efc710993da57bdbfacd9edbfc3cde3fd63a0a4206a" &&
       ["e8aedc8c76d6cb9423b70ede071228f7cb1644094c114b8721ae6d121100d4fe",
@@ -594,11 +602,11 @@ export async function verificationPreflight(root, plan, options = {}) {
         }
       }
     }
-    return { version: output.version, file: output.file, binary, packageIdentity, config,
+    return { version: output.version, file: output.file, binary, packageIdentity, config, stderr: digest(probeResult.stderr),
       candidateImplementation, candidateSafe, prefixResolution, powershellNode };
   });
   const nativeNpm = () => once("native-npm", async () => {
-    // Gradle uses CMD's explicit npm.cmd, not PowerShell's preferred launcher.
+    // Gradle and workflow shards use npm.cmd to preserve forwarded arguments on Windows.
     const windows = process.platform === "win32";
     const file = await resolveVerificationExecutable(root, windows ? "npm.cmd" : "npm", { shell: windows });
     const actual = await realpath(file), binary = await fileIdentity(actual), identity = await npm();
@@ -672,9 +680,9 @@ export async function verificationPreflight(root, plan, options = {}) {
       return owner();
     });
     await check("node", () => once("node", async () => {
-      if (!/^v24\./.test(process.version)) throw diagnosticError("preflight-version");
+      if (!/^v26\./.test(process.version)) throw diagnosticError("preflight-version");
       return { version: process.version, file: process.execPath, binary: await fileIdentity(process.execPath),
-        child: await tool("node", ["--version"], (text) => /^v24\./.test(text)) };
+        child: await tool("node", ["--version"], (text) => /^v26\./.test(text)) };
     }), "preflight-tool", ["command-ownership"]);
     await check("powershell", powershell, "preflight-tool", ["command-ownership"]);
     await check("output-directory", () => writable(root, options.directory), "preflight-path");
@@ -682,6 +690,7 @@ export async function verificationPreflight(root, plan, options = {}) {
     if (usesNpm) {
       await check("root-dependencies", () => once("root-dependencies", () => dependencies(root)), "preflight-dependencies");
       await check("npm", npm, "preflight-tool", ["command-ownership", "node", "powershell"]);
+      if (group === "tooling") await check("native-npm", nativeNpm, "preflight-tool", ["command-ownership", "npm"]);
       await check("node-command", () => once("node-command", async () => {
         if ((await npm()).candidateSafe !== true) return { status: "unbound" };
         const child = (await memo.get("node")).child;
@@ -695,7 +704,7 @@ export async function verificationPreflight(root, plan, options = {}) {
         if (kind === "native" && samePath(file, child.file)) return { ...child, target, kind };
         const output = await probe((await powershell()).file,
           ["-NoProfile", "-NonInteractive", "-Command", `& '${file.replaceAll("'", "''")}' --version; exit $LASTEXITCODE`]);
-        if (!/^v24\./.test(output)) throw diagnosticError("preflight-version");
+        if (!/^v26\./.test(output)) throw diagnosticError("preflight-version");
         return { file, target, kind, binary, output: digest(output) };
       }), "preflight-tool", ["command-ownership", "npm"]);
       identities.push(["node-environment", environment(/^(?:NODE_.*|TSX_.*|TS_NODE_.*|ESBUILD_.*|NPM_CONFIG_.*|PATH|COMSPEC|PATHEXT|NODEFAULTCURRENTDIRECTORYINEXEPATH|SHELL|SYSTEMROOT|WINDIR|CI|TZ|LANG|LC_.*)$/i)]);
@@ -749,7 +758,7 @@ export async function verificationPreflight(root, plan, options = {}) {
       const device = group === "device";
       await check("native-npm", nativeNpm, "preflight-tool", ["command-ownership", "npm"]);
       await check("android-entry", () => fileIdentity(path.join(root, "scripts", device ? "test-android.ps1" : "build-android.ps1")), "preflight-path");
-      const jdk = path.resolve(root, options.jdk ?? (device ? process.env.DEVPOCKET_JDK : undefined) ?? path.join(".tools", "jdk-21"));
+      const jdk = path.resolve(root, options.jdk ?? (device ? process.env.DEVPOCKET_JDK : undefined) ?? path.join(".tools", "jdk-25"));
       const sdk = path.resolve(root, options.sdk ?? (device ? process.env.DEVPOCKET_ANDROID_SDK : undefined) ?? path.join(".tools", "android-sdk"));
       const cacheDirectory = device && process.platform === "linux" && process.env.GITHUB_ACTIONS === "true" &&
         process.env.RUNNER_ENVIRONMENT === "github-hosted" ? path.join(options.directory, "device", "gradle-cache")
@@ -759,18 +768,18 @@ export async function verificationPreflight(root, plan, options = {}) {
         const java = path.join(jdk, "bin", executableName("java"));
         await access(java, constants.R_OK | constants.X_OK);
         const output = await probe(java, ["-version"]);
-        if (!/(?:openjdk|java) version "(?:17|21)\./.test(output)) throw diagnosticError("preflight-version");
+        if (!/(?:openjdk|java) version "25(?:\.\d+)*"/.test(output)) throw diagnosticError("preflight-version");
         return { jdk, java: await fileIdentity(java), release: await fileIdentity(path.join(jdk, "release")),
           tree: await treeIdentity(jdk), version: digest(output) };
       }), "preflight-sdk", ["command-ownership"]);
-      await check("android-platform-35", () => once(`sdk:${sdk}`, async () => ({
-        sdk, platform: await fileIdentity(path.join(sdk, "platforms", "android-35", "android.jar")),
-        platformMetadata: await fileIdentity(path.join(sdk, "platforms", "android-35", "package.xml")),
+      await check("android-platform-37.2", () => once(`sdk:${sdk}`, async () => ({
+        sdk, platform: await fileIdentity(path.join(sdk, "platforms", "android-37.2", "android.jar")),
+        platformMetadata: await fileIdentity(path.join(sdk, "platforms", "android-37.2", "package.xml")),
         license: await fileIdentity(path.join(sdk, "licenses", "android-sdk-license")),
-        aapt: await fileIdentity(path.join(sdk, "build-tools", "35.0.0", executableName("aapt2"))),
-        zipalign: await fileIdentity(path.join(sdk, "build-tools", "35.0.0", executableName("zipalign"))),
-        buildToolsMetadata: await fileIdentity(path.join(sdk, "build-tools", "35.0.0", "package.xml")),
-        buildTools: await treeIdentity(path.join(sdk, "build-tools", "35.0.0")),
+        aapt: await fileIdentity(path.join(sdk, "build-tools", "37.0.0", executableName("aapt2"))),
+        zipalign: await fileIdentity(path.join(sdk, "build-tools", "37.0.0", executableName("zipalign"))),
+        buildToolsMetadata: await fileIdentity(path.join(sdk, "build-tools", "37.0.0", "package.xml")),
+        buildTools: await treeIdentity(path.join(sdk, "build-tools", "37.0.0")),
       })), "preflight-sdk");
       await check("gradle-wrapper", () => once("gradle-wrapper", async () => ({
         jar: await fileIdentity(path.join(root, "android", "gradle", "wrapper", "gradle-wrapper.jar")),
@@ -793,7 +802,7 @@ export async function verificationPreflight(root, plan, options = {}) {
         const emulatorSdk = path.resolve(root, process.env.DEVPOCKET_EMULATOR_SDK ?? sdk);
         const architecture = androidImageArchitecture();
         const image = (options.image ?? process.env.DEVPOCKET_ANDROID_IMAGE ??
-          `system-images/android-35/google_apis/${architecture}`).replaceAll("\\", "/");
+          `system-images/android-37.0/google_apis/${architecture}`).replaceAll("\\", "/");
         await check("android-image", () => once(`image:${emulatorSdk}:${image}`, async () => {
           if (androidImagePattern.exec(image)?.[1] !== architecture) {
             throw diagnosticError("preflight-sdk");
@@ -835,7 +844,8 @@ export async function verificationPreflight(root, plan, options = {}) {
     // shortcut: Native workspace builds cannot reuse until their loader/compiler input contract is closed.
     const workspaceBuild = java && Boolean(identities.find(([name]) => name === "root-dependencies")?.[1]?.workspaces?.length);
     const unbound = sourceHasLinks || workspaceBuild || usesNpm &&
-      (!candidateSafe || npmIdentity?.candidateImplementation !== true || injected(/^(?:TSX_|TS_NODE_|ESBUILD_)/i) ||
+      (!npmLaunchersBound(group, npmIdentity, identities.find(([name]) => name === "native-npm")?.[1]) ||
+        injected(/^(?:TSX_|TS_NODE_|ESBUILD_)/i) ||
         !samePath(identities.find(([name]) => name === "node")?.[1]?.child?.file ?? "", process.execPath) ||
         !directNode(identities.find(([name]) => name === "node-command")?.[1], "native") ||
         !directNode(npmIdentity?.powershellNode, "Application")) ||
@@ -843,7 +853,6 @@ export async function verificationPreflight(root, plan, options = {}) {
         injected(/^(?:PYTHONPATH|PYTHONHOME|PYTHONSTARTUP|PYTHONUSERBASE)$/i) ||
       java && (injected(/^(?:JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|GRADLE_OPTS|JAVA_OPTS)$/i) ||
         cache?.init || cache?.initKotlin || cache?.initDirectory ||
-        identities.find(([name]) => name === "native-npm")?.[1]?.bound !== true ||
         identities.find(([name]) => name === "native-configuration")?.[1]?.reusable !== true);
     const blocked = issues.length > 0 || notProbed.length > 0;
     results.push({ group, status: blocked ? "blocked" : "passed", issues, notProbed,

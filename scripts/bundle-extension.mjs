@@ -7,24 +7,24 @@ if (pkg.version !== VERSION) throw new Error("Package and protocol application v
 await mkdir("dist/extension", { recursive: true });
 await build({
   entryPoints: ["backend/src/bridge.ts"], outfile: "dist/extension/bridge.mjs",
-  bundle: true, platform: "node", format: "esm", target: "node24", sourcemap: false,
+  bundle: true, platform: "node", format: "esm", target: "node26", sourcemap: false,
   banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
 });
 await copyFile("extension/extension.mjs", "dist/extension/extension.mjs");
 await build({
   entryPoints: ["backend/src/cli.ts"], outfile: "dist/devpocket.mjs",
-  bundle: true, platform: "node", format: "esm", target: "node24", sourcemap: false,
+  bundle: true, platform: "node", format: "esm", target: "node26", sourcemap: false,
   banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
 });
 await mkdir("dist/setup-assets", { recursive: true });
 await build({
   entryPoints: ["deployment/onboarding/setup.mjs"], outfile: "dist/setup.mjs",
-  bundle: true, platform: "node", format: "esm", target: "node24", sourcemap: false,
+  bundle: true, platform: "node", format: "esm", target: "node26", sourcemap: false,
   banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
 });
 await build({
   entryPoints: ["deployment/onboarding/cloud-host.mjs"], outfile: "dist/setup-assets/cloud-host.mjs",
-  bundle: true, platform: "node", format: "esm", target: "node24",
+  bundle: true, platform: "node", format: "esm", target: "node26",
   minifyWhitespace: true, minifySyntax: true,
 });
 for (const name of ["guest.py", "private-directory.ps1"])

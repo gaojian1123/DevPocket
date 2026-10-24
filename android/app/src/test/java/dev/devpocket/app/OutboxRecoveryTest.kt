@@ -6,6 +6,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import androidx.test.core.app.ApplicationProvider
 import dev.devpocket.app.data.*
 import java.util.UUID
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.encodeToJsonElement
@@ -15,12 +16,29 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import org.robolectric.annotation.SQLiteMode
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], application = DevPocketApplication::class)
-@SQLiteMode(SQLiteMode.Mode.NATIVE)
 class OutboxRecoveryTest {
+    @Test fun invalidReceiptRollsBackTheWholeEventPageAndCursor() {
+        val context = ApplicationProvider.getApplicationContext<DevPocketApplication>()
+        val scope = Scope(UUID.randomUUID().toString(), "host", "session")
+        fun event(cursor: Long, kind: String) =
+            WireEvent("event-$cursor", "2026-10-23T00:00:00.000Z", kind, JsonObject(emptyMap()),
+                cursor, scope.hostId, scope.sessionId)
+        val original = event(1, "status")
+        LocalStore(context).use { local ->
+            try {
+                local.applyPage(scope, EventPage(listOf(original), 1))
+                assertThrows(SerializationException::class.java) {
+                    local.applyPage(scope, EventPage(listOf(event(2, "status"), event(3, "delivery")), 3, reset = true))
+                }
+                assertEquals(1L, local.cursor(scope))
+                assertEquals(listOf(original), local.events(scope))
+            } finally { local.forgetAccount(scope.accountId) }
+        }
+    }
+
     @Test fun cacheUpgradePreservesOldDraftsAndReferencedRetriesRefuseAnOldClientDowngrade() {
         val context = ApplicationProvider.getApplicationContext<DevPocketApplication>()
         val scope = Scope(UUID.randomUUID().toString(), "host", "session")

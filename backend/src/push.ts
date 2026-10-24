@@ -2,6 +2,7 @@ import { createPrivateKey, createSign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { Fault } from "./security.js";
+import type { PushTarget } from "./protocol.js";
 
 const serviceAccount = z.object({
   type: z.literal("service_account"),
@@ -11,7 +12,7 @@ const serviceAccount = z.object({
 });
 type ServiceAccount = z.infer<typeof serviceAccount>;
 export type PushNotice = { hostId: string; sessionId: string; eventId: string; kind: "attention" | "status" };
-export interface PushSender { send(token: string, notice: PushNotice): Promise<"sent" | "unregistered"> }
+export interface PushSender { send(target: PushTarget, notice: PushNotice): Promise<"sent" | "unregistered"> }
 const base64 = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString("base64url");
 
 export class FcmPush implements PushSender {
@@ -50,12 +51,12 @@ export class FcmPush implements PushSender {
     return result.access_token;
   }
 
-  async send(token: string, notice: PushNotice): Promise<"sent" | "unregistered"> {
+  async send(target: PushTarget, notice: PushNotice): Promise<"sent" | "unregistered"> {
     const response = await fetch(`https://fcm.googleapis.com/v1/projects/${this.config.project_id}/messages:send`, {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(15_000),
       headers: { Authorization: `Bearer ${await this.token()}`, "Content-Type": "application/json" },
       body: JSON.stringify({ message: {
-        token, data: notice,
+        ...(target.kind === "fid" ? { fid: target.value } : { token: target.value }), data: notice,
         notification: { title: "DevPocket", body: notice.kind === "attention" ? "Your GitHub Copilot session needs attention." : "Your GitHub Copilot session has an update." },
         android: { priority: notice.kind === "attention" ? "high" : "normal", ttl: "300s",
           notification: { channel_id: "devpocket_attention", tag: `${notice.hostId}:${notice.sessionId}`,

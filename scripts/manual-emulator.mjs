@@ -202,6 +202,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
     repo: { type: "string" }, directory: { type: "string" }, sdk: { type: "string" }, jdk: { type: "string" },
     image: { type: "string" }, "emulator-sdk": { type: "string" }, "queue-timeout": { type: "string" },
+    visible: { type: "boolean", default: false },
   } });
   const command = positionals[0];
   if (positionals.length !== 1 || !["start", "layouts", "stop", "status"].includes(command)) {

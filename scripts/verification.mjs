@@ -90,8 +90,8 @@ export function verificationFailure(error, phase = "command") {
     ...(Number.isSafeInteger(index) && index >= 0 && index < 128 ? { inputIndex: index } : {}),
     ...(["app", "instrumentation"].includes(artifact) ? { artifact } : {}),
     ...(Array.isArray(missing) ? { missingChecks: CHECKS.filter((item) => missing.includes(item.id)).map((item) => item.id) } : {}),
-    ...(["node", "command-ownership", "powershell", "output-directory", "root-dependencies", "npm", "git",
-      "ssh-keygen", "python", "azure-dependencies", "probe-python", "operations-python", "jdk", "android-platform-35",
+    ...(["node", "command-ownership", "powershell", "output-directory", "root-dependencies", "npm", "native-npm", "git",
+      "ssh-keygen", "python", "azure-dependencies", "probe-python", "operations-python", "jdk", "android-platform-35", "android-platform-37.2",
       "gradle-wrapper", "android-entry", "android-output", "backend-output", "gradle-cache", "native-configuration",
       "android-image", "adb", "emulator-acceleration", "typecheck-contract"]
       .includes(ownValue(context, "prerequisite")) ? { prerequisite: ownValue(context, "prerequisite") } : {}),
