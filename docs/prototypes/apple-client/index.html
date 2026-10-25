@@ -1,0 +1,101 @@
+<!doctype html>
+<!-- DESIGN PROTOTYPE: Glass Workbench for iPhone, iPad, Mac and iPhone Duo.
+     Device geometry is illustrative. Custom posture-transition animation is out of scope.
+     Original UI and invented sample data only; no AgenticDeck renderer, SDK, network, or persistence. -->
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="robots" content="noindex">
+  <title>DevPocket — Apple 客户端交互原型</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='17' fill='%230077ed'/%3E%3Cpath d='m17 23 10 9-10 9m17 0h13' fill='none' stroke='white' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./base.css">
+  <link rel="stylesheet" href="./app.css">
+  <script src="./app.js" defer></script>
+</head>
+<body class="deck-study">
+  <a class="skip-link" href="#design-board">跳到原型</a>
+  <header class="studio-header">
+    <a class="brand" href="./index.html">
+      <span class="brand-icon" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="m8 10 6 6-6 6m11 0h6"/></svg></span>
+      <span>DevPocket<span class="brand-divider">/</span><span class="brand-subtitle">Apple client</span></span>
+    </a>
+    <div class="studio-actions">
+      <span class="prototype-badge"><span></span>流光工作台 · 设计原型</span>
+      <button class="studio-button" data-action="theme" id="theme-button" aria-label="切换深浅色" aria-pressed="false"></button>
+      <button class="studio-button text-button" data-action="about">设计说明</button>
+    </div>
+  </header>
+  <main>
+    <section class="intro">
+      <div><p class="eyebrow">ONE CONVERSATION. A NATURAL FLOW.</p>
+        <h1>顺着对话。<br><span>读懂每一步。</span></h1></div>
+      <div class="intro-aside"><p>从提问到文字、工具活动与 Canvas，沿着对话自然阅读。现在也能在 iPhone Duo 上合上随行、展开并排，设备姿态变了，思路与上下文不变。</p>
+        <div class="intro-tags"><span>顺序阅读</span><span>iPhone Duo</span><span>展开，继续同一会话</span></div></div>
+    </section>
+    <div class="preview-toolbar">
+      <nav class="device-switcher" aria-label="预览设备">
+        <button data-device="all" aria-pressed="true">全景</button><button data-device="iphone" aria-pressed="false">iPhone</button>
+        <button data-device="duo" aria-pressed="false">iPhone Duo</button>
+        <button data-device="ipad" aria-pressed="false">iPad</button><button data-device="mac" aria-pressed="false">Mac</button>
+      </nav>
+      <div class="preview-options">
+        <label class="scenario-label" for="scene">演示内容</label>
+        <select id="scene"><option value="visual">图文混排</option><option value="plain">普通多段对话</option><option value="decision">等待你的决定</option><option value="legacy">归属不明的历史</option><option value="building">画布生成中</option><option value="unavailable">画布不可显示</option><option value="append">后续追加新图</option></select>
+        <button class="studio-button" id="offline-button" data-action="offline" aria-label="模拟离线" aria-pressed="false"></button>
+        <button class="studio-button" id="transparency-button" data-action="transparency" aria-label="减少透明度" aria-pressed="false"></button>
+      </div>
+    </div>
+    <section class="design-board" id="design-board" data-view="all" aria-label="Apple 客户端交互原型">
+      <article class="device-card phone-card" data-card="iphone">
+        <header class="device-caption"><div><span class="platform-dot"></span><h2>iPhone</h2></div><span>轻触图表，展开另一层信息</span></header>
+        <div class="device-mount" data-mount="iphone"><div class="hardware iphone-hardware" data-hardware="iphone"><div class="phone-island" aria-hidden="true"></div><div class="app-screen iphone-screen" id="iphone-screen"></div><div class="home-indicator" aria-hidden="true"></div></div></div>
+        <div class="device-note"><span class="note-index">01</span><div><h3>从提问开始，一路读下去。</h3><p>不必在文字、Canvas 和结论之间切换。画布仍可全屏展开，返回保持原来的阅读位置。</p></div></div>
+        <div class="phone-annotation"><span class="annotation-line"></span>试试图表右上角的展开按钮。</div>
+      </article>
+      <article class="device-card mac-card" data-card="mac">
+        <header class="device-caption"><div><span class="platform-dot"></span><h2>Mac</h2></div><span>对话与查看器，彼此关联</span></header>
+        <div class="device-mount" data-mount="mac"><div class="hardware mac-hardware" data-hardware="mac"><div class="app-screen mac-screen" id="mac-screen"></div></div></div>
+        <div class="device-note"><span class="note-index">03</span><div><h3>边读，边问，始终有出处。</h3><p>右侧展开同一张卡片，不复制成另一条回复；关闭查看器即可恢复会话列表。</p></div></div>
+      </article>
+      <article class="device-card ipad-card" data-card="ipad">
+        <header class="device-caption"><div><span class="platform-dot"></span><h2>iPad</h2></div><button class="caption-button" id="ipad-size-button" data-action="ipad-size" aria-pressed="false">试试窄窗口 ↗</button></header>
+        <div class="device-mount" data-mount="ipad"><div class="hardware ipad-hardware" data-hardware="ipad"><div class="tablet-camera" aria-hidden="true"></div><div class="app-screen ipad-screen" id="ipad-screen"></div></div></div>
+        <div class="device-note"><span class="note-index">02</span><div><h3>空间变了，上下文还在。</h3><p>宽窗支持对话与画布并排；窄窗以覆盖式查看器展开，保留草稿和阅读位置。</p></div></div>
+      </article>
+      <article class="device-card duo-card" data-card="duo">
+        <header class="device-caption"><div><span class="platform-dot"></span><h2>iPhone Duo</h2></div><span>同一会话，随姿态展开</span></header>
+        <div class="duo-preview-controls">
+          <nav class="segmented-control duo-pose-switcher" aria-label="iPhone Duo 设备姿态">
+            <button data-action="duo-pose" data-pose="outer" aria-pressed="false">外屏收起</button>
+            <button data-action="duo-pose" data-pose="open" aria-pressed="true">内屏展开</button>
+            <button data-action="duo-pose" data-pose="book" aria-pressed="false">书本式半折</button>
+          </nav>
+          <button class="caption-button" data-action="duo-info">设计依据</button>
+        </div>
+        <p class="duo-pose-description" id="duo-pose-description" role="status"></p>
+        <div class="device-mount" data-mount="duo"><div class="hardware duo-hardware" data-hardware="duo"><div class="app-screen duo-screen" id="duo-screen"></div></div></div>
+        <div class="device-note"><span class="note-index">04</span><div><h3>展开的是空间，不是另一段对话。</h3><p>外屏单列与内屏分栏共享会话、草稿和画布查看状态；半折为中间区域留白，导航保持在右侧。</p></div></div>
+        <p class="duo-disclaimer">机身比例和折叠预留区域仅为布局示意，不代表官方硬件尺寸。此轮展示外屏、内屏横向与书本式半折；不代表原生实机适配完成。</p>
+      </article>
+    </section>
+    <section class="design-principles" aria-label="本版设计决定">
+      <div><span class="principle-icon" data-icon="turn"></span><h3>顺序清楚，关联还在</h3><p>沿时间线阅读，普通文字与 Canvas 仍绑定自己的来源回复。无法确认归属的历史保留独立显示。</p></div>
+      <div><span class="principle-icon" data-icon="layers"></span><h3>查看，不是修改</h3><p>时间范围、数据点、表格排序与搜索都只是本地查看状态，不改变生成的数据。</p></div>
+      <div><span class="principle-icon" data-icon="append"></span><h3>新图，属于新的回答</h3><p>“把折线换成柱状图”追加一张新卡片。上一轮的图还在，不引入未支持的原地编辑或版本管理。</p></div>
+    </section>
+    <details class="prototype-state"><summary id="state-summary">原型状态</summary><pre id="state-output"></pre></details>
+    <footer class="studio-footer">
+      <p>本地交互原型 · 全部为虚构演示数据 · 不连接 AgenticDeck、原始运行时或真实文件 · 输入刷新即重置</p>
+      <p><button class="footer-link" data-action="sources">实现边界</button><span>·</span><a href="https://developer.apple.com/design/human-interface-guidelines/materials" target="_blank" rel="noreferrer">Liquid Glass</a><span>·</span><a href="https://developer.apple.com/design/human-interface-guidelines/designing-for-iphone-duo" target="_blank" rel="noreferrer">iPhone Duo 设计指南</a></p>
+    </footer>
+  </main>
+  <nav class="prototype-switcher deck-demo-switcher" id="prototype-switcher" aria-label="原型演示入口" hidden>
+    <div class="variant-label"><span class="variant-overline">原型预览</span><strong>流光工作台 + AgenticDeck</strong></div>
+    <button data-action="demo-home">工作台</button><button class="active" data-action="demo-chat">图文回复</button><button data-action="demo-reader">展开画布</button>
+  </nav>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <dialog id="prototype-dialog" aria-labelledby="dialog-title"><div class="dialog-chrome"><span>DEVPOCKET · 本地演示</span><button class="icon-button" data-action="close-dialog" aria-label="关闭弹窗"></button></div><div id="dialog-content"></div></dialog>
+</body>
+</html>
