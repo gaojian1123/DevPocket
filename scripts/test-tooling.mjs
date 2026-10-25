@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const TOOLING_TEST_FILES = Object.freeze([
-  "verification", "verification-execution", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
+  "verification", "verification-execution", "verification-refinement", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
   "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
   "bounded-worker-log", "development-tools", "development-approval", "process", "emulator-resources", "manual-emulator",
   "linux-emulator", "linux-runtime", "xcode-mcp", "tooling-runner", "macos-host",

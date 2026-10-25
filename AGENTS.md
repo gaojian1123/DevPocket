@@ -18,6 +18,10 @@ Advice, explanations, planning, read-only reviews and documentation-only edits
 do not start an implementation pipeline. Development retains required verification,
 independent review and scoped authorization; self-review is not independent review.
 
+For local Apple presentation follow-ups after accepted delivery, use **Local Apple
+refinement** in the guide. Its checkpoint, cumulative diff and native evidence
+remain source-bound; ordinary PR CI and Android selection are unchanged.
+
 For PR delivery, read **CI-first delivery and live qualification** in the guide;
 for unattended work, also read **Unattended execution**. Use explicit task-scoped
 ordinary CI authority, separate from local control adoption; retain missing scope

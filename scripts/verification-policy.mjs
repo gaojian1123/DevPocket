@@ -44,12 +44,13 @@ const rules = [
       ".github/skills/devpocket-development/SKILL.md", ".github/ISSUE_TEMPLATE/ai-task.yml"].includes(file), checks: tooling },
   { id: "verification-contract", description: "Source identity, planning, evidence validation and report projection use tooling contracts, not application builds.",
     matches: (file) => [".gitignore", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
-      "scripts/verify.mjs", "scripts/verify.ps1", "scripts/verification-tooling.mjs", "scripts/verification-diagnostics.mjs", "scripts/diagnostic-errors.mjs",
+      "scripts/verify.mjs", "scripts/verify.ps1", "scripts/verification-refinement.mjs",
+      "scripts/verification-tooling.mjs", "scripts/verification-diagnostics.mjs", "scripts/diagnostic-errors.mjs",
       "scripts/diagnostic-publication.mjs", "scripts/android-diagnostics.mjs", "scripts/device-diagnostics.mjs",
       "scripts/worker-diagnostics.mjs", "scripts/native-lifecycle.mjs"].includes(file), checks: tooling },
   { id: "tooling-regression", description: "Named synthetic tooling regressions run the complete tooling suite without provisioning application toolchains.",
     matches: (file) => [
-      "verification", "verification-execution", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
+      "verification", "verification-execution", "verification-refinement", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
       "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
       "bounded-worker-log", "development-tools", "development-approval", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime", "xcode-mcp", "tooling-runner", "macos-host",
     ].some((name) => file === `scripts/tests/${name}.test.mjs`) ||

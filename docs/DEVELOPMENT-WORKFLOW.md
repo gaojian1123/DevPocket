@@ -15,6 +15,7 @@ keeps the ordered steps and their completion criteria:
 - **Failure or interruption:** [Stops and recovery](#stops-and-recovery) and
   [Selected-group preflight and explicit recovery](#selected-group-preflight-and-explicit-recovery).
 - **Already verified working tree becoming a commit:** [Working-tree evidence to an authorized candidate](#working-tree-evidence-to-an-authorized-candidate).
+- **Local Apple presentation follow-up after accepted delivery:** [Local Apple refinement](#local-apple-refinement).
 
 ## Skill-led development
 
@@ -460,6 +461,188 @@ An unchanged push does not invalidate local source evidence. Required remote CI
 and checks of a different PR/merge ref still apply. Report an opened PR only after
 creation succeeds. Merge, deployment, external installation and local control
 adoption remain separately authorized.
+
+## Local Apple refinement
+
+This is a local acceptance route for bounded Apple presentation follow-ups, not a
+PR exemption or general cross-version test cache. The ordinary verifier, Android
+selection and `Required verification` CI keep their existing rules. The local
+entry refuses GitHub Actions and combinations with ordinary planning, aggregation,
+recovery, promotion or Android toolchain flags.
+
+Use the owning session and its original Xcode MCP tools. The verifier captures
+source/evidence and reads retained `.xcresult` bundles with `xcresulttool`; it never
+builds, runs tests, starts a simulator, installs an app or resets a fixture store.
+Existing task authority, device ownership and user decisions still apply. In
+particular, leave user trials running and respect a request to keep Duo shut down.
+
+### Eligibility and first adoption
+
+Start from a complete, independently accepted local checkpoint in the same task.
+Keep the original `BASE_COMMIT`. The checkpoint retains all source inputs and
+native presentation text, the original terminal-qualified full report, actual
+review response and native evidence references. Each follow-up compares the
+**entire cumulative delta** to that checkpoint, including non-ignored untracked
+inputs. A successful refinement does not silently advance the checkpoint.
+
+The initial path screen admits `ContentView.swift` and `Controls.swift` under
+`apple/DevPocket/DevPocket`, their two existing native test files, and
+`docs/APPLE-CLIENT.md`. At least one existing presentation file must change.
+Source deletion, executable/link changes, any other path, a different branch or
+history, changed hooks, policy or Git/Node/Xcode environment selects `full_required`.
+The owner explains that reason and returns to the ordinary applicable gate.
+No filename proves semantic eligibility: independent review also checks the
+actual handlers, bindings, accessibility, test changes and surrounding code.
+New state/transport/permission behavior, shared renderer changes and dependency
+or build configuration use the ordinary route.
+
+Local text/style adjustments and removal of redundant presentation can qualify
+when normal navigation and user-facing controls remain covered. Every changed
+Swift file needs an explicit fresh-test mapping. Select relevant layout, Dynamic
+Type, keyboard, navigation and model/WK boundary cases rather than treating a
+screenshot or successful build as complete acceptance. Record why other cases or
+devices remain unchanged evidence; their original source identities stay intact.
+An unavailable required result remains a gap, not an invented pass.
+
+Adopting these new controls requires the actual input-bound local decision.
+After initial adoption, obtain a complete normal gate and independent acceptance
+before creating the first checkpoint. An older report cannot acquire the changed
+policy's identity, and a branch ref alone does not identify uncommitted Apple work.
+Preserve previous failures, including all-passed commands whose terminal
+qualification failed with `environment-changed`. This route does not repair that
+failure, reclaim a lock or retroactively qualify a blocked run.
+
+### Local entry and records
+
+Use an immutable request JSON and a new output path for every invocation:
+
+```powershell
+npm run verify -- -Base BASE_COMMIT -Refinement REQUEST_JSON -Report NEW_REPORT_JSON
+```
+
+All requests/evidence live in ignored `.data` storage in this worktree. The
+ordinary report output stays under `.data/verification`. The four actions are:
+
+**Checkpoint**, while the fully accepted source is still current:
+
+```json
+{
+  "action": "checkpoint",
+  "verification": ".data/verification/full/report.json",
+  "review": ".data/apple/review/agent-response.json",
+  "nativeEvidence": [".data/apple/native-matrix.json", ".data/apple/native-artifacts.json"]
+}
+```
+
+`verification` is the original complete local run report, with its valid terminal
+run history, not an edited summary or partial shard. `review` is the retained
+original-client `tool.execution_complete` event for `devpocket-reviewer`, including
+the actual successful response and reviewed source. References/digests identify
+data, not authenticated human consent or an adversarial attestation. The owner
+and reviewer still establish that this is the actual independent tool response.
+Historical native references may retain another source; at least one must bind
+the current accepted source. Keep all underlying records available to review.
+
+**Plan**, after a bounded edit and before native execution:
+
+```json
+{
+  "action": "plan",
+  "checkpoint": ".data/verification/apple-checkpoint/report.json",
+  "selection": {
+    "reason": "Remove the redundant workbench promotion; normal sessions remain reachable.",
+    "tests": [{
+      "platform": "iOS Simulator",
+      "deviceId": "ACTUAL_OWNED_DEVICE_ID",
+      "osVersion": "ACTUAL_OS_VERSION",
+      "identifiers": ["DevPocketUITests/testWorkbenchListsSessionsWithoutPromotionalCard()"]
+    }],
+    "coverage": [{
+      "path": "apple/DevPocket/DevPocket/ContentView.swift",
+      "tests": ["DevPocketUITests/testWorkbenchListsSessionsWithoutPromotionalCard()"],
+      "reason": "Checks absence of the card and normal session navigation."
+    }],
+    "unchangedCoverage": "Explain unchanged cases and platform applicability against the retained evidence."
+  }
+}
+```
+
+This example is an input shape, not a prescribed sufficient suite. Map **every**
+changed Swift file, including test files; add layout/font/reader/interaction cases
+as the real change requires. Tests name exact `GetTestList` identifiers and actual
+devices, not wildcards. Normal iOS and macOS builds remain required. The report
+retains before/after text for the cumulative delta and the selected tests for
+independent inspection.
+
+**Binding**, immediately before a native operation or unchanged-source group:
+
+```json
+{ "action": "binding", "plan": ".data/verification/refinement/plan.json" }
+```
+
+Save that report, use the original Xcode MCP to prepare/build/test, then capture
+another binding with the same plan and `"before"` pointing to the first binding
+report. This captures actual source, hooks, environment and observation times on
+both sides. Xcode version inspection is read-only (`xcrun xcodebuild -version`).
+Do not write these values by hand. Run the existing component
+preparation when needed and preserve its output/renderer checks. Build for testing
+before rediscovering newly added cases; a cached `GetTestList` is not evidence of
+execution. Retain normal build logs, sealed `.app` copies and actual `.xcresult`
+bundles/exports using the existing Apple evidence format.
+
+**Qualify**, after all selected native work:
+
+```json
+{
+  "action": "qualify",
+  "plan": ".data/verification/refinement/plan.json",
+  "tests": [{
+    "binding": ".data/verification/native/after.json",
+    "summary": ".data/apple/current/summary.json",
+    "tests": ".data/apple/current/tests.json",
+    "resultBundle": ".data/apple/current/result.xcresult"
+  }],
+  "builds": [{
+    "platform": "ios",
+    "binding": ".data/verification/ios-build/after.json",
+    "artifact": ".data/apple/current/ios-build/artifact.json",
+    "bundle": ".data/apple/current/ios-build/DevPocket.app",
+    "log": ".data/apple/current/ios-build/build.log"
+  }, {
+    "platform": "macos",
+    "binding": ".data/verification/mac-build/after.json",
+    "artifact": ".data/apple/current/mac-build/artifact.json",
+    "bundle": ".data/apple/current/mac-build/DevPocket.app",
+    "log": ".data/apple/current/mac-build/build.log"
+  }]
+}
+```
+
+Test entries follow the plan's target order. `artifact.json` retains `source`,
+`bundleId`, `minimumOS`, successful signature verification, and the complete
+bundle-relative SHA256 `files` map. Preserve the original build outcome/log and
+signature output for review; copying a product is not a new build.
+Qualification decodes each actual result bundle, matches the exports, exact
+device/OS/case set and binding interval, requires zero failed/skipped/expected
+failures, and checks the sealed product bytes. It rechecks source and execution
+context, without starting a device or running another full-stack gate.
+
+### Review and delivery
+
+The version-1 `local-refinement-verification` is complete only for its explicit
+native plan. It always has `acceptance: false` and `reviewRequired: true`; it is
+not version-6 full verification and cannot be fed into ordinary/CI aggregation.
+Give the independent reviewer the fixed contract, checkpoint and its original
+evidence, cumulative delta, local native report, raw artifacts, policy and actual
+authority. A path-screen pass or implementer coverage claim is not final approval.
+
+After an actual eligible `pass` bound to the current source and plan digest,
+repeat the same `qualify` request into a new report and check unchanged plan,
+source, policy, hooks and authority before local handoff. Any gap returns to
+repair or the normal gate. Local commits retain their own authorization and
+candidate/source requirements; capture bindings after freezing the intended
+candidate. Moving to PR delivery returns to ordinary CI. Scope/authority and
+historical failures are never supplied by the local report itself.
 
 ## Verification
 

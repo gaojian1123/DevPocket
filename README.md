@@ -314,6 +314,11 @@ explicit task grant; autopilot does not create one. The
 [autonomy rules](docs/DEVELOPMENT-WORKFLOW.md#task-scoped-autonomy) preserve user
 limits/cancellation without a project-default time, credit or repair-round cap.
 
+For local Apple presentation follow-ups after a fully accepted checkpoint, use
+[Local Apple refinement](docs/DEVELOPMENT-WORKFLOW.md#local-apple-refinement).
+It keeps Xcode MCP execution in the owning session and avoids unrelated full-stack
+reruns only for eligible local revisions; ordinary PR CI and Android gates remain.
+
 **Checks:** use `npm run verify -- -Base BASE_COMMIT` for the diff-selected gate;
 `-Plan` explains [impact selection](docs/DEVELOPMENT-WORKFLOW.md#responsibility-based-impact)
 without acceptance. Shared execution, CI/dependencies and unknown paths retain

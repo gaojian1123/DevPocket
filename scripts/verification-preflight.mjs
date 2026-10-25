@@ -18,7 +18,7 @@ const directNode = (value, kind) => value?.kind === kind && /\.(?:com|exe)$/i.te
   samePath(value.file, process.execPath) && samePath(value.target, process.execPath);
 const policyInputs = [
   "verify.mjs", "verify.ps1", "verification.mjs", "verification-policy.mjs", "verification-executor.mjs", "verification-preflight.mjs",
-  "verification-run.mjs", "verification-transition.mjs", "verification-backend.mjs", "verification-android.mjs",
+  "verification-run.mjs", "verification-transition.mjs", "verification-refinement.mjs", "verification-backend.mjs", "verification-android.mjs",
   "test-tooling.mjs", "verification-tooling.mjs", "verification-admission.mjs", "verification-ci.mjs",
   "verification-ci-artifact.ps1", "development-policy.mjs", "development-paths.mjs",
   "candidate-commit.mjs", "native-candidate.mjs", "git-state.mjs", "process.mjs",

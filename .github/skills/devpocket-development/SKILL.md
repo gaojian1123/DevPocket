@@ -28,6 +28,11 @@ ordinary CI needs repository/branch-bound authority; missing scope is
 **Complete when:** the fixed contract, delivery target, actual authority and
 user-selected limits are retained. A follow-up keeps its original task and base.
 
+For a local Apple presentation follow-up after accepted delivery, read
+[Local Apple refinement](../../../docs/DEVELOPMENT-WORKFLOW.md#local-apple-refinement).
+Use its fixed checkpoint and cumulative diff; ordinary implementation and PR
+delivery keep the normal gate.
+
 ## 2. Select the workspace
 
 Confirm root, HEAD and resolved `--git-dir` / `--git-common-dir`; equal directories
@@ -96,11 +101,17 @@ and run `npm run verify -- -Base BASE_COMMIT`. For a cleanup-confirmed environme
 failure, read [Selected-group preflight and explicit recovery](../../../docs/DEVELOPMENT-WORKFLOW.md#selected-group-preflight-and-explicit-recovery)
 before `-Resume`; preflight or recovered partial groups are not acceptance.
 
+An eligible local Apple refinement instead follows the guide's planned Xcode
+checks and distinct local refinement report. `full_required` returns to the normal
+gate; a source, environment or evidence failure remains blocked.
+
 **Complete when:** the actual version-6 report is complete and passing with every
 required check, shard origin and selected platform/device result. Local candidate
 evidence binds `source.head` to `CANDIDATE_COMMIT`; CI keeps candidate and tested
 merge ref distinct. Retain original-client-only evidence when required.
 CI reports do not supply local policy decisions or independent review.
+For local Apple refinement, require its complete native qualification instead;
+its `acceptance: false` remains pending independent review, not PR CI success.
 
 ## 6. Request independent review
 
@@ -110,6 +121,8 @@ Invoke the configured read/search-only `devpocket-reviewer` in a separate contex
 with the fixed contract, actual full diff and added files, base/source/candidate,
 delivery target, underlying verification and recorded policy/authority evidence.
 The reviewer inspects the files; self-review is not independent review.
+For local Apple refinement, supply the original accepted checkpoint, the entire
+checkpoint-to-current delta and the planned native coverage for eligibility review.
 
 **Complete when:** the agent's actual source-bound verdict is
 `pass | changes_requested | needs_human` with reproducible findings. `pass` has
@@ -128,6 +141,8 @@ Honor the user's budget/cancellation; there is no project-default repair cap.
 After a passing review, perform the guide's route-specific freshness check:
 live CI qualification/inspection, or local source-bound reaggregation (explicit
 candidate-evidence validation for conversion). Recompute local policy requirements.
+Local Apple refinement repeats its `qualify` request into a new report instead of
+feeding a local refinement report into ordinary aggregation.
 
 **Complete when:** the current source identity matches the review and complete
 evidence, hooks/authority remain applicable, and a candidate is still clean at

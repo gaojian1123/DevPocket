@@ -19,6 +19,7 @@ async function main() {
     group: { type: "string", default: "all" },
     "tooling-shard": { type: "string" },
     resume: { type: "string" },
+    refinement: { type: "string" },
     promote: { type: "string" },
     "candidate-request": { type: "string" },
     "candidate-evidence": { type: "boolean", default: false },
@@ -54,54 +55,65 @@ async function main() {
   let report, plan, phase = "plan";
   try {
     try {
-      plan = await verificationPlan(root, values.base, values.all);
-      requirePlanCollection(plan);
-      if (!["all", ...CHECK_GROUPS].includes(values.group)) throw verificationFault("configuration");
-      if (values["tooling-shard"] && (values.group !== "tooling" || values.plan || values.combine || values.promote)) {
-        throw verificationFault("configuration");
-      }
-      if (values.plan && values.combine || values.resume && (values.plan || values.combine || values.input.length)) {
-        throw verificationFault("configuration");
-      }
-      if (values.promote && (values.plan || values.combine || values.resume || values.input.length || values.group !== "all") ||
-          Boolean(values.promote) !== Boolean(values["candidate-request"]) ||
-          values["candidate-evidence"] && !values.combine) throw verificationFault("configuration");
-      if (values.combine) {
-        phase = "aggregate";
-        if (values.input.length > 32) throw verificationFault("report-invalid");
-        const reports = await Promise.all(values.input.map(async (file, inputIndex) => {
-          let value;
-          try { value = await readDiagnosticReport(file); }
-          catch (error) { throw verificationFault(error.diagnosticCode ?? (error instanceof SyntaxError ? "report-invalid" : "report-unavailable"), { inputIndex }, error); }
-          if (value === null) throw verificationFault("report-missing", { inputIndex });
-          return value;
-        }));
-        report = await validateVerificationEvidence(root, plan, reports, { ...values,
-          candidateEvidence: values["candidate-evidence"], backendDiagnostics: values["backend-diagnostics"] });
-        const upstream = new Map();
-        for (const result of values.upstream) {
-          const [group, outcome, extra] = result.split(":");
-          if (!CHECK_GROUPS.includes(group) || extra !== undefined || upstream.has(group) ||
-              !["success", "failure", "cancelled", "skipped", "unknown"].includes(outcome)) throw verificationFault("configuration");
-          upstream.set(group, outcome);
-        }
-        if (upstream.size) for (const group of plan.requiredGroups) {
-          const outcome = upstream.get(group) ?? "unknown";
-          if (outcome !== "success") throw verificationFault("upstream-job-failed", { group, outcome });
-        }
+      if (values.refinement) {
+        if (values.plan || values.all || values.group !== "all" || values["tooling-shard"] ||
+            values.resume || values.promote || values["candidate-request"] || values["candidate-evidence"] ||
+            values.combine || values.input.length || values.upstream.length || values["backend-diagnostics"] ||
+            values.jdk || values.sdk || values.image) throw verificationFault("configuration");
+        const { executeLocalRefinement } = await import("./verification-refinement.mjs");
+        report = await executeLocalRefinement(root, values.base, values.refinement);
       } else {
-        if (values.upstream.length) throw verificationFault("configuration");
-        phase = values.plan ? "plan" : "command";
-        report = values.plan ? { ...plan, status: "planned", complete: false, checks: [] }
-          : await executeVerification(root, plan, { ...values, backendDiagnostics: values["backend-diagnostics"],
-            toolingShard: values["tooling-shard"],
-            candidateRequest: values["candidate-request"],
-            directory: path.dirname(reportPath), signal: cancellation.signal });
+        plan = await verificationPlan(root, values.base, values.all);
+        requirePlanCollection(plan);
+        if (!["all", ...CHECK_GROUPS].includes(values.group)) throw verificationFault("configuration");
+        if (values["tooling-shard"] && (values.group !== "tooling" || values.plan || values.combine || values.promote)) {
+          throw verificationFault("configuration");
+        }
+        if (values.plan && values.combine || values.resume && (values.plan || values.combine || values.input.length)) {
+          throw verificationFault("configuration");
+        }
+        if (values.promote && (values.plan || values.combine || values.resume || values.input.length || values.group !== "all") ||
+            Boolean(values.promote) !== Boolean(values["candidate-request"]) ||
+            values["candidate-evidence"] && !values.combine) throw verificationFault("configuration");
+        if (values.combine) {
+          phase = "aggregate";
+          if (values.input.length > 32) throw verificationFault("report-invalid");
+          const reports = await Promise.all(values.input.map(async (file, inputIndex) => {
+            let value;
+            try { value = await readDiagnosticReport(file); }
+            catch (error) { throw verificationFault(error.diagnosticCode ?? (error instanceof SyntaxError ? "report-invalid" : "report-unavailable"), { inputIndex }, error); }
+            if (value === null) throw verificationFault("report-missing", { inputIndex });
+            return value;
+          }));
+          report = await validateVerificationEvidence(root, plan, reports, { ...values,
+            candidateEvidence: values["candidate-evidence"], backendDiagnostics: values["backend-diagnostics"] });
+          const upstream = new Map();
+          for (const result of values.upstream) {
+            const [group, outcome, extra] = result.split(":");
+            if (!CHECK_GROUPS.includes(group) || extra !== undefined || upstream.has(group) ||
+                !["success", "failure", "cancelled", "skipped", "unknown"].includes(outcome)) throw verificationFault("configuration");
+            upstream.set(group, outcome);
+          }
+          if (upstream.size) for (const group of plan.requiredGroups) {
+            const outcome = upstream.get(group) ?? "unknown";
+            if (outcome !== "success") throw verificationFault("upstream-job-failed", { group, outcome });
+          }
+        } else {
+          if (values.upstream.length) throw verificationFault("configuration");
+          phase = values.plan ? "plan" : "command";
+          report = values.plan ? { ...plan, status: "planned", complete: false, checks: [] }
+            : await executeVerification(root, plan, { ...values, backendDiagnostics: values["backend-diagnostics"],
+              toolingShard: values["tooling-shard"],
+              candidateRequest: values["candidate-request"],
+              directory: path.dirname(reportPath), signal: cancellation.signal });
+        }
       }
-      if (["failed", "blocked"].includes(report.status)) process.exitCode = 1;
+      if (["failed", "blocked", "full_required"].includes(report.status)) process.exitCode = 1;
     } catch (error) {
       const failure = verificationFailure(error, error.verificationContext?.phase ?? phase);
-      report = { ...plan, version: VERIFICATION_REPORT_VERSION, status: "blocked", complete: false, failure,
+      report = { ...plan, version: values.refinement ? 1 : VERIFICATION_REPORT_VERSION,
+        ...(values.refinement ? { kind: "local-refinement-failure", acceptance: false } : {}),
+        status: "blocked", complete: false, failure,
         error: failure.summary + (failure.missingChecks?.length ? ` Missing checks: ${failure.missingChecks.join(", ")}.` : ""),
         checks: [] };
       process.exitCode = 1;
@@ -134,7 +146,11 @@ async function main() {
   if (report.preflight?.status === "blocked") {
     console.error(JSON.stringify({ kind: "verification-preflight", ...report.preflight }));
   }
-  if (report.status === "planned") console.log(JSON.stringify({
+  if (report.kind?.startsWith("local-refinement-")) console.log(JSON.stringify({
+    kind: report.kind, acceptance: false, reviewRequired: report.reviewRequired ?? false,
+    changedFiles: report.changedFiles, selection: report.selection, reasons: report.reasons,
+  }));
+  else if (report.status === "planned") console.log(JSON.stringify({
     kind: "verification-plan", requiredChecks: report.requiredChecks, requiredGroups: report.requiredGroups,
     layouts: report.layouts, ciMacos: report.ciMacos, selectionReasons: report.selectionReasons, toolingShards: report.toolingShards ?? null,
   }));

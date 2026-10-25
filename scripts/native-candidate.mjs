@@ -8,7 +8,7 @@ const implementationFiles = [...new Set([...nativeFiles, "native-candidate.mjs",
   "verification.mjs", "verification-policy.mjs", "process.mjs", "device-run.mjs", "worker-diagnostics.mjs",
   "device-diagnostics.mjs", "diagnostic-errors.mjs", "bounded-worker-log.mjs", "diagnostic-publication.mjs",
   "native-lifecycle.mjs", "verification-executor.mjs", "verification-backend.mjs", "verification-android.mjs",
-  "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs", "verification-transition.mjs",
+  "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs", "verification-transition.mjs", "verification-refinement.mjs",
   "verification-tooling.mjs", "verification-admission.mjs", "verification-ci.mjs", "verification-ci-artifact.ps1",
   "verify.mjs", "verify.ps1", "test-tooling.mjs", "owned-command-windows.mjs", "owned-command.cs", "owned-command.ps1",
   "owned-command-linux.py", "owned-command-darwin.py", "local-ipc.mjs", "android-platform.mjs", "emulator-resources.mjs"])].sort();
