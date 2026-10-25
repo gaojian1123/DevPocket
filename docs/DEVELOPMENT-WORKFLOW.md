@@ -551,6 +551,10 @@ when the source plan selects them. For an initial local visual-refinement
 checkpoint, also use `-CaptureRefinementContext` and the existing subject/review
 route. A missing or stale native result blocks the Apple check; it is not a reason
 to invent passing evidence.
+For an authorized working-tree-to-candidate conversion, collect fresh
+candidate-bound Apple evidence and pass `-AppleEvidence` alongside `-Promote`
+and `-CandidateRequest`. The original signed run still needs validation;
+old native results are not relabelled to the candidate.
 
 ### Hosted Apple CI
 

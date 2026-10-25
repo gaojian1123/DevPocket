@@ -75,7 +75,7 @@ async function main() {
         plan = await verificationPlan(root, values.base, values.all);
         requirePlanCollection(plan);
         if (values["apple-evidence"] && (!plan.requiredChecks.includes("apple-native") ||
-            !["all", "apple"].includes(values.group) || values.combine || values.plan || values.promote)) {
+            !["all", "apple"].includes(values.group) || values.combine || values.plan)) {
           throw verificationFault("configuration");
         }
         if (!["all", ...CHECK_GROUPS].includes(values.group)) throw verificationFault("configuration");

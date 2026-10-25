@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import {
@@ -14,6 +15,7 @@ import { combineVerification, requireToolingShardReport } from "../verification.
 import { ciReportEnvelope, collectCIReports } from "../verification-ci.mjs";
 import { toolingCatalogue, toolingShardDescriptor } from "../verification-tooling.mjs";
 import { syntheticExecution } from "./fixtures/verification-tools.mjs";
+import { openVerificationRun, readVerificationRun } from "../verification-run.mjs";
 
 const uuid = (number) => `00000000-0000-4000-8000-${number.toString(16).padStart(12, "0")}`;
 const owner = uuid(42);
@@ -272,6 +274,40 @@ test("complete evidence validates variable suite sizes, not a permanent 31-test 
     const report = evidenceFixture(modelCases);
     assert.equal(validateAppleNativeEvidence(report, plan), report);
     assert.ok(report.tests.every((item) => item.result.cases.length === modelCases + 1));
+  }
+});
+
+test("successful Apple group and full-gate receipts round-trip through signed run history", async (t) => {
+  await mkdir(".data/tests", { recursive: true });
+  const root = await mkdtemp(path.resolve(".data/tests/apple-ledger-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const selected = { ...structuredClone(plan), version: 6, ciMacos: false, layouts: false,
+    requiredChecks: ["apple-native"], requiredGroups: ["apple"] };
+  for (const group of ["apple", "all"]) {
+    const evidence = evidenceFixture(), policy = "4".repeat(64);
+    const run = await openVerificationRun(root, selected, {
+      group, directory: path.join(root, ".data/verification", group),
+    }, policy);
+    const report = { ...selected, group, run: run.reference, status: "passed", complete: true,
+      checks: [{ id: "apple-native", status: "passed", exitCode: 0,
+        execution: { source: plan.source, startedAt: evidence.startedAt, completedAt: evidence.completedAt },
+        appleEvidence: evidence }] };
+    await run.record({ ...report, group: "apple" }, "5".repeat(64), { available: true }, false);
+    await run.finish(report, true, ["apple"]);
+    const recorded = await readVerificationRun(root, run.reference.manifest);
+    assert.deepEqual(recorded.report, report);
+    assert.deepEqual(recorded.manifest.binding.apple, APPLE_REQUIREMENTS);
+    assert.deepEqual(recorded.latest.get("apple").report.checks[0].appleEvidence, evidence);
+    const resumed = await openVerificationRun(root, selected, {
+      group, resume: run.reference.manifest, directory: path.join(root, ".data/verification", group + "-resumed"),
+    }, policy);
+    assert.deepEqual(await resumed.reusable("apple", "5".repeat(64), { available: true }, false),
+      { status: "invalidated", reason: "environment-unbound" });
+    await resumed.finish({ ...selected, group, status: "blocked", complete: false,
+      checks: [{ id: "apple-native", status: "not_run" }] }, true, []);
+    assert.equal((await readVerificationRun(root, resumed.reference.manifest)).count, 2);
+    await writeFile(path.join(recorded.directory, "0003-foreign.json"), "{}\n");
+    await assert.rejects(readVerificationRun(root, resumed.reference.manifest), { diagnosticCode: "run-invalid" });
   }
 });
 

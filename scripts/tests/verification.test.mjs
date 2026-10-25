@@ -3269,6 +3269,23 @@ async function commitFixtureCandidate(root) {
   return file;
 }
 
+test("candidate promotion accepts a fresh Apple evidence input but still validates the original signed run", async (t) => {
+  const root = await changedRepository(t, ["apple/DevPocket/DevPocket/ContentView.swift"]);
+  const promotion = ["--promote", path.join(root, ".data/verification/original/run/run.json"),
+    "--candidate-request", path.join(root, ".data/verification/candidate.json"),
+    "--apple-evidence", path.join(root, ".data/verification/candidate-apple-request.json")];
+  const result = await verify(root, promotion);
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.report.failure.reason, "run-untrusted", JSON.stringify(result.report));
+  assert.equal(result.report.complete, false);
+  assert.equal(result.report.preflight, undefined);
+  assert.deepEqual(result.report.checks, [{ id: "apple-native", status: "not_run" }]);
+  for (const extra of [["--plan"], ["--combine"], ["--group", "apple"]]) {
+    const rejected = await verify(root, [...promotion, ...extra]);
+    assert.equal(rejected.report.failure.reason, "configuration");
+  }
+});
+
 test("a native candidate transition reuses content-only execution across Git normalization without rewriting its old HEAD or time", async (t) => {
   const { root, base, counts } = await recoveryFixture(t, { candidate: true });
   // CI's process-level Git override otherwise takes precedence over the disposable repository's config.

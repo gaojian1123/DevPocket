@@ -9,6 +9,7 @@ import { executeLocalRefinement } from "../verification-refinement.mjs";
 import { combineVerification, executeVerification, verificationPlan } from "../verification.mjs";
 import { verificationImpact } from "../verification-policy.mjs";
 import { developmentReviewRequirements } from "../development-policy.mjs";
+import { readVerificationRun } from "../verification-run.mjs";
 
 const exec = promisify(execFile);
 const digest = (value) => createHash("sha256").update(value).digest("hex");
@@ -469,6 +470,15 @@ nativeTest("a missing local Apple request blocks before execution and releases t
   assert.equal(check.failure.reason, "apple-evidence-required", JSON.stringify(report));
   assert.equal(check.executionState, "not-started");
   assert.equal(report.admission.state, report.admission.mode === "inherited" ? "returned" : "released");
+  const recorded = await readVerificationRun(f.root, report.run.manifest);
+  assert.deepEqual(recorded.report, report);
+  assert.equal(recorded.latest.get("apple").report.group, "apple");
+  const resumed = await executeVerification(f.root, plan, {
+    group: "apple", resume: report.run.manifest,
+    directory: path.join(f.root, ".data/verification/missing-apple-request-resumed"),
+  });
+  assert.equal(resumed.checks.find((item) => item.id === "apple-native").failure.reason, "apple-evidence-required");
+  assert.equal((await readVerificationRun(f.root, resumed.run.manifest)).count, 2);
 });
 
 nativeTest("retained evidence paths cannot escape the worktree or follow symlinks", async (t) => {
