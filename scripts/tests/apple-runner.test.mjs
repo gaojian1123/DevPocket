@@ -291,7 +291,9 @@ test("successful Apple group and full-gate receipts round-trip through signed ru
     const report = { ...selected, group, run: run.reference, status: "passed", complete: true,
       checks: [{ id: "apple-native", status: "passed", exitCode: 0,
         execution: { source: plan.source, startedAt: evidence.startedAt, completedAt: evidence.completedAt },
-        appleEvidence: evidence }] };
+        executionState: "exited", privateLog: { availability: "retained" },
+        commandOutcome: { observedProcess: "owned-command-supervisor", reason: "exit",
+          exitCode: 0, cleanupFailure: null }, cleanup: "completed", appleEvidence: evidence }] };
     await run.record({ ...report, group: "apple" }, "5".repeat(64), { available: true }, false);
     await run.finish(report, true, ["apple"]);
     const recorded = await readVerificationRun(root, run.reference.manifest);
