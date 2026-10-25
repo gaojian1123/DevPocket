@@ -50,6 +50,7 @@ async function validateTransition(root, plan, transition) {
       !equal(manifest.plan.changedFiles, plan.changedFiles) ||
       !equal(manifest.plan.requiredChecks, plan.requiredChecks) ||
       !equal(manifest.plan.requiredGroups, plan.requiredGroups) || manifest.plan.layouts !== plan.layouts ||
+      !equal(manifest.plan.apple ?? null, plan.apple ?? null) ||
       (manifest.plan.ciMacos ?? false) !== (plan.ciMacos ?? false) ||
       manifest.binding.policy !== await verificationExecutionPolicy()) fail();
   combineVerification(manifest.plan, [original.report]);

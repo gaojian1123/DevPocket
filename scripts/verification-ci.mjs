@@ -18,8 +18,8 @@ const sha = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const repositoryName = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 const validRepository = (value) => typeof value === "string" && value.length <= 256 && repositoryName.test(value) &&
   value.split("/").every((part) => part !== "." && part !== "..");
-const unitName = /^(?:tooling-(?:all|candidate|verification|diagnostics|native)|macos|backend|android|device|gate)$/;
-const artifactName = /^verification-((?:tooling-(?:all|candidate|verification|diagnostics|native))|macos|backend|android|device)-attempt-([1-9]\d*)$/;
+const unitName = /^(?:tooling-(?:all|candidate|verification|diagnostics|native)|macos|backend|android|device|apple|gate)$/;
+const artifactName = /^verification-((?:tooling-(?:all|candidate|verification|diagnostics|native))|macos|backend|android|device|apple)-attempt-([1-9]\d*)$/;
 const digest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const fail = (cause) => diagnosticError("ci-evidence", cause);
@@ -37,6 +37,7 @@ function macosReport(plan, report) {
   return {
     version: report.version, base: report.base, source: { ...plan.source }, ciMacos: report.ciMacos,
     requiredChecks: [...plan.requiredChecks], requiredGroups: [...plan.requiredGroups],
+    ...(plan.apple ? { apple: structuredClone(plan.apple) } : {}),
     toolingShards: structuredClone(plan.toolingShards), group: report.group, status: report.status, complete: report.complete,
     environment: { platform: report.environment.platform, architecture: report.environment.architecture },
     checks: [{ id: check.id, status: check.status, exitCode: check.exitCode, toolingShard: structuredClone(check.toolingShard),
@@ -46,6 +47,13 @@ function macosReport(plan, report) {
         exitCode: check.commandOutcome.exitCode, cleanupFailure: check.commandOutcome.cleanupFailure,
       } }],
   };
+}
+
+function requireAppleCIContext(report, context, attempt) {
+  const evidence = report.checks?.find((check) => check.id === "apple-native")?.appleEvidence;
+  if (evidence?.origin !== "ci-xcodebuild" || evidence.ci?.repository !== context.repository ||
+      evidence.ci.runId !== context.runId || evidence.ci.runAttempt !== String(attempt) ||
+      evidence.ci.job !== "apple" || evidence.ci.sha !== context.tested.head) throw fail();
 }
 
 function requireContext(context) {
@@ -126,6 +134,7 @@ export function collectCIReports(plan, context, envelopes, upstream) {
     seen.add(value.unit);
     const group = value.unit.startsWith("tooling-") || value.unit === "macos" ? "tooling" : value.unit;
     if (value.report.group !== group) throw fail();
+    if (group === "apple") requireAppleCIContext(value.report, context, attempt);
     if (value.unit === "macos") macos = macosReport(plan, value.report);
     else if (group === "tooling") {
       const descriptor = value.report.checks?.find((check) => check.id === "tooling-tests")?.toolingShard;
@@ -230,6 +239,9 @@ export function validateLiveCIEnvelope(envelope, { repository, pullRequest, base
       expected.some((unit) => !units.includes(unit)) || value.inputs.some((input) =>
         !Number.isSafeInteger(input.attempt) || input.attempt < 1 || input.attempt > context.attempt ||
         !/^[a-f0-9]{64}$/.test(input.reportDigest ?? ""))) throw fail();
+  if (value.report.requiredGroups.includes("apple")) {
+    requireAppleCIContext(value.report, context, value.inputs.find((input) => input.unit === "apple").attempt);
+  }
   return value;
 }
 

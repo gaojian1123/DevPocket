@@ -9,6 +9,7 @@ import { combineVerification, requireCheckPolicy, requirePlanCollection, require
   verificationFailure, verificationFault, verificationProcessCleanupConfirmed, verificationCleanupConfirmed } from "./verification.mjs";
 import { backendVerification, prepareBackendVerification } from "./verification-backend.mjs";
 import { androidVerification } from "./verification-android.mjs";
+import { appleVerification } from "./verification-apple.mjs";
 import { acquireVerificationLock, openVerificationRun, readVerificationRun } from "./verification-run.mjs";
 import { emulatorInputDifference, verificationArtifacts, verificationExecutionPolicy, verificationPreflight } from "./verification-preflight.mjs";
 import { candidateReusableChecks, capturePromotionContext, prepareVerificationTransition, validateCandidateVerification } from "./verification-transition.mjs";
@@ -262,16 +263,9 @@ export async function executeVerification(root, plan, options = {}) {
 async function executeCheck(root, plan, check, options, backend) {
   const definition = CHECKS.find((item) => item.id === check.id);
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-  const adapter = definition.group === "tooling" ? {
-    args: ["-NoProfile", "-NonInteractive", "-Command", check.toolingShard
-      ? `& ${npm} run test:tooling -- --tooling-shard ${check.toolingShard.id}; exit $LASTEXITCODE`
-      : `& ${npm} run test:tooling; exit $LASTEXITCODE`],
-    timeoutMs: 60 * 60_000, graceMs: 5000,
-  } : definition.group === "backend" ? backendVerification(root, check, backend)
-    : await androidVerification(root, check, plan, options);
   const started = Date.now();
   const log = path.join(options.directory, `${check.id}.log`);
-  let logFile, checkPhase = "log", retainedLog = Buffer.alloc(0), logTruncated = false;
+  let adapter, logFile, checkPhase = "preflight", retainedLog = Buffer.alloc(0), logTruncated = false;
   check.executionState = "not-started";
   const logIssue = (error) => {
     check.collectionStatus = "failed";
@@ -304,11 +298,20 @@ async function executeCheck(root, plan, check, options, backend) {
   };
   let output;
   try {
+    adapter = definition.group === "tooling" ? {
+      args: ["-NoProfile", "-NonInteractive", "-Command", check.toolingShard
+        ? `& ${npm} run test:tooling -- --tooling-shard ${check.toolingShard.id}; exit $LASTEXITCODE`
+        : `& ${npm} run test:tooling; exit $LASTEXITCODE`],
+      timeoutMs: 60 * 60_000, graceMs: 5000,
+    } : definition.group === "backend" ? backendVerification(root, check, backend)
+      : definition.group === "apple" ? await appleVerification(root, check, plan, options)
+        : await androidVerification(root, check, plan, options);
+    checkPhase = "log";
     logFile = await open(log, "wx", 0o600);
     checkPhase = "command";
     check.executionState = "started";
     check.execution = { source: structuredClone(plan.source), startedAt: new Date().toISOString() };
-    output = await runCommand("pwsh", adapter.args, {
+    output = await runCommand(adapter.file ?? "pwsh", adapter.args, {
       cwd: root, env: options.admissionEnvironment ? { ...(adapter.env ?? process.env), ...options.admissionEnvironment } : adapter.env,
       timeoutMs: adapter.timeoutMs, graceMs: adapter.graceMs, signal: options.signal,
     });
@@ -327,7 +330,7 @@ async function executeCheck(root, plan, check, options, backend) {
     if (check.executionState === "started") check.executionState = "exited";
     check.failure = verificationFailure(error, error.verificationContext?.phase ?? checkPhase);
     if (!logFile) {
-      check.failure = { ...failureDetails(error, "report-write"), phase: "log", check: check.id };
+      if (checkPhase === "log") check.failure = { ...failureDetails(error, "report-write"), phase: "log", check: check.id };
       check.privateLog = { availability: "not-produced", truncated: false, retainedBytes: 0 };
     }
     await writeLog(`${error.stdout ?? ""}${error.stderr ?? ""}\n${error.message}\n`);
@@ -336,7 +339,7 @@ async function executeCheck(root, plan, check, options, backend) {
       exitCode: typeof error.code === "number" ? error.code : null,
       reason: check.failure.summary,
     });
-    await adapter.failure?.(error, output);
+    await adapter?.failure?.(error, output);
   } finally {
     try { await logFile?.close(); }
     catch (error) {

@@ -299,7 +299,7 @@ test("macOS CI workflow is plan-selected, source-sealed and required by the fina
   assert.match(macos, /verification-macos-attempt-/);
   assert.doesNotMatch(macos, /continue-on-error|prepare-native|sdkmanager|test-android\.ps1/);
   const gate = workflow.slice(workflow.indexOf("  gate:\n"));
-  assert.match(gate, /needs: \[plan, tooling, macos, backend, android, device\]/);
+  assert.match(gate, /needs: \[plan, tooling, macos, backend, android, device, apple\]/);
   assert.doesNotMatch(workflow, /isolated-boundary|ISOLATION_RESULT|isolated-worker/);
   assert.match(gate, /MACOS_RESULT: \$\{\{ needs\.macos\.result \}\}/);
   assert.match(gate, /'tooling', 'macos', 'backend', 'android', 'device'/);

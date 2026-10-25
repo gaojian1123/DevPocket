@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, open, readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -8,6 +8,10 @@ import { combineVerification, verificationFault, verificationPlan } from "./veri
 import { readVerificationRun } from "./verification-run.mjs";
 import { applePreparationInputs, resolveVerificationExecutable, verificationExecutionPolicy } from "./verification-preflight.mjs";
 import { runCommand } from "./process.mjs";
+import {
+  APPLE_PROBES, APPLE_REQUIREMENTS, appleDeviceId, appleDevices, appleDigest, appleJSON,
+  inspectAppleScheme, inspectAppleToolchain, normalizeAppleTestResult, projectAppleXcresult, validateAppleNativeEvidence,
+} from "./apple-evidence.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const equal = isDeepStrictEqual;
@@ -294,16 +298,67 @@ async function makePlan(root, base, request, before) {
   return { ...output, status: "planned", delta, selection: selection(request.selection, changed) };
 }
 
-async function currentPlan(root, base, file, before) {
+async function makeApplePlan(root, base, request, before, directory, signal) {
+  const policy = await verificationPlan(root, base);
+  if (!policy.requiredChecks.includes("apple-native") || !sameSource(policy.source, before.source)) fail("policy-mismatch");
+  if (request.runId !== undefined && !appleDeviceId(request.runId) ||
+      !Array.isArray(request.targets) || request.targets.length !== APPLE_REQUIREMENTS.targets.length ||
+      new Set(request.targets.map((target) => target?.role)).size !== request.targets.length ||
+      new Set(request.targets.map((target) => target?.deviceId)).size !== request.targets.length) fail("configuration");
+  const absolute = await location(root, directory, true), relative = path.relative(root, absolute).replaceAll("\\", "/");
+  if (!/^\.data\/verification\/[^/]+/.test(relative)) fail("ownership-mismatch");
+  const outputs = {};
+  for (const probe of APPLE_PROBES) {
+    const result = await runCommand(probe.file, probe.args, { cwd: root, timeoutMs: 30000, signal });
+    outputs[probe.id] = result.stdout;
+  }
+  const toolchain = inspectAppleToolchain(outputs), inventory = JSON.parse(outputs.simulators);
+  const devices = appleDevices(inventory), tests = [], simulators = [];
+  for (const requirement of APPLE_REQUIREMENTS.targets) {
+    const target = request.targets.find((item) => item.role === requirement.role);
+    if (!text(target?.deviceId)) fail("configuration");
+    if (requirement.role === "mac") {
+      tests.push({ role: "mac", platform: "macOS", osVersion: toolchain.macOS,
+        architecture: toolchain.architecture, deviceId: target.deviceId });
+      continue;
+    }
+    const found = devices.filter((item) => item.udid === target.deviceId);
+    if (found.length !== 1) fail("device-evidence");
+    const device = found[0], runtime = inventory.runtimes.find((item) => item.identifier === device.runtimeIdentifier);
+    const type = inventory.devicetypes.find((item) => item.identifier === device.deviceTypeIdentifier);
+    if (!runtime?.isAvailable || runtime.version.split(".").slice(0, 2).join(".") !== requirement.runtimeVersion ||
+        type?.name !== requirement.deviceTypeName ||
+        !runtime.supportedDeviceTypes?.some((item) => item.identifier === type.identifier)) fail("device-evidence");
+    const selected = { ...requirement, osVersion: runtime.version, runtimeIdentifier: runtime.identifier,
+      deviceTypeIdentifier: type.identifier };
+    simulators.push(selected);
+    tests.push({ ...selected, architecture: toolchain.architecture, deviceId: target.deviceId });
+  }
+  toolchain.simulators = simulators;
+  const schemePath = `${APPLE_REQUIREMENTS.project}/xcshareddata/xcschemes/DevPocket.xcscheme`;
+  const xml = await readFile(path.join(root, schemePath), "utf8");
+  return { version, kind: "local-apple-plan", base, context: before, apple: policy.apple,
+    directory: relative, runId: request.runId ?? randomUUID(), changedFiles: policy.changedFiles,
+    toolchain, scheme: { path: schemePath, xml, sha256: appleDigest(xml), targets: inspectAppleScheme(xml) },
+    selection: { builds: ["ios", "macos"], tests, fullSuite: true },
+    status: "planned", complete: false, acceptance: false, checks: [], createdAt: new Date().toISOString() };
+}
+
+async function currentPlan(root, base, file, before, signal) {
   const input = await json(root, file), plan = input.value;
-  if (plan?.version !== version || plan.kind !== "local-refinement-plan" || plan.status !== "planned" ||
+  const apple = plan?.kind === "local-apple-plan";
+  if (plan?.version !== version || !["local-refinement-plan", "local-apple-plan"].includes(plan.kind) || plan.status !== "planned" ||
       !timestamp(plan.createdAt)) fail();
   if (!sameSource(plan.context?.source, before.source)) fail("source-mismatch");
   if (!equal(plan.context.environment, before.environment)) fail("environment-changed");
   if (!equal(plan.context, before)) fail("policy-mismatch");
   await retained(root, plan.request);
-  const expected = await makePlan(root, base, { checkpoint: plan.checkpoint?.path, selection: plan.selection }, before);
-  for (const key of ["base", "context", "checkpoint", "changedFiles", "delta", "selection", "status"]) {
+  const expected = apple
+    ? await makeApplePlan(root, base, { targets: plan.selection.tests, runId: plan.runId }, before, plan.directory, signal)
+    : await makePlan(root, base, { checkpoint: plan.checkpoint?.path, selection: plan.selection }, before);
+  const keys = apple ? ["base", "context", "apple", "directory", "runId", "changedFiles", "toolchain", "scheme", "selection", "status"]
+    : ["base", "context", "checkpoint", "changedFiles", "delta", "selection", "status"];
+  for (const key of keys) {
     if (!equal(plan[key], expected[key])) {
       if (key === "context" && !equal(plan.context.environment, before.environment)) fail("environment-changed");
       fail(key === "context" ? "source-mismatch" : "policy-mismatch");
@@ -312,8 +367,8 @@ async function currentPlan(root, base, file, before) {
   return input;
 }
 
-async function binding(root, base, request, before) {
-  const plan = await currentPlan(root, base, request.plan, before);
+async function binding(root, base, request, before, signal) {
+  const plan = await currentPlan(root, base, request.plan, before, signal);
   const result = { version, kind: "local-refinement-binding", base, plan: plan.reference,
     context: before, source: before.source, hooks: before.hooks, observedAt: new Date().toISOString(),
     status: "observed", complete: false, acceptance: false, checks: [] };
@@ -400,9 +455,11 @@ async function resultExport(root, bundle, kind, signal) {
   }
 }
 
-async function bundleFiles(root, directory, produced = false) {
+async function bundleFiles(root, directory, produced = false, manifest = false) {
   const absolute = produced ? await realpath(directory) : await location(root, directory, true), files = {};
-  if (produced && (!path.isAbsolute(directory) || path.basename(directory) !== "DevPocket.app" ||
+  const entries = [];
+  if (produced && (!path.isAbsolute(directory) ||
+      !(path.basename(directory) === "DevPocket.app" || produced === "xcresult" && directory.endsWith(".xcresult")) ||
       !(await lstat(directory)).isDirectory() || (await lstat(directory)).isSymbolicLink())) fail("ownership-mismatch");
   let total = 0;
   const visit = async (relative, depth = 0) => {
@@ -417,12 +474,19 @@ async function bundleFiles(root, directory, produced = false) {
         total += item.bytes.length;
         if (total > 512 * 1024 * 1024) fail("output-limit");
         files[name.replaceAll("\\", "/")] = item.sha256;
+        entries.push({ path: name.replaceAll("\\", "/"), bytes: item.bytes.length, sha256: item.sha256 });
       }
     }
   };
   await visit("");
   if (await realpath(path.resolve(root, directory)) !== absolute) fail("artifact-changed");
-  return files;
+  return manifest ? entries.sort((a, b) => a.path.localeCompare(b.path)) : files;
+}
+
+async function nativeTree(root, directory, producedBy) {
+  const files = await bundleFiles(root, directory, false, true);
+  return { path: path.relative(root, path.resolve(root, directory)).replaceAll("\\", "/"),
+    producedBy, files, sha256: appleDigest(appleJSON(files)) };
 }
 
 async function sealedProduct(root, item, seal, source, renderer) {
@@ -442,14 +506,39 @@ async function sealedProduct(root, item, seal, source, renderer) {
   return files;
 }
 
-function buildInvocation(start, finish, root, observedBefore, observedAfter) {
+async function workspaceBinding(root, nativeRequest, supplied, observedBefore) {
+  const identifier = nativeRequest?.data?.arguments?.workspaceIdentifier;
+  const project = path.join(root, APPLE_REQUIREMENTS.project);
+  if (identifier === project) return { identifier, evidence: [] };
+  if (!text(identifier) || !supplied) fail("execution-origin");
+  const start = await json(root, supplied.requestEvent), finish = await json(root, supplied.responseEvent);
+  const event = start.value, result = finish.value;
+  if (event?.type !== "tool.execution_start" || event.data?.mcpServerName !== "xcode" ||
+      event.data.mcpToolName !== "XcodeListWorkspaces" || !text(event.data.toolCallId) ||
+      result?.type !== "tool.execution_complete" || result.data?.toolCallId !== event.data.toolCallId ||
+      result.data.success !== true || result.data.result?.isError === true ||
+      typeof result.data.result?.structuredContent?.message !== "string" ||
+      !timestamp(event.timestamp) || !timestamp(result.timestamp) ||
+      event.timestamp < observedBefore || result.timestamp < event.timestamp ||
+      result.timestamp > nativeRequest.timestamp) fail("execution-origin");
+  const mappings = result.data.result.structuredContent.message.split(/\r?\n/).filter((line) => line.trim()).map((line) => {
+    const match = /^\*\s*workspaceIdentifier:\s*([^,\r\n]+),\s*workspacePath:\s*(.+)$/.exec(line.trim());
+    if (!match || !path.isAbsolute(match[2])) fail("execution-origin");
+    return { identifier: match[1].trim(), path: match[2] };
+  });
+  const matches = mappings.filter((item) => item.identifier === identifier);
+  if (matches.length !== 1 || matches[0].path !== project) fail("execution-origin");
+  return { identifier, evidence: [start.reference, finish.reference] };
+}
+
+function buildInvocation(start, finish, root, observedBefore, observedAfter, identifier) {
   const args = start?.data?.arguments, result = finish?.data?.result?.structuredContent;
   const project = path.join(root, "apple", "DevPocket", "DevPocket.xcodeproj");
-  if (start?.type !== "tool.execution_start" || start.data.mcpServerName !== "xcode" ||
+  if (start?.type !== "tool.execution_start" || start.data?.mcpServerName !== "xcode" ||
       start.data.mcpToolName !== "BuildProject" || !text(start.data.toolCallId) ||
-      finish?.type !== "tool.execution_complete" || finish.data.toolCallId !== start.data.toolCallId ||
+      finish?.type !== "tool.execution_complete" || finish.data?.toolCallId !== start.data.toolCallId ||
       finish.data.success !== true || finish.data.result?.isError === true ||
-      args?.workspaceIdentifier !== project ||
+      args?.workspaceIdentifier !== identifier ||
       (args.buildForTesting !== undefined && args.buildForTesting !== false) ||
       Object.keys(args).some((key) => !["workspaceIdentifier", "buildForTesting"].includes(key)) ||
       result?.buildResult !== "The project built successfully." || !Array.isArray(result.errors) || result.errors.length ||
@@ -467,8 +556,9 @@ function buildInvocation(start, finish, root, observedBefore, observedAfter) {
 
 async function buildEvidence(root, item, pair, source, renderer) {
   const start = await json(root, item.requestEvent), finish = await json(root, item.responseEvent);
+  const workspace = await workspaceBinding(root, start.value, item.workspaceBinding, pair.before.value.observedAt);
   const execution = buildInvocation(start.value, finish.value, root,
-    pair.before.value.observedAt, pair.after.value.observedAt);
+    pair.before.value.observedAt, pair.after.value.observedAt, workspace.identifier);
   const log = await artifact(root, item.log), originalLog = await regularArtifact(execution.fullLogPath);
   if (log.reference.sha256 !== originalLog.sha256) fail("artifact-changed");
   const content = log.bytes.toString("utf8");
@@ -486,11 +576,12 @@ async function buildEvidence(root, item, pair, source, renderer) {
   const files = await sealedProduct(root, item, seal.value, source, renderer);
   if (!equal(files, await bundleFiles(root, products[0], true))) fail("artifact-changed");
   return { execution, product: products[0], bundle: item.bundle,
-    evidence: [start.reference, finish.reference, log.reference, seal.reference] };
+    evidence: [start.reference, finish.reference, ...workspace.evidence, log.reference, seal.reference] };
 }
 
 async function qualify(root, base, request, before, signal) {
-  const input = await currentPlan(root, base, request.plan, before), plan = input.value;
+  const input = await currentPlan(root, base, request.plan, before, signal), plan = input.value;
+  if (plan.kind !== "local-refinement-plan") fail("configuration");
   if (!Array.isArray(request.tests) || request.tests.length !== plan.selection.tests.length ||
       !Array.isArray(request.builds) || request.builds.length !== 2) fail("shard-missing");
   const checks = [];
@@ -532,17 +623,99 @@ async function qualify(root, base, request, before, signal) {
     note: "Local Apple refinement evidence only. Independent review and fresh local authority are still required; not PR CI evidence." };
 }
 
-export async function executeLocalRefinement(root, base, requestFile, signal) {
+export function validateAppleMcpTestInvocation(start, finish, root, pair, target, identifier) {
+  const args = start?.data?.arguments, result = finish?.data?.result?.structuredContent;
+  if (start?.type !== "tool.execution_start" || start.data?.mcpServerName !== "xcode" ||
+      start.data.mcpToolName !== "RunAllTests" || !text(start.data.toolCallId) ||
+      finish?.type !== "tool.execution_complete" || finish.data?.toolCallId !== start.data.toolCallId ||
+      finish.data.success !== true || finish.data.result?.isError === true ||
+      !text(identifier) || args?.workspaceIdentifier !== identifier ||
+      Object.keys(args).some((key) => key !== "workspaceIdentifier") ||
+      result?.schemeName !== APPLE_REQUIREMENTS.scheme || result.truncated !== false ||
+      !Array.isArray(result.results) || !result.results.length ||
+      !text(result.xcresultBundlePath) || !path.isAbsolute(result.xcresultBundlePath) ||
+      !result.xcresultBundlePath.endsWith(".xcresult") ||
+      !timestamp(start.timestamp) || !timestamp(finish.timestamp) ||
+      start.timestamp < pair.before.value.observedAt || finish.timestamp < start.timestamp ||
+      finish.timestamp > pair.after.value.observedAt ||
+      result.counts?.total !== result.results.length || result.totalResults !== result.results.length ||
+      result.counts.passed !== result.results.length ||
+      ["failed", "skipped", "expectedFailures", "notRun"].some((key) => result.counts[key] !== 0) ||
+      result.results.some((item) => !text(item?.targetName) || !text(item.identifier) ||
+        item.state !== "Passed" || !Array.isArray(item.errorMessages) || item.errorMessages.length) ||
+      new Set(result.results.map((item) => `${item.targetName}/${item.identifier}`)).size !== result.results.length) {
+    fail("case-evidence");
+  }
+  return { execution: { origin: "local-xcode-mcp", kind: "original-client-tool-call",
+    workspace: path.join(root, APPLE_REQUIREMENTS.project), tool: "xcode/RunAllTests",
+    toolCallId: start.data.toolCallId, startedAt: start.timestamp, completedAt: finish.timestamp },
+  result, target };
+}
+
+async function qualifyApple(root, base, request, before, signal) {
+  const input = await currentPlan(root, base, request.plan, before, signal), plan = input.value;
+  if (plan.kind !== "local-apple-plan" || !Array.isArray(request.tests) || request.tests.length !== 4 ||
+      !Array.isArray(request.builds) || request.builds.length !== 2) fail("configuration");
+  const evidence = { version: 1, kind: "apple-native-evidence", origin: "local-xcode-mcp",
+    base, source: before.source, sourceBefore: plan.context.source, sourceAfter: before.source,
+    workspace: root, directory: plan.directory, runId: plan.runId, apple: plan.apple,
+    startedAt: plan.createdAt, completedAt: null, status: "passed", cleanup: "completed",
+    failures: [], toolchain: plan.toolchain, scheme: plan.scheme, builds: [], tests: [] };
+  for (const target of plan.selection.tests) {
+    signal?.throwIfAborted();
+    const matches = request.tests.filter((item) => item.role === target.role);
+    if (matches.length !== 1) fail("case-evidence");
+    const item = matches[0], pair = await bindingPair(root, item.binding, input);
+    const start = await json(root, item.requestEvent), finish = await json(root, item.responseEvent);
+    const workspace = await workspaceBinding(root, start.value, item.workspaceBinding, pair.before.value.observedAt);
+    const call = validateAppleMcpTestInvocation(start.value, finish.value, root, pair, target, workspace.identifier);
+    const summary = await resultExport(root, call.result.xcresultBundlePath, "summary", signal);
+    const testTree = await resultExport(root, call.result.xcresultBundlePath, "tests", signal);
+    const retainedBundle = await location(root, item.resultBundle, true);
+    if (!equal(summary, await resultExport(root, retainedBundle, "summary", signal)) ||
+        !equal(testTree, await resultExport(root, retainedBundle, "tests", signal)) ||
+        !equal(await bundleFiles(root, call.result.xcresultBundlePath, "xcresult"),
+          await bundleFiles(root, retainedBundle))) fail("artifact-changed");
+    const result = normalizeAppleTestResult(summary, testTree, target, call.execution, plan.scheme.targets);
+    const observed = call.result.results.map((test) => `${test.targetName}/${test.identifier}`).sort();
+    if (!equal(observed, result.cases.map((test) => `${test.target}/${test.identifier}`).sort())) fail("case-evidence");
+    evidence.tests.push({ role: target.role, action: "test", status: "passed", target,
+      execution: { ...call.execution, evidence: [start.reference, finish.reference, ...workspace.evidence, pair.before.reference, pair.after.reference] },
+      resultBundle: await nativeTree(root, retainedBundle, call.execution.toolCallId),
+      summary: projectAppleXcresult("summary", summary), testTree: projectAppleXcresult("tests", testTree), result });
+  }
+  for (const platform of ["ios", "macos"]) {
+    const matches = request.builds.filter((item) => item.platform === platform);
+    if (matches.length !== 1) fail("case-evidence");
+    const item = matches[0], pair = await bindingPair(root, item.binding, input);
+    const built = await buildEvidence(root, item, pair, before.source, before.environment.preparation.renderer);
+    evidence.builds.push({ platform, action: "build", status: "passed", originalProduct: built.product,
+      execution: { ...built.execution, origin: evidence.origin,
+        evidence: [...built.evidence, pair.before.reference, pair.after.reference] },
+      product: await nativeTree(root, built.bundle, built.execution.toolCallId) });
+  }
+  evidence.completedAt = new Date().toISOString();
+  validateAppleNativeEvidence(evidence, { base, source: before.source, apple: plan.apple }, "local-xcode-mcp");
+  return { version, kind: "local-apple-verification", status: "passed", complete: true, acceptance: false,
+    reviewRequired: true, base, source: before.source, context: before, plan: input.reference,
+    appleEvidence: evidence, checks: [] };
+}
+
+async function executeLocalNativeRequest(root, base, requestFile, signal, apple, directory) {
   if (process.env.GITHUB_ACTIONS === "true" || process.platform !== "darwin") fail("configuration");
   root = await realpath(root);
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(base ?? "") ||
       (await readOnlyGit(root, ["rev-parse", "--verify", `${base}^{commit}`])).trim() !== base) fail("base-invalid");
   const request = await json(root, requestFile), before = await captureLocalRefinementContext(root, signal);
   let report;
-  if (request.value?.action === "prepare-checkpoint") report = await prepareCheckpoint(root, base, request.value, before);
+  if (apple && !["apple-plan", "binding", "apple-qualify"].includes(request.value?.action) ||
+      !apple && ["apple-plan", "apple-qualify"].includes(request.value?.action)) fail("configuration");
+  if (request.value?.action === "apple-plan") report = await makeApplePlan(root, base, request.value, before, directory, signal);
+  else if (request.value?.action === "apple-qualify") report = await qualifyApple(root, base, request.value, before, signal);
+  else if (request.value?.action === "prepare-checkpoint") report = await prepareCheckpoint(root, base, request.value, before);
   else if (request.value?.action === "checkpoint") report = await acceptCheckpoint(root, base, request.value, before);
   else if (request.value?.action === "plan") report = await makePlan(root, base, request.value, before);
-  else if (request.value?.action === "binding") report = await binding(root, base, request.value, before);
+  else if (request.value?.action === "binding") report = await binding(root, base, request.value, before, signal);
   else if (request.value?.action === "qualify") report = await qualify(root, base, request.value, before, signal);
   else fail("configuration");
   await retained(root, request.reference);
@@ -551,3 +724,8 @@ export async function executeLocalRefinement(root, base, requestFile, signal) {
   if (!equal(before, after)) fail("source-changed");
   return { ...report, request: request.reference };
 }
+
+export const executeLocalRefinement = (root, base, request, signal) =>
+  executeLocalNativeRequest(root, base, request, signal, false);
+export const executeLocalAppleRequest = (root, base, request, signal, directory) =>
+  executeLocalNativeRequest(root, base, request, signal, true, directory);

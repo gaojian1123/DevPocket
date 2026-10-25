@@ -32,6 +32,10 @@ For a local Apple presentation follow-up after accepted delivery, read
 [Local Apple refinement](../../../docs/DEVELOPMENT-WORKFLOW.md#local-apple-refinement).
 Use its fixed checkpoint and cumulative diff; ordinary implementation and PR
 delivery keep the normal gate.
+For ordinary Apple feature work, read
+[Apple platform verification](../../../docs/DEVELOPMENT-WORKFLOW.md#apple-platform-verification).
+Use the actual platform-selected gate, not an assumed repository-wide suite or a
+visual-refinement exemption.
 
 ## 2. Select the workspace
 
@@ -103,6 +107,9 @@ before `-Resume`; preflight or recovered partial groups are not acceptance.
 For local Apple feature delivery, use the guide's initial checkpoint route:
 capture native inputs in the complete normal gate and prepare the checkpoint
 subject before independent review, so later presentation edits have a usable base.
+When `apple-native` is selected locally, first collect the complete original-client
+Apple evidence using that platform route, then pass its qualification request as
+`-AppleEvidence` to the ordinary gate. A missing native result is not a skipped pass.
 
 An eligible local Apple refinement instead follows the guide's planned Xcode
 checks and distinct local refinement report. `full_required` returns to the normal

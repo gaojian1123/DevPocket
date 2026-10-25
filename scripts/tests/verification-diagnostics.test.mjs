@@ -170,7 +170,8 @@ test("historical local review flags are diagnostic-only and cannot manufacture a
         await mkdir(directory, { recursive: true });
         const explained = [3, 5, VERIFICATION_REPORT_VERSION].includes(version);
         const toolingId = version === VERIFICATION_REPORT_VERSION ? "tooling-tests" : "workflow-tests";
-        const checks = explained ? [toolingId] : CHECKS.map((check) => check.id === "tooling-tests" ? toolingId : check.id);
+        const checks = explained ? [toolingId] : CHECKS.filter((check) => check.group !== "apple")
+          .map((check) => check.id === "tooling-tests" ? toolingId : check.id);
         await writeFile(path.join(directory, "plan.json"), JSON.stringify({
           version, status: "planned", complete: false, checks: [], requiredChecks: checks,
           requiresHumanReview: requirement, approval: "approved", review: { verdict: "pass" },
@@ -185,7 +186,7 @@ test("historical local review flags are diagnostic-only and cannot manufacture a
         assert.equal(output.status, "planned");
         assert.deepEqual(output.selection.requiredChecks, checks);
         assert.deepEqual(output.selection.requiredGroups, explained ? ["tooling"]
-          : version === 1 ? ["backend", "android", "device"] : CHECK_GROUPS);
+          : version === 1 ? ["backend", "android", "device"] : CHECK_GROUPS.filter((group) => group !== "apple"));
         assert.equal(Object.hasOwn(output.selection, "requiresHumanReview"), false);
         if (explained) {
           assert.deepEqual(output.selection.selectionReasons[0].paths, [file]);

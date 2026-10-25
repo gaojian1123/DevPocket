@@ -6,6 +6,15 @@ tools: ["read", "search"]
 
 Review the supplied task without changing files or invoking another agent.
 
+For **Apple platform verification**, verify the actual source-selected requirements:
+Apple-only product changes need the complete Apple gate, not unrelated Android or
+backend product suites. Apple execution/configuration changes also need tooling;
+shared/mixed inputs retain all affected consumers. Require both model/WK and UI
+test coverage for each required Apple role, not just the cached GetTestList count.
+Local evidence must retain original Xcode MCP invocations and source/workspace
+bindings; CI evidence must retain its own actual commands, runtime/device selection
+and owned-resource cleanup. A local MCP record is not a hosted-CI execution.
+
 When an initial Apple checkpoint subject is supplied, review that exact subject
 and its original terminal-qualified full gate, native input context, raw native
 evidence and accepted product copies. Include its supplied, tool-generated file

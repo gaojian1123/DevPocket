@@ -16,6 +16,7 @@ keeps the ordered steps and their completion criteria:
   [Selected-group preflight and explicit recovery](#selected-group-preflight-and-explicit-recovery).
 - **Already verified working tree becoming a commit:** [Working-tree evidence to an authorized candidate](#working-tree-evidence-to-an-authorized-candidate).
 - **Local Apple presentation follow-up after accepted delivery:** [Local Apple refinement](#local-apple-refinement).
+- **Apple feature work and Apple CI:** [Apple platform verification](#apple-platform-verification).
 
 ## Skill-led development
 
@@ -462,11 +463,128 @@ and checks of a different PR/merge ref still apply. Report an opened PR only aft
 creation succeeds. Merge, deployment, external installation and local control
 adoption remain separately authorized.
 
+## Apple platform verification
+
+Platform selection and visual refinement solve different problems. Ordinary
+`apple/**` product changes select `apple-native`, covering normal iOS/macOS builds
+and the complete Apple native test matrix. They do not select unrelated backend,
+operational or Android product checks. Apple build/dependency/execution controls
+also select the existing tooling regressions. Plain Apple documentation selects
+no application checks. Execution authority remains a separate decision.
+
+The planner discovers the Apple project from the tracked/non-ignored source index.
+Shared runtime/wire changes add Apple compatibility when that project is present;
+shared renderer, root dependencies and cross-lane infrastructure retain their
+conservative union. A missing Apple project is not a successful Apple test:
+Apple product changes still select the lane and fail if its required inputs are
+absent. A checkout without an Apple project otherwise keeps its existing platform
+set, including for `--all`.
+
+Both local verification and CI use this same source-bound plan:
+
+```powershell
+npm run verify -- -Base BASE_COMMIT -Plan
+```
+
+### Local full Apple evidence
+
+Keep native execution in the owning original client's Xcode MCP. Planning,
+receipt collection and qualification do not authorize new devices, deployment or
+changing another session's worktree. A stopped or unavailable required target
+remains a gap; do not boot a user-disabled Duo or count a skipped platform as passed.
+
+Use `-AppleRequest` for the full-platform collector. It is separate from the
+checkpoint-limited `-Refinement` path. Put all native receipts and retained
+artifacts below the plan directory, such as `.data/verification/apple-N/`.
+Prepare the locked component resources with the existing, authorized
+`node apple/prepare-components.mjs` before capturing the plan's native input context.
+
+```json
+{
+  "action": "apple-plan",
+  "targets": [
+    { "role": "mac", "deviceId": "ACTUAL_MAC_ID" },
+    { "role": "iphone", "deviceId": "ACTUAL_OWNED_IPHONE_ID" },
+    { "role": "ipad", "deviceId": "ACTUAL_OWNED_IPAD_ID" },
+    { "role": "duo", "deviceId": "ACTUAL_OWNED_DUO_ID" }
+  ]
+}
+```
+
+```powershell
+npm run verify -- -Base BASE_COMMIT -AppleRequest REQUEST_JSON `
+  -Report .data/verification/apple-N/plan.json
+```
+
+The collector verifies the real toolchain, runtime/device-type mapping, full
+inline Debug scheme and source context. Do not hardcode a past test count.
+`GetTestList` may be incomplete even with `truncated: false`; complete verification
+requires actual model/WK and UI test results, not merely everything shown in a
+cached list.
+
+Capture `binding` observations with `-AppleRequest` before/after each native
+operation or unchanged-source group, as in the local refinement route. Use
+`RunAllTests` for each required target and normal `BuildProject` for iOS/macOS.
+Preserve actual request/completion events and the original `.xcresult` bundles.
+Normal builds may follow tests locally so build-for-testing does not replace
+the sealed normal products.
+
+The final request has `action: "apple-qualify"`, `plan`, four `tests` entries
+(`role`, `binding`, `requestEvent`, `responseEvent`, `resultBundle`) and the two
+normal `builds` entries used by local refinement. If an invocation uses a workspace
+handle, include `workspaceBinding` with the original `XcodeListWorkspaces`
+`requestEvent`/`responseEvent`. The mapping must have been observed within the
+source binding before that invocation and must uniquely map the actual handle to
+this worktree's project. Keep the original request unchanged; do not replace its
+handle with a path to manufacture evidence.
+
+Pass that qualification **request**, not a hand-written success report, to the
+ordinary gate:
+
+```powershell
+npm run verify -- -Base BASE_COMMIT -AppleEvidence APPLE_QUALIFY_REQUEST `
+  -Report .data/verification/full-N/report.json
+```
+
+The Apple check revalidates the original-client evidence. Other groups run only
+when the source plan selects them. For an initial local visual-refinement
+checkpoint, also use `-CaptureRefinementContext` and the existing subject/review
+route. A missing or stale native result blocks the Apple check; it is not a reason
+to invent passing evidence.
+
+### Hosted Apple CI
+
+The existing workflow has an `apple` job and includes it in `Required verification`
+only when the shared planner selects it. It uses the official `xcode-27` runner,
+currently a public-preview macOS 27 image, and the Xcode 27.1 installation. The job
+checks its actual Xcode/Swift/SDK, host OS and supported simulator device types
+before execution; image changes or missing prerequisites fail explicitly.
+See the [runner manifest](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md)
+and [published label](https://github.com/actions/runner-images/issues/14404).
+
+The compile SDK must provide the iOS 27.1 reserved-region symbols; a runtime
+availability guard and deployment target 27.0 do not make an older SDK sufficient.
+The native Mac host must also meet the app's macOS minimum.
+
+CI restores locked Node dependencies, prepares the existing component renderer,
+performs fresh normal builds and full-scheme tests with isolated derived data, and
+collects actual xcresult evidence for Mac, ordinary iPhone, iPad and Duo. It creates
+only uniquely named run-owned simulators and confirms their cleanup. Developer
+UDIDs are never used in CI. Native UI/desktop failures remain failures, not
+model-only or skipped-platform success.
+
+The Apple job keeps raw logs/artifacts separately and publishes a bounded
+source-bound native report. Aggregation requires the actual hosted execution
+origin, complete selected matrix and cleanup; local MCP reports cannot impersonate
+that CI job. A workflow-only branch without the uncommitted Apple implementation
+can validate selectors and runner contracts, but cannot claim a real Apple-client
+CI run. Publishing that source remains separately authorized.
+
 ## Local Apple refinement
 
 This is a local acceptance route for bounded Apple presentation follow-ups, not a
-PR exemption or general cross-version test cache. The ordinary verifier, Android
-selection and `Required verification` CI keep their existing rules. The local
+PR exemption or general cross-version test cache. Ordinary feature changes use
+the platform gate above; visual refinements are a narrower local route. The local
 entry refuses GitHub Actions and combinations with ordinary planning, aggregation,
 recovery, promotion or Android toolchain flags.
 Native refinement runs on macOS. Its integration regressions use the existing
@@ -634,9 +752,13 @@ preparation when needed and preserve its output/renderer checks. Build for testi
 before rediscovering newly added cases; a cached `GetTestList` is not evidence of
 execution. Retain normal build logs, sealed `.app` copies and actual `.xcresult`
 bundles/exports using the existing Apple evidence format.
-For each normal build, call `BuildProject` with `buildForTesting: false` and the
-absolute project path from this worktree as `workspaceIdentifier`. A handle from
-another session, or an unassociated handle without a path binding, is insufficient.
+For each normal build, call `BuildProject` with `buildForTesting: false`.
+Use a current `XcodeListWorkspaces` mapping to bind the provider's actual workspace
+handle to this worktree. Some providers reject absolute paths for BuildProject;
+retain the real request rather than rewriting it. Supply `workspaceBinding`
+request/completion events for a handle-based call, collected inside the source
+binding before the build. Direct paths remain accepted when the actual provider
+supports them. An unassociated handle from another session is insufficient.
 Retain its actual original-client start/completion events and the full tool log.
 
 **Qualify**, after all selected native work:
@@ -676,7 +798,7 @@ Test entries follow the plan's target order. `artifact.json` retains `source`,
 bundle-relative SHA256 `files` map. Preserve the original build outcome/log and
 signature output for review; copying a product is not a new build.
 The build outcome must be a successful structured `xcode/BuildProject` response
-paired with its actual request for this absolute workspace. Its tool-call interval
+paired with its actual request and workspace binding. Its tool-call interval
 must lie inside the source observations. Reports preserve that envelope and the
 SDK's `elapsedTime` separately from observation times; they do not invent internal
 compiler start/finish timestamps. The retained log must match `fullLogPath` and

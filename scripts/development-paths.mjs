@@ -3,6 +3,7 @@ const executionScripts = new Set([
   "git-state", "verification", "verification-policy", "verify", "verification-executor", "test-tooling",
   "verification-backend", "verification-android", "process", "owned-command", "owned-command-windows",
   "verification-preflight", "verification-run", "verification-transition", "verification-refinement",
+  "apple-evidence", "apple-runner", "verification-apple",
   "verification-tooling", "verification-admission", "verification-ci", "verification-ci-artifact",
   "owned-command-linux", "owned-command-darwin", "local-ipc", "device-run", "worker-diagnostics", "device-diagnostics", "diagnostic-errors",
   "bounded-worker-log", "diagnostic-publication", "native-lifecycle", "backend-diagnostics",
@@ -23,6 +24,9 @@ export function classifyDevelopmentPath(file) {
       /^scripts\/([^/]+)\.(?:mjs|ps1|cs|py|ts)$/.test(lower) && executionScripts.has(lower.slice(8).replace(/\.[^.]+$/, ""))) {
     return "execution";
   }
+  if (lower.startsWith("apple/") && /\.(?:mjs|cjs|js|ps1|sh|py)$/.test(lower)) return "execution";
+  if (lower.startsWith("apple/") && (/\.(?:pbxproj|xcscheme|xctestplan|xcconfig)$/.test(lower) ||
+      /(?:^|\/)package\.(?:swift|resolved)$/.test(lower))) return "dependency";
   if (/(?:^|\/)(?:\.npmrc|package(?:-lock)?\.json|npm-shrinkwrap\.json|tsconfig(?:\.[^/]+)?\.json|requirements[^/]*\.txt)$/.test(lower) ||
       /^(?:android\/gradle\/|android\/gradlew(?:\.bat)?$)/.test(lower) ||
       /^android\/.*(?:\.gradle(?:\.kts)?|gradle\.properties)$/.test(lower)) return "dependency";

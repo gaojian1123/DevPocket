@@ -22,6 +22,7 @@ function binding(plan, group, policy, options) {
     requiredChecks: plan.requiredChecks, requiredGroups: plan.requiredGroups, layouts: plan.layouts, ciMacos: plan.ciMacos ?? false,
     trustedDeviceClasses: plan.trustedDeviceClasses ?? [], group, policy,
     backendDiagnostics: Boolean(options.backendDiagnostics), toolingShard: options.toolingShard ?? null,
+    ...(plan.apple ? { apple: plan.apple } : {}),
     ...(options.captureRefinementContext === true ? { captureRefinementContext: true } : {}) };
 }
 

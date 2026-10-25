@@ -35,7 +35,8 @@ test("the dedicated tooling entry retains the complete explicit suite without di
   const manifest = JSON.parse(await readFile("package.json", "utf8"));
   assert.equal(manifest.scripts["test:tooling"], "node scripts/test-tooling.mjs");
   assert.deepEqual(TOOLING_TEST_FILES, [
-    "verification", "verification-execution", "verification-refinement", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
+    "verification", "verification-execution", "verification-refinement", "verification-diagnostics", "apple-selection", "apple-local", "apple-runner",
+    "android-runner", "android-build", "android-diagnostics",
     "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
     "bounded-worker-log", "development-tools", "development-approval", "process", "emulator-resources", "manual-emulator",
     "linux-emulator", "linux-runtime", "xcode-mcp", "tooling-runner", "macos-host",

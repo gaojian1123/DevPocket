@@ -20,6 +20,8 @@ async function main() {
     "tooling-shard": { type: "string" },
     resume: { type: "string" },
     refinement: { type: "string" },
+    "apple-request": { type: "string" },
+    "apple-evidence": { type: "string" },
     "capture-refinement-context": { type: "boolean", default: false },
     promote: { type: "string" },
     "candidate-request": { type: "string" },
@@ -56,19 +58,26 @@ async function main() {
   let report, plan, phase = "plan";
   try {
     try {
-      if (values.refinement) {
+      if (values.refinement || values["apple-request"]) {
+        if (values.refinement && values["apple-request"] || values["apple-evidence"]) throw verificationFault("configuration");
         if (values.plan || values.all || values["capture-refinement-context"] || values.group !== "all" || values["tooling-shard"] ||
             values.resume || values.promote || values["candidate-request"] || values["candidate-evidence"] ||
             values.combine || values.input.length || values.upstream.length || values["backend-diagnostics"] ||
             values.jdk || values.sdk || values.image) throw verificationFault("configuration");
-        const { executeLocalRefinement } = await import("./verification-refinement.mjs");
-        report = await executeLocalRefinement(root, values.base, values.refinement, cancellation.signal);
+        const { executeLocalRefinement, executeLocalAppleRequest } = await import("./verification-refinement.mjs");
+        report = values["apple-request"]
+          ? await executeLocalAppleRequest(root, values.base, values["apple-request"], cancellation.signal, path.dirname(reportPath))
+          : await executeLocalRefinement(root, values.base, values.refinement, cancellation.signal);
       } else {
         if (values["capture-refinement-context"] && (values.plan || values.combine || values.promote)) {
           throw verificationFault("configuration");
         }
         plan = await verificationPlan(root, values.base, values.all);
         requirePlanCollection(plan);
+        if (values["apple-evidence"] && (!plan.requiredChecks.includes("apple-native") ||
+            !["all", "apple"].includes(values.group) || values.combine || values.plan || values.promote)) {
+          throw verificationFault("configuration");
+        }
         if (!["all", ...CHECK_GROUPS].includes(values.group)) throw verificationFault("configuration");
         if (values["tooling-shard"] && (values.group !== "tooling" || values.plan || values.combine || values.promote)) {
           throw verificationFault("configuration");
@@ -109,6 +118,7 @@ async function main() {
             : await executeVerification(root, plan, { ...values, backendDiagnostics: values["backend-diagnostics"],
               toolingShard: values["tooling-shard"],
               captureRefinementContext: values["capture-refinement-context"],
+              appleEvidence: values["apple-evidence"],
               candidateRequest: values["candidate-request"],
               directory: path.dirname(reportPath), signal: cancellation.signal });
         }
@@ -116,8 +126,10 @@ async function main() {
       if (["failed", "blocked", "full_required"].includes(report.status)) process.exitCode = 1;
     } catch (error) {
       const failure = verificationFailure(error, error.verificationContext?.phase ?? phase);
-      report = { ...plan, version: values.refinement ? 2 : VERIFICATION_REPORT_VERSION,
-        ...(values.refinement ? { kind: "local-refinement-failure", acceptance: false } : {}),
+      report = { ...plan, version: values.refinement || values["apple-request"] ? 2 : VERIFICATION_REPORT_VERSION,
+        ...(values.refinement || values["apple-request"] ? {
+          kind: values["apple-request"] ? "local-apple-failure" : "local-refinement-failure", acceptance: false,
+        } : {}),
         status: "blocked", complete: false, failure,
         error: failure.summary + (failure.missingChecks?.length ? ` Missing checks: ${failure.missingChecks.join(", ")}.` : ""),
         checks: [] };
@@ -154,13 +166,14 @@ async function main() {
   if (report.preflight?.status === "blocked") {
     console.error(JSON.stringify({ kind: "verification-preflight", ...report.preflight }));
   }
-  if (report.kind?.startsWith("local-refinement-")) console.log(JSON.stringify({
+  if (report.kind?.startsWith("local-refinement-") || report.kind?.startsWith("local-apple-")) console.log(JSON.stringify({
     kind: report.kind, acceptance: false, reviewRequired: report.reviewRequired ?? false,
     changedFiles: report.changedFiles, selection: report.selection, reasons: report.reasons,
   }));
   else if (report.status === "planned") console.log(JSON.stringify({
     kind: "verification-plan", requiredChecks: report.requiredChecks, requiredGroups: report.requiredGroups,
-    layouts: report.layouts, ciMacos: report.ciMacos, selectionReasons: report.selectionReasons, toolingShards: report.toolingShards ?? null,
+    layouts: report.layouts, ciMacos: report.ciMacos, apple: report.apple,
+    selectionReasons: report.selectionReasons, toolingShards: report.toolingShards ?? null,
   }));
   if (report.failure) console.error(JSON.stringify({ kind: "verification-failure", ...report.failure }));
 }

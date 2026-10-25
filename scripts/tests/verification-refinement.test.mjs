@@ -57,7 +57,7 @@ async function fixture(t) {
   await save(root, "docs/APPLE-CLIENT.md", "Fixture Apple client.\n");
   const decoder = `const fs = require("node:fs"), path = require("node:path");
 const args = process.argv.slice(2), kind = args[args.indexOf("test-results") + 1];
-if (args.includes("-version")) { console.log("Synthetic Xcode fixture"); process.exit(0); }
+if (args.includes("-version")) { console.log("Xcode 27.1\\nBuild version SyntheticFixture"); process.exit(0); }
 if (!["summary", "tests"].includes(kind)) throw new Error("Unexpected fixture decoder command");
 process.stdout.write(fs.readFileSync(path.join(args[args.indexOf("--path") + 1], kind + ".json")));
 `;
@@ -415,10 +415,60 @@ nativeTest("build logs, workspaces and producing products must match the native 
   const wrong = structuredClone(start);
   wrong.data.arguments.workspaceIdentifier = "/another/worktree/DevPocket.xcodeproj";
   await save(f.root, item.requestEvent, wrong);
-  await assert.rejects(f.invoke(native.request), { diagnosticCode: "check-failed" });
+  await assert.rejects(f.invoke(native.request), { diagnosticCode: "execution-origin" });
   await save(f.root, item.requestEvent, start);
   await save(f.root, path.relative(f.root, item.originalProduct) + "/DevPocket", "A different producing product\n");
   await assert.rejects(f.invoke(native.request), { diagnosticCode: "artifact-changed" });
+});
+
+nativeTest("actual workspace mappings bind handle-based MCP calls without rewriting the request", async (t) => {
+  const f = await fixture(t), plan = await planned(f), native = await nativeEvidence(f, plan);
+  const item = native.request.builds[0], request = JSON.parse(await readFile(path.join(f.root, item.requestEvent)));
+  const before = JSON.parse(await readFile(path.join(f.root, ".data/apple/fresh/before.json")));
+  request.data.arguments.workspaceIdentifier = "workspace-fixture";
+  await save(f.root, item.requestEvent, request);
+  const requestEvent = ".data/apple/fresh/workspaces-request.json";
+  const responseEvent = ".data/apple/fresh/workspaces-response.json";
+  await save(f.root, requestEvent, { type: "tool.execution_start", timestamp: before.observedAt, data: {
+    toolCallId: "fixture-workspaces", mcpServerName: "xcode", mcpToolName: "XcodeListWorkspaces", arguments: {},
+  } });
+  const response = { type: "tool.execution_complete", timestamp: before.observedAt, data: {
+    toolCallId: "fixture-workspaces", success: true, result: { structuredContent: {
+      message: `* workspaceIdentifier: workspace-fixture, workspacePath: ${path.join(f.root, "apple", "DevPocket", "DevPocket.xcodeproj")}`,
+    } },
+  } };
+  await save(f.root, responseEvent, response);
+  item.workspaceBinding = { requestEvent, responseEvent };
+  assert.equal((await f.invoke(native.request)).status, "passed");
+  for (const alter of [
+    (value) => { value.data.result.structuredContent.message = "* workspaceIdentifier: workspace-fixture, workspacePath: /another/DevPocket.xcodeproj"; },
+    (value) => { value.data.result.structuredContent.message += "\n" + value.data.result.structuredContent.message; },
+    (value) => { value.data.result.structuredContent.message = value.data.result.structuredContent.message.replace("workspace-fixture", "another-handle"); },
+    (value) => { value.timestamp = new Date(Date.parse(before.observedAt) - 1).toISOString(); },
+    (value) => { value.timestamp = new Date(Date.parse(request.timestamp) + 1).toISOString(); },
+    (value) => { value.data.toolCallId = "another-call"; },
+    (value) => { value.data.result.isError = true; },
+  ]) {
+    const invalid = structuredClone(response);
+    alter(invalid);
+    await save(f.root, responseEvent, invalid);
+    await assert.rejects(f.invoke(native.request), { diagnosticCode: "execution-origin" });
+  }
+});
+
+nativeTest("a missing local Apple request blocks before execution and releases the owned gate", async (t) => {
+  const f = await fixture(t);
+  await save(f.root, "apple/DevPocket/DevPocket.xcodeproj/project.pbxproj", "// Synthetic project; never built\n");
+  await save(f.root, "scripts/apple-runner.mjs", "// Synthetic entry; never executed\n");
+  const plan = await verificationPlan(f.root, f.base);
+  const report = await executeVerification(f.root, plan, {
+    group: "apple", directory: path.join(f.root, ".data/verification/missing-apple-request"),
+  });
+  const check = report.checks.find((item) => item.id === "apple-native");
+  assert.equal(report.status, "blocked");
+  assert.equal(check.failure.reason, "apple-evidence-required", JSON.stringify(report));
+  assert.equal(check.executionState, "not-started");
+  assert.equal(report.admission.state, "released");
 });
 
 nativeTest("retained evidence paths cannot escape the worktree or follow symlinks", async (t) => {
@@ -443,7 +493,7 @@ test("hosted CI and ordinary gate aggregation cannot consume local refinement", 
   await assert.rejects(exec(process.execPath, [entry, "--repo", root, "--base", "not-a-base",
     "--refinement", ".data/verification/request.json", "--all"], { env: { ...process.env, GITHUB_ACTIONS: "false" } }),
   (error) => error.code === 1 && error.stderr.includes("configuration"));
-  assert.deepEqual(verificationImpact(["apple/DevPocket/DevPocket/ContentView.swift"]).selectionReasons.map((item) => item.rule), ["unknown"]);
+  assert.deepEqual(verificationImpact(["apple/DevPocket/DevPocket/ContentView.swift"]).selectionReasons.map((item) => item.rule), ["apple"]);
   assert.equal(developmentReviewRequirements(["scripts/verification-refinement.mjs"]).requiresHumanReview, true);
   assert.deepEqual(verificationImpact(["scripts/tests/verification-refinement.test.mjs"]).requiredChecks, ["tooling-tests"]);
 });

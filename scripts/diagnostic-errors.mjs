@@ -26,6 +26,8 @@ const reasons = {
   "options-interpolation": "Backend diagnostics do not support interpolation-bearing Node options.",
   "upstream-job-failed": "A required upstream job did not complete successfully.",
   "device-evidence": "Required current device evidence is incomplete.",
+  "apple-evidence": "Required source-bound Apple build or complete native test evidence is incomplete.",
+  "apple-evidence-required": "Local Apple checks require current original-client Xcode evidence; prepare it before running the Apple gate.",
   "acceleration-evidence": "Device evidence requires usable hardware acceleration for its host platform.",
   "case-evidence": "Required native cases are missing, skipped, duplicated or inconsistent.",
   "apk-unavailable": "A required tested APK could not be read.",

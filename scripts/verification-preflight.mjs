@@ -26,6 +26,7 @@ const policyInputs = [
   "backend-diagnostics.mjs", "diagnostic-errors.mjs", "diagnostic-publication.mjs", "bounded-worker-log.mjs",
   "device-run.mjs", "worker-diagnostics.mjs", "device-diagnostics.mjs", "native-lifecycle.mjs", "android-platform.mjs",
   "emulator-resources.mjs",
+  "apple-evidence.mjs", "apple-runner.mjs", "verification-apple.mjs",
 ];
 
 export function npmLaunchersBound(group, powershellNpm, nativeNpm) {
@@ -686,7 +687,7 @@ export async function verificationPreflight(root, plan, options = {}) {
     }), "preflight-tool", ["command-ownership"]);
     await check("powershell", powershell, "preflight-tool", ["command-ownership"]);
     await check("output-directory", () => writable(root, options.directory), "preflight-path");
-    const usesNpm = ["tooling", "backend", "android", "device"].includes(group);
+    const usesNpm = ["tooling", "backend", "android", "device", "apple"].includes(group);
     if (usesNpm) {
       await check("root-dependencies", () => once("root-dependencies", () => dependencies(root)), "preflight-dependencies");
       await check("npm", npm, "preflight-tool", ["command-ownership", "node", "powershell"]);
@@ -716,12 +717,22 @@ export async function verificationPreflight(root, plan, options = {}) {
       "preflight-tool", ["command-ownership", "root-dependencies", "node-command"]);
     }
     if (has("backend-build")) await check("backend-output", () => writable(root, path.join(root, "dist")), "preflight-path");
-    if (group === "tooling" || has("backend-tests")) {
+    if (group === "tooling" || group === "apple" || has("backend-tests")) {
       await check("git", () => once("git", async () => ({
         tool: await tool("git", ["--version"], (text) => /^git version 2\.(?:3[4-9]|[4-9]\d|\d{3,})\./.test(text)),
         configuration: digest(await readOnlyGit(root, ["config", "--null", "--list", "--show-origin", "--show-scope"])),
         branch: (await readOnlyGit(root, ["rev-parse", "--symbolic-full-name", "HEAD"])).trim(),
       })), "preflight-tool", ["command-ownership"]);
+    }
+    if (group === "apple") {
+      await check("apple-entry", () => fileIdentity(path.join(root, "scripts", "apple-runner.mjs")), "preflight-path");
+      await check("apple-project", () => fileIdentity(path.join(root, plan.apple.project, "project.pbxproj")), "preflight-path");
+      await check("apple-prepare", () => fileIdentity(path.join(root, "apple", "prepare-components.mjs")), "preflight-path");
+      await check("xcode", () => {
+        if (process.platform !== "darwin") throw diagnosticError("preflight-tool");
+        return tool("xcrun", ["xcodebuild", "-version"], (output) => /^Xcode (?:27\.[1-9]\d*|(?:2[89]|[3-9]\d)\.)/m.test(output));
+      }, "preflight-sdk", ["command-ownership"]);
+      identities.push(["apple-environment", environment(/^(?:DEVELOPER_DIR|SDKROOT|TOOLCHAINS|DYLD_.*)$/i)]);
     }
     if (group === "tooling") {
       await check("ssh-keygen", () => once("ssh-keygen", async () => {
@@ -844,7 +855,7 @@ export async function verificationPreflight(root, plan, options = {}) {
     const java = ["android", "device"].includes(group), cache = identities.find(([name]) => name === "gradle-cache")?.[1];
     // shortcut: Native workspace builds cannot reuse until their loader/compiler input contract is closed.
     const workspaceBuild = java && Boolean(identities.find(([name]) => name === "root-dependencies")?.[1]?.workspaces?.length);
-    const unbound = sourceHasLinks || workspaceBuild || usesNpm &&
+    const unbound = group === "apple" || sourceHasLinks || workspaceBuild || usesNpm &&
       (!npmLaunchersBound(group, npmIdentity, identities.find(([name]) => name === "native-npm")?.[1]) ||
         injected(/^(?:TSX_|TS_NODE_|ESBUILD_)/i) ||
         !samePath(identities.find(([name]) => name === "node")?.[1]?.child?.file ?? "", process.execPath) ||

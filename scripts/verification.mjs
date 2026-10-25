@@ -5,6 +5,7 @@ import { deviceSourceCatalogue } from "./device-diagnostics.mjs";
 import { diagnosticError, failureDetails, ownValue, diagnosticVersion } from "./diagnostic-errors.mjs";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationGroups, verificationImpact } from "./verification-policy.mjs";
 import { requireToolingCatalogue, requireToolingShard, toolingCatalogue } from "./verification-tooling.mjs";
+import { APPLE_REQUIREMENTS, validateAppleNativeEvidence } from "./apple-evidence.mjs";
 export { CHECKS } from "./verification-policy.mjs";
 export { git, readOnlyGit, sourceSnapshot } from "./git-state.mjs";
 
@@ -93,7 +94,8 @@ export function verificationFailure(error, phase = "command") {
     ...(["node", "command-ownership", "powershell", "output-directory", "root-dependencies", "npm", "native-npm", "git",
       "ssh-keygen", "python", "azure-dependencies", "probe-python", "operations-python", "jdk", "android-platform-35", "android-platform-37.2",
       "gradle-wrapper", "android-entry", "android-output", "backend-output", "gradle-cache", "native-configuration",
-      "android-image", "adb", "emulator-acceleration", "typecheck-contract"]
+      "android-image", "adb", "emulator-acceleration", "typecheck-contract",
+      "apple-entry", "apple-project", "apple-prepare", "xcode"]
       .includes(ownValue(context, "prerequisite")) ? { prerequisite: ownValue(context, "prerequisite") } : {}),
   };
 }
@@ -109,7 +111,10 @@ export async function verificationPlan(root, base, all = false, options) {
     ...splitPaths(await readOnlyGit(root, ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "--no-renames", "-z", baseSha, "--"])),
     ...splitPaths(await readOnlyGit(root, ["ls-files", "--others", "--exclude-standard", "-z"])),
   ])].sort();
-  const impact = verificationImpact(changedFiles, all);
+  const appleProject = `${APPLE_REQUIREMENTS.project}/project.pbxproj`;
+  const appleAvailable = splitPaths(await readOnlyGit(root,
+    ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", appleProject])).includes(appleProject);
+  const impact = verificationImpact(changedFiles, all, appleAvailable);
   const device = impact.requiredChecks.includes("android-device");
   let trustedDeviceClasses = baselineDeviceClasses;
   let deviceClassCatalogueAvailable = false;
@@ -172,6 +177,7 @@ export function verificationProcessCleanupConfirmed(check) {
 export function verificationCleanupConfirmed(check) {
   if (check.status === "not_run" || check.executionState === "not-started") return true;
   if (!verificationProcessCleanupConfirmed(check)) return false;
+  if (check.id === "apple-native") return check.cleanup === "completed" || check.appleEvidence?.cleanup === "completed";
   if (check.id !== "android-device") return true;
   if (check.diagnosticIssues !== undefined && !Array.isArray(check.diagnosticIssues)) return false;
   if (check.diagnosticIssues?.some((issue) => issue?.operation === "controller-cleanup")) return false;
@@ -199,6 +205,9 @@ export function requireCheckPolicy(plan) {
     throw verificationFault("policy-mismatch");
   }
   if (plan.toolingShards) requireToolingCatalogue(plan.toolingShards);
+  if (plan.requiredChecks.includes("apple-native")
+    ? JSON.stringify(plan.apple) !== JSON.stringify(APPLE_REQUIREMENTS)
+    : plan.apple !== undefined && plan.apple !== null) throw verificationFault("policy-mismatch");
 }
 
 export function combineVerification(plan, reports) {
@@ -225,6 +234,7 @@ export function combineVerification(plan, reports) {
         ...(Number.isSafeInteger(check.durationMs) && check.durationMs >= 0 && check.durationMs <= 86400000
           ? { durationMs: check.durationMs } : {}),
         ...(check.id === "android-device" ? { deviceEvidence: publicDeviceEvidence(check.deviceEvidence) } : {}),
+        ...(check.id === "apple-native" ? { appleEvidence: structuredClone(check.appleEvidence) } : {}),
       });
     }
   }
@@ -296,6 +306,7 @@ function validatedReportChecks(plan, report, inputIndex, allowToolingShard = fal
   }
   if (JSON.stringify(report.requiredChecks) !== JSON.stringify(plan.requiredChecks) ||
       JSON.stringify(report.requiredGroups) !== JSON.stringify(plan.requiredGroups) ||
+      JSON.stringify(report.apple ?? null) !== JSON.stringify(plan.apple ?? null) ||
       (report.ciMacos ?? false) !== (plan.ciMacos ?? false) ||
       JSON.stringify(report.toolingShards ?? null) !== JSON.stringify(plan.toolingShards ?? null)) {
     throw verificationFault("policy-mismatch", context);
@@ -323,6 +334,18 @@ function validatedReportChecks(plan, report, inputIndex, allowToolingShard = fal
       throw verificationFault("collector-failed", { ...context, check: check.id });
     }
     if (check.id === "android-device") validateDeviceEvidence(check.deviceEvidence, plan, report.environment?.platform);
+    if (check.id === "apple-native") {
+      if (!["ci-xcodebuild", "local-xcode-mcp"].includes(check.appleEvidence?.origin)) {
+        throw verificationFault("apple-evidence", { check: check.id });
+      }
+      try { validateAppleNativeEvidence(check.appleEvidence, plan, check.appleEvidence?.origin); }
+      catch (error) { throw verificationFault("apple-evidence", { check: check.id }, error); }
+      if (check.appleEvidence.origin === "ci-xcodebuild" &&
+          (check.appleEvidence.startedAt < check.execution.startedAt ||
+            check.appleEvidence.completedAt > check.execution.completedAt)) {
+        throw verificationFault("execution-origin", { check: check.id });
+      }
+    }
     passed.push(check);
   }
   return passed;

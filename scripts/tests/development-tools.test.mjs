@@ -17,7 +17,8 @@ import { originRepository, requirePushTarget } from "../git-state.mjs";
 const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
   "verification-android.mjs", "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs",
-  "verification-transition.mjs", "verification-refinement.mjs", "test-tooling.mjs", "verification-tooling.mjs",
+  "verification-transition.mjs", "verification-refinement.mjs", "apple-evidence.mjs", "apple-runner.mjs", "verification-apple.mjs",
+  "test-tooling.mjs", "verification-tooling.mjs",
   "verification-admission.mjs", "verification-ci.mjs", "verification-ci-artifact.ps1", "development-paths.mjs",
   "owned-command-darwin.py", "local-ipc.mjs", "android-platform.mjs", "emulator-resources.mjs"];
 // Top-level tests stay serial; only fresh-workspace cases without shared environment writes use this limit.
