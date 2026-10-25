@@ -15,6 +15,8 @@ keeps the ordered steps and their completion criteria:
 - **Failure or interruption:** [Stops and recovery](#stops-and-recovery) and
   [Selected-group preflight and explicit recovery](#selected-group-preflight-and-explicit-recovery).
 - **Already verified working tree becoming a commit:** [Working-tree evidence to an authorized candidate](#working-tree-evidence-to-an-authorized-candidate).
+- **Local Apple presentation follow-up after accepted delivery:** [Local Apple refinement](#local-apple-refinement).
+- **Apple feature work and Apple CI:** [Apple platform verification](#apple-platform-verification).
 
 ## Skill-led development
 
@@ -461,6 +463,388 @@ and checks of a different PR/merge ref still apply. Report an opened PR only aft
 creation succeeds. Merge, deployment, external installation and local control
 adoption remain separately authorized.
 
+## Apple platform verification
+
+Platform selection and visual refinement solve different problems. Ordinary
+`apple/**` product changes select `apple-native`, covering normal iOS/macOS builds
+and the complete Apple native test matrix. They do not select unrelated backend,
+operational or Android product checks. Apple build/dependency/execution controls
+also select the existing tooling regressions. Plain Apple documentation selects
+no application checks. Execution authority remains a separate decision.
+
+The planner discovers the Apple project from the tracked/non-ignored source index.
+Shared runtime/wire changes add Apple compatibility when that project is present;
+shared renderer, root dependencies and cross-lane infrastructure retain their
+conservative union. A missing Apple project is not a successful Apple test:
+Apple product changes still select the lane and fail if its required inputs are
+absent. A checkout without an Apple project otherwise keeps its existing platform
+set, including for `--all`.
+
+Both local verification and CI use this same source-bound plan:
+
+```powershell
+npm run verify -- -Base BASE_COMMIT -Plan
+```
+
+### Local full Apple evidence
+
+Keep native execution in the owning original client's Xcode MCP. Planning,
+receipt collection and qualification do not authorize new devices, deployment or
+changing another session's worktree. A stopped or unavailable required target
+remains a gap; do not boot a user-disabled Duo or count a skipped platform as passed.
+
+Use `-AppleRequest` for the full-platform collector. It is separate from the
+checkpoint-limited `-Refinement` path. Put all native receipts and retained
+artifacts below the plan directory, such as `.data/verification/apple-N/`.
+Prepare the locked component resources with the existing, authorized
+`node apple/prepare-components.mjs` before capturing the plan's native input context.
+
+```json
+{
+  "action": "apple-plan",
+  "targets": [
+    { "role": "mac", "deviceId": "ACTUAL_MAC_ID" },
+    { "role": "iphone", "deviceId": "ACTUAL_OWNED_IPHONE_ID" },
+    { "role": "ipad", "deviceId": "ACTUAL_OWNED_IPAD_ID" },
+    { "role": "duo", "deviceId": "ACTUAL_OWNED_DUO_ID" }
+  ]
+}
+```
+
+```powershell
+npm run verify -- -Base BASE_COMMIT -AppleRequest REQUEST_JSON `
+  -Report .data/verification/apple-N/plan.json
+```
+
+The collector verifies the real toolchain, runtime/device-type mapping, full
+inline Debug scheme and source context. Do not hardcode a past test count.
+`GetTestList` may be incomplete even with `truncated: false`; complete verification
+requires actual model/WK and UI test results, not merely everything shown in a
+cached list.
+
+Capture `binding` observations with `-AppleRequest` before/after each native
+operation or unchanged-source group, as in the local refinement route. Use
+`RunAllTests` for each required target and normal `BuildProject` for iOS/macOS.
+Preserve actual request/completion events and the original `.xcresult` bundles.
+Normal builds may follow tests locally so build-for-testing does not replace
+the sealed normal products.
+
+The final request has `action: "apple-qualify"`, `plan`, four `tests` entries
+(`role`, `binding`, `requestEvent`, `responseEvent`, `resultBundle`) and the two
+normal `builds` entries used by local refinement. If an invocation uses a workspace
+handle, include `workspaceBinding` with the original `XcodeListWorkspaces`
+`requestEvent`/`responseEvent`. The mapping must have been observed within the
+source binding before that invocation and must uniquely map the actual handle to
+this worktree's project. Keep the original request unchanged; do not replace its
+handle with a path to manufacture evidence.
+
+Pass that qualification **request**, not a hand-written success report, to the
+ordinary gate:
+
+```powershell
+npm run verify -- -Base BASE_COMMIT -AppleEvidence APPLE_QUALIFY_REQUEST `
+  -Report .data/verification/full-N/report.json
+```
+
+The Apple check revalidates the original-client evidence. Other groups run only
+when the source plan selects them. For an initial local visual-refinement
+checkpoint, also use `-CaptureRefinementContext` and the existing subject/review
+route. A missing or stale native result blocks the Apple check; it is not a reason
+to invent passing evidence.
+For an authorized working-tree-to-candidate conversion, collect fresh
+candidate-bound Apple evidence and pass `-AppleEvidence` alongside `-Promote`
+and `-CandidateRequest`. The original signed run still needs validation;
+old native results are not relabelled to the candidate.
+
+### Hosted Apple CI
+
+The existing workflow has an `apple` job and includes it in `Required verification`
+only when the shared planner selects it. It uses the official `xcode-27` runner,
+currently a public-preview macOS 27 image, and the Xcode 27.1 installation. The job
+checks its actual Xcode/Swift/SDK, host OS and supported simulator device types
+before execution; image changes or missing prerequisites fail explicitly.
+See the [runner manifest](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md)
+and [published label](https://github.com/actions/runner-images/issues/14404).
+
+The compile SDK must provide the iOS 27.1 reserved-region symbols; a runtime
+availability guard and deployment target 27.0 do not make an older SDK sufficient.
+The native Mac host must also meet the app's macOS minimum.
+
+CI restores locked Node dependencies, prepares the existing component renderer,
+performs fresh normal builds and full-scheme tests with isolated derived data, and
+collects actual xcresult evidence for Mac, ordinary iPhone, iPad and Duo. It creates
+only uniquely named run-owned simulators and confirms their cleanup. Developer
+UDIDs are never used in CI. Native UI/desktop failures remain failures, not
+model-only or skipped-platform success.
+
+The Apple job keeps raw logs/artifacts separately and publishes a bounded
+source-bound native report. Aggregation requires the actual hosted execution
+origin, complete selected matrix and cleanup; local MCP reports cannot impersonate
+that CI job. A workflow-only branch without the uncommitted Apple implementation
+can validate selectors and runner contracts, but cannot claim a real Apple-client
+CI run. Publishing that source remains separately authorized.
+
+## Local Apple refinement
+
+This is a local acceptance route for bounded Apple presentation follow-ups, not a
+PR exemption or general cross-version test cache. Ordinary feature changes use
+the platform gate above; visual refinements are a narrower local route. The local
+entry refuses GitHub Actions and combinations with ordinary planning, aggregation,
+recovery, promotion or Android toolchain flags.
+Native refinement runs on macOS. Its integration regressions use the existing
+macOS native tooling shard; portable CI-refusal checks also run on other hosts.
+
+Use the owning session and its original Xcode MCP tools. The refinement actions capture
+source/evidence and reads retained `.xcresult` bundles with `xcresulttool`; it never
+builds, runs tests, starts a simulator, installs an app or resets a fixture store.
+Existing task authority, device ownership and user decisions still apply. In
+particular, leave user trials running and respect a request to keep Duo shut down.
+
+### Eligibility and first adoption
+
+Start from a complete, independently accepted local checkpoint in the same task.
+Keep the original `BASE_COMMIT`. The checkpoint retains all source inputs and
+native presentation text, the original terminal-qualified full report, actual
+review response and native evidence references. Each follow-up compares the
+**entire cumulative delta** to that checkpoint, including non-ignored untracked
+inputs. A successful refinement does not silently advance the checkpoint.
+
+The initial path screen admits `ContentView.swift` and `Controls.swift` under
+`apple/DevPocket/DevPocket`, their two existing native test files, and
+`docs/APPLE-CLIENT.md`. At least one existing presentation file must change.
+Source deletion, executable/link changes, any other path, a different branch or
+history, changed hooks, policy or Git/Node/Xcode/preparation environment selects `full_required`.
+The owner explains that reason and returns to the ordinary applicable gate.
+No filename proves semantic eligibility: independent review also checks the
+actual handlers, bindings, accessibility, test changes and surrounding code.
+New state/transport/permission behavior, shared renderer changes and dependency
+or build configuration use the ordinary route.
+
+Local text/style adjustments and removal of redundant presentation can qualify
+when normal navigation and user-facing controls remain covered. Every changed
+Swift file needs an explicit fresh-test mapping. Select relevant layout, Dynamic
+Type, keyboard, navigation and model/WK boundary cases rather than treating a
+screenshot or successful build as complete acceptance. Record why other cases or
+devices remain unchanged evidence; their original source identities stay intact.
+An unavailable required result remains a gap, not an invented pass.
+
+Adopting these new controls requires the actual input-bound local decision.
+After initial adoption, prepare the current renderer and obtain a complete normal
+gate with `-CaptureRefinementContext`, followed by independent acceptance, before
+creating the first checkpoint. This local-only option records the actual native
+input context before and after the normal run in its terminal-qualified report.
+It preserves the ordinary check set; it is not a reduced gate. It requires an
+unsharded local run and must also be supplied when resuming that run.
+Checkpoint creation compares against that recorded context, not a newly sampled
+replacement. An older report cannot acquire the changed
+policy's identity, and a branch ref alone does not identify uncommitted Apple work.
+Preserve previous failures, including all-passed commands whose terminal
+qualification failed with `environment-changed`. This route does not repair that
+failure, reclaim a lock or retroactively qualify a blocked run.
+
+Preparation identity includes the actual Node/npm launchers and npm implementation,
+effective startup/configuration inputs, installed dependency bytes, the preparation
+helper and fixtures, compiled component outputs, and every prepared renderer file.
+Unknown startup overrides or unavailable identities block reduction. The renderer
+must also match both independently accepted app copies at checkpoint creation and
+the actual produced apps at qualification. Changing an ignored input is therefore
+not hidden by an unchanged Git diff.
+
+### Local entry and records
+
+Use an immutable request JSON and a new output path for every invocation:
+
+```powershell
+npm run verify -- -Base BASE_COMMIT -Refinement REQUEST_JSON -Report NEW_REPORT_JSON
+```
+
+All requests/evidence live in ignored `.data` storage in this worktree. The
+ordinary report output stays under `.data/verification`. The five actions are:
+
+**Prepare checkpoint**, after full verification and before independent review:
+
+```json
+{
+  "action": "prepare-checkpoint",
+  "verification": ".data/verification/full/report.json",
+  "nativeEvidence": [".data/apple/native-matrix.json", ".data/apple/native-artifacts.json"],
+  "acceptedProducts": [{
+    "platform": "ios",
+    "artifact": ".data/apple/accepted/ios-build/artifact.json",
+    "bundle": ".data/apple/accepted/ios-build/DevPocket.app"
+  }, {
+    "platform": "macos",
+    "artifact": ".data/apple/accepted/mac-build/artifact.json",
+    "bundle": ".data/apple/accepted/mac-build/DevPocket.app"
+  }]
+}
+```
+
+`verification` is the original complete local run report, with its valid terminal
+run history and captured input context, not an edited summary or partial shard.
+The command emits a `pending_review` subject and prints its SHA256. Supply that
+exact subject, underlying evidence and digest to the independent reviewer.
+References/digests identify
+data, not authenticated human consent or an adversarial attestation. The owner
+and reviewer still establish that this is the actual independent tool response.
+Historical native references may retain another source; at least one must bind
+the current accepted source. Keep all underlying records available to review.
+The accepted product seals/copies must bind that current source and the prepared
+renderer. Version-1 local records lack these bindings and remain historical data;
+recreate the checkpoint from a fresh qualifying run instead of editing a version.
+
+**Checkpoint**, after the actual independent review accepts that subject:
+
+```json
+{
+  "action": "checkpoint",
+  "subject": ".data/verification/apple-checkpoint/subject.json",
+  "review": ".data/apple/review/agent-response.json"
+}
+```
+
+`review` is the retained original-client `tool.execution_complete` event for
+`devpocket-reviewer`. Its actual verdict must include `checkpointSha256` matching
+the subject, in addition to the original base and reviewed source. This prevents
+an old same-source verdict from accepting a different environment or evidence
+selection. Finalization rechecks source, environment and all referenced inputs.
+Only the finalized `checkpointed` record can seed a presentation plan.
+
+**Plan**, after a bounded edit and before native execution:
+
+```json
+{
+  "action": "plan",
+  "checkpoint": ".data/verification/apple-checkpoint/report.json",
+  "selection": {
+    "reason": "Remove the redundant workbench promotion; normal sessions remain reachable.",
+    "tests": [{
+      "platform": "iOS Simulator",
+      "deviceId": "ACTUAL_OWNED_DEVICE_ID",
+      "osVersion": "ACTUAL_OS_VERSION",
+      "identifiers": ["DevPocketUITests/testWorkbenchListsSessionsWithoutPromotionalCard()"]
+    }],
+    "coverage": [{
+      "path": "apple/DevPocket/DevPocket/ContentView.swift",
+      "tests": ["DevPocketUITests/testWorkbenchListsSessionsWithoutPromotionalCard()"],
+      "reason": "Checks absence of the card and normal session navigation."
+    }],
+    "unchangedCoverage": "Explain unchanged cases and platform applicability against the retained evidence."
+  }
+}
+```
+
+This example is an input shape, not a prescribed sufficient suite. Map **every**
+changed Swift file, including test files; add layout/font/reader/interaction cases
+as the real change requires. Tests name exact `GetTestList` identifiers and actual
+devices, not wildcards. Normal iOS and macOS builds remain required. The report
+retains before/after text for the cumulative delta and the selected tests for
+independent inspection.
+
+**Binding**, immediately before a native operation or unchanged-source group:
+
+```json
+{ "action": "binding", "plan": ".data/verification/refinement/plan.json" }
+```
+
+Save that report, use the original Xcode MCP to prepare/build/test, then capture
+another binding with the same plan and `"before"` pointing to the first binding
+report. This captures actual source, hooks, environment and observation times on
+both sides. Xcode version inspection is read-only (`xcrun xcodebuild -version`).
+Do not write these values by hand. Run the existing component
+preparation when needed and preserve its output/renderer checks. Build for testing
+before rediscovering newly added cases; a cached `GetTestList` is not evidence of
+execution. Retain normal build logs, sealed `.app` copies and actual `.xcresult`
+bundles/exports using the existing Apple evidence format.
+For each normal build, call `BuildProject` with `buildForTesting: false`.
+Use a current `XcodeListWorkspaces` mapping to bind the provider's actual workspace
+handle to this worktree. Some providers reject absolute paths for BuildProject;
+retain the real request rather than rewriting it. Supply `workspaceBinding`
+request/completion events for a handle-based call, collected inside the source
+binding before the build. Direct paths remain accepted when the actual provider
+supports them. An unassociated handle from another session is insufficient.
+Retain its actual original-client start/completion events and the full tool log.
+Selected tests likewise retain the successful `RunSomeTests` request/completion
+events and workspace binding. Keep the producing SDK result bundle as well as
+the retained copy; matching case IDs and a nearby timestamp alone do not prove
+that this worktree ran those tests.
+
+**Qualify**, after all selected native work:
+
+```json
+{
+  "action": "qualify",
+  "plan": ".data/verification/refinement/plan.json",
+  "tests": [{
+    "binding": ".data/verification/native/after.json",
+    "requestEvent": ".data/apple/current/tests-request.event.json",
+    "responseEvent": ".data/apple/current/tests-response.event.json",
+    "summary": ".data/apple/current/summary.json",
+    "tests": ".data/apple/current/tests.json",
+    "resultBundle": ".data/apple/current/result.xcresult"
+  }],
+  "builds": [{
+    "platform": "ios",
+    "binding": ".data/verification/ios-build/after.json",
+    "requestEvent": ".data/apple/current/ios-build/build-request.event.json",
+    "responseEvent": ".data/apple/current/ios-build/build-response.event.json",
+    "artifact": ".data/apple/current/ios-build/artifact.json",
+    "bundle": ".data/apple/current/ios-build/DevPocket.app",
+    "log": ".data/apple/current/ios-build/build.log"
+  }, {
+    "platform": "macos",
+    "binding": ".data/verification/mac-build/after.json",
+    "requestEvent": ".data/apple/current/mac-build/build-request.event.json",
+    "responseEvent": ".data/apple/current/mac-build/build-response.event.json",
+    "artifact": ".data/apple/current/mac-build/artifact.json",
+    "bundle": ".data/apple/current/mac-build/DevPocket.app",
+    "log": ".data/apple/current/mac-build/build.log"
+  }]
+}
+```
+
+Test entries follow the plan's target order. `artifact.json` retains `source`,
+`originalProduct`, `bundleId`, `minimumOS`, successful signature verification, and the complete
+bundle-relative SHA256 `files` map. Preserve the original build outcome/log and
+signature output for review; copying a product is not a new build.
+The build outcome must be a successful structured `xcode/BuildProject` response
+paired with its actual request and workspace binding. Its tool-call interval
+must lie inside the source observations. Reports preserve that envelope and the
+SDK's `elapsedTime` separately from observation times; they do not invent internal
+compiler start/finish timestamps. The retained log must match `fullLogPath` and
+identify the DevPocket target, worktree and one produced Debug app for that
+platform. Its product path and current product bytes must match the independent
+sealed copy, including prepared renderer bytes. Keep the original SDK log and
+producing product available through final qualification. A failed/omitted build,
+a stale call, an ambiguous/no-product log or a replaced product cannot count as a
+build pass. Use the ordinary evidence route when a supported producing record
+cannot be obtained; do not manufacture log entries or edit source to force proof.
+Qualification binds the requested case set and successful response to this
+workspace, then compares the original SDK bundle with its retained copy and
+exports. It checks the exact device/OS/case set and producing invocation interval,
+allowing one second for xcresult timestamp precision, requires zero
+failed/skipped/expected failures, and checks the sealed product bytes.
+Native SDK/toolchain/loader environment inputs remain part of the checkpoint
+fingerprint just as in the full Apple lane. It rechecks source and execution
+context, without starting a device or running another full-stack gate.
+
+### Review and delivery
+
+The version-2 `local-refinement-verification` is complete only for its explicit
+native plan. It always has `acceptance: false` and `reviewRequired: true`; it is
+not version-6 full verification and cannot be fed into ordinary/CI aggregation.
+Give the independent reviewer the fixed contract, checkpoint and its original
+evidence, cumulative delta, local native report, raw artifacts, policy and actual
+authority. A path-screen pass or implementer coverage claim is not final approval.
+
+After an actual eligible `pass` bound to the current source and plan digest,
+repeat the same `qualify` request into a new report and check unchanged plan,
+source, policy, hooks and authority before local handoff. Any gap returns to
+repair or the normal gate. Local commits retain their own authorization and
+candidate/source requirements; capture bindings after freezing the intended
+candidate. Moving to PR delivery returns to ordinary CI. Scope/authority and
+historical failures are never supplied by the local report itself.
+
 ## Verification
 
 Run from the checkout with Node 26, npm 12.2.1 and PowerShell 7. The complete tooling
@@ -566,7 +950,9 @@ adding a new file does not silently inherit a tooling exemption.
 | Agent instructions | `AGENTS.md`, the DevPocket skill/reviewer and AI task template | Complete `tooling-tests` |
 | Source/verification contracts | Root `.gitignore`, `git-state.mjs`, `verification.mjs`, `verification-policy.mjs`, `verify.mjs`, `verify.ps1`; named diagnostic/evidence projections and tooling regressions | Complete `tooling-tests` |
 | Backend execution/build | `verification-backend.mjs`, extension bundle/package helpers, CLI-proof launcher, backend TypeScript configs, extension distribution workflow | Tooling and backend checks; no Android provisioning |
-| Native execution/build | `verification-android.mjs`, Android runner/build/emulator helpers, owned device cleanup, Gradle inputs/wrappers, native preparation action | Tooling, Android build, device cases and all layouts |
+| Android execution/build | `verification-android.mjs`, Android runner/build/emulator helpers, owned device cleanup, Gradle inputs/wrappers, native preparation action | Tooling, Android build, device cases and all layouts |
+| Apple product | Apple Swift, native tests, resources and fixtures | Complete `apple-native` |
+| Apple execution/build | Apple preparation, project/scheme/dependency inputs and Apple verifier/runner | Tooling and Apple; no unrelated Android/backend product suites |
 | Shared execution | `verification-executor.mjs`, `process.mjs`, `owned-command*`, bounded command logs, shared backend/native diagnostic preflight | Every check and layouts |
 | Cross-lane infrastructure | `ci.yml`, root npm/lock inputs, shared or unclassified dependency policy | Every check and layouts |
 | Operations | `deployment/`, `infra/`, `azure.yaml`, including their own npm/Python inputs | Backend and operational fixtures, not native execution |
@@ -603,10 +989,12 @@ the `git`/`readOnlyGit`/`sourceSnapshot` compatibility exports from `git-state.m
 Planning and aggregation do not load the execution adapters. The execution
 entry loads `verification-executor.mjs`, which owns sequencing, process
 ownership, bounded logs, stopping after failure and the final source check.
-The two concrete adapters own actual backend npm commands and native
-PowerShell commands/arguments respectively, including diagnostic preparation
-and device evidence/cleanup. No caller-supplied executable or plugin registry
-is introduced. Keep actual command, timeout, build and device changes in these
+The backend and Android adapters own their actual npm and native PowerShell
+commands, including diagnostic preparation and device evidence/cleanup.
+`verification-apple.mjs` selects the original-client evidence or hosted native
+execution route described in [Apple platform verification](#apple-platform-verification).
+No caller-supplied executable or plugin registry is introduced.
+Keep actual command, timeout, build and device changes in these
 execution modules, not in the tooling-classified facade or catalogue.
 
 The source contract still returns `{ head, fingerprint }`. The fingerprint
@@ -622,7 +1010,8 @@ that command only. Raw `git` remains available for unchanged configuration
 evidence and authorized mutations; probe overrides do not rewrite user settings.
 
 Mixed changes take the union; no narrow rule cancels another path's requirements.
-`--all` explicitly selects every check. Plan JSON and CLI output include
+`--all` explicitly selects every available platform's checks; an Apple product
+change still requires Apple even when its project is missing. Plan JSON and CLI output include
 `requiredChecks`, `requiredGroups`, `layouts`, and
 `selectionReasons`: fixed rule descriptions, selected checks/groups and sorted
 changed-path examples (at most 16 paths of 240 characters per rule, with

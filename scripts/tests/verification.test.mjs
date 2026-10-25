@@ -19,6 +19,8 @@ import { committedInputsMatch, committedSourceInputs, commitSourceProjection, so
 import { androidImageArchitecture } from "../android-platform.mjs";
 
 const exec = promisify(execFile);
+const checksWithoutApple = CHECKS.filter((check) => check.group !== "apple").map((check) => check.id);
+const groupsWithoutApple = CHECK_GROUPS.filter((group) => group !== "apple");
 const entry = path.resolve("scripts/verify.mjs");
 const toolchains = new Map();
 
@@ -329,7 +331,7 @@ test("shared execution, cross-lane CI, shared dependencies and unknown paths ret
   ];
   for (const [file, rule] of cases) await t.test(file, () => {
     const impact = verificationImpact([file]);
-    assert.deepEqual(impact.requiredChecks, CHECKS.map((check) => check.id));
+    assert.deepEqual(impact.requiredChecks, checksWithoutApple);
     assert.deepEqual(impact.requiredGroups, ["tooling", "backend", "android", "device"]);
     assert.equal(Object.hasOwn(impact, "requiresHumanReview"), false);
     assert.equal(developmentReviewRequirements([file]).requiresHumanReview, isVerificationPolicyPath(file));
@@ -392,7 +394,7 @@ test("the tooling entry does not exempt shared dependencies, unknown tests or mi
   for (const file of ["package.json", "package-lock.json", ".npmrc", ".github/workflows/ci.yml",
     "scripts/test-tooling-extra.mjs", "scripts/tests/tooling-runner-extra.test.mjs", "scripts/tests/unlisted.test.mjs"]) {
     const impact = verificationImpact([...entry, file]);
-    assert.deepEqual(impact.requiredChecks, CHECKS.map((check) => check.id), file);
+    assert.deepEqual(impact.requiredChecks, checksWithoutApple, file);
     assert.equal(impact.layouts, true, file);
   }
   assert.deepEqual(verificationImpact([...entry, "backend/tests/fixture.test.ts"]).requiredGroups, ["tooling", "backend"]);
@@ -417,7 +419,7 @@ test("local Xcode setup and root ignore policy select tooling without weakening 
     "scripts/setup-xcode-mcp-extra.mjs", "config/another-mcp.example.json",
     "scripts/tests/xcode-mcp-extra.test.mjs", "nested/.gitignore"]) {
     const impact = verificationImpact([...setup, file]);
-    assert.deepEqual(impact.requiredChecks, CHECKS.map((check) => check.id), file);
+    assert.deepEqual(impact.requiredChecks, checksWithoutApple, file);
     assert.equal(impact.layouts, true, file);
   }
   assert.deepEqual(verificationImpact([...setup, "android/app/src/main/java/dev/devpocket/app/ui/Screen.kt"]).requiredGroups,
@@ -430,10 +432,10 @@ test("mixed development tooling and application changes select the union from th
     "scripts/candidate-commit.mjs", ".github/agents/devpocket-reviewer.agent.md"];
   for (const [file, checks, groups, layouts = false] of [
     ["backend/tests/fixture.test.ts", core, ["tooling", "backend"]],
-    ["backend/src/protocol.ts", [...core, "extension-package", "setup", "android-build", "android-device"], CHECK_GROUPS],
-    ["backend/integration/fixture.ts", [...core, "android-build", "android-device"], CHECK_GROUPS],
-    ["protocol.schema.json", [...core, "android-build", "android-device"], CHECK_GROUPS],
-    ["test-fixtures/fixture.ts", [...core, "android-build", "android-device"], CHECK_GROUPS],
+    ["backend/src/protocol.ts", [...core, "extension-package", "setup", "android-build", "android-device"], groupsWithoutApple],
+    ["backend/integration/fixture.ts", [...core, "android-build", "android-device"], groupsWithoutApple],
+    ["protocol.schema.json", [...core, "android-build", "android-device"], groupsWithoutApple],
+    ["test-fixtures/fixture.ts", [...core, "android-build", "android-device"], groupsWithoutApple],
     ["extension/bridge.mjs", [...core, "extension-package", "setup"], ["tooling", "backend"]],
     ["deployment/azure/src/fixture.ts", [...core, "setup", "azure-tests", "operations-tests"], ["tooling", "backend"]],
     ["android/app/src/main/java/dev/devpocket/app/ui/Screen.kt", ["tooling-tests", "android-build", "android-device"],
@@ -444,9 +446,9 @@ test("mixed development tooling and application changes select the union from th
     ["scripts/verification-backend.mjs", CHECKS.filter((check) => ["tooling", "backend"].includes(check.group)).map((check) => check.id),
       ["tooling", "backend"]],
     ["scripts/verification-android.mjs", ["tooling-tests", "android-build", "android-device"], ["tooling", "android", "device"], true],
-    ["scripts/verification-executor.mjs", CHECKS.map((check) => check.id), CHECK_GROUPS, true],
-    [".github/workflows/ci.yml", CHECKS.map((check) => check.id), CHECK_GROUPS, true],
-    ["unknown.txt", CHECKS.map((check) => check.id), CHECK_GROUPS, true],
+    ["scripts/verification-executor.mjs", checksWithoutApple, groupsWithoutApple, true],
+    [".github/workflows/ci.yml", checksWithoutApple, groupsWithoutApple, true],
+    ["unknown.txt", checksWithoutApple, groupsWithoutApple, true],
   ]) await t.test(file, () => {
     const impact = verificationImpact([...tooling, file]);
     assert.deepEqual(impact.requiredChecks, checks);
@@ -465,7 +467,7 @@ test("mixed development tooling and application changes select the union from th
 test("real added, staged, deleted, renamed and mixed paths select a deterministic conservative union", async (t) => {
   const tools = ["scripts/git-state.mjs", "scripts/native-candidate.mjs", "scripts/verification.mjs", "scripts/tests/verification.test.mjs"];
   const backend = CHECKS.filter((check) => ["tooling", "backend"].includes(check.group)).map((check) => check.id);
-  const native = ["tooling-tests", "android-build", "android-device"], all = CHECKS.map((check) => check.id);
+  const native = ["tooling-tests", "android-build", "android-device"], all = checksWithoutApple;
   for (const scenario of [
     { name: "untracked tools", add: tools, checks: ["tooling-tests"] },
     { name: "staged tools", add: tools, staged: true, checks: ["tooling-tests"] },
@@ -524,8 +526,8 @@ test("plan explanations are deterministic and bounded without truncating actual 
   assert.ok(reason.description.length > 0);
   assert.deepEqual(first.selectionReasons.find((item) => item.rule === "development-tooling").checks, ["tooling-tests"]);
   const forced = (await verify(root, ["--plan", "--all"])).report;
-  assert.deepEqual(forced.requiredChecks, CHECKS.map((check) => check.id));
-  assert.deepEqual(forced.requiredGroups, CHECK_GROUPS);
+  assert.deepEqual(forced.requiredChecks, checksWithoutApple);
+  assert.deepEqual(forced.requiredGroups, groupsWithoutApple);
   assert.equal(forced.selectionReasons.at(-1).rule, "all-checks");
   assert.deepEqual(forced.selectionReasons.at(-1).paths, []);
 });
@@ -533,7 +535,8 @@ test("plan explanations are deterministic and bounded without truncating actual 
 test("public plan diagnostics preserve responsibility-specific selections without supplying approval", async (t) => {
   for (const file of ["scripts/git-state.mjs", "scripts/verification-backend.mjs", "scripts/verification-android.mjs",
     "scripts/verification-executor.mjs", "scripts/unknown.mjs", ".github/workflows/ci.yml",
-    ".github/agents/devpocket-reviewer.agent.md", "deployment/azure/package.json"]) await t.test(file, async (t) => {
+    ".github/agents/devpocket-reviewer.agent.md", "deployment/azure/package.json",
+    "apple/DevPocket/DevPocket/ContentView.swift"]) await t.test(file, async (t) => {
     const root = await changedRepository(t, [file]), result = await verify(root, ["--plan"]);
     assert.equal(result.exitCode, 0);
     const impact = verificationImpact([file]);
@@ -542,8 +545,9 @@ test("public plan diagnostics preserve responsibility-specific selections withou
     }
     assert.deepEqual(result.report.changedFiles, [file]);
     const publicPlan = JSON.parse(result.stdout.split(/\r?\n/).find((line) => line.startsWith("{")));
-    assert.deepEqual(Object.keys(publicPlan).sort(), ["ciMacos", "kind", "layouts", "requiredChecks", "requiredGroups", "selectionReasons", "toolingShards"]);
+    assert.deepEqual(Object.keys(publicPlan).sort(), ["apple", "ciMacos", "kind", "layouts", "requiredChecks", "requiredGroups", "selectionReasons", "toolingShards"]);
     assert.deepEqual(publicPlan.requiredGroups, impact.requiredGroups);
+    assert.deepEqual(publicPlan.apple, impact.apple);
     const directory = path.dirname(result.reportPath);
     await rename(result.reportPath, path.join(directory, "plan.json"));
     await exec(process.execPath, [path.resolve("scripts/verification-diagnostics.mjs"),
@@ -736,7 +740,8 @@ test("CI projects actual planner groups and forwards selected and unselected job
       "scripts/tests/verification.test.mjs"], ["tooling"]],
     ["backend", ["scripts/verification-backend.mjs"], ["tooling", "backend"]],
     ["native", ["scripts/verification-android.mjs"], ["tooling", "android", "device"]],
-    ["full", ["scripts/verification-executor.mjs"], CHECK_GROUPS],
+    ["apple", ["apple/DevPocket/DevPocket/ContentView.swift"], ["apple"]],
+    ["full", ["scripts/verification-executor.mjs"], groupsWithoutApple],
   ]) await t.test(name, async (t) => {
     const root = await changedRepository(t, files), plan = await verify(root, ["--plan"]);
     const output = path.join(root, ".data", "job-outputs");
@@ -746,7 +751,7 @@ test("CI projects actual planner groups and forwards selected and unselected job
     const flags = Object.fromEntries((await readFile(output, "utf8")).trim().split(/\r?\n/).map((line) => line.split("=")));
     assert.deepEqual(flags, { ...Object.fromEntries(CHECK_GROUPS.map((group) => [group, String(groups.includes(group))])),
       macos: String(plan.report.ciMacos) });
-    const ciGroups = ["tooling", "macos", "backend", "android", "device"];
+    const ciGroups = ["tooling", "macos", "backend", "android", "device", "apple"];
     const selected = new Set([...groups, ...(plan.report.ciMacos ? ["macos"] : [])]);
     const results = Object.fromEntries(ciGroups.map((group) =>
       [`${group.toUpperCase()}_RESULT`, selected.has(group) ? "success" : "skipped"]));
@@ -777,8 +782,8 @@ test("app, wire, unrelated skills and unknown changes cannot omit device checks"
       assert.equal(Object.hasOwn(result.report, "requiresHumanReview"), false);
       assert.equal(developmentReviewRequirements(result.report.changedFiles).requiresHumanReview, isVerificationPolicyPath(file));
       if (file.startsWith(".github/skills/")) {
-        assert.deepEqual(result.report.requiredChecks, CHECKS.map((check) => check.id));
-        assert.deepEqual(result.report.requiredGroups, CHECK_GROUPS);
+        assert.deepEqual(result.report.requiredChecks, checksWithoutApple);
+        assert.deepEqual(result.report.requiredGroups, groupsWithoutApple);
       }
     });
   }
@@ -2337,7 +2342,7 @@ test("uncertain ownership blocks command probes across selected groups but still
     });
     assert.equal(result.status, "blocked");
     assert.equal(commands, 1);
-    assert.deepEqual(result.groups.map((group) => group.group), CHECK_GROUPS);
+    assert.deepEqual(result.groups.map((group) => group.group), groupsWithoutApple);
     for (const group of result.groups) {
       assert.ok(group.issues.length, "Keep a real failure for existing report consumers and recovery.");
       assert.ok(group.issues.some(({ failure }) => failure.processTreeStopped === false));
@@ -2412,7 +2417,7 @@ test("tooling-only preflight never inspects unrelated Java, SDK, image or probe-
   await mkdir(path.join(root, "scripts"));
   await writeFile(path.join(root, "scripts", "verification-executor.mjs"), "// select all downstream checks\n");
   const plan = await verificationPlan(root, "HEAD");
-  assert.deepEqual(plan.requiredGroups, CHECK_GROUPS);
+  assert.deepEqual(plan.requiredGroups, groupsWithoutApple);
   const settings = {
     DEVPOCKET_JDK: "missing-jdk", DEVPOCKET_ANDROID_SDK: "missing-sdk",
     DEVPOCKET_ANDROID_IMAGE: "invalid-image", DEVPOCKET_PROBE_PYTHON: "missing-python",
@@ -3263,6 +3268,23 @@ async function commitFixtureCandidate(root) {
   await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", nativeCandidateCommand(file, sha256(bytes))], { timeout: 120000 });
   return file;
 }
+
+test("candidate promotion accepts a fresh Apple evidence input but still validates the original signed run", async (t) => {
+  const root = await changedRepository(t, ["apple/DevPocket/DevPocket/ContentView.swift"]);
+  const promotion = ["--promote", path.join(root, ".data/verification/original/run/run.json"),
+    "--candidate-request", path.join(root, ".data/verification/candidate.json"),
+    "--apple-evidence", path.join(root, ".data/verification/candidate-apple-request.json")];
+  const result = await verify(root, promotion);
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.report.failure.reason, "run-untrusted", JSON.stringify(result.report));
+  assert.equal(result.report.complete, false);
+  assert.equal(result.report.preflight, undefined);
+  assert.deepEqual(result.report.checks, [{ id: "apple-native", status: "not_run" }]);
+  for (const extra of [["--plan"], ["--combine"], ["--group", "apple"]]) {
+    const rejected = await verify(root, [...promotion, ...extra]);
+    assert.equal(rejected.report.failure.reason, "configuration");
+  }
+});
 
 test("a native candidate transition reuses content-only execution across Git normalization without rewriting its old HEAD or time", async (t) => {
   const { root, base, counts } = await recoveryFixture(t, { candidate: true });

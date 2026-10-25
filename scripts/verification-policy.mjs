@@ -1,3 +1,5 @@
+import { APPLE_REQUIREMENTS } from "./apple-evidence.mjs";
+
 export const VERIFICATION_REPORT_VERSION = 6;
 export const isDiagnosticVerificationVersion = (version) => [1, 2, 3, 4, 5, VERIFICATION_REPORT_VERSION].includes(version);
 
@@ -13,6 +15,7 @@ export const CHECKS = [
   { id: "operations-tests", group: "backend" },
   { id: "android-build", group: "android" },
   { id: "android-device", group: "device" },
+  { id: "apple-native", group: "apple" },
 ];
 
 export const CHECK_GROUPS = [...new Set(CHECKS.map((check) => check.group))];
@@ -20,7 +23,7 @@ export const verificationGroups = (ids) => [...new Set(CHECKS.filter((check) => 
 const diagnosticCheckId = (id, version) =>
   [1, 2, 3, 4, 5].includes(version) && id === "tooling-tests" ? "workflow-tests" : id;
 // Historical names are diagnostic-only; acceptance uses the current CHECKS.
-export const diagnosticChecks = (version) => CHECKS.map((check) => ({
+export const diagnosticChecks = (version) => CHECKS.filter((check) => check.group !== "apple" || version === VERIFICATION_REPORT_VERSION).map((check) => ({
   id: diagnosticCheckId(check.id, version),
   group: version === 1 && check.id === "tooling-tests" ? "backend" : check.group,
 }));
@@ -30,11 +33,18 @@ const tooling = ["tooling-tests"];
 const backend = ["tooling-tests", "typecheck", "backend-tests", "backend-build", "schema"];
 const backendExecution = CHECKS.filter((check) => ["tooling", "backend"].includes(check.group)).map((check) => check.id);
 const android = ["android-build", "android-device"];
+const apple = ["apple-native"];
 const nativeExecution = { checks: [...tooling, ...android], layouts: () => true };
 const full = { checks: allChecks, layouts: () => true };
+const appleControl = (file) => file.startsWith("apple/") && (
+  /(?:^|\/)(?:AGENTS|CLAUDE)\.md$/i.test(file) ||
+  /(?:^|\/)(?:Package(?:\.swift|\.resolved)|package(?:-lock)?\.json|\.npmrc)$/.test(file) ||
+  /\.(?:mjs|cjs|js|ps1|sh|py|pbxproj|xcscheme|xctestplan|xcconfig)$/.test(file) ||
+  /\/\.github\/(?:skills|agents|instructions|workflows|actions)\//.test(file));
 const rules = [
   { id: "documentation", description: "Documentation does not select application checks.",
-    matches: (file) => ["README.md", "VALIDATION.md"].includes(file) || /^docs\/.*\.md$/.test(file), checks: [] },
+    matches: (file) => ["README.md", "VALIDATION.md"].includes(file) || /^docs\/.*\.md$/.test(file) ||
+      file.startsWith("apple/") && file.endsWith(".md") && !appleControl(file), checks: [] },
   { id: "development-tooling", description: "Local tool setup, trust policy and candidate preparation use the complete tooling suite.",
     matches: (file) => ["scripts/development-policy.mjs", "scripts/development-paths.mjs",
       "scripts/candidate-commit.mjs", "scripts/native-candidate.mjs",
@@ -44,12 +54,14 @@ const rules = [
       ".github/skills/devpocket-development/SKILL.md", ".github/ISSUE_TEMPLATE/ai-task.yml"].includes(file), checks: tooling },
   { id: "verification-contract", description: "Source identity, planning, evidence validation and report projection use tooling contracts, not application builds.",
     matches: (file) => [".gitignore", "scripts/git-state.mjs", "scripts/verification.mjs", "scripts/verification-policy.mjs",
-      "scripts/verify.mjs", "scripts/verify.ps1", "scripts/verification-tooling.mjs", "scripts/verification-diagnostics.mjs", "scripts/diagnostic-errors.mjs",
+      "scripts/verify.mjs", "scripts/verify.ps1", "scripts/verification-refinement.mjs",
+      "scripts/verification-tooling.mjs", "scripts/verification-diagnostics.mjs", "scripts/diagnostic-errors.mjs",
       "scripts/diagnostic-publication.mjs", "scripts/android-diagnostics.mjs", "scripts/device-diagnostics.mjs",
       "scripts/worker-diagnostics.mjs", "scripts/native-lifecycle.mjs"].includes(file), checks: tooling },
   { id: "tooling-regression", description: "Named synthetic tooling regressions run the complete tooling suite without provisioning application toolchains.",
     matches: (file) => [
-      "verification", "verification-execution", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
+      "verification", "verification-execution", "verification-refinement", "verification-diagnostics", "apple-selection", "apple-local",
+      "android-runner", "android-build", "android-diagnostics",
       "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
       "bounded-worker-log", "development-tools", "development-approval", "process", "emulator-resources", "manual-emulator", "linux-emulator", "linux-runtime", "xcode-mcp", "tooling-runner", "macos-host",
     ].some((name) => file === `scripts/tests/${name}.test.mjs`) ||
@@ -79,6 +91,12 @@ const rules = [
   { id: "operations", description: "Deployment and infrastructure changes, including their dependencies, require backend and operational fixtures.",
     matches: (file) => file.startsWith("deployment/") || file.startsWith("infra/") || file === "azure.yaml",
     checks: [...backend, "setup", "azure-tests", "operations-tests"] },
+  { id: "apple-execution", description: "Apple build, dependency and verification controls require tooling and Apple checks, not unrelated Android/backend product suites.",
+    matches: (file) => appleControl(file) ||
+      ["scripts/apple-runner.mjs", "scripts/apple-evidence.mjs", "scripts/verification-apple.mjs",
+        "scripts/tests/apple-runner.test.mjs"].includes(file), checks: [...tooling, ...apple] },
+  { id: "apple", description: "Apple product changes require the complete Apple native gate.",
+    matches: (file) => file.startsWith("apple/"), checks: apple },
   { id: "verification-infrastructure", description: "Cross-lane CI and shared or unclassified dependency inputs require all downstream checks.",
     matches: (file) => [".github/workflows/ci.yml", ".github/CODEOWNERS"].includes(file) ||
       /(?:^|\/)(?:\.npmrc|package(?:-lock)?\.json|npm-shrinkwrap\.json|tsconfig(?:\.[^/]+)?\.json|requirements[^/]*\.txt)$/i.test(file), ...full },
@@ -87,16 +105,16 @@ const rules = [
     layouts: (file) => /\/ui\/|\/res\/|Manifest|\.gradle|gradle\.properties/.test(file) },
   { id: "backend-runtime", description: "Backend/runtime source requires backend, packaging, setup and native compatibility checks.",
     matches: (file) => file.startsWith("backend/src/"),
-    checks: [...backend, "extension-package", "setup", ...android] },
+    checks: [...backend, "extension-package", "setup", ...android, ...apple] },
   { id: "backend-integration", description: "Runtime integration changes require backend and native compatibility checks.",
-    matches: (file) => file.startsWith("backend/integration/"), checks: [...backend, ...android] },
+    matches: (file) => file.startsWith("backend/integration/"), checks: [...backend, ...android, ...apple] },
   { id: "backend", description: "Backend changes require tooling regressions and backend checks.",
     matches: (file) => file.startsWith("backend/"), checks: backend },
   { id: "runtime-extension", description: "The shipped runtime extension requires backend, packaging and setup checks.",
     matches: (file) => file.startsWith("extension/"), checks: [...backend, "extension-package", "setup"] },
   { id: "wire-fixtures", description: "Shared wire contracts and fixtures require backend and native compatibility checks.",
     matches: (file) => file.startsWith("test-fixtures/") || ["protocol.schema.json", "scripts/export-schema.ts"].includes(file),
-    checks: [...backend, ...android] },
+    checks: [...backend, ...android, ...apple] },
   { id: "unknown", description: "Unclassified paths require every check and layouts.",
     matches: () => true, ...full },
 ];
@@ -110,38 +128,42 @@ const otherPlatformInputs = new Set([
   ".github/actions/prepare-native/action.yml", ".github/workflows/native-startup-diagnostics.yml",
 ]);
 const selectsMacos = (file, rule) => !otherPlatformInputs.has(file) && (
-  macosRules.has(rule.id) || rule.id === "android-execution" ||
-  rule.id === "tooling-regression" && /^scripts\/tests\/(?:verification(?:-execution|-diagnostics)?|development-(?:tools|approval)|android-runner|android-build|native-lifecycle|process|emulator-resources|manual-emulator|xcode-mcp|tooling-runner|macos-host)\.test\.mjs$/.test(file) ||
+  macosRules.has(rule.id) || rule.id === "android-execution" || rule.id === "apple-execution" ||
+  rule.id === "tooling-regression" && /^scripts\/tests\/(?:verification(?:-execution|-diagnostics|-refinement)?|development-(?:tools|approval)|android-runner|android-build|native-lifecycle|process|emulator-resources|manual-emulator|xcode-mcp|tooling-runner|macos-host)\.test\.mjs$/.test(file) ||
   file === "scripts/tests/fixtures/emulator-lease-peer.mjs" || file === "scripts/tests/fixtures/verification-tools.mjs");
 const orderedChecks = (ids) => allChecks.filter((id) => ids.includes(id));
 const safePath = (file) => typeof file === "string" && file.length <= 240 &&
   /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/.test(file) && !file.split("/").some((part) => [".", ".."].includes(part));
 const pathLimit = 16;
 
-function explanation(rule, files, version = VERIFICATION_REPORT_VERSION) {
+function explanation(rule, files, version = VERIFICATION_REPORT_VERSION, selected) {
   const paths = files.filter(safePath).slice(0, pathLimit);
-  const checks = orderedChecks(rule.checks).map((id) => diagnosticCheckId(id, version));
+  const checks = orderedChecks(rule.checks).map((id) => diagnosticCheckId(id, version))
+    .filter((id) => !selected || selected.includes(id));
   return { rule: rule.id, description: rule.description, paths, omittedPaths: files.length - paths.length,
     checks, groups: [...new Set(diagnosticChecks(version).filter((check) => checks.includes(check.id)).map((check) => check.group))] };
 }
 
-export function verificationImpact(changedFiles, all = false) {
+export function verificationImpact(changedFiles, all = false, appleAvailable = false) {
   const selected = new Set(), causes = new Map();
+  const hasApple = appleAvailable || changedFiles.some((file) =>
+    file.startsWith("apple/") && (!file.endsWith(".md") || appleControl(file)));
   let layouts = false, ciMacos = all;
   for (const file of [...new Set(changedFiles)].sort()) {
     const rule = ruleFor(file);
-    rule.checks.forEach((id) => selected.add(id));
+    rule.checks.filter((id) => id !== "apple-native" || hasApple).forEach((id) => selected.add(id));
     if (!causes.has(rule.id)) causes.set(rule.id, []);
     causes.get(rule.id).push(file);
     layouts ||= Boolean(rule.layouts?.(file));
     ciMacos ||= selectsMacos(file, rule);
   }
-  if (all) allChecks.forEach((id) => selected.add(id));
+  if (all) allChecks.filter((id) => id !== "apple-native" || hasApple).forEach((id) => selected.add(id));
   const requiredChecks = orderedChecks([...selected]);
   return { requiredChecks, requiredGroups: verificationGroups(requiredChecks), layouts, ciMacos,
+    apple: requiredChecks.includes("apple-native") ? structuredClone(APPLE_REQUIREMENTS) : null,
     selectionReasons: [
-      ...rules.filter((rule) => causes.has(rule.id)).map((rule) => explanation(rule, causes.get(rule.id))),
-      ...(all ? [explanation(allRule, [])] : []),
+      ...rules.filter((rule) => causes.has(rule.id)).map((rule) => explanation(rule, causes.get(rule.id), VERIFICATION_REPORT_VERSION, requiredChecks)),
+      ...(all ? [explanation(allRule, [], VERIFICATION_REPORT_VERSION, requiredChecks)] : []),
     ] };
 }
 
@@ -167,7 +189,8 @@ export function projectVerificationSelection(report, sourcePaths) {
         safePath(file) && sourcePaths.has(file) && ruleFor(file).id === rule.id))].sort().slice(0, remainingPaths);
       remainingPaths -= paths.length;
       const omitted = Number.isSafeInteger(input.omittedPaths) && input.omittedPaths >= 0 ? input.omittedPaths : 0;
-      return [{ ...explanation(rule, paths, report.version), omittedPaths: Math.min(1_000_000, omitted + input.paths.length - paths.length) }];
+      return [{ ...explanation(rule, paths, report.version, selected.map((check) => check.id)),
+        omittedPaths: Math.min(1_000_000, omitted + input.paths.length - paths.length) }];
     }),
   };
 }

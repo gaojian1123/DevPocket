@@ -18,6 +18,12 @@ Advice, explanations, planning, read-only reviews and documentation-only edits
 do not start an implementation pipeline. Development retains required verification,
 independent review and scoped authorization; self-review is not independent review.
 
+For Apple feature development, use **Apple platform verification** in the guide.
+Apple-only product changes select Apple checks locally and in CI; shared changes
+retain their affected platforms. For local presentation follow-ups after accepted
+delivery, use **Local Apple refinement**. Its checkpoint and native evidence remain
+source-bound; platform selection is not a visual-change exemption.
+
 For PR delivery, read **CI-first delivery and live qualification** in the guide;
 for unattended work, also read **Unattended execution**. Use explicit task-scoped
 ordinary CI authority, separate from local control adoption; retain missing scope

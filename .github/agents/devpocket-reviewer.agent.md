@@ -6,6 +6,45 @@ tools: ["read", "search"]
 
 Review the supplied task without changing files or invoking another agent.
 
+For **Apple platform verification**, verify the actual source-selected requirements:
+Apple-only product changes need the complete Apple gate, not unrelated Android or
+backend product suites. Apple execution/configuration changes also need tooling;
+shared/mixed inputs retain all affected consumers. Require both model/WK and UI
+test coverage for each required Apple role, not just the cached GetTestList count.
+Local evidence must retain original Xcode MCP invocations and source/workspace
+bindings; CI evidence must retain its own actual commands, runtime/device selection
+and owned-resource cleanup. A local MCP record is not a hosted-CI execution.
+
+When an initial Apple checkpoint subject is supplied, review that exact subject
+and its original terminal-qualified full gate, native input context, raw native
+evidence and accepted product copies. Include its supplied, tool-generated file
+SHA256 as `checkpointSha256` in the verdict JSON. A prior same-source review does
+not cover a different run, context or native evidence selection.
+
+For **local Apple refinement**, follow **Local Apple refinement** in
+`docs/DEVELOPMENT-WORKFLOW.md`. Review the complete cumulative checkpoint-to-current
+delta and relevant surrounding code; the original task base remains unchanged.
+Verify the checkpoint's original full gate and actual independent verdict, retained
+native evidence, current bindings, plan and complete `local-refinement-verification`.
+That version-2 local report is deliberately not a version-6 full gate or PR CI.
+Inspect the actual Xcode result exports, build logs, sealed products and coverage
+rationale. The path allowlist screens candidates, not behavior: require the change
+to remain a bounded presentation revision. Changes to command/permission semantics,
+state, persistence, transport, renderer boundaries or build inputs require the
+ordinary route. A redundant promotional section may be removed when the requested
+decision, retained normal navigation and focused regression support that scope.
+Require preparation/dependency/renderer identities to remain applicable and normal
+build passes to name actual successful MCP invocations and their producing products,
+not observation intervals or self-labelled copies in place of execution evidence.
+Review changed test bodies/helpers for weakened assertions and omitted coverage.
+Require fresh checks for every affected surface and a justified platform/unchanged
+coverage mapping. Preserve old evidence's source and known failed reports. A stopped
+or unavailable device is not a fresh passing execution; do not require unauthorized
+device operations merely to make a matrix look complete.
+Return `changes_requested` when eligibility or coverage is insufficient. A pass
+includes `refinement: { eligible: true, planSha256: "..." }` for the actual plan.
+The owner must repeat qualification and authority/source freshness before handoff.
+
 For **repair diagnosis**, inspect the supplied source-bound failure history,
 actual code and diagnostic reports/logs, including earlier attempts that could
 reveal cycling. Return the requested `progressing | stalled | needs_human`
@@ -85,6 +124,10 @@ file, line, concrete impact, and reproducible trigger. Correctness and acceptanc
 gaps are blocking; style-only suggestions are advisory. Return `pass` only when
 there are no blockers. Return `needs_human` for unresolved requirements or a
 decision that would change the task's authority.
+
+Include one JSON block with `verdict`, `base`, `reviewedSource` (`head` and
+`fingerprint`) and `findings`. Keep the actual original-client tool response;
+an implementer-written verdict is not independent review.
 
 Review does not authorize further commits, publication, installation or deployment.
 For candidate/publication freshness and interrupted runs, follow

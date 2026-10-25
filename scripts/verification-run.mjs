@@ -21,7 +21,9 @@ function binding(plan, group, policy, options) {
   return { base: plan.base, source: plan.source, version: plan.version,
     requiredChecks: plan.requiredChecks, requiredGroups: plan.requiredGroups, layouts: plan.layouts, ciMacos: plan.ciMacos ?? false,
     trustedDeviceClasses: plan.trustedDeviceClasses ?? [], group, policy,
-    backendDiagnostics: Boolean(options.backendDiagnostics), toolingShard: options.toolingShard ?? null };
+    backendDiagnostics: Boolean(options.backendDiagnostics), toolingShard: options.toolingShard ?? null,
+    ...(plan.apple ? { apple: plan.apple } : {}),
+    ...(options.captureRefinementContext === true ? { captureRefinementContext: true } : {}) };
 }
 
 async function safeDirectory(root, directory, create = false) {
@@ -139,7 +141,8 @@ async function history(root, directory, manifest, signing) {
   const selectedGroups = plan.requiredGroups.filter((name) => group === "all" || group === name);
   const read = async (name) => signing.decode(await readOwned(root, path.join(directory, name)));
   const names = (await readdir(directory)).sort();
-  if (names.some((name) => name !== "run.json" && !/^\d{4}-(?:start|finish|tooling|backend|android|device)\.json$/.test(name))) {
+  const receiptKinds = new Set(["start", "finish", ...CHECK_GROUPS]);
+  if (names.some((name) => name !== "run.json" && !receiptKinds.has(/^\d{4}-([a-z]+)\.json$/.exec(name)?.[1]))) {
     throw diagnosticError("run-invalid");
   }
   const starts = names.filter((name) => name.endsWith("-start.json"));

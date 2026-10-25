@@ -35,7 +35,8 @@ test("the dedicated tooling entry retains the complete explicit suite without di
   const manifest = JSON.parse(await readFile("package.json", "utf8"));
   assert.equal(manifest.scripts["test:tooling"], "node scripts/test-tooling.mjs");
   assert.deepEqual(TOOLING_TEST_FILES, [
-    "verification", "verification-execution", "verification-diagnostics", "android-runner", "android-build", "android-diagnostics",
+    "verification", "verification-execution", "verification-refinement", "verification-diagnostics", "apple-selection", "apple-local", "apple-runner",
+    "android-runner", "android-build", "android-diagnostics",
     "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
     "bounded-worker-log", "development-tools", "development-approval", "process", "emulator-resources", "manual-emulator",
     "linux-emulator", "linux-runtime", "xcode-mcp", "tooling-runner", "macos-host",
@@ -44,6 +45,7 @@ test("the dedicated tooling entry retains the complete explicit suite without di
   assert.deepEqual(TOOLING_TEST_SHARDS.flatMap((part) => part.files).sort(), [...TOOLING_TEST_FILES].sort());
   assert.deepEqual(TOOLING_TEST_SHARDS.find((part) => part.id === "candidate").files,
     ["scripts/tests/development-tools.test.mjs", "scripts/tests/development-approval.test.mjs"]);
+  assert.ok(TOOLING_TEST_SHARDS.find((part) => part.id === "native").files.includes("scripts/tests/verification-refinement.test.mjs"));
   for (const file of TOOLING_TEST_FILES) await readFile(file);
   const development = await readFile("scripts/tests/development-tools.test.mjs", "utf8");
   assert.doesNotMatch(development, /import\(["']\.\/xcode-mcp\.test\.mjs["']\)/);
