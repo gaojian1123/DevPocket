@@ -26,7 +26,7 @@ test("local review requirements preserve trust boundaries independently of impac
     [".github/README.md", false, false],
     ["scripts/verification.mjs", true, true], ["scripts/verification-policy.mjs", true, true],
     ["scripts/verification-preflight.mjs", true, true], ["scripts/verification-run.mjs", true, true],
-    ["scripts/verification-transition.mjs", true, true],
+    ["scripts/verification-transition.mjs", true, true], ["scripts/verification-refinement.mjs", true, true],
     ["scripts/verification-tooling.mjs", true, true], ["scripts/verification-admission.mjs", true, true],
     ["scripts/verification-ci.mjs", true, true], ["scripts/verification-ci-artifact.ps1", true, true],
     ["scripts/verify.mjs", true, true], [".github/workflows/ci.yml", true, true],

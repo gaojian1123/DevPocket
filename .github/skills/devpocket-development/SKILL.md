@@ -100,6 +100,9 @@ the intended delivery target and original base; any draft is explicitly pending.
 and run `npm run verify -- -Base BASE_COMMIT`. For a cleanup-confirmed environment
 failure, read [Selected-group preflight and explicit recovery](../../../docs/DEVELOPMENT-WORKFLOW.md#selected-group-preflight-and-explicit-recovery)
 before `-Resume`; preflight or recovered partial groups are not acceptance.
+For local Apple feature delivery, use the guide's initial checkpoint route:
+capture native inputs in the complete normal gate and prepare the checkpoint
+subject before independent review, so later presentation edits have a usable base.
 
 An eligible local Apple refinement instead follows the guide's planned Xcode
 checks and distinct local refinement report. `full_required` returns to the normal
@@ -121,6 +124,8 @@ Invoke the configured read/search-only `devpocket-reviewer` in a separate contex
 with the fixed contract, actual full diff and added files, base/source/candidate,
 delivery target, underlying verification and recorded policy/authority evidence.
 The reviewer inspects the files; self-review is not independent review.
+An initial Apple checkpoint subject needs the actual review bound to its printed
+SHA256; a same-source verdict about different evidence is insufficient.
 For local Apple refinement, supply the original accepted checkpoint, the entire
 checkpoint-to-current delta and the planned native coverage for eligibility review.
 
@@ -157,6 +162,8 @@ and `needs_human` for specific missing authority or product decisions.
 Working-tree evidence is not final-commit evidence. For PR delivery, mark the
 same authorized draft ready only after freshness; report publication only after
 it succeeds. Merge, deployment and local control adoption remain separate.
+For local Apple feature delivery, finalize the reviewed checkpoint before handoff;
+its command rechecks the accepted environment and original evidence.
 
 **Complete when:** the requested deliverable actually exists in its reported
 state, within the user's scope, with no unresolved required check or decision.

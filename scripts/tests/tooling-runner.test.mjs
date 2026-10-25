@@ -44,6 +44,7 @@ test("the dedicated tooling entry retains the complete explicit suite without di
   assert.deepEqual(TOOLING_TEST_SHARDS.flatMap((part) => part.files).sort(), [...TOOLING_TEST_FILES].sort());
   assert.deepEqual(TOOLING_TEST_SHARDS.find((part) => part.id === "candidate").files,
     ["scripts/tests/development-tools.test.mjs", "scripts/tests/development-approval.test.mjs"]);
+  assert.ok(TOOLING_TEST_SHARDS.find((part) => part.id === "native").files.includes("scripts/tests/verification-refinement.test.mjs"));
   for (const file of TOOLING_TEST_FILES) await readFile(file);
   const development = await readFile("scripts/tests/development-tools.test.mjs", "utf8");
   assert.doesNotMatch(development, /import\(["']\.\/xcode-mcp\.test\.mjs["']\)/);

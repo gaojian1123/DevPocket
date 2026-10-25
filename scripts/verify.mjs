@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -20,6 +20,7 @@ async function main() {
     "tooling-shard": { type: "string" },
     resume: { type: "string" },
     refinement: { type: "string" },
+    "capture-refinement-context": { type: "boolean", default: false },
     promote: { type: "string" },
     "candidate-request": { type: "string" },
     "candidate-evidence": { type: "boolean", default: false },
@@ -56,13 +57,16 @@ async function main() {
   try {
     try {
       if (values.refinement) {
-        if (values.plan || values.all || values.group !== "all" || values["tooling-shard"] ||
+        if (values.plan || values.all || values["capture-refinement-context"] || values.group !== "all" || values["tooling-shard"] ||
             values.resume || values.promote || values["candidate-request"] || values["candidate-evidence"] ||
             values.combine || values.input.length || values.upstream.length || values["backend-diagnostics"] ||
             values.jdk || values.sdk || values.image) throw verificationFault("configuration");
         const { executeLocalRefinement } = await import("./verification-refinement.mjs");
-        report = await executeLocalRefinement(root, values.base, values.refinement);
+        report = await executeLocalRefinement(root, values.base, values.refinement, cancellation.signal);
       } else {
+        if (values["capture-refinement-context"] && (values.plan || values.combine || values.promote)) {
+          throw verificationFault("configuration");
+        }
         plan = await verificationPlan(root, values.base, values.all);
         requirePlanCollection(plan);
         if (!["all", ...CHECK_GROUPS].includes(values.group)) throw verificationFault("configuration");
@@ -104,6 +108,7 @@ async function main() {
           report = values.plan ? { ...plan, status: "planned", complete: false, checks: [] }
             : await executeVerification(root, plan, { ...values, backendDiagnostics: values["backend-diagnostics"],
               toolingShard: values["tooling-shard"],
+              captureRefinementContext: values["capture-refinement-context"],
               candidateRequest: values["candidate-request"],
               directory: path.dirname(reportPath), signal: cancellation.signal });
         }
@@ -111,7 +116,7 @@ async function main() {
       if (["failed", "blocked", "full_required"].includes(report.status)) process.exitCode = 1;
     } catch (error) {
       const failure = verificationFailure(error, error.verificationContext?.phase ?? phase);
-      report = { ...plan, version: values.refinement ? 1 : VERIFICATION_REPORT_VERSION,
+      report = { ...plan, version: values.refinement ? 2 : VERIFICATION_REPORT_VERSION,
         ...(values.refinement ? { kind: "local-refinement-failure", acceptance: false } : {}),
         status: "blocked", complete: false, failure,
         error: failure.summary + (failure.missingChecks?.length ? ` Missing checks: ${failure.missingChecks.join(", ")}.` : ""),
@@ -124,6 +129,9 @@ async function main() {
       await output.truncate(0);
       await output.writeFile(bytes);
       await output.sync();
+      if (report.kind === "local-refinement-checkpoint-subject") {
+        console.log(`Checkpoint subject SHA256: ${createHash("sha256").update(bytes).digest("hex")}`);
+      }
     } catch (error) {
       console.error(JSON.stringify({
         kind: "verification-report-failure", status: "blocked", acceptance: false,

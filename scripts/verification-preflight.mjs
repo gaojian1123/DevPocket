@@ -690,7 +690,7 @@ export async function verificationPreflight(root, plan, options = {}) {
     if (usesNpm) {
       await check("root-dependencies", () => once("root-dependencies", () => dependencies(root)), "preflight-dependencies");
       await check("npm", npm, "preflight-tool", ["command-ownership", "node", "powershell"]);
-      if (group === "tooling") await check("native-npm", nativeNpm, "preflight-tool", ["command-ownership", "npm"]);
+      if (group === "tooling" || options.nativePreparation) await check("native-npm", nativeNpm, "preflight-tool", ["command-ownership", "npm"]);
       await check("node-command", () => once("node-command", async () => {
         if ((await npm()).candidateSafe !== true) return { status: "unbound" };
         const child = (await memo.get("node")).child;
@@ -838,6 +838,7 @@ export async function verificationPreflight(root, plan, options = {}) {
       }
     }
     const npmIdentity = identities.find(([name]) => name === "npm")?.[1];
+    if (options.nativePreparation) options.onPreparationIdentity?.(Object.fromEntries(identities));
     const candidateSafe = npmIdentity?.candidateSafe === true;
     const injected = (pattern) => Object.entries(process.env).some(([name, value]) => value && pattern.test(name));
     const java = ["android", "device"].includes(group), cache = identities.find(([name]) => name === "gradle-cache")?.[1];
@@ -865,4 +866,35 @@ export async function verificationPreflight(root, plan, options = {}) {
       }) });
   }
   return { version: 1, status: results.some((item) => item.status !== "passed") ? "blocked" : "passed", groups: results };
+}
+
+export async function applePreparationInputs(root, source, signal) {
+  if (process.platform !== "darwin") throw diagnosticError("configuration");
+  let identity;
+  const result = await verificationPreflight(root, { source, requiredChecks: ["backend-build"] }, {
+    directory: path.join(root, ".data", "verification", "refinement-inputs"),
+    nativePreparation: true, onPreparationIdentity: (value) => { identity = value; }, signal,
+  });
+  const group = result.groups[0];
+  if (result.status !== "passed") {
+    const unsafe = result.groups.some((item) => item.issues.some(({ failure }) =>
+      failure.observedProcess === "owned-command-supervisor" && failure.processTreeStopped !== true));
+    throw Object.assign(diagnosticError("preflight-dependencies"), { processTreeStopped: !unsafe, preparation: result });
+  }
+  const node = await realpath(process.execPath), npm = identity.npm, native = identity["native-npm"];
+  if (!group.candidateSafe || identity.node.child.file !== node || identity["node-command"].target !== node ||
+      npm.powershellNode.target !== node || native.actual !== await realpath(npm.file) ||
+      path.basename(native.actual) !== "npm-cli.js" ||
+      Object.entries(process.env).some(([name, value]) => value && /^(?:TSX_|TS_NODE_|ESBUILD_)/i.test(name))) {
+    throw diagnosticError("environment-unbound");
+  }
+  const renderer = await treeInputs(path.join(root, "apple", "DevPocket", "Renderer"), "index.html");
+  if (renderer.some(([, value]) => !value.sha256)) throw diagnosticError("preflight-path");
+  const prepared = await treeInputs(path.join(root, "packages", "components", "dist"), "spec.js");
+  if (prepared.some(([, value]) => !value.sha256)) throw diagnosticError("preflight-path");
+  return { fingerprint: group.fingerprint,
+    helper: await fileIdentity(path.join(root, "apple", "prepare-components.mjs")),
+    fixtures: await fileIdentity(path.join(root, "apple", "Fixtures", "components.json")),
+    prepared: digest(JSON.stringify(prepared)),
+    renderer: renderer.map(([file, value]) => [file.replaceAll("\\", "/"), value]) };
 }

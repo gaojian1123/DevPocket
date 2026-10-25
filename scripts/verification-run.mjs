@@ -21,7 +21,8 @@ function binding(plan, group, policy, options) {
   return { base: plan.base, source: plan.source, version: plan.version,
     requiredChecks: plan.requiredChecks, requiredGroups: plan.requiredGroups, layouts: plan.layouts, ciMacos: plan.ciMacos ?? false,
     trustedDeviceClasses: plan.trustedDeviceClasses ?? [], group, policy,
-    backendDiagnostics: Boolean(options.backendDiagnostics), toolingShard: options.toolingShard ?? null };
+    backendDiagnostics: Boolean(options.backendDiagnostics), toolingShard: options.toolingShard ?? null,
+    ...(options.captureRefinementContext === true ? { captureRefinementContext: true } : {}) };
 }
 
 async function safeDirectory(root, directory, create = false) {

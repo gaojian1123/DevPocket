@@ -9,7 +9,8 @@ export const TOOLING_TEST_FILES = Object.freeze([
   "linux-emulator", "linux-runtime", "xcode-mcp", "tooling-runner", "macos-host",
 ].map((name) => `scripts/tests/${name}.test.mjs`));
 
-const shardFor = (file) => /\/development-(?:tools|approval)\.test\.mjs$/.test(file) ? "candidate"
+const shardFor = (file) => file === "scripts/tests/verification-refinement.test.mjs" ? "native"
+  : /\/development-(?:tools|approval)\.test\.mjs$/.test(file) ? "candidate"
   : /\/(?:verification[^/]*|git-state)\.test\.mjs$/.test(file) ? "verification"
     : /(?:diagnostics|bounded-worker-log)\.test\.mjs$/.test(file) ? "diagnostics" : "native";
 

@@ -1,18 +1,17 @@
 import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
 import { lstat, open, readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
-import { isDeepStrictEqual, promisify } from "node:util";
+import { isDeepStrictEqual } from "node:util";
 import { activeHookSnapshot, sameSource } from "./candidate-commit.mjs";
 import { readOnlyGit, sourceInputs, sourceSnapshot } from "./git-state.mjs";
 import { combineVerification, verificationFault, verificationPlan } from "./verification.mjs";
 import { readVerificationRun } from "./verification-run.mjs";
-import { resolveVerificationExecutable, verificationExecutionPolicy } from "./verification-preflight.mjs";
+import { applePreparationInputs, resolveVerificationExecutable, verificationExecutionPolicy } from "./verification-preflight.mjs";
+import { runCommand } from "./process.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const exec = promisify(execFile);
 const equal = isDeepStrictEqual;
-const version = 1;
+const version = 2;
 const application = [
   "apple/DevPocket/DevPocket/ContentView.swift",
   "apple/DevPocket/DevPocket/Controls.swift",
@@ -49,8 +48,9 @@ async function location(root, file, directory = false) {
   return absolute;
 }
 
-async function artifact(root, file, maximum = 2 * 1024 * 1024) {
-  const absolute = await location(root, file), before = await lstat(absolute);
+async function regularArtifact(file, maximum = 2 * 1024 * 1024) {
+  const absolute = await realpath(file), before = await lstat(file);
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) fail("ownership-mismatch");
   if (before.size > maximum) fail("output-limit");
   const handle = await open(absolute, "r");
   let bytes;
@@ -58,13 +58,19 @@ async function artifact(root, file, maximum = 2 * 1024 * 1024) {
     const opened = await handle.stat();
     if (opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) fail("source-changed");
     bytes = await handle.readFile();
-    for (const after of [await handle.stat(), await lstat(absolute)]) {
+    for (const after of [await handle.stat(), await lstat(file)]) {
       if (["dev", "ino", "size", "mode", "nlink", "mtimeMs", "ctimeMs"].some((key) => opened[key] !== after[key])) {
         fail("source-changed");
       }
     }
+    if (await realpath(file) !== absolute) fail("artifact-changed");
   } finally { await handle.close(); }
-  return { reference: { path: path.relative(root, absolute).replaceAll("\\", "/"), sha256: hash(bytes) }, bytes };
+  return { sha256: hash(bytes), bytes };
+}
+
+async function artifact(root, file, maximum = 2 * 1024 * 1024) {
+  const absolute = await location(root, file), input = await regularArtifact(absolute, maximum);
+  return { reference: { path: path.relative(root, absolute).replaceAll("\\", "/"), sha256: input.sha256 }, bytes: input.bytes };
 }
 
 async function json(root, file) {
@@ -82,15 +88,18 @@ async function retained(root, reference) {
   return input.value;
 }
 
-async function context(root) {
+export async function captureLocalRefinementContext(root, signal) {
+  root = await realpath(root);
+  if (process.env.GITHUB_ACTIONS === "true" || process.platform !== "darwin") fail("configuration");
+  const source = await sourceSnapshot(root);
+  const preparation = await applePreparationInputs(root, source, signal);
   const executable = await resolveVerificationExecutable(root, "git");
   const xcrun = await resolveVerificationExecutable(root, "xcrun");
-  const xcode = await exec(xcrun, ["xcodebuild", "-version"],
-    { cwd: root, timeout: 30000, maxBuffer: 64 * 1024, encoding: "utf8" });
+  const xcode = await runCommand(xcrun, ["xcodebuild", "-version"], { cwd: root, timeoutMs: 30000, signal });
   return {
     workspace: root,
     branch: (await readOnlyGit(root, ["symbolic-ref", "--quiet", "HEAD"])).trim(),
-    source: await sourceSnapshot(root),
+    source,
     hooks: await activeHookSnapshot(root),
     policy: await verificationExecutionPolicy(),
     environment: {
@@ -101,11 +110,12 @@ async function context(root) {
         configuration: hash(await readOnlyGit(root, ["config", "--null", "--show-origin", "--show-scope", "--list"])) },
       xcode: { launcher: hash(await readFile(xcrun)), version: hash(xcode.stdout),
         developerDirectory: hash(process.env.DEVELOPER_DIR ?? "") },
+      preparation,
     },
   };
 }
 
-function reviewConclusion(event, source, base) {
+function reviewConclusion(event, source, base, checkpointSha256) {
   const data = event?.data;
   if (event?.type !== "tool.execution_complete" || data?.success !== true || !text(data.toolCallId) ||
       data.toolTelemetry?.restrictedProperties?.agent_name !== "devpocket-reviewer" ||
@@ -120,6 +130,7 @@ function reviewConclusion(event, source, base) {
   catch (error) { if (!(error instanceof SyntaxError)) throw error; fail(); }
   const verdict = result.verdict ?? /^## Verdict:\s*`(pass|changes_requested|needs_human)`/m.exec(content)?.[1];
   if (verdict !== "pass" || result.base !== base || !sameSource(result.reviewedSource, source) ||
+      result.checkpointSha256 !== checkpointSha256 ||
       !Array.isArray(result.findings) || result.findings.some((finding) => finding.severity !== "advisory")) fail("check-failed");
   return { toolCallId: data.toolCallId, agentId: data.toolTelemetry.restrictedProperties.agent_id };
 }
@@ -134,13 +145,14 @@ async function fullEvidence(root, file, source, base) {
   return { input, run };
 }
 
-async function capture(root, base, request, before) {
+async function prepareCheckpoint(root, base, request, before) {
   const plan = await verificationPlan(root, base);
   const { input, run } = await fullEvidence(root, request.verification, before.source, base);
   combineVerification(plan, [input.value]);
   if (run.manifest.binding.policy !== before.policy) fail("policy-mismatch");
-  const review = await json(root, request.review);
-  const origin = reviewConclusion(review.value, before.source, base);
+  if (run.manifest.binding.captureRefinementContext !== true || !equal(input.value.refinementContext, before)) {
+    fail("environment-changed");
+  }
   if (!strings(request.nativeEvidence, 32)) fail();
   const nativeEvidence = [];
   for (const file of request.nativeEvidence) {
@@ -149,6 +161,15 @@ async function capture(root, base, request, before) {
     nativeEvidence.push({ ...item.reference, source: item.value.source });
   }
   if (!nativeEvidence.some((item) => sameSource(item.source, before.source))) fail("source-mismatch");
+  if (!Array.isArray(request.acceptedProducts) || request.acceptedProducts.length !== 2) fail("artifact-changed");
+  const acceptedProducts = [];
+  for (const platform of ["ios", "macos"]) {
+    const products = request.acceptedProducts.filter((item) => item?.platform === platform);
+    if (products.length !== 1) fail("artifact-changed");
+    const item = products[0], seal = await json(root, item.artifact);
+    await sealedProduct(root, item, seal.value, before.source, before.environment.preparation.renderer);
+    acceptedProducts.push({ platform, artifact: seal.reference, bundle: item.bundle });
+  }
   const inputs = await sourceInputs(root), sources = {};
   for (const [file, mode, kind, digest] of inputs.filter(([file]) => allowed.has(file))) {
     if (mode !== "100644" || kind !== "file") fail("source-mismatch");
@@ -157,24 +178,32 @@ async function capture(root, base, request, before) {
     sources[file] = bytes.toString("utf8");
   }
   if (!application.some((file) => Object.hasOwn(sources, file))) fail("configuration");
-  return { version, kind: "local-refinement-checkpoint", status: "checkpointed", complete: true, acceptance: false,
+  return { version, kind: "local-refinement-checkpoint-subject", status: "pending_review", complete: false, acceptance: false,
+    reviewRequired: true,
     base, context: before, inputs, sources, verification: input.reference,
-    review: { ...review.reference, ...origin }, nativeEvidence, createdAt: new Date().toISOString(), checks: [] };
+    nativeEvidence, acceptedProducts,
+    createdAt: new Date().toISOString(), checks: [] };
 }
 
-async function checkpoint(root, file, base) {
+async function checkpointSubject(root, file, base) {
   const input = await json(root, file), value = input.value;
-  if (value?.version !== version || value.kind !== "local-refinement-checkpoint" || value.status !== "checkpointed" ||
+  if (value?.version !== version || value.kind !== "local-refinement-checkpoint-subject" || value.status !== "pending_review" ||
       value.base !== base || value.context?.workspace !== root ||
       !Array.isArray(value.inputs) || hash(JSON.stringify(value.inputs)) !== value.context.source?.fingerprint ||
       !value.sources || !Array.isArray(value.nativeEvidence) || !value.nativeEvidence.length) fail("source-mismatch");
   await retained(root, value.request);
-  await fullEvidence(root, value.verification?.path, value.context.source, base);
+  const full = await fullEvidence(root, value.verification?.path, value.context.source, base);
   await retained(root, value.verification);
-  reviewConclusion(await retained(root, value.review), value.context.source, base);
+  if (full.run.manifest.binding.captureRefinementContext !== true ||
+      !equal(full.input.value.refinementContext, value.context)) fail("environment-changed");
   for (const reference of value.nativeEvidence) {
     const native = await retained(root, reference);
     if (!sameSource(native.source, reference.source)) fail("source-mismatch");
+  }
+  if (!Array.isArray(value.acceptedProducts) || value.acceptedProducts.length !== 2) fail("artifact-changed");
+  for (const item of value.acceptedProducts) {
+    const seal = await retained(root, item.artifact);
+    await sealedProduct(root, item, seal, value.context.source, value.context.environment.preparation.renderer);
   }
   for (const [file, contents] of Object.entries(value.sources)) {
     const original = value.inputs.find(([name]) => name === file);
@@ -183,6 +212,31 @@ async function checkpoint(root, file, base) {
   }
   if (value.inputs.some(([file, mode]) => allowed.has(file) && mode !== "deleted" &&
       !Object.hasOwn(value.sources, file))) fail("source-mismatch");
+  return input;
+}
+
+async function acceptCheckpoint(root, base, request, before) {
+  const subject = await checkpointSubject(root, request.subject, base), value = subject.value;
+  if (!sameSource(value.context.source, before.source)) fail("source-mismatch");
+  if (!equal(value.context, before)) fail("environment-changed");
+  const review = await json(root, request.review);
+  const origin = reviewConclusion(review.value, before.source, base, subject.reference.sha256);
+  return { ...value, kind: "local-refinement-checkpoint", status: "checkpointed", complete: true,
+    reviewRequired: false, subject: subject.reference, review: { ...review.reference, ...origin }, acceptedAt: new Date().toISOString() };
+}
+
+async function checkpoint(root, file, base) {
+  const input = await json(root, file), value = input.value;
+  if (value?.version !== version || value.kind !== "local-refinement-checkpoint" || value.status !== "checkpointed" ||
+      value.complete !== true) fail("report-invalid");
+  await retained(root, value.request);
+  const subject = await checkpointSubject(root, value.subject?.path, base);
+  if (subject.reference.sha256 !== value.subject.sha256) fail("artifact-changed");
+  for (const key of ["base", "context", "inputs", "sources", "verification", "nativeEvidence", "acceptedProducts"]) {
+    if (!equal(value[key], subject.value[key])) fail("source-mismatch");
+  }
+  const origin = reviewConclusion(await retained(root, value.review), value.context.source, base, subject.reference.sha256);
+  if (origin.toolCallId !== value.review.toolCallId || origin.agentId !== value.review.agentId) fail("execution-origin");
   return input;
 }
 
@@ -329,14 +383,15 @@ function testOutcome(summary, tests, target, createdAt) {
     startedAt: new Date(summary.startTime * 1000).toISOString(), completedAt: new Date(summary.finishTime * 1000).toISOString() };
 }
 
-async function resultExport(root, bundle, kind) {
+async function resultExport(root, bundle, kind, signal) {
   const reader = await resolveVerificationExecutable(root, "xcrun");
   let output;
   try {
-    output = await exec(reader, ["xcresulttool", "get", "test-results", kind, "--path", bundle, "--compact"],
-      { cwd: root, timeout: 30000, maxBuffer: 8 * 1024 * 1024, encoding: "utf8" });
+    output = await runCommand(reader, ["xcresulttool", "get", "test-results", kind, "--path", bundle, "--compact"],
+      { cwd: root, timeoutMs: 30000, signal });
   } catch (error) {
-    throw verificationFault("collector-failed", {}, error);
+    throw Object.assign(verificationFault("collector-failed", {}, error),
+      error.processTreeStopped === false ? { processTreeStopped: false } : {});
   }
   try { return JSON.parse(output.stdout); }
   catch (error) {
@@ -345,8 +400,10 @@ async function resultExport(root, bundle, kind) {
   }
 }
 
-async function bundleFiles(root, directory) {
-  const absolute = await location(root, directory, true), files = {};
+async function bundleFiles(root, directory, produced = false) {
+  const absolute = produced ? await realpath(directory) : await location(root, directory, true), files = {};
+  if (produced && (!path.isAbsolute(directory) || path.basename(directory) !== "DevPocket.app" ||
+      !(await lstat(directory)).isDirectory() || (await lstat(directory)).isSymbolicLink())) fail("ownership-mismatch");
   let total = 0;
   const visit = async (relative, depth = 0) => {
     if (depth > 20) fail("output-limit");
@@ -356,30 +413,97 @@ async function bundleFiles(root, directory) {
       if (entry.isDirectory()) await visit(name, depth + 1);
       else {
         if (!entry.isFile() || Object.keys(files).length >= 10000) fail("artifact-changed");
-        const item = await artifact(root, path.join(absolute, name), 64 * 1024 * 1024);
+        const item = await regularArtifact(path.join(absolute, name), 64 * 1024 * 1024);
         total += item.bytes.length;
         if (total > 512 * 1024 * 1024) fail("output-limit");
-        files[name.replaceAll("\\", "/")] = item.reference.sha256;
+        files[name.replaceAll("\\", "/")] = item.sha256;
       }
     }
   };
   await visit("");
+  if (await realpath(path.resolve(root, directory)) !== absolute) fail("artifact-changed");
   return files;
 }
 
-async function qualify(root, base, request, before) {
+async function sealedProduct(root, item, seal, source, renderer) {
+  if (!["ios", "macos"].includes(item.platform) || !sameSource(seal?.source, source) ||
+      seal.signatureExitCode !== 0 || !text(seal.bundleId) || !text(seal.minimumOS) ||
+      !seal.files || Object.keys(seal.files).length < 2) fail("artifact-changed");
+  const files = await bundleFiles(root, item.bundle);
+  const required = item.platform === "macos" ? ["Contents/Info.plist", "Contents/MacOS/DevPocket"] : ["Info.plist", "DevPocket"];
+  if (required.some((file) => !Object.hasOwn(files, file)) ||
+      Object.keys(files).length !== Object.keys(seal.files).length ||
+      Object.entries(files).some(([file, digest]) => seal.files[file] !== digest)) fail("artifact-changed");
+  const prefix = item.platform === "macos" ? "Contents/Resources/Renderer/" : "Renderer/";
+  const packaged = Object.entries(files).filter(([file]) => file.startsWith(prefix))
+    .map(([file, digest]) => [file.slice(prefix.length), digest]).sort();
+  if (!Array.isArray(renderer) || !renderer.length ||
+      !equal(packaged, renderer.map(([file, identity]) => [file, identity.sha256]).sort())) fail("artifact-changed");
+  return files;
+}
+
+function buildInvocation(start, finish, root, observedBefore, observedAfter) {
+  const args = start?.data?.arguments, result = finish?.data?.result?.structuredContent;
+  const project = path.join(root, "apple", "DevPocket", "DevPocket.xcodeproj");
+  if (start?.type !== "tool.execution_start" || start.data.mcpServerName !== "xcode" ||
+      start.data.mcpToolName !== "BuildProject" || !text(start.data.toolCallId) ||
+      finish?.type !== "tool.execution_complete" || finish.data.toolCallId !== start.data.toolCallId ||
+      finish.data.success !== true || finish.data.result?.isError === true ||
+      args?.workspaceIdentifier !== project ||
+      (args.buildForTesting !== undefined && args.buildForTesting !== false) ||
+      Object.keys(args).some((key) => !["workspaceIdentifier", "buildForTesting"].includes(key)) ||
+      result?.buildResult !== "The project built successfully." || !Array.isArray(result.errors) || result.errors.length ||
+      !Number.isFinite(result.elapsedTime) || result.elapsedTime < 0 ||
+      !text(result.fullLogPath) || !path.isAbsolute(result.fullLogPath) ||
+      !/^BuildProject-Log-[A-Za-z0-9_.-]+\.txt$/.test(path.basename(result.fullLogPath)) ||
+      !timestamp(start.timestamp) || !timestamp(finish.timestamp) ||
+      start.timestamp < observedBefore || finish.timestamp < start.timestamp || finish.timestamp > observedAfter) {
+    fail("check-failed");
+  }
+  return { toolCallId: start.data.toolCallId, tool: "xcode/BuildProject", workspace: project,
+    kind: "original-client-tool-call", startedAt: start.timestamp, completedAt: finish.timestamp,
+    elapsedSeconds: result.elapsedTime, fullLogPath: result.fullLogPath };
+}
+
+async function buildEvidence(root, item, pair, source, renderer) {
+  const start = await json(root, item.requestEvent), finish = await json(root, item.responseEvent);
+  const execution = buildInvocation(start.value, finish.value, root,
+    pair.before.value.observedAt, pair.after.value.observedAt);
+  const log = await artifact(root, item.log), originalLog = await regularArtifact(execution.fullLogPath);
+  if (log.reference.sha256 !== originalLog.sha256) fail("artifact-changed");
+  const content = log.bytes.toString("utf8");
+  const products = [...new Set([...content.matchAll(
+    /^\s*(?:CodeSign|Validate) (.+\/DevPocket\.app) \(in target 'DevPocket' from project 'DevPocket'\)\s*$/gm,
+  )].map((match) => match[1]))];
+  if (!/^\*\* BUILD SUCCEEDED \*\*\s*$/m.test(content) || /\*\* BUILD (?:FAILED|CANCELLED) \*\*/.test(content) ||
+      !content.split(/\r?\n/).some((line) => line.trim() === `cd ${path.join(root, "apple", "DevPocket")}`) ||
+      products.length !== 1 || !path.isAbsolute(products[0]) ||
+      path.basename(path.dirname(products[0])) !== (item.platform === "ios" ? "Debug-iphonesimulator" : "Debug")) {
+    fail("execution-origin");
+  }
+  const seal = await json(root, item.artifact);
+  if (seal.value.originalProduct !== products[0]) fail("artifact-changed");
+  const files = await sealedProduct(root, item, seal.value, source, renderer);
+  if (!equal(files, await bundleFiles(root, products[0], true))) fail("artifact-changed");
+  return { execution, product: products[0], bundle: item.bundle,
+    evidence: [start.reference, finish.reference, log.reference, seal.reference] };
+}
+
+async function qualify(root, base, request, before, signal) {
   const input = await currentPlan(root, base, request.plan, before), plan = input.value;
   if (!Array.isArray(request.tests) || request.tests.length !== plan.selection.tests.length ||
       !Array.isArray(request.builds) || request.builds.length !== 2) fail("shard-missing");
   const checks = [];
   for (const [index, target] of plan.selection.tests.entries()) {
+    signal?.throwIfAborted();
     const supplied = request.tests[index];
     const pair = await bindingPair(root, supplied?.binding, input);
     const summary = await json(root, supplied?.summary), tests = await json(root, supplied?.tests);
     const bundle = await location(root, supplied?.resultBundle, true);
     if (!bundle.endsWith(".xcresult")) fail("artifact-changed");
     // Decode the retained bundle, not GetTestList's cache or an owner's success summary.
-    const actualSummary = await resultExport(root, bundle, "summary"), actualTests = await resultExport(root, bundle, "tests");
+    const actualSummary = await resultExport(root, bundle, "summary", signal);
+    const actualTests = await resultExport(root, bundle, "tests", signal);
     if (!equal(actualSummary, summary.value) || !equal(actualTests, tests.value)) fail("artifact-changed");
     const execution = testOutcome(actualSummary, actualTests, target, pair.before.value.observedAt);
     if (execution.completedAt > pair.after.value.observedAt) fail("execution-origin");
@@ -387,22 +511,20 @@ async function qualify(root, base, request, before) {
       source: before.source, evidence: [pair.after.reference, pair.before.reference, summary.reference, tests.reference],
       resultBundle: path.relative(root, bundle).replaceAll("\\", "/") });
   }
+  const buildCalls = new Set();
   for (const platform of plan.selection.builds) {
+    signal?.throwIfAborted();
     const builds = request.builds.filter((item) => item?.platform === platform);
     if (builds.length !== 1) fail("check-duplicate");
-    const item = builds[0], seal = await json(root, item.artifact), log = await artifact(root, item.log);
+    const item = builds[0];
     const pair = await bindingPair(root, item.binding, input);
-    if (!sameSource(seal.value?.source, before.source) || seal.value.signatureExitCode !== 0 ||
-        !text(seal.value.bundleId) || !text(seal.value.minimumOS) ||
-        !log.bytes.length || !seal.value.files || Object.keys(seal.value.files).length < 2) fail("artifact-changed");
-    const files = await bundleFiles(root, item.bundle);
-    const required = platform === "macos" ? ["Contents/Info.plist", "Contents/MacOS/DevPocket"] : ["Info.plist", "DevPocket"];
-    if (required.some((file) => !Object.hasOwn(files, file)) ||
-        Object.keys(files).length !== Object.keys(seal.value.files).length ||
-        Object.entries(files).some(([file, digest]) => seal.value.files[file] !== digest)) fail("artifact-changed");
+    const built = await buildEvidence(root, item, pair, before.source, before.environment.preparation.renderer);
+    if (buildCalls.has(built.execution.toolCallId)) fail("check-duplicate");
+    buildCalls.add(built.execution.toolCallId);
     checks.push({ id: `apple-build-${platform}`, status: "passed", source: before.source,
-      execution: { startedAt: pair.before.value.observedAt, completedAt: pair.after.value.observedAt }, bundle: item.bundle,
-      evidence: [seal.reference, pair.before.reference, pair.after.reference, log.reference] });
+      execution: built.execution, product: built.product, bundle: built.bundle,
+      observation: { startedAt: pair.before.value.observedAt, completedAt: pair.after.value.observedAt },
+      evidence: [...built.evidence, pair.before.reference, pair.after.reference] });
   }
   return { version, kind: "local-refinement-verification", status: "passed", complete: true, acceptance: false,
     reviewRequired: true, base, source: before.source, context: before, plan: input.reference,
@@ -410,20 +532,21 @@ async function qualify(root, base, request, before) {
     note: "Local Apple refinement evidence only. Independent review and fresh local authority are still required; not PR CI evidence." };
 }
 
-export async function executeLocalRefinement(root, base, requestFile) {
-  if (process.env.GITHUB_ACTIONS === "true") fail("configuration");
+export async function executeLocalRefinement(root, base, requestFile, signal) {
+  if (process.env.GITHUB_ACTIONS === "true" || process.platform !== "darwin") fail("configuration");
   root = await realpath(root);
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(base ?? "") ||
       (await readOnlyGit(root, ["rev-parse", "--verify", `${base}^{commit}`])).trim() !== base) fail("base-invalid");
-  const request = await json(root, requestFile), before = await context(root);
+  const request = await json(root, requestFile), before = await captureLocalRefinementContext(root, signal);
   let report;
-  if (request.value?.action === "checkpoint") report = await capture(root, base, request.value, before);
+  if (request.value?.action === "prepare-checkpoint") report = await prepareCheckpoint(root, base, request.value, before);
+  else if (request.value?.action === "checkpoint") report = await acceptCheckpoint(root, base, request.value, before);
   else if (request.value?.action === "plan") report = await makePlan(root, base, request.value, before);
   else if (request.value?.action === "binding") report = await binding(root, base, request.value, before);
-  else if (request.value?.action === "qualify") report = await qualify(root, base, request.value, before);
+  else if (request.value?.action === "qualify") report = await qualify(root, base, request.value, before, signal);
   else fail("configuration");
   await retained(root, request.reference);
-  const after = await context(root);
+  const after = await captureLocalRefinementContext(root, signal);
   if (!equal(before.environment, after.environment)) fail("environment-changed");
   if (!equal(before, after)) fail("source-changed");
   return { ...report, request: request.reference };

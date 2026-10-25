@@ -112,7 +112,7 @@ const otherPlatformInputs = new Set([
 ]);
 const selectsMacos = (file, rule) => !otherPlatformInputs.has(file) && (
   macosRules.has(rule.id) || rule.id === "android-execution" ||
-  rule.id === "tooling-regression" && /^scripts\/tests\/(?:verification(?:-execution|-diagnostics)?|development-(?:tools|approval)|android-runner|android-build|native-lifecycle|process|emulator-resources|manual-emulator|xcode-mcp|tooling-runner|macos-host)\.test\.mjs$/.test(file) ||
+  rule.id === "tooling-regression" && /^scripts\/tests\/(?:verification(?:-execution|-diagnostics|-refinement)?|development-(?:tools|approval)|android-runner|android-build|native-lifecycle|process|emulator-resources|manual-emulator|xcode-mcp|tooling-runner|macos-host)\.test\.mjs$/.test(file) ||
   file === "scripts/tests/fixtures/emulator-lease-peer.mjs" || file === "scripts/tests/fixtures/verification-tools.mjs");
 const orderedChecks = (ids) => allChecks.filter((id) => ids.includes(id));
 const safePath = (file) => typeof file === "string" && file.length <= 240 &&

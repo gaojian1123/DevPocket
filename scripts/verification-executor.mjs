@@ -30,7 +30,12 @@ export async function executeVerification(root, plan, options = {}) {
   requireCheckPolicy(plan);
   const group = options.group ?? "all";
   if (!["all", ...CHECK_GROUPS].includes(group)) throw verificationFault("configuration");
+  if (options.captureRefinementContext !== undefined && typeof options.captureRefinementContext !== "boolean") {
+    throw verificationFault("configuration");
+  }
   if (options.toolingShard && (group !== "tooling" || options.promote)) throw verificationFault("configuration");
+  if (options.captureRefinementContext && (group !== "all" || options.toolingShard || options.promote ||
+      process.env.GITHUB_ACTIONS === "true" || process.platform !== "darwin")) throw verificationFault("configuration");
   const checks = plan.requiredChecks.map((id) => ({ id, status: "not_run" }));
   if (options.toolingShard) {
     const check = checks.find((check) => check.id === "tooling-tests");
@@ -47,6 +52,7 @@ export async function executeVerification(root, plan, options = {}) {
   let candidateChecks = new Map();
   let admission, admissionReleased = false;
   let initialEmulator, finalEmulator, emulatorChanges;
+  let refinementContext, captureRefinement;
   try {
     try {
       if (selected.length) {
@@ -64,6 +70,10 @@ export async function executeVerification(root, plan, options = {}) {
         : options.resume ? (await readVerificationRun(root, options.resume)).manifest.transition : null;
       const promotionContext = transition ? null : await capturePromotionContext(root, plan);
       run = await openVerificationRun(root, plan, { ...options, transition }, policy, promotionContext);
+      if (options.captureRefinementContext) {
+        ({ captureLocalRefinementContext: captureRefinement } = await import("./verification-refinement.mjs"));
+        refinementContext = await captureRefinement(root, options.signal);
+      }
       const backend = await prepareBackendVerification(root, plan, options);
       preflight = await verificationPreflight(root, plan, { ...options,
         onEmulatorIdentity: (value) => { initialEmulator = value; } });
@@ -170,6 +180,18 @@ export async function executeVerification(root, plan, options = {}) {
       report = { ...reportFor(plan, group, checks), status: "blocked", complete: false, failure, error: failure.summary,
         ...(preflight ? { preflight } : {}), ...(run ? { run: run.reference } : {}), recovery, ...(transition ? { transition } : {}),
         ...(emulatorChanges ? { emulatorInputChanges: emulatorChanges } : {}) };
+    }
+    if (refinementContext) {
+      report.refinementContext = refinementContext;
+      try {
+        const after = await captureRefinement(root, options.signal);
+        if (JSON.stringify(after) !== JSON.stringify(refinementContext)) throw verificationFault("environment-changed");
+      } catch (error) {
+        if (error.processTreeStopped === false) { safe = false; processesStopped = false; }
+        qualifiedGroups.clear();
+        const failure = verificationFailure(error, "preflight");
+        Object.assign(report, { status: "blocked", complete: false, failure, error: failure.summary });
+      }
     }
     try {
       const current = await sourceSnapshot(root);

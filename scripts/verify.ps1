@@ -3,6 +3,7 @@ param(
     [string]$Report,
     [string]$Resume,
     [string]$Refinement,
+    [switch]$CaptureRefinementContext,
     [string]$Promote,
     [string]$CandidateRequest,
     [string]$ToolingShard,
@@ -22,6 +23,7 @@ $arguments = @((Join-Path $PSScriptRoot 'verify.mjs'), '--base', $Base, '--group
 if ($Report) { $arguments += @('--report', $Report) }
 if ($Resume) { $arguments += @('--resume', $Resume) }
 if ($Refinement) { $arguments += @('--refinement', $Refinement) }
+if ($CaptureRefinementContext) { $arguments += '--capture-refinement-context' }
 if ($Promote) { $arguments += @('--promote', $Promote) }
 if ($CandidateRequest) { $arguments += @('--candidate-request', $CandidateRequest) }
 if ($ToolingShard) { $arguments += @('--tooling-shard', $ToolingShard) }
