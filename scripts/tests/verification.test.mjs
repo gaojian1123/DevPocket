@@ -535,7 +535,8 @@ test("plan explanations are deterministic and bounded without truncating actual 
 test("public plan diagnostics preserve responsibility-specific selections without supplying approval", async (t) => {
   for (const file of ["scripts/git-state.mjs", "scripts/verification-backend.mjs", "scripts/verification-android.mjs",
     "scripts/verification-executor.mjs", "scripts/unknown.mjs", ".github/workflows/ci.yml",
-    ".github/agents/devpocket-reviewer.agent.md", "deployment/azure/package.json"]) await t.test(file, async (t) => {
+    ".github/agents/devpocket-reviewer.agent.md", "deployment/azure/package.json",
+    "apple/DevPocket/DevPocket/ContentView.swift"]) await t.test(file, async (t) => {
     const root = await changedRepository(t, [file]), result = await verify(root, ["--plan"]);
     assert.equal(result.exitCode, 0);
     const impact = verificationImpact([file]);
@@ -544,8 +545,9 @@ test("public plan diagnostics preserve responsibility-specific selections withou
     }
     assert.deepEqual(result.report.changedFiles, [file]);
     const publicPlan = JSON.parse(result.stdout.split(/\r?\n/).find((line) => line.startsWith("{")));
-    assert.deepEqual(Object.keys(publicPlan).sort(), ["ciMacos", "kind", "layouts", "requiredChecks", "requiredGroups", "selectionReasons", "toolingShards"]);
+    assert.deepEqual(Object.keys(publicPlan).sort(), ["apple", "ciMacos", "kind", "layouts", "requiredChecks", "requiredGroups", "selectionReasons", "toolingShards"]);
     assert.deepEqual(publicPlan.requiredGroups, impact.requiredGroups);
+    assert.deepEqual(publicPlan.apple, impact.apple);
     const directory = path.dirname(result.reportPath);
     await rename(result.reportPath, path.join(directory, "plan.json"));
     await exec(process.execPath, [path.resolve("scripts/verification-diagnostics.mjs"),

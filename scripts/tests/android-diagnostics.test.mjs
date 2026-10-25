@@ -214,21 +214,21 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   const normalWorkflow = workflow;
   assert.doesNotMatch(workflow, /startup_diagnostic|startup_variant|STARTUP_ONLY|\n  startup:/);
   assert.deepEqual([...workflow.split("\njobs:\n")[1].matchAll(/^  ([A-Za-z_][\w-]*):[ \t]*$/gm)]
-    .map((match) => match[1]), ["plan", "tooling", "macos", "backend", "android", "device", "gate"]);
+    .map((match) => match[1]), ["plan", "tooling", "macos", "backend", "android", "device", "apple", "gate"]);
   const expandedNormal = `${normalWorkflow}\n${preparation}`;
   const actions = [...expandedNormal.matchAll(/^\s+- uses: (actions\/[^\s]+)$/gm)].map((match) => match[1]);
   const counts = {};
   for (const action of actions) counts[action] = (counts[action] ?? 0) + 1;
   assert.deepEqual(counts, {
-    "actions/checkout@v7": 7, "actions/setup-node@v7": 7, "actions/setup-python@v7": 3,
-    "actions/upload-artifact@v7": 19, "actions/setup-java@v6": 2, "actions/download-artifact@v8": 1,
+    "actions/checkout@v7": 8, "actions/setup-node@v7": 8, "actions/setup-python@v7": 4,
+    "actions/upload-artifact@v7": 22, "actions/setup-java@v6": 2, "actions/download-artifact@v8": 1,
   });
   assert.equal([...normalWorkflow.matchAll(
     /- uses: actions\/checkout@v7\n\s+with:\n\s+fetch-depth: 0\n\s+persist-credentials: false/g,
-  )].length, 7);
+  )].length, 8);
   assert.equal([...expandedNormal.matchAll(
     /- uses: actions\/setup-node@v7\n\s+with:\n\s+node-version: 26\.12\.1\n/g,
-  )].length, 7);
+  )].length, 8);
   assert.equal([...expandedNormal.matchAll(/- uses: actions\/setup-java@v6\n\s+with:\n\s+distribution: temurin\n\s+java-version: '25'/g)].length, 2);
   const androidBuild = await readFile("android/app/build.gradle.kts", "utf8");
   assert.match(androidBuild, /sourceCompatibility = JavaVersion\.VERSION_17/);
@@ -237,14 +237,14 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(workflow, /- uses: actions\/setup-python@v7\n\s+with:\n\s+python-version: '3\.12'/);
   assert.match(workflow, /^permissions:\n  contents: read\n/m);
   assert.doesNotMatch(workflow, /continue-on-error:|FORCE_JAVASCRIPT_ACTIONS_TO_NODE20|ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION/);
-  assert.doesNotMatch(workflow, /^\s+(?:merge-multiple|include-hidden-files|overwrite|archive|digest-mismatch):/m);
-  assert.equal([...normalWorkflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 18);
+  assert.doesNotMatch(workflow, /^\s+(?:merge-multiple|overwrite|archive|digest-mismatch):/m);
+  assert.equal([...normalWorkflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 21);
 
   const backend = workflow.split("\n  backend:")[1].split("\n  android:")[0];
   assert.match(backend, /\$env:DEVPOCKET_PROBE_PYTHON = \(Get-Command python -CommandType Application -ErrorAction Stop \| Select-Object -First 1\)\.Source\n\s+node scripts\\verify\.mjs/);
   const android = workflow.split("\n  android:")[1].split("\n  device:")[0];
   assert.match(android, /--jdk \$env:JAVA_HOME --sdk \.tools\\android-sdk --report \.data\\ci\\android\\report\.json/);
-  const device = workflow.split("\n  device:")[1].split("\n  gate:")[0];
+  const device = workflow.split("\n  device:")[1].split("\n  apple:")[0];
   assert.match(device, /needs: \[plan, android\]/);
   assert.match(device, /needs\.plan\.outputs\.device == 'true' &&/);
   assert.ok(device.includes("(github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)"));
@@ -279,8 +279,29 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(device, /name: owned-worker-diagnostics-attempt-\$\{\{ github\.run_attempt \}\}\n\s+path: \.data\/ci\/device\/worker-diagnostics\.json/);
   assert.match(device, /steps\.device_diagnostics\.outputs\.report_ready == 'true'/);
 
+  const apple = workflow.split("\n  apple:")[1].split("\n  gate:")[0];
+  assert.match(apple, /needs\.plan\.outputs\.apple == 'true'/);
+  assert.match(apple, /runs-on: xcode-27/);
+  assert.match(apple, /DEVELOPER_DIR: \/Applications\/Xcode_27\.1\.app\/Contents\/Developer/);
+  assert.match(apple, /npm_config_registry: https:\/\/packagefeedproxy\.microsoft\.io\/npm\//);
+  assert.match(apple, /node scripts\/verify\.mjs --base \$env:BASE_SHA --group apple --report \.data\/ci\/apple\/report\.json/);
+  assert.match(apple, /--seal --unit apple/);
+  assert.match(apple, /name: verification-apple-attempt-[^\n]+\n\s+path: \|\n\s+\.data\/ci\/apple\/report\.json\n\s+\.data\/ci\/apple\/ci-report\.json\n\s+if-no-files-found: error/);
+  assert.doesNotMatch(workflow.replace(apple, ""), /^\s+include-hidden-files:/m);
+  assert.equal([...apple.matchAll(/^\s+include-hidden-files:/gm)].length, 1);
+  const nativeArtifacts = apple.split("name: apple-native-evidence-attempt-")[1];
+  assert.match(nativeArtifacts, /include-hidden-files: true/);
+  assert.deepEqual([...nativeArtifacts.matchAll(/^\s+(\.data\/[^\r\n]+)$/gm)].map((match) => match[1]), [
+    ".data/ci/apple/apple/apple-owner.json",
+    ".data/ci/apple/apple/apple-report*.json",
+    ".data/ci/apple/apple/logs/",
+    ".data/ci/apple/apple/*/result.xcresult/",
+    ".data/ci/apple/apple/build-*/derived/Build/Products/**/DevPocket.app/",
+  ]);
+
   const gate = workflow.split("\n  gate:")[1];
-  assert.match(gate, /needs: \[plan, tooling, macos, backend, android, device\]\n\s+if: always\(\)/);
+  assert.match(gate, /needs: \[plan, tooling, macos, backend, android, device, apple\]\n\s+if: always\(\)/);
+  assert.ok(gate.includes("APPLE_RESULT: ${{ needs.apple.result }}"));
   assert.doesNotMatch(gate, /ISOLATION_REQUIRED|ISOLATION_RESULT|isolated-boundary/);
   assert.match(gate, /- uses: actions\/download-artifact@v8\n\s+with:\n\s+pattern: verification-\*\n\s+path: \.data\\ci\\inputs/);
   assert.ok(gate.includes("'scripts\\verification-ci.mjs', '--base', $env:BASE_SHA, '--collect'"));
@@ -313,7 +334,7 @@ test("the independent tooling CI job runs the complete tooling suite without app
   assert.match(tooling, /name: check-diagnostics-tooling-\$\{\{ matrix\.part \}\}-attempt-\$\{\{ github\.run_attempt \}\}\n\s+path: \.data\/ci\/tooling\/verification-diagnostics\.json/);
   assert.doesNotMatch(tooling, /setup-java|prepare-native|prepare-android|npm run build|npm --prefix|pip install|--(?:sdk|jdk|image)|continue-on-error/);
   const gate = workflow.split("\n  gate:")[1];
-  assert.match(gate, /name: Required verification\n\s+needs: \[plan, tooling, macos, backend, android, device\]\n\s+if: always\(\)/);
+  assert.match(gate, /name: Required verification\n\s+needs: \[plan, tooling, macos, backend, android, device, apple\]\n\s+if: always\(\)/);
   assert.ok(gate.includes("TOOLING_RESULT: ${{ needs.tooling.result }}"));
   assert.match(gate, /pattern: verification-\*/);
   const manifest = JSON.parse(await readFile("package.json", "utf8"));

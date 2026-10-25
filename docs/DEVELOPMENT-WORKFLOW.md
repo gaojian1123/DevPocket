@@ -936,7 +936,9 @@ adding a new file does not silently inherit a tooling exemption.
 | Agent instructions | `AGENTS.md`, the DevPocket skill/reviewer and AI task template | Complete `tooling-tests` |
 | Source/verification contracts | Root `.gitignore`, `git-state.mjs`, `verification.mjs`, `verification-policy.mjs`, `verify.mjs`, `verify.ps1`; named diagnostic/evidence projections and tooling regressions | Complete `tooling-tests` |
 | Backend execution/build | `verification-backend.mjs`, extension bundle/package helpers, CLI-proof launcher, backend TypeScript configs, extension distribution workflow | Tooling and backend checks; no Android provisioning |
-| Native execution/build | `verification-android.mjs`, Android runner/build/emulator helpers, owned device cleanup, Gradle inputs/wrappers, native preparation action | Tooling, Android build, device cases and all layouts |
+| Android execution/build | `verification-android.mjs`, Android runner/build/emulator helpers, owned device cleanup, Gradle inputs/wrappers, native preparation action | Tooling, Android build, device cases and all layouts |
+| Apple product | Apple Swift, native tests, resources and fixtures | Complete `apple-native` |
+| Apple execution/build | Apple preparation, project/scheme/dependency inputs and Apple verifier/runner | Tooling and Apple; no unrelated Android/backend product suites |
 | Shared execution | `verification-executor.mjs`, `process.mjs`, `owned-command*`, bounded command logs, shared backend/native diagnostic preflight | Every check and layouts |
 | Cross-lane infrastructure | `ci.yml`, root npm/lock inputs, shared or unclassified dependency policy | Every check and layouts |
 | Operations | `deployment/`, `infra/`, `azure.yaml`, including their own npm/Python inputs | Backend and operational fixtures, not native execution |
@@ -973,10 +975,12 @@ the `git`/`readOnlyGit`/`sourceSnapshot` compatibility exports from `git-state.m
 Planning and aggregation do not load the execution adapters. The execution
 entry loads `verification-executor.mjs`, which owns sequencing, process
 ownership, bounded logs, stopping after failure and the final source check.
-The two concrete adapters own actual backend npm commands and native
-PowerShell commands/arguments respectively, including diagnostic preparation
-and device evidence/cleanup. No caller-supplied executable or plugin registry
-is introduced. Keep actual command, timeout, build and device changes in these
+The backend and Android adapters own their actual npm and native PowerShell
+commands, including diagnostic preparation and device evidence/cleanup.
+`verification-apple.mjs` selects the original-client evidence or hosted native
+execution route described in [Apple platform verification](#apple-platform-verification).
+No caller-supplied executable or plugin registry is introduced.
+Keep actual command, timeout, build and device changes in these
 execution modules, not in the tooling-classified facade or catalogue.
 
 The source contract still returns `{ head, fingerprint }`. The fingerprint
@@ -992,7 +996,8 @@ that command only. Raw `git` remains available for unchanged configuration
 evidence and authorized mutations; probe overrides do not rewrite user settings.
 
 Mixed changes take the union; no narrow rule cancels another path's requirements.
-`--all` explicitly selects every check. Plan JSON and CLI output include
+`--all` explicitly selects every available platform's checks; an Apple product
+change still requires Apple even when its project is missing. Plan JSON and CLI output include
 `requiredChecks`, `requiredGroups`, `layouts`, and
 `selectionReasons`: fixed rule descriptions, selected checks/groups and sorted
 changed-path examples (at most 16 paths of 240 characters per rule, with

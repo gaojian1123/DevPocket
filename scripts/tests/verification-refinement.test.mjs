@@ -468,7 +468,7 @@ nativeTest("a missing local Apple request blocks before execution and releases t
   assert.equal(report.status, "blocked");
   assert.equal(check.failure.reason, "apple-evidence-required", JSON.stringify(report));
   assert.equal(check.executionState, "not-started");
-  assert.equal(report.admission.state, "released");
+  assert.equal(report.admission.state, report.admission.mode === "inherited" ? "returned" : "released");
 });
 
 nativeTest("retained evidence paths cannot escape the worktree or follow symlinks", async (t) => {
