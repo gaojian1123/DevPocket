@@ -25,7 +25,7 @@ export async function appleVerification(root, check, plan, options) {
       "--apple-request", path.resolve(root, options.appleEvidence), "--report", reportFile];
   }
   return {
-    file: process.execPath, args, timeoutMs: 30 * 60_000, graceMs: 90_000,
+    file: process.execPath, args, timeoutMs: 30 * 60_000, graceMs: 60_000,
     async accept() {
       const report = await readDiagnosticReport(reportFile, { maximum: 512 * 1024 });
       const evidence = ci ? report : report?.kind === "local-apple-verification" && report.appleEvidence;

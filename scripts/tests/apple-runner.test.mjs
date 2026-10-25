@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import {
-  APPLE_NATIVE_REPORT_MAX_BYTES, APPLE_PROBES, APPLE_REQUIREMENTS, appleDigest, appleJSON, appleXcodeArguments,
+  APPLE_NATIVE_REPORT_MAX_BYTES, APPLE_PROBES, APPLE_REQUIREMENTS, appleDigest, appleJSON, appleTestInterval, appleXcodeArguments,
   inspectAppleScheme, inspectAppleToolchain, normalizeAppleTestResult, selectAppleSimulators,
   projectAppleCommandOutput, projectAppleXcresult, validateAppleNativeEvidence, validateApplePlan,
 } from "../apple-evidence.mjs";
@@ -16,6 +16,8 @@ import { ciReportEnvelope, collectCIReports } from "../verification-ci.mjs";
 import { toolingCatalogue, toolingShardDescriptor } from "../verification-tooling.mjs";
 import { syntheticExecution } from "./fixtures/verification-tools.mjs";
 import { openVerificationRun, readVerificationRun } from "../verification-run.mjs";
+import { appleVerification } from "../verification-apple.mjs";
+import { commandCleanupConfirmed, runCommand } from "../process.mjs";
 
 const uuid = (number) => `00000000-0000-4000-8000-${number.toString(16).padStart(12, "0")}`;
 const owner = uuid(42);
@@ -206,6 +208,33 @@ test("CI guard is a pure check and does not turn local or self-hosted execution 
     [{ GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted" }, "linux"],
   ]) assert.throws(() => requireAppleCIEnvironment(environment, platform), /GitHub-hosted CI only/);
   assert.doesNotThrow(() => requireAppleCIEnvironment({ GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted" }, "darwin"));
+});
+
+test("the Apple adapter's grace period starts a real Darwin-owned child",
+  { skip: process.platform !== "darwin" }, async (t) => {
+    const ci = process.env.GITHUB_ACTIONS;
+    delete process.env.GITHUB_ACTIONS;
+    t.after(() => { if (ci === undefined) delete process.env.GITHUB_ACTIONS; else process.env.GITHUB_ACTIONS = ci; });
+    await mkdir(".data/tests", { recursive: true });
+    const root = await mkdtemp(path.resolve(".data/tests/apple-grace-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const adapter = await appleVerification(root, { id: "apple-native" }, plan, {
+      directory: path.join(root, ".data/verification/grace"), appleEvidence: ".data/qualify.json",
+    });
+    const args = ["-e", "process.stdout.write('apple-adapter-started')"];
+    const result = await runCommand(adapter.file, args, { cwd: root, timeoutMs: 10000, graceMs: adapter.graceMs });
+    assert.equal(result.stdout, "apple-adapter-started");
+    assert.equal(commandCleanupConfirmed(result, { file: adapter.file, args, cwd: root }), true);
+  });
+
+test("Apple test intervals allow bounded timestamp precision, not stale executions", () => {
+  const execution = { startedAt: "2026-10-25T00:00:00.800Z", completedAt: "2026-10-25T00:00:01.200Z" };
+  const startTime = Date.parse("2026-10-25T00:00:00.000Z") / 1000;
+  assert.doesNotThrow(() => appleTestInterval({ startTime, finishTime: startTime + 2 }, execution));
+  for (const summary of [{ startTime: startTime - 1, finishTime: startTime + 1 },
+    { startTime, finishTime: startTime + 3 }]) {
+    assert.throws(() => appleTestInterval(summary, execution), { diagnosticCode: "execution-origin" });
+  }
 });
 
 test("runner accepts only explicit unique arguments and checkout-scoped output paths", () => {

@@ -732,6 +732,8 @@ export async function verificationPreflight(root, plan, options = {}) {
         if (process.platform !== "darwin") throw diagnosticError("preflight-tool");
         return tool("xcrun", ["xcodebuild", "-version"], (output) => /^Xcode (?:27\.[1-9]\d*|(?:2[89]|[3-9]\d)\.)/m.test(output));
       }, "preflight-sdk", ["command-ownership"]);
+    }
+    if (group === "apple" || options.nativePreparation) {
       identities.push(["apple-environment", environment(/^(?:DEVELOPER_DIR|SDKROOT|TOOLCHAINS|DYLD_.*)$/i)]);
     }
     if (group === "tooling") {

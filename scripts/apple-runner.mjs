@@ -3,7 +3,7 @@ import { lstat, mkdir, open, readFile, readdir, realpath, rename, writeFile } fr
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual as equal } from "node:util";
-import { commandCleanupConfirmed, runCommand } from "./process.mjs";
+import { commandCleanupConfirmed, listenForCommandCancellation, runCommand } from "./process.mjs";
 import { commandDetails, failureDetails } from "./diagnostic-errors.mjs";
 import { readOnlyGit, sourceSnapshot } from "./git-state.mjs";
 import { requireVerificationOutputDirectory } from "./verification.mjs";
@@ -243,7 +243,7 @@ export async function runAppleCI(options) {
   const failure = (error, phase, role) => report.failures.push({ phase, ...(role ? { role } : {}),
     ...(error.appleCommandId ? { commandId: error.appleCommandId } : {}),
     ...failureDetails(error), message: String(error.message ?? error).slice(0, 4000) });
-  const controller = new AbortController(), abort = () => controller.abort();
+  const controller = new AbortController();
   const environment = { ...process.env, TMPDIR: path.join(output, "scratch") + path.sep,
     TMP: path.join(output, "scratch"), TEMP: path.join(output, "scratch") };
   const execute = async (id, file, args, { timeoutMs = 30_000, cleanup = false } = {}) => {
@@ -293,8 +293,7 @@ export async function runAppleCI(options) {
   const nativeExecution = (command) => ({ kind: command.kind, origin: report.origin, commandId: command.id,
     workspace: path.join(root, APPLE_REQUIREMENTS.project), startedAt: command.startedAt, completedAt: command.completedAt });
   let phase = "preflight", active, inventory = { devices: {} };
-  process.on("SIGINT", abort);
-  process.on("SIGTERM", abort);
+  const stopCancellation = listenForCommandCancellation(controller);
   try {
     await publish();
     report.sourceBefore = await sourceSnapshot(root);
@@ -417,8 +416,7 @@ export async function runAppleCI(options) {
       report.sourceAfter = await sourceSnapshot(root);
       requireApple(equal(report.sourceAfter, plan.source), "Apple source changed during verification.", "source-changed");
     } catch (error) { failure(error, "source-validation"); }
-    process.off("SIGINT", abort);
-    process.off("SIGTERM", abort);
+    stopCancellation();
     report.completedAt = new Date().toISOString();
     report.status = report.failures.length ? report.cleanup === "completed" &&
       report.failures.every((item) => item.phase === "preflight" && item.reason !== "source-mismatch") ? "blocked" : "failed" : "passed";

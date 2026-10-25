@@ -3,8 +3,9 @@ import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
+import { createInterface } from "node:readline";
 import path from "node:path";
-import { failureDetails } from "./diagnostic-errors.mjs";
+import { diagnosticError, failureDetails } from "./diagnostic-errors.mjs";
 
 const exec = promisify(execFile);
 const ownedProcesses = new WeakMap();
@@ -12,6 +13,21 @@ const cleanedCommands = new WeakMap();
 const inheritedDarwinScope = process.platform === "darwin" ? process.env.DEVPOCKET_DARWIN_SCOPE : undefined;
 
 const commandIdentity = (file, args, cwd) => JSON.stringify({ file, args, cwd: path.resolve(cwd ?? process.cwd()) });
+
+export function listenForCommandCancellation(controller, input = process.stdin) {
+  const cancel = () => controller.abort(diagnosticError("command-cancelled"));
+  const reader = createInterface({ input });
+  reader.on("line", (line) => { if (line.trim() === "cancel") cancel(); });
+  reader.once("error", (error) => controller.abort(error));
+  process.once("SIGINT", cancel);
+  process.once("SIGTERM", cancel);
+  return () => {
+    reader.close();
+    input.pause();
+    process.off("SIGINT", cancel);
+    process.off("SIGTERM", cancel);
+  };
+}
 
 export function commandCleanupConfirmed(outcome, { file, args, cwd }) {
   return outcome !== null && typeof outcome === "object" &&

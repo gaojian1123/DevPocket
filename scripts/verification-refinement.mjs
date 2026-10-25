@@ -9,7 +9,7 @@ import { readVerificationRun } from "./verification-run.mjs";
 import { applePreparationInputs, resolveVerificationExecutable, verificationExecutionPolicy } from "./verification-preflight.mjs";
 import { runCommand } from "./process.mjs";
 import {
-  APPLE_PROBES, APPLE_REQUIREMENTS, appleDeviceId, appleDevices, appleDigest, appleJSON,
+  APPLE_PROBES, APPLE_REQUIREMENTS, appleDeviceId, appleDevices, appleDigest, appleJSON, appleTestInterval,
   inspectAppleScheme, inspectAppleToolchain, normalizeAppleTestResult, projectAppleXcresult, validateAppleNativeEvidence,
 } from "./apple-evidence.mjs";
 
@@ -416,13 +416,10 @@ function testCases(value) {
   return cases;
 }
 
-function testOutcome(summary, tests, target, createdAt) {
+function testOutcome(summary, tests, target, invocation) {
   const cases = testCases(tests?.testNodes), device = summary?.devicesAndConfigurations?.[0];
   if (summary?.result !== "Passed" || summary.failedTests !== 0 || summary.skippedTests !== 0 ||
       summary.expectedFailures !== 0 || !Array.isArray(summary.testFailures) || summary.testFailures.length ||
-      !Number.isFinite(summary.startTime) || !Number.isFinite(summary.finishTime) ||
-      summary.startTime * 1000 < Date.parse(createdAt) || summary.finishTime < summary.startTime ||
-      summary.finishTime * 1000 > Date.now() ||
       !Array.isArray(summary.devicesAndConfigurations) || summary.devicesAndConfigurations.length !== 1 ||
       !Array.isArray(tests.devices) || tests.devices.length !== 1 ||
       !equal(device.device, tests.devices[0]) || device.device.deviceId !== target.deviceId ||
@@ -435,7 +432,7 @@ function testOutcome(summary, tests, target, createdAt) {
     fail("check-failed");
   }
   return { device: device.device, identifiers: cases.map((item) => item.nodeIdentifier),
-    startedAt: new Date(summary.startTime * 1000).toISOString(), completedAt: new Date(summary.finishTime * 1000).toISOString() };
+    ...appleTestInterval(summary, invocation) };
 }
 
 async function resultExport(root, bundle, kind, signal) {
@@ -584,25 +581,21 @@ async function qualify(root, base, request, before, signal) {
   if (plan.kind !== "local-refinement-plan") fail("configuration");
   if (!Array.isArray(request.tests) || request.tests.length !== plan.selection.tests.length ||
       !Array.isArray(request.builds) || request.builds.length !== 2) fail("shard-missing");
-  const checks = [];
+  const checks = [], calls = new Set();
   for (const [index, target] of plan.selection.tests.entries()) {
     signal?.throwIfAborted();
     const supplied = request.tests[index];
     const pair = await bindingPair(root, supplied?.binding, input);
     const summary = await json(root, supplied?.summary), tests = await json(root, supplied?.tests);
-    const bundle = await location(root, supplied?.resultBundle, true);
-    if (!bundle.endsWith(".xcresult")) fail("artifact-changed");
-    // Decode the retained bundle, not GetTestList's cache or an owner's success summary.
-    const actualSummary = await resultExport(root, bundle, "summary", signal);
-    const actualTests = await resultExport(root, bundle, "tests", signal);
-    if (!equal(actualSummary, summary.value) || !equal(actualTests, tests.value)) fail("artifact-changed");
-    const execution = testOutcome(actualSummary, actualTests, target, pair.before.value.observedAt);
-    if (execution.completedAt > pair.after.value.observedAt) fail("execution-origin");
-    checks.push({ id: `apple-tests-${index}`, status: "passed", execution,
-      source: before.source, evidence: [pair.after.reference, pair.before.reference, summary.reference, tests.reference],
-      resultBundle: path.relative(root, bundle).replaceAll("\\", "/") });
+    const native = await nativeTestEvidence(root, supplied, pair, target, signal, target.identifiers);
+    if (!equal(native.summary, summary.value) || !equal(native.testTree, tests.value)) fail("artifact-changed");
+    if (calls.has(native.execution.toolCallId)) fail("check-duplicate");
+    calls.add(native.execution.toolCallId);
+    const result = testOutcome(native.summary, native.testTree, target, native.execution);
+    checks.push({ id: `apple-tests-${index}`, status: "passed", execution: native.execution, result,
+      source: before.source, evidence: [...native.evidence, summary.reference, tests.reference],
+      resultBundle: path.relative(root, native.bundle).replaceAll("\\", "/") });
   }
-  const buildCalls = new Set();
   for (const platform of plan.selection.builds) {
     signal?.throwIfAborted();
     const builds = request.builds.filter((item) => item?.platform === platform);
@@ -610,8 +603,8 @@ async function qualify(root, base, request, before, signal) {
     const item = builds[0];
     const pair = await bindingPair(root, item.binding, input);
     const built = await buildEvidence(root, item, pair, before.source, before.environment.preparation.renderer);
-    if (buildCalls.has(built.execution.toolCallId)) fail("check-duplicate");
-    buildCalls.add(built.execution.toolCallId);
+    if (calls.has(built.execution.toolCallId)) fail("check-duplicate");
+    calls.add(built.execution.toolCallId);
     checks.push({ id: `apple-build-${platform}`, status: "passed", source: before.source,
       execution: built.execution, product: built.product, bundle: built.bundle,
       observation: { startedAt: pair.before.value.observedAt, completedAt: pair.after.value.observedAt },
@@ -624,13 +617,18 @@ async function qualify(root, base, request, before, signal) {
 }
 
 export function validateAppleMcpTestInvocation(start, finish, root, pair, target, identifier) {
+  return mcpTestInvocation(start, finish, root, pair, target, identifier);
+}
+
+function mcpTestInvocation(start, finish, root, pair, target, identifier, selected) {
   const args = start?.data?.arguments, result = finish?.data?.result?.structuredContent;
+  const tool = selected ? "RunSomeTests" : "RunAllTests";
   if (start?.type !== "tool.execution_start" || start.data?.mcpServerName !== "xcode" ||
-      start.data.mcpToolName !== "RunAllTests" || !text(start.data.toolCallId) ||
+      start.data.mcpToolName !== tool || !text(start.data.toolCallId) ||
       finish?.type !== "tool.execution_complete" || finish.data?.toolCallId !== start.data.toolCallId ||
       finish.data.success !== true || finish.data.result?.isError === true ||
       !text(identifier) || args?.workspaceIdentifier !== identifier ||
-      Object.keys(args).some((key) => key !== "workspaceIdentifier") ||
+      Object.keys(args).some((key) => key !== "workspaceIdentifier" && !(selected && key === "tests")) ||
       result?.schemeName !== APPLE_REQUIREMENTS.scheme || result.truncated !== false ||
       !Array.isArray(result.results) || !result.results.length ||
       !text(result.xcresultBundlePath) || !path.isAbsolute(result.xcresultBundlePath) ||
@@ -646,10 +644,34 @@ export function validateAppleMcpTestInvocation(start, finish, root, pair, target
       new Set(result.results.map((item) => `${item.targetName}/${item.identifier}`)).size !== result.results.length) {
     fail("case-evidence");
   }
+  if (selected) {
+    const expected = selected.map((id) => `${id.slice(0, id.indexOf("/"))}/${id}`).sort();
+    if (!Array.isArray(args.tests) || args.tests.length !== selected.length ||
+        args.tests.some((item) => !text(item?.targetName) || !text(item.testIdentifier) ||
+          Object.keys(item).some((key) => !["targetName", "testIdentifier"].includes(key))) ||
+        !equal(args.tests.map((item) => `${item.targetName}/${item.testIdentifier}`).sort(), expected) ||
+        !equal(result.results.map((item) => `${item.targetName}/${item.identifier}`).sort(), expected)) fail("case-evidence");
+  }
   return { execution: { origin: "local-xcode-mcp", kind: "original-client-tool-call",
-    workspace: path.join(root, APPLE_REQUIREMENTS.project), tool: "xcode/RunAllTests",
+    workspace: path.join(root, APPLE_REQUIREMENTS.project), tool: `xcode/${tool}`,
     toolCallId: start.data.toolCallId, startedAt: start.timestamp, completedAt: finish.timestamp },
   result, target };
+}
+
+async function nativeTestEvidence(root, item, pair, target, signal, selected) {
+  const start = await json(root, item.requestEvent), finish = await json(root, item.responseEvent);
+  const workspace = await workspaceBinding(root, start.value, item.workspaceBinding, pair.before.value.observedAt);
+  const call = mcpTestInvocation(start.value, finish.value, root, pair, target, workspace.identifier, selected);
+  const bundle = await location(root, item.resultBundle, true);
+  if (!bundle.endsWith(".xcresult")) fail("artifact-changed");
+  const summary = await resultExport(root, call.result.xcresultBundlePath, "summary", signal);
+  const testTree = await resultExport(root, call.result.xcresultBundlePath, "tests", signal);
+  if (!equal(summary, await resultExport(root, bundle, "summary", signal)) ||
+      !equal(testTree, await resultExport(root, bundle, "tests", signal)) ||
+      !equal(await bundleFiles(root, call.result.xcresultBundlePath, "xcresult"),
+        await bundleFiles(root, bundle))) fail("artifact-changed");
+  return { ...call, summary, testTree, bundle,
+    evidence: [start.reference, finish.reference, ...workspace.evidence, pair.before.reference, pair.after.reference] };
 }
 
 async function qualifyApple(root, base, request, before, signal) {
@@ -666,22 +688,14 @@ async function qualifyApple(root, base, request, before, signal) {
     const matches = request.tests.filter((item) => item.role === target.role);
     if (matches.length !== 1) fail("case-evidence");
     const item = matches[0], pair = await bindingPair(root, item.binding, input);
-    const start = await json(root, item.requestEvent), finish = await json(root, item.responseEvent);
-    const workspace = await workspaceBinding(root, start.value, item.workspaceBinding, pair.before.value.observedAt);
-    const call = validateAppleMcpTestInvocation(start.value, finish.value, root, pair, target, workspace.identifier);
-    const summary = await resultExport(root, call.result.xcresultBundlePath, "summary", signal);
-    const testTree = await resultExport(root, call.result.xcresultBundlePath, "tests", signal);
-    const retainedBundle = await location(root, item.resultBundle, true);
-    if (!equal(summary, await resultExport(root, retainedBundle, "summary", signal)) ||
-        !equal(testTree, await resultExport(root, retainedBundle, "tests", signal)) ||
-        !equal(await bundleFiles(root, call.result.xcresultBundlePath, "xcresult"),
-          await bundleFiles(root, retainedBundle))) fail("artifact-changed");
+    const call = await nativeTestEvidence(root, item, pair, target, signal);
+    const { summary, testTree } = call;
     const result = normalizeAppleTestResult(summary, testTree, target, call.execution, plan.scheme.targets);
     const observed = call.result.results.map((test) => `${test.targetName}/${test.identifier}`).sort();
     if (!equal(observed, result.cases.map((test) => `${test.target}/${test.identifier}`).sort())) fail("case-evidence");
     evidence.tests.push({ role: target.role, action: "test", status: "passed", target,
-      execution: { ...call.execution, evidence: [start.reference, finish.reference, ...workspace.evidence, pair.before.reference, pair.after.reference] },
-      resultBundle: await nativeTree(root, retainedBundle, call.execution.toolCallId),
+      execution: { ...call.execution, evidence: call.evidence },
+      resultBundle: await nativeTree(root, call.bundle, call.execution.toolCallId),
       summary: projectAppleXcresult("summary", summary), testTree: projectAppleXcresult("tests", testTree), result });
   }
   for (const platform of ["ios", "macos"]) {

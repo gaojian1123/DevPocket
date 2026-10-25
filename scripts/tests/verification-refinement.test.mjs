@@ -147,6 +147,7 @@ async function nativeEvidence(f, plan) {
   await save(f.root, directory + "/before.json", before);
   const device = { deviceId: "fixture-iphone", platform: "iOS Simulator", osVersion: "27.0", architecture: "arm64" };
   const now = Date.now() / 1000;
+  const originalBundle = path.join(f.root, directory, "original", "result.xcresult");
   const summary = { result: "Passed", failedTests: 0, skippedTests: 0, expectedFailures: 0,
     passedTests: 1, totalTestCount: 1, testFailures: [], startTime: now, finishTime: now,
     devicesAndConfigurations: [{ device, failedTests: 0, skippedTests: 0, expectedFailures: 0, passedTests: 1 }] };
@@ -156,10 +157,26 @@ async function nativeEvidence(f, plan) {
   for (const [name, value] of [["summary", summary], ["tests", tests]]) {
     await save(f.root, `${directory}/${name}.json`, value);
     await save(f.root, `${directory}/result.xcresult/${name}.json`, value);
+    await save(f.root, path.relative(f.root, path.join(originalBundle, `${name}.json`)), value);
   }
+  const requestEvent = `${directory}/tests-request.event.json`, responseEvent = `${directory}/tests-response.event.json`;
+  const testTime = new Date(now * 1000).toISOString();
+  await save(f.root, requestEvent, { type: "tool.execution_start", timestamp: testTime, data: {
+    toolCallId: "fixture-selected-tests", mcpServerName: "xcode", mcpToolName: "RunSomeTests",
+    arguments: { workspaceIdentifier: path.join(f.root, "apple", "DevPocket", "DevPocket.xcodeproj"),
+      tests: [{ targetName: "DevPocketUITests", testIdentifier: nativeCase }] },
+  } });
+  await save(f.root, responseEvent, { type: "tool.execution_complete", timestamp: testTime, data: {
+    toolCallId: "fixture-selected-tests", success: true, result: { structuredContent: {
+      schemeName: "DevPocket", truncated: false, xcresultBundlePath: originalBundle,
+      counts: { total: 1, passed: 1, failed: 0, skipped: 0, expectedFailures: 0, notRun: 0 },
+      totalResults: 1, results: [{ targetName: "DevPocketUITests", identifier: nativeCase,
+        state: "Passed", errorMessages: [] }],
+    } },
+  } });
   const request = { action: "qualify", plan: ".data/verification/plan.json",
     tests: [{ binding: directory + "/binding.json", summary: directory + "/summary.json",
-      tests: directory + "/tests.json", resultBundle: directory + "/result.xcresult" }], builds: [] };
+      tests: directory + "/tests.json", resultBundle: directory + "/result.xcresult", requestEvent, responseEvent }], builds: [] };
   for (const platform of ["ios", "macos"]) {
     const built = await product(f.root, "fresh", platform, plan.context.source);
     const log = `${directory}/${platform}/build.log`;
@@ -183,7 +200,7 @@ async function nativeEvidence(f, plan) {
   }
   const after = await f.invoke({ action: "binding", plan: ".data/verification/plan.json", before: directory + "/before.json" });
   await save(f.root, directory + "/binding.json", after);
-  return { request, summary, tests, directory };
+  return { request, summary, tests, directory, originalBundle };
 }
 
 nativeTest("a local Apple refinement retains its full checkpoint and requires independent review", async (t) => {
@@ -197,6 +214,8 @@ nativeTest("a local Apple refinement retains its full checkpoint and requires in
   assert.deepEqual(result.source, plan.context.source);
   assert.notEqual(result.source.fingerprint, f.checkpoint.context.source.fingerprint);
   assert.equal(result.checks.length, 3);
+  assert.equal(result.checks[0].execution.tool, "xcode/RunSomeTests");
+  assert.equal(result.checks[0].execution.workspace, path.join(f.root, "apple", "DevPocket", "DevPocket.xcodeproj"));
   assert.deepEqual(JSON.parse(await readFile(path.join(f.root, ".data/verification/full/report.json"))), f.report);
   assert.throws(() => combineVerification(f.report, [result]), { diagnosticCode: "policy-mismatch" });
   await assert.rejects(f.invoke({ action: "plan", checkpoint: f.subjectFile, selection: selected() }),
@@ -265,6 +284,24 @@ nativeTest("Git environment changes remain explicit blockers even when source is
   assert.equal(next.status, "full_required");
   assert.ok(next.reasons.includes("environment-changed"));
   await assert.rejects(f.invoke(native.request), { diagnosticCode: "environment-changed" });
+});
+
+nativeTest("native SDK, toolchain and loader environment drift requires the full gate", async (t) => {
+  const f = await fixture(t);
+  await planned(f);
+  for (const name of ["SDKROOT", "TOOLCHAINS", "DYLD_TEST_NATIVE_BINDING"]) {
+    const original = process.env[name];
+    try {
+      process.env[name] = "synthetic-changed-native-input";
+      const result = await f.invoke({ action: "plan", checkpoint: ".data/verification/checkpoint.json", selection: selected() });
+      assert.equal(result.status, "full_required", name);
+      assert.ok(result.reasons.includes("environment-changed"), name);
+      assert.deepEqual(result.changedFiles, [view]);
+    } finally {
+      if (original === undefined) delete process.env[name];
+      else process.env[name] = original;
+    }
+  }
 });
 
 nativeTest("checkpoint creation cannot adopt drift after the accepted full run", async (t) => {
@@ -356,21 +393,62 @@ nativeTest("native exports must match the actual xcresult and report every selec
   const failed = { ...native.summary, result: "Failed", failedTests: 1, passedTests: 0 };
   await save(f.root, summaryFile, failed);
   await save(f.root, `${native.directory}/result.xcresult/summary.json`, failed);
+  await save(f.root, path.relative(f.root, path.join(native.originalBundle, "summary.json")), failed);
   await assert.rejects(f.invoke(native.request), { diagnosticCode: "check-failed" });
 });
 
 nativeTest("old native results, wrong devices and skipped tests are not fresh visual evidence", async (t) => {
   const f = await fixture(t), plan = await planned(f), native = await nativeEvidence(f, plan);
-  for (const summary of [
-    { ...native.summary, startTime: Date.parse(plan.createdAt) / 1000 - 1 },
-    { ...native.summary, skippedTests: 1 },
-    { ...native.summary, devicesAndConfigurations: [{ ...native.summary.devicesAndConfigurations[0],
-      device: { ...native.summary.devicesAndConfigurations[0].device, deviceId: "wrong-device" } }] },
+  for (const [summary, diagnosticCode] of [
+    [{ ...native.summary, startTime: Date.parse(plan.createdAt) / 1000 - 5 }, "execution-origin"],
+    [{ ...native.summary, skippedTests: 1 }, "check-failed"],
+    [{ ...native.summary, devicesAndConfigurations: [{ ...native.summary.devicesAndConfigurations[0],
+      device: { ...native.summary.devicesAndConfigurations[0].device, deviceId: "wrong-device" } }] }, "check-failed"],
   ]) {
     await save(f.root, `${native.directory}/summary.json`, summary);
     await save(f.root, `${native.directory}/result.xcresult/summary.json`, summary);
-    await assert.rejects(f.invoke(native.request), { diagnosticCode: "check-failed" });
+    await save(f.root, path.relative(f.root, path.join(native.originalBundle, "summary.json")), summary);
+    await assert.rejects(f.invoke(native.request), { diagnosticCode });
   }
+});
+
+nativeTest("selected test passes require the original invocation, workspace and bundle", async (t) => {
+  const f = await fixture(t), plan = await planned(f), native = await nativeEvidence(f, plan);
+  const item = native.request.tests[0];
+  const start = JSON.parse(await readFile(path.join(f.root, item.requestEvent)));
+  const finish = JSON.parse(await readFile(path.join(f.root, item.responseEvent)));
+  for (const [edit, diagnosticCode] of [
+    [(request) => { request.data.arguments.workspaceIdentifier = "/another/worktree/DevPocket.xcodeproj"; }, "execution-origin"],
+    [(request) => { request.data.mcpToolName = "RunAllTests"; }, "case-evidence"],
+    [(request) => { request.timestamp = new Date(Date.parse(plan.createdAt) - 5000).toISOString(); }, "case-evidence"],
+    [(request) => { request.data.arguments.tests[0].testIdentifier = "DevPocketUITests/anotherCase()"; }, "case-evidence"],
+  ]) {
+    const invalid = structuredClone(start);
+    edit(invalid);
+    await save(f.root, item.requestEvent, invalid);
+    await assert.rejects(f.invoke(native.request), { diagnosticCode });
+  }
+  await save(f.root, item.requestEvent, start);
+  await save(f.root, item.responseEvent, { ...finish, data: { ...finish.data, success: false } });
+  await assert.rejects(f.invoke(native.request), { diagnosticCode: "case-evidence" });
+  await save(f.root, item.responseEvent, finish);
+  const omitted = structuredClone(native.request);
+  delete omitted.tests[0].requestEvent;
+  await assert.rejects(f.invoke(omitted), { diagnosticCode: "ownership-mismatch" });
+  await save(f.root, path.relative(f.root, path.join(native.originalBundle, "different-bytes.txt")), "Another producing bundle\n");
+  await assert.rejects(f.invoke(native.request), { diagnosticCode: "artifact-changed" });
+});
+
+nativeTest("refinement accepts whole-second xcresult precision inside an actual MCP invocation", async (t) => {
+  const f = await fixture(t), plan = await planned(f), native = await nativeEvidence(f, plan);
+  const rounded = { ...native.summary, startTime: Math.floor(native.summary.startTime),
+    finishTime: Math.ceil(native.summary.finishTime) };
+  for (const file of [`${native.directory}/summary.json`, `${native.directory}/result.xcresult/summary.json`,
+    path.relative(f.root, path.join(native.originalBundle, "summary.json"))]) await save(f.root, file, rounded);
+  const result = await f.invoke(native.request);
+  assert.equal(result.status, "passed");
+  assert.equal(result.checks[0].result.startedAt, new Date(rounded.startTime * 1000).toISOString());
+  assert.equal(result.checks[0].execution.startedAt, new Date(native.summary.startTime * 1000).toISOString());
 });
 
 nativeTest("changed products and source changes after planning invalidate qualification", async (t) => {
@@ -440,6 +518,11 @@ nativeTest("actual workspace mappings bind handle-based MCP calls without rewrit
   } };
   await save(f.root, responseEvent, response);
   item.workspaceBinding = { requestEvent, responseEvent };
+  const testItem = native.request.tests[0];
+  const testRequest = JSON.parse(await readFile(path.join(f.root, testItem.requestEvent)));
+  testRequest.data.arguments.workspaceIdentifier = "workspace-fixture";
+  await save(f.root, testItem.requestEvent, testRequest);
+  testItem.workspaceBinding = { requestEvent, responseEvent };
   assert.equal((await f.invoke(native.request)).status, "passed");
   for (const alter of [
     (value) => { value.data.result.structuredContent.message = "* workspaceIdentifier: workspace-fixture, workspacePath: /another/DevPocket.xcodeproj"; },

@@ -6,6 +6,7 @@ import { executeVerification, validateVerificationEvidence, verificationPlan, ve
   requirePlanCollection, requireVerificationReportPath } from "./verification.mjs";
 import { readDiagnosticReport } from "./worker-diagnostics.mjs";
 import { CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "./verification-policy.mjs";
+import { listenForCommandCancellation } from "./process.mjs";
 
 let entryPhase = "arguments";
 
@@ -52,9 +53,7 @@ async function main() {
   }
   const output = await open(reportPath, "wx", 0o600);
   const cancellation = new AbortController();
-  const cancel = () => cancellation.abort(new Error("Verification cancelled."));
-  process.once("SIGINT", cancel);
-  process.once("SIGTERM", cancel);
+  const stopCancellation = listenForCommandCancellation(cancellation);
   let report, plan, phase = "plan";
   try {
     try {
@@ -157,9 +156,8 @@ async function main() {
       return;
     }
   } finally {
-    await output.close();
-    process.off("SIGINT", cancel);
-    process.off("SIGTERM", cancel);
+    try { await output.close(); }
+    finally { stopCancellation(); }
   }
   console.log(`Verification ${report.status}: ${path.relative(root, reportPath).replaceAll("\\", "/")}`);
   if (report.run) console.log(`Verification run: ${report.run.manifest.replaceAll("\\", "/")} (attempt ${report.run.attempt})`);

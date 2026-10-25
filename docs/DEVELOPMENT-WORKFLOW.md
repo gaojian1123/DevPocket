@@ -764,6 +764,10 @@ request/completion events for a handle-based call, collected inside the source
 binding before the build. Direct paths remain accepted when the actual provider
 supports them. An unassociated handle from another session is insufficient.
 Retain its actual original-client start/completion events and the full tool log.
+Selected tests likewise retain the successful `RunSomeTests` request/completion
+events and workspace binding. Keep the producing SDK result bundle as well as
+the retained copy; matching case IDs and a nearby timestamp alone do not prove
+that this worktree ran those tests.
 
 **Qualify**, after all selected native work:
 
@@ -773,6 +777,8 @@ Retain its actual original-client start/completion events and the full tool log.
   "plan": ".data/verification/refinement/plan.json",
   "tests": [{
     "binding": ".data/verification/native/after.json",
+    "requestEvent": ".data/apple/current/tests-request.event.json",
+    "responseEvent": ".data/apple/current/tests-response.event.json",
     "summary": ".data/apple/current/summary.json",
     "tests": ".data/apple/current/tests.json",
     "resultBundle": ".data/apple/current/result.xcresult"
@@ -813,9 +819,13 @@ producing product available through final qualification. A failed/omitted build,
 a stale call, an ambiguous/no-product log or a replaced product cannot count as a
 build pass. Use the ordinary evidence route when a supported producing record
 cannot be obtained; do not manufacture log entries or edit source to force proof.
-Qualification decodes each actual result bundle, matches the exports, exact
-device/OS/case set and binding interval, requires zero failed/skipped/expected
-failures, and checks the sealed product bytes. It rechecks source and execution
+Qualification binds the requested case set and successful response to this
+workspace, then compares the original SDK bundle with its retained copy and
+exports. It checks the exact device/OS/case set and producing invocation interval,
+allowing one second for xcresult timestamp precision, requires zero
+failed/skipped/expected failures, and checks the sealed product bytes.
+Native SDK/toolchain/loader environment inputs remain part of the checkpoint
+fingerprint just as in the full Apple lane. It rechecks source and execution
 context, without starting a device or running another full-stack gate.
 
 ### Review and delivery

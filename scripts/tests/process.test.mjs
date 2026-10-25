@@ -8,9 +8,31 @@ import net from "node:net";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
-import { commandCleanupConfirmed, ownedCommandLaunch, ownedProcessCleanupConfirmed, runCommand, spawnOwnedCommand, stopOwnedProcess } from "../process.mjs";
+import { PassThrough } from "node:stream";
+import { commandCleanupConfirmed, listenForCommandCancellation, ownedCommandLaunch, ownedProcessCleanupConfirmed, runCommand, spawnOwnedCommand, stopOwnedProcess } from "../process.mjs";
 
 const exec = promisify(execFile);
+
+test("owned-command cancellation consumes complete stdin frames and releases its listeners", () => {
+  const input = new PassThrough(), controller = new AbortController();
+  const listeners = ["SIGINT", "SIGTERM"].map((signal) => process.listenerCount(signal));
+  const stop = listenForCommandCancellation(controller, input);
+  input.write("unrelated\ncan");
+  assert.equal(controller.signal.aborted, false);
+  input.write("cel\n");
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(controller.signal.reason.diagnosticCode, "command-cancelled");
+  stop();
+  assert.deepEqual(["SIGINT", "SIGTERM"].map((signal) => process.listenerCount(signal)), listeners);
+  assert.equal(input.listenerCount("data"), 0);
+  input.destroy();
+
+  const later = new PassThrough(), unused = new AbortController();
+  listenForCommandCancellation(unused, later)();
+  later.write("cancel\n");
+  assert.equal(unused.signal.aborted, false);
+  later.destroy();
+});
 
 test("macOS commands use the native owner without changing Windows or Linux launches", () => {
   const launch = ownedCommandLaunch("darwin");

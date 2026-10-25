@@ -305,6 +305,18 @@ function testCases(nodes) {
   return cases;
 }
 
+export function appleTestInterval(summary, execution) {
+  // xcresult may report whole-second timestamps.
+  requireApple(Number.isFinite(summary?.startTime) && Number.isFinite(summary?.finishTime) &&
+    timestamp(execution?.startedAt) && timestamp(execution?.completedAt) &&
+    execution.completedAt >= execution.startedAt && summary.finishTime >= summary.startTime &&
+    summary.startTime * 1000 >= Date.parse(execution.startedAt) - 1000 &&
+    summary.finishTime * 1000 <= Date.parse(execution.completedAt) + 1000,
+  "The xcresult is outside its producing test invocation.", "execution-origin");
+  return { startedAt: new Date(summary.startTime * 1000).toISOString(),
+    completedAt: new Date(summary.finishTime * 1000).toISOString() };
+}
+
 // This normalized result is reusable by an original-client MCP adapter; it contains no invented command receipt.
 export function normalizeAppleTestResult(summary, tests, target, execution, requiredTargets) {
   const cases = testCases(tests?.testNodes), configuration = summary?.devicesAndConfigurations?.[0];
@@ -322,15 +334,7 @@ export function normalizeAppleTestResult(summary, tests, target, execution, requ
     Array.isArray(requiredTargets) && requiredTargets.length >= 2 &&
     requiredTargets.every((name) => cases.some((item) => item.target === name)),
   "The complete native test outcome, target coverage or destination does not match.", "case-evidence");
-  // xcresult may report whole-second timestamps.
-  requireApple(Number.isFinite(summary.startTime) && Number.isFinite(summary.finishTime) &&
-    timestamp(execution?.startedAt) && timestamp(execution?.completedAt) &&
-    summary.finishTime >= summary.startTime &&
-    summary.startTime * 1000 >= Date.parse(execution.startedAt) - 1000 &&
-    summary.finishTime * 1000 <= Date.parse(execution.completedAt) + 1000,
-  "The xcresult is outside its producing test invocation.", "execution-origin");
-  return { device, cases, startedAt: new Date(summary.startTime * 1000).toISOString(),
-    completedAt: new Date(summary.finishTime * 1000).toISOString() };
+  return { device, cases, ...appleTestInterval(summary, execution) };
 }
 
 function inside(directory, file) {
