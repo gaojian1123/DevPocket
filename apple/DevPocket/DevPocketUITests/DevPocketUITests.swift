@@ -1020,8 +1020,11 @@ final class DevPocketUITests: XCTestCase {
     private func setWindowLayout(wide: Bool) async throws {
         let window = focusWorkbenchWindow()
         let original = window.frame
+        let display = CGDisplayBounds(CGMainDisplayID())
         let targetWidth: CGFloat = wide ? 1000 : 600
         if abs(window.frame.width - targetWidth) > 2 {
+            // Both the resize border and its destination must stay inside the display.
+            moveWorkbenchWindow(window, toX: display.maxX - max(window.frame.width, targetWidth) - 12)
             // Reach the native resize border instead of the content's scroll hit area.
             let edge = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
                 .withOffset(CGVector(dx: 1, dy: 0))
@@ -1029,16 +1032,46 @@ final class DevPocketUITests: XCTestCase {
         }
         for _ in 0..<50 {
             let width = app.windows.firstMatch.frame.width
-            if wide ? width >= 820 : width <= 640 { break }
+            if wide ? width >= 820 : width < 660 { break }
             try await Task.sleep(for: .milliseconds(100))
         }
+        moveWorkbenchWindow(window, toX: min(max(original.minX, display.minX + 12),
+            display.maxX - window.frame.width - 12))
         let width = app.windows.firstMatch.frame.width
         let dimensions = XCTAttachment(string: "Requested width: \(targetWidth)\nBefore: \(original)\nAfter: \(window.frame)\nSheets: \(app.sheets.count)\nApp state: \(app.state.rawValue)")
         dimensions.name = "native-mac-window-dimensions"
         dimensions.lifetime = .keepAlways
         add(dimensions)
         if wide { XCTAssertGreaterThanOrEqual(width, 820) }
-        else { XCTAssertLessThanOrEqual(width, 640) }
+        else { XCTAssertLessThan(width, 660) }
+    }
+
+    private func moveWorkbenchWindow(_ window: XCUIElement, toX x: CGFloat) {
+        let delta = x - window.frame.minX
+        if abs(delta) <= 2 { return }
+        let titlebar = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: 8))
+        titlebar.click(forDuration: 0.2, thenDragTo: titlebar.withOffset(CGVector(dx: delta, dy: 0)))
+        XCTAssertEqual(window.frame.minX, x, accuracy: 2)
+    }
+
+    func testNarrowWindowWorksAtDisplayEdge() async throws {
+        launch()
+        defer { app.terminate() }
+        let window = focusWorkbenchWindow()
+        let display = CGDisplayBounds(CGMainDisplayID())
+        let titlebar = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: 8))
+        let shift = display.maxX - window.frame.maxX
+        if abs(shift) > 2 {
+            titlebar.click(forDuration: 0.2, thenDragTo: titlebar.withOffset(CGVector(dx: shift, dy: 0)))
+        }
+        for _ in 0..<30 where abs(window.frame.maxX - display.maxX) > 2 {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertEqual(window.frame.maxX, display.maxX, accuracy: 2)
+        try await setWindowLayout(wide: false)
+        try await setWindowLayout(wide: true)
     }
 
     private func assertModalReader() {

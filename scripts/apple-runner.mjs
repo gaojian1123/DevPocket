@@ -596,7 +596,7 @@ async function runAppleNative(options, local) {
           exported.push(projectAppleXcresult(kind, JSON.parse(result.stdout.text)));
         }
         const resultManifest = await directoryArtifact(root, `${relative}/result.xcresult`, phase);
-        item.resultBundle = local ? await retainAppleResultManifest(root, resultManifest) : resultManifest;
+        item.resultBundle = await retainAppleResultManifest(root, resultManifest);
         [item.summary, item.testTree] = exported;
         if (local) {
           await mkdir(path.join(root, relative, "retained"));

@@ -387,26 +387,51 @@ test("local commands refuse hosted identity before touching a plan or invoking a
   await assert.rejects(runAppleLocalCommands({}), /local Mac entry/);
 });
 
-test("full four-role results keep large file manifests outside the unchanged publication budget", () => {
-  const report = localCommandFixture(42), privateManifests = new Map();
-  for (const item of report.tests) {
-    const directory = path.posix.dirname(item.resultBundle.path);
-    const tree = treeFixture(item.resultBundle.path, item.commandId,
-      ["Info.plist", ...Array.from({ length: 4000 }, (_, index) => `Data/attachment-${String(index).padStart(8, "0")}`)]);
-    const bytes = appleJSON(tree.files), reference = outputFile(`${directory}/result-files.json`, bytes);
-    assert.ok(Buffer.byteLength(bytes) > APPLE_NATIVE_REPORT_MAX_BYTES);
-    privateManifests.set(reference.path, bytes);
-    item.resultBundle = appleResultManifestReference(tree, reference);
-    item.retainedResultBundle.sha256 = tree.sha256;
+test("hosted and local four-role results keep complete manifests outside the unchanged publication budget", () => {
+  for (const [origin, report] of [["ci-xcodebuild", evidenceFixture(42)], ["local-xcodebuild", localCommandFixture(42)]]) {
+    const privateManifests = new Map();
+    for (const item of report.tests) {
+      const directory = path.posix.dirname(item.resultBundle.path);
+      const tree = treeFixture(item.resultBundle.path, item.commandId,
+        ["Info.plist", ...Array.from({ length: 4000 }, (_, index) => `Data/attachment-${String(index).padStart(8, "0")}`)]);
+      const bytes = appleJSON(tree.files), reference = outputFile(`${directory}/result-files.json`, bytes);
+      assert.ok(Buffer.byteLength(bytes) > APPLE_NATIVE_REPORT_MAX_BYTES);
+      privateManifests.set(reference.path, bytes);
+      item.resultBundle = appleResultManifestReference(tree, reference);
+      if (item.retainedResultBundle) item.retainedResultBundle.sha256 = tree.sha256;
+    }
+    assert.equal(privateManifests.size, 4);
+    assert.ok(Buffer.byteLength(appleJSON(report)) < APPLE_NATIVE_REPORT_MAX_BYTES);
+    assert.equal(validateAppleNativeEvidence(report, plan, origin), report);
+    assert.equal(report.tests.flatMap((item) => item.result.cases).length, 172);
+    for (const item of report.tests) {
+      const bytes = privateManifests.get(item.resultBundle.fileManifest.path);
+      assert.equal(appleDigest(bytes), item.resultBundle.sha256);
+      assert.equal(JSON.parse(bytes).length, item.resultBundle.fileCount);
+    }
   }
-  assert.equal(privateManifests.size, 4);
-  assert.ok(Buffer.byteLength(appleJSON(report)) < APPLE_NATIVE_REPORT_MAX_BYTES);
-  assert.equal(validateAppleNativeEvidence(report, plan, "local-xcodebuild"), report);
-  assert.equal(report.tests.flatMap((item) => item.result.cases).length, 172);
-  for (const item of report.tests) {
-    const bytes = privateManifests.get(item.resultBundle.fileManifest.path);
-    assert.equal(appleDigest(bytes), item.resultBundle.sha256);
-    assert.equal(JSON.parse(bytes).length, item.resultBundle.fileCount);
+});
+
+test("hosted result manifests keep exact command, path, digest and size bindings", () => {
+  const inline = evidenceFixture();
+  assert.equal(validateAppleNativeEvidence(inline, plan), inline);
+  const changes = [
+    (item) => { item.resultBundle.producedBy = "another-command"; },
+    (item) => { item.resultBundle.fileManifest.sha256 = "0".repeat(64); },
+    (item) => { item.resultBundle.fileManifest.bytes = 16 * 1024 * 1024 + 1; },
+    (item) => { item.resultBundle.fileManifest.path = "../unbound-files.json"; },
+    (item) => { item.resultBundle.fileManifest.path += ".other"; },
+    (item) => { item.resultBundle.fileCount = 0; },
+    (item) => { item.resultBundle.fileCount = 20001; },
+    (item) => { item.resultBundle.infoSha256 = "missing"; },
+  ];
+  for (const change of changes) {
+    const report = evidenceFixture(), item = report.tests[0], full = item.resultBundle;
+    item.resultBundle = appleResultManifestReference(full,
+      outputFile(`${path.posix.dirname(full.path)}/result-files.json`, appleJSON(full.files)));
+    assert.equal(validateAppleNativeEvidence(report, plan), report);
+    change(item);
+    assert.throws(() => validateAppleNativeEvidence(report, plan));
   }
 });
 

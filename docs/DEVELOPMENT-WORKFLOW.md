@@ -799,7 +799,11 @@ UDIDs are never used in CI. Native UI/desktop failures remain failures, not
 model-only or skipped-platform success.
 
 The Apple job keeps raw logs/artifacts separately and publishes a bounded
-source-bound native report. Aggregation requires the actual hosted execution
+source-bound native report. Hosted test results use complete external file
+manifests, included with the raw artifacts, so each bounded result retains its
+digest, file count and Info.plist binding without inlining thousands of attachment
+names. The report budget, native contents and required case coverage stay unchanged.
+Aggregation requires the actual hosted execution
 origin, complete selected matrix and cleanup; local MCP reports cannot impersonate
 that CI job. A workflow-only branch without the uncommitted Apple implementation
 can validate selectors and runner contracts, but cannot claim a real Apple-client

@@ -296,6 +296,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
     ".data/ci/apple/apple/apple-report*.json",
     ".data/ci/apple/apple/logs/",
     ".data/ci/apple/apple/*/result.xcresult/",
+    ".data/ci/apple/apple/test-*/result-files.json",
     ".data/ci/apple/apple/build-*/derived/Build/Products/**/DevPocket.app/",
   ]);
 

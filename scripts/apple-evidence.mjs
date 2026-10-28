@@ -566,7 +566,8 @@ function sharedAppleOutcomes(evidence) {
       requireApple(inside(evidence.directory, test.resultBundle?.path) && test.resultBundle.path.endsWith(".xcresult") &&
         !resultPaths.has(test.resultBundle.path), "The original native test result bundle is missing or reused.", "artifact-changed");
       resultPaths.add(test.resultBundle.path);
-      treeReference(test.resultBundle, test.resultBundle.path, id, ["Info.plist"], evidence.origin === "local-xcodebuild");
+      treeReference(test.resultBundle, test.resultBundle.path, id, ["Info.plist"],
+        evidence.origin === "ci-xcodebuild" || evidence.origin === "local-xcodebuild");
       const result = selected
         ? normalizeAppleBatchResult(test.summary, test.testTree, target, test.execution, selected)
         : normalizeAppleTestResult(test.summary, test.testTree, target, test.execution, evidence.scheme.targets);
@@ -805,7 +806,7 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
     const bundle = `${directory}/result.xcresult`;
     requireApple(!resultPaths.has(bundle), "A native result bundle was reused.", "execution-origin");
     resultPaths.add(bundle);
-    treeReference(item.resultBundle, bundle, value.id, ["Info.plist"], local && action === "test");
+    treeReference(item.resultBundle, bundle, value.id, ["Info.plist"], action === "test");
     if (local) {
       const ready = item.readiness;
       requireApple(ready?.status === "ready" && ready.commandId === value.id &&

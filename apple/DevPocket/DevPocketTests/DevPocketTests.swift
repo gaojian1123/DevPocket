@@ -464,6 +464,34 @@ struct DevPocketTests {
         for card in try #require(value.selected).entries.compactMap(\.component) {
             let renderer = ComponentWebSession(card: card, detail: true)
             renderer.webView.frame = CGRect(x: 0, y: 0, width: 600, height: 600)
+            #if os(macOS)
+            let previousWindow = NSApp.keyWindow
+            let window = NSWindow(contentRect: renderer.webView.frame, styleMask: [.titled],
+                backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = renderer.webView
+            window.makeKeyAndOrderFront(nil)
+            defer {
+                renderer.dispose()
+                window.contentView = nil
+                window.close()
+                previousWindow?.makeKeyAndOrderFront(nil)
+            }
+            #else
+            let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+            let previousWindow = scene.keyWindow
+            let window = UIWindow(windowScene: scene)
+            let controller = UIViewController()
+            controller.view = renderer.webView
+            window.rootViewController = controller
+            window.makeKeyAndVisible()
+            defer {
+                renderer.dispose()
+                window.isHidden = true
+                window.rootViewController = nil
+                previousWindow?.makeKey()
+            }
+            #endif
             for theme in ["light", "dark"] {
                 await renderer.start(theme: theme, scale: 1)
                 for _ in 0..<100 where !renderer.rendered && renderer.failure == nil {
