@@ -1110,3 +1110,24 @@ inspector switching/dismissal and draft preservation. This scoped decision does
 not waive other required checks or turn the earlier failures into passes.
 The underlying cause remains unconfirmed; no physical Duo result or platform-bug
 conclusion is claimed.
+
+## Apple hosted graphics evidence limitation
+
+The initial hosted attempts
+[40706524808](https://github.com/gaojian1123/DevPocket/actions/runs/40706524808)
+and [40722017341](https://github.com/gaojian1123/DevPocket/actions/runs/40722017341)
+remain failed evidence. On the `xcode-27` virtual Mac running macOS 27.0.1,
+the real WK pixel check reported `InvalidStateError`; its retained WebKit log
+also reported `IOSurface open failed: e00002e2 (likely sandbox violation)`.
+Mounting the WK view in a native window did not resolve that hosted failure.
+Successful local rendering on macOS 27.2 is not a successful result on that image.
+
+The second attempt retained its complete native file manifest outside the
+unchanged report budget, preserving the original test failures rather than
+replacing them with an oversized-report error.
+
+The user selected complete, source-bound local verification and independent
+review as the delivery route, with merging conditional on repository rules.
+The WK pixel checks, App Sandbox and complete selected platform matrix remain
+required. This decision does not relabel either hosted run or authorize a new
+runner, skipped checks or a native-permission bypass.

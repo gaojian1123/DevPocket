@@ -1023,8 +1023,14 @@ final class DevPocketUITests: XCTestCase {
         let display = CGDisplayBounds(CGMainDisplayID())
         let targetWidth: CGFloat = wide ? 1000 : 600
         if abs(window.frame.width - targetWidth) > 2 {
-            // Both the resize border and its destination must stay inside the display.
-            moveWorkbenchWindow(window, toX: display.maxX - max(window.frame.width, targetWidth) - 12)
+            if window.frame.maxX + 1 >= display.maxX || window.frame.minX + targetWidth + 1 >= display.maxX {
+                // Native tiling exposes an on-screen resize border without moving a filled window offscreen.
+                activate(app.menuBars.menuBarItems["窗口"])
+                activate(app.menuItems["移动与调整大小"])
+                activate(app.menuItems["左侧"])
+            }
+            XCTAssertLessThan(window.frame.maxX + 1, display.maxX)
+            XCTAssertLessThan(window.frame.minX + targetWidth + 1, display.maxX)
             // Reach the native resize border instead of the content's scroll hit area.
             let edge = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
                 .withOffset(CGVector(dx: 1, dy: 0))
@@ -1035,8 +1041,6 @@ final class DevPocketUITests: XCTestCase {
             if wide ? width >= 820 : width < 660 { break }
             try await Task.sleep(for: .milliseconds(100))
         }
-        moveWorkbenchWindow(window, toX: min(max(original.minX, display.minX + 12),
-            display.maxX - window.frame.width - 12))
         let width = app.windows.firstMatch.frame.width
         let dimensions = XCTAttachment(string: "Requested width: \(targetWidth)\nBefore: \(original)\nAfter: \(window.frame)\nSheets: \(app.sheets.count)\nApp state: \(app.state.rawValue)")
         dimensions.name = "native-mac-window-dimensions"
@@ -1044,15 +1048,6 @@ final class DevPocketUITests: XCTestCase {
         add(dimensions)
         if wide { XCTAssertGreaterThanOrEqual(width, 820) }
         else { XCTAssertLessThan(width, 660) }
-    }
-
-    private func moveWorkbenchWindow(_ window: XCUIElement, toX x: CGFloat) {
-        let delta = x - window.frame.minX
-        if abs(delta) <= 2 { return }
-        let titlebar = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
-            .withOffset(CGVector(dx: 0, dy: 8))
-        titlebar.click(forDuration: 0.2, thenDragTo: titlebar.withOffset(CGVector(dx: delta, dy: 0)))
-        XCTAssertEqual(window.frame.minX, x, accuracy: 2)
     }
 
     func testNarrowWindowWorksAtDisplayEdge() async throws {
