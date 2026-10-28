@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { executeLocalRefinement } from "../verification-refinement.mjs";
-import { combineVerification, executeVerification, verificationPlan } from "../verification.mjs";
+import { executeLocalAppleRequest, executeLocalRefinement } from "../verification-refinement.mjs";
+import { APPLE_REQUIREMENTS, validateAppleNativeEvidence } from "../apple-evidence.mjs";
+import { combineVerification, executeVerification, sourceSnapshot, verificationPlan } from "../verification.mjs";
 import { verificationImpact } from "../verification-policy.mjs";
 import { developmentReviewRequirements } from "../development-policy.mjs";
 import { readVerificationRun } from "../verification-run.mjs";
+import { retainApplePreparationFailure } from "../verification-preflight.mjs";
+import { diagnosticError, failureDetails } from "../diagnostic-errors.mjs";
 
 const exec = promisify(execFile);
 const digest = (value) => createHash("sha256").update(value).digest("hex");
@@ -30,7 +33,7 @@ async function save(root, file, value) {
   return file;
 }
 
-async function fixture(t) {
+async function fixture(t, fullApple = false) {
   const oldPath = process.env.PATH, oldCI = process.env.GITHUB_ACTIONS;
   delete process.env.GITHUB_ACTIONS;
   t.after(() => {
@@ -56,9 +59,34 @@ async function fixture(t) {
   await save(root, controls, "Text(\"Send\").font(.body)\n");
   await save(root, uiTests, "func testWorkbenchListsSessionsWithoutPromotionalCard() {}\n");
   await save(root, "docs/APPLE-CLIENT.md", "Fixture Apple client.\n");
+  if (fullApple) {
+    await save(root, `${APPLE_REQUIREMENTS.project}/project.pbxproj`, "// Synthetic project; never built by Xcode\n");
+    await save(root, "scripts/apple-runner.mjs", "// Synthetic preflight input; never executed\n");
+    await save(root, "scripts/verify.mjs", `import ${JSON.stringify(new URL("../verify.mjs", import.meta.url).href)};\n`);
+    await save(root, `${APPLE_REQUIREMENTS.project}/xcshareddata/xcschemes/DevPocket.xcscheme`,
+      `<Scheme><TestAction buildConfiguration="Debug"><Testables>${["DevPocketTests", "DevPocketUITests"].map((target) =>
+        `<TestableReference skipped="NO" parallelizable="NO"><BuildableReference BlueprintName="${target}" BuildableName="${target}.xctest"/></TestableReference>`
+      ).join("")}</Testables></TestAction></Scheme>`);
+    await save(root, ".data/native-probes.json", nativeProbes());
+  }
   const decoder = `const fs = require("node:fs"), path = require("node:path");
 const args = process.argv.slice(2), kind = args[args.indexOf("test-results") + 1];
-if (args.includes("-version")) { console.log("Xcode 27.1\\nBuild version SyntheticFixture"); process.exit(0); }
+if (args[0] === "xcodebuild" && args.includes("-version")) { console.log("Xcode 27.1\\nBuild version SyntheticFixture"); process.exit(0); }
+if (fs.existsSync(".data/native-probes.json")) {
+  const probes = JSON.parse(fs.readFileSync(".data/native-probes.json"));
+  if (args.includes("-enumerate-tests")) {
+    const output = args[args.indexOf("-test-enumeration-output-path") + 1];
+    if (probes.catalogOutputRace) {
+      fs.writeFileSync(path.join(path.dirname(output), "stdout.txt"), "Existing concurrent fixture output\\n");
+      throw new Error("Synthetic enumeration failed after an output collision");
+    }
+    fs.writeFileSync(output, JSON.stringify(probes.enumeration));
+    console.log("Synthetic enumeration; no Apple compiler or device invoked.");
+    process.exit(0);
+  }
+  const key = JSON.stringify(args);
+  if (Object.hasOwn(probes.outputs, key)) { process.stdout.write(probes.outputs[key]); process.exit(0); }
+}
 if (!["summary", "tests"].includes(kind)) throw new Error("Unexpected fixture decoder command");
 process.stdout.write(fs.readFileSync(path.join(args[args.indexOf("--path") + 1], kind + ".json")));
 `;
@@ -66,6 +94,10 @@ process.stdout.write(fs.readFileSync(path.join(args[args.indexOf("--path") + 1],
   await mkdir(bin, { recursive: true });
   await writeFile(path.join(bin, "xcrun"), `#!/usr/bin/env node\n${decoder}`);
   await chmod(path.join(bin, "xcrun"), 0o755);
+  if (fullApple) for (const [tool, output] of [["sw_vers", "27.0.1"], ["uname", process.arch]]) {
+    await writeFile(path.join(bin, tool), `#!/usr/bin/env node\nconsole.log(${JSON.stringify(output)});\n`);
+    await chmod(path.join(bin, tool), 0o755);
+  }
   process.env.PATH = bin + path.delimiter + oldPath;
   await exec("git", ["init", "--quiet", root]);
   await exec("git", ["config", "core.autocrlf", "false"], { cwd: root });
@@ -84,10 +116,12 @@ process.stdout.write(fs.readFileSync(path.join(args[args.indexOf("--path") + 1],
   for (const platform of ["ios", "macos"]) acceptedProducts.push(await product(root, "accepted", platform, report.source));
   const prepareRequest = { action: "prepare-checkpoint", verification: ".data/verification/full/report.json",
     nativeEvidence: [".data/apple/native.json"], acceptedProducts };
-  const invoke = async (value) => {
-    const file = `.data/verification/requests/${randomUUID()}.json`;
+  const invoke = async (value, directory) => {
+    const file = `${directory ?? ".data/verification"}/requests/${randomUUID()}.json`;
     await save(root, file, value);
-    return executeLocalRefinement(root, base, file);
+    if (!directory) return executeLocalRefinement(root, base, file);
+    await mkdir(path.join(root, directory), { recursive: true });
+    return executeLocalAppleRequest(root, base, file, undefined, directory);
   };
   const subject = await invoke(prepareRequest), subjectFile = ".data/verification/subject.json";
   assert.equal(subject.status, "pending_review");
@@ -104,9 +138,9 @@ process.stdout.write(fs.readFileSync(path.join(args[args.indexOf("--path") + 1],
   return { root, base, checkpoint, report, request, prepareRequest, subjectFile, review, invoke };
 }
 
-async function product(root, label, platform, source) {
-  const directory = `.data/apple/${label}/${platform}`, bundle = directory + "/DevPocket.app";
-  const originalProduct = path.join(root, `.data/apple/${label}/produced`,
+async function product(root, label, platform, source, parent = ".data/apple") {
+  const directory = `${parent}/${label}/${platform}`, bundle = directory + "/DevPocket.app";
+  const originalProduct = path.join(root, `${parent}/${label}/produced`,
     platform === "macos" ? "Debug" : "Debug-iphonesimulator", "DevPocket.app");
   const files = platform === "macos" ? ["Contents/Info.plist", "Contents/MacOS/DevPocket"] : ["Info.plist", "DevPocket"];
   const contents = Object.fromEntries(files.map((file) => [file, "Synthetic product, not native acceptance.\n"]));
@@ -124,6 +158,353 @@ async function product(root, label, platform, source) {
   return { platform, artifact, bundle, originalProduct };
 }
 
+test("private preparation diagnostics preserve raw failure facts without inventing cleanup evidence", async (t) => {
+  await mkdir(".data/tests", { recursive: true });
+  const root = await mkdtemp(path.resolve(".data/tests/preparation-diagnostic-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const cause = Object.assign(new Error("PRIVATE_PREPARATION_ERROR", { cause: new Error("PRIVATE_NESTED_CAUSE") }), {
+    stdout: "PRIVATE_PREPARATION_STDOUT", stderr: "PRIVATE_PREPARATION_STDERR", processTreeStopped: false,
+    commandOutcome: { observedProcess: "owned-command-supervisor", reason: "timeout", exitCode: null,
+      signal: "SIGTERM", outputTruncated: false, capturedBytes: 52,
+      cleanupFailure: { reason: "cleanup-failed", processTreeStopped: false } },
+  });
+  cause[Symbol.for("nodejs.util.inspect.custom")] = () => { throw new Error("Custom inspection must not run"); };
+  const failure = failureDetails(cause);
+  const preparation = { version: 1, status: "blocked", groups: [{
+    group: "backend", status: "blocked", issues: [{ prerequisite: "powershell", failure }],
+    notProbed: [{ prerequisite: "npm", blockedBy: ["powershell"] }],
+  }] };
+  const error = Object.assign(diagnosticError("preflight-dependencies"), {
+    processTreeStopped: false, preparation,
+    preparationFailures: [{ group: "backend", prerequisite: "powershell", failure, error: cause }],
+  });
+  const original = failureDetails(error), source = { head: "1".repeat(40), fingerprint: "2".repeat(64) };
+  const retained = await retainApplePreparationFailure(root, source, error);
+  const bytes = await readFile(path.join(root, retained.path)), contents = bytes.toString("utf8");
+  assert.equal(digest(bytes), retained.sha256);
+  for (const value of ["PRIVATE_PREPARATION_ERROR", "PRIVATE_NESTED_CAUSE", "PRIVATE_PREPARATION_STDOUT",
+    "PRIVATE_PREPARATION_STDERR", source.fingerprint, "notProbed", "blockedBy", "commandOutcome"]) {
+    assert.ok(contents.includes(value), value);
+  }
+  assert.match(contents, /processTreeStopped: false/);
+  assert.match(contents, /failedProcessId: 'unknown'/);
+  assert.match(contents, /rawCleanupReceipt: 'unknown'/);
+  assert.ok(!contents.includes("[Object]"));
+  assert.deepEqual(failureDetails(error), original);
+  assert.ok(!JSON.stringify(original).includes("PRIVATE_"));
+  if (process.platform !== "win32") {
+    assert.equal((await lstat(path.join(root, retained.path))).mode & 0o777, 0o600);
+    assert.equal((await lstat(path.dirname(path.join(root, retained.path)))).mode & 0o777, 0o700);
+  }
+  const second = await retainApplePreparationFailure(root, source, error);
+  assert.notEqual(second.path, retained.path);
+  assert.deepEqual(await readFile(path.join(root, retained.path)), bytes);
+});
+
+async function failedPreparationEntry(t, blockDiagnostics = false) {
+  await mkdir(".data/tests", { recursive: true });
+  const root = await mkdtemp(path.resolve(".data/tests/preparation-entry-"));
+  const oldPath = process.env.PATH, oldCI = process.env.GITHUB_ACTIONS;
+  let cleanupConfirmed = false;
+  delete process.env.GITHUB_ACTIONS;
+  t.after(async () => {
+    process.env.PATH = oldPath;
+    if (oldCI === undefined) delete process.env.GITHUB_ACTIONS;
+    else process.env.GITHUB_ACTIONS = oldCI;
+    if (cleanupConfirmed) await rm(root, { recursive: true, force: true });
+    else t.diagnostic(`Retained preparation fixture after unconfirmed or missing cleanup: ${root}`);
+  });
+  await save(root, ".gitignore", ".data/\n.tools/\n");
+  await save(root, "package.json", { name: "synthetic-preparation-fixture", version: "1.0.0" });
+  await exec("git", ["init", "--quiet", root]);
+  await exec("git", ["add", "."], { cwd: root });
+  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "commit.gpgsign=false",
+    "commit", "--quiet", "-m", "Synthetic fixture"], { cwd: root });
+  const base = (await exec("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+  const directory = ".data/verification/preparation-failure";
+  // Deliberately only enough plan metadata to reach the failing preflight; no native catalogue is fabricated.
+  const plan = { version: 2, kind: "local-apple-plan", base, directory,
+    context: { workspace: root, source: await sourceSnapshot(root) }, selection: { testMode: "batches" } };
+  const planFile = `${directory}/plan.json`;
+  await save(root, planFile, plan);
+  const request = `${directory}/request.json`, report = `${directory}/report.json`;
+  await save(root, request, { action: "apple-catalog", plan: planFile, role: "mac" });
+  if (blockDiagnostics) await save(root, ".data/verification/preparation-diagnostics", "Existing diagnostic path\n");
+  const bin = path.join(root, ".tools/bin"), powershell = path.join(bin, "pwsh");
+  await mkdir(bin, { recursive: true });
+  await writeFile(powershell, "#!/usr/bin/env node\n" +
+    "process.stdout.write('PRIVATE_PREPARATION_OUTPUT');process.stderr.write('PRIVATE_PREPARATION_ERROR');process.exitCode=37;\n");
+  await chmod(powershell, 0o755);
+  process.env.PATH = bin + path.delimiter + oldPath;
+  let failure;
+  try {
+    await exec(process.execPath, [path.resolve("scripts/verify.mjs"), "--repo", root, "--base", base,
+      "--apple-request", request, "--report", report]);
+    assert.fail("The real entry must remain failed");
+  } catch (error) {
+    assert.equal(error.code, 1);
+    failure = error;
+  }
+  const output = JSON.parse(await readFile(path.join(root, report)));
+  cleanupConfirmed = output.failure?.processTreeStopped === true;
+  assert.equal(output.kind, "local-apple-failure");
+  assert.equal(output.failure.reason, "preflight-dependencies");
+  assert.equal(output.failure.processTreeStopped, true);
+  const invalidation = await readFile(path.join(root, directory, "batch-invalidated.json"), "utf8");
+  for (const text of [JSON.stringify(output), failure.stdout, failure.stderr, invalidation]) {
+    assert.ok(!text.includes("PRIVATE_PREPARATION"), text);
+  }
+  assert.equal(JSON.parse(invalidation).failure.reason, "preflight-dependencies");
+  await assert.rejects(readFile(path.join(root, directory, "command-request.json")), { code: "ENOENT" });
+  return { root, base, plan, directory, failure, output, invalidation };
+}
+
+nativeTest("the original Apple CLI retains the failing prerequisite privately before public projection", async (t) => {
+  const f = await failedPreparationEntry(t);
+  const directory = path.join(f.root, ".data/verification/preparation-diagnostics");
+  const files = await readdir(directory);
+  assert.equal(files.length, 1);
+  const text = await readFile(path.join(directory, files[0]), "utf8");
+  for (const value of ["powershell", "PRIVATE_PREPARATION_OUTPUT", "PRIVATE_PREPARATION_ERROR", "commandOutcome",
+    "exitCode: 37", "--apple-request", f.plan.context.source.fingerprint, "notProbed"]) {
+    assert.ok(text.includes(value), value);
+  }
+  assert.ok(!text.includes("[Object]"));
+  const binding = `${f.directory}/binding.json`;
+  await save(f.root, binding, { action: "binding", plan: `${f.directory}/plan.json` });
+  await assert.rejects(executeLocalAppleRequest(f.root, f.base, binding, undefined, path.join(f.root, f.directory)),
+    { diagnosticCode: "apple-batch-invalidated" });
+  assert.equal(await readFile(path.join(f.root, f.directory, "batch-invalidated.json"), "utf8"), f.invalidation);
+});
+
+nativeTest("a private diagnostic write failure leaves the original preflight failure and cleanup status intact", async (t) => {
+  const f = await failedPreparationEntry(t, true);
+  const diagnostic = f.failure.stderr.split(/\r?\n/).filter(Boolean).map(line => {
+    try { return JSON.parse(line); } catch (error) { if (!(error instanceof SyntaxError)) throw error; return null; }
+  }).find(value => value?.kind === "apple-preparation-diagnostic-failure");
+  assert.ok(diagnostic);
+  assert.equal(diagnostic.failure.reason, "report-write");
+  assert.equal(diagnostic.originalFailure.reason, "preflight-dependencies");
+  assert.equal(diagnostic.originalFailure.processTreeStopped, true);
+  assert.equal(await readFile(path.join(f.root, ".data/verification/preparation-diagnostics"), "utf8"), "Existing diagnostic path\n");
+});
+
+const batchCases = [
+  { targetName: "DevPocketTests", testIdentifier: "ModelAndWKTests/testModel()" },
+  { targetName: "DevPocketUITests", testIdentifier: "WindowTests/testLayout()" },
+  { targetName: "DevPocketUITests", testIdentifier: "WindowTests/testNavigation()" },
+];
+const fixtureDevice = (index) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+
+function nativeProbes() {
+  const types = APPLE_REQUIREMENTS.targets.slice(1).map((target) =>
+    ({ name: target.deviceTypeName, identifier: `synthetic.type.${target.role}` }));
+  const runtimes = ["27.0", "27.1"].map((version) => ({ version, isAvailable: true,
+    identifier: `com.apple.CoreSimulator.SimRuntime.iOS-${version.replaceAll(".", "-")}`,
+    supportedDeviceTypes: types }));
+  const devices = Object.fromEntries(runtimes.map((runtime) => [runtime.identifier, []]));
+  APPLE_REQUIREMENTS.targets.slice(1).forEach((target, index) => {
+    const runtime = runtimes.find((item) => item.version === target.runtimeVersion);
+    devices[runtime.identifier].push({ udid: fixtureDevice(index + 1), name: `Synthetic ${target.role}`,
+      state: "Booted", deviceTypeIdentifier: types[index].identifier });
+  });
+  return {
+    outputs: Object.fromEntries([
+      [["--find", "xcodebuild"], "/Applications/Synthetic.app/Contents/Developer/usr/bin/xcodebuild\n"],
+      [["--sdk", "iphoneos", "--show-sdk-version"], "27.1\n"],
+      [["--sdk", "iphonesimulator", "--show-sdk-version"], "27.1\n"],
+      [["--sdk", "macosx", "--show-sdk-version"], "27.1\n"],
+      [["swift", "-version"], "Apple Swift version 7.0 (synthetic)\n"],
+      [["simctl", "list", "--json"], JSON.stringify({ devices, runtimes, devicetypes: types })],
+    ].map(([args, output]) => [JSON.stringify(args), output])),
+    enumeration: { errors: [], values: [{ testPlan: "DevPocket", disabledTests: [],
+      enabledTests: batchCases.map((item) => ({ identifier: `${item.targetName}/${item.testIdentifier}` })) }] },
+  };
+}
+
+async function fullBatches(f) {
+  const directory = ".data/verification/full-batches", planFile = `${directory}/plan.json`;
+  await save(f.root, view, "Text(\"Changed Apple source fixture\")\n");
+  const plan = await f.invoke({ action: "apple-plan", testMode: "batches",
+    targets: APPLE_REQUIREMENTS.targets.map((target, index) => ({ role: target.role, deviceId: fixtureDevice(index) })) }, directory);
+  await save(f.root, planFile, plan);
+  const request = { action: "apple-qualify", plan: planFile, tests: [], builds: [] };
+  for (const target of plan.selection.tests) {
+    const folder = `${directory}/catalog-${target.role}`;
+    const catalog = await f.invoke({ action: "apple-catalog", plan: planFile, role: target.role }, folder);
+    const file = `${folder}/catalog.json`;
+    await save(f.root, file, catalog);
+    request.tests.push({ role: target.role, catalog: file, batches: [] });
+  }
+  const before = await f.invoke({ action: "binding", plan: planFile }, directory);
+  await save(f.root, `${directory}/before.json`, before);
+  const binding = `${directory}/after.json`, handle = "synthetic-batch-workspace";
+  const workspaceBinding = { requestEvent: `${directory}/workspaces-request.json`,
+    responseEvent: `${directory}/workspaces-response.json` };
+  await save(f.root, workspaceBinding.requestEvent, { type: "tool.execution_start", timestamp: before.observedAt,
+    data: { toolCallId: "synthetic-workspaces", mcpServerName: "xcode", mcpToolName: "XcodeListWorkspaces", arguments: {} } });
+  await save(f.root, workspaceBinding.responseEvent, { type: "tool.execution_complete", timestamp: before.observedAt,
+    data: { toolCallId: "synthetic-workspaces", success: true, result: { structuredContent: {
+      message: `* workspaceIdentifier: ${handle}, workspacePath: ${path.join(f.root, APPLE_REQUIREMENTS.project)}`,
+    } } } });
+  for (const target of plan.selection.tests) for (const [index, selected] of [[batchCases[0]], batchCases.slice(1)].entries()) {
+    const folder = `${directory}/${target.role}-${index}`, now = new Date().toISOString();
+    const original = `${folder}/original.xcresult`, copy = `${folder}/retained.xcresult`;
+    const device = { deviceId: target.deviceId, platform: target.platform, osVersion: target.osVersion, architecture: target.architecture };
+    const summary = { result: "Passed", failedTests: 0, skippedTests: 0, expectedFailures: 0,
+      passedTests: selected.length, totalTestCount: selected.length, testFailures: [],
+      startTime: Date.parse(now) / 1000, finishTime: Date.parse(now) / 1000,
+      devicesAndConfigurations: [{ device, failedTests: 0, skippedTests: 0, expectedFailures: 0, passedTests: selected.length }] };
+    const tests = { devices: [device], testNodes: [{ nodeType: "Test Plan", name: "DevPocket", children:
+      [...new Set(selected.map((item) => item.targetName))].map((name) => ({
+        nodeType: name === "DevPocketTests" ? "Unit test bundle" : "UI test bundle", name,
+        children: selected.filter((item) => item.targetName === name).map((item) =>
+          ({ nodeType: "Test Case", nodeIdentifier: item.testIdentifier, result: "Passed" })),
+      })) }] };
+    for (const bundle of [original, copy]) {
+      await save(f.root, `${bundle}/summary.json`, summary);
+      await save(f.root, `${bundle}/tests.json`, tests);
+      await save(f.root, `${bundle}/Info.plist`, "Synthetic xcresult only\n");
+    }
+    const requestEvent = `${folder}/request.json`, responseEvent = `${folder}/response.json`, id = `synthetic-${target.role}-${index}`;
+    await save(f.root, requestEvent, { type: "tool.execution_start", timestamp: now, data: {
+      toolCallId: id, mcpServerName: "xcode", mcpToolName: "RunSomeTests",
+      arguments: { workspaceIdentifier: handle, tests: selected },
+    } });
+    await save(f.root, responseEvent, { type: "tool.execution_complete", timestamp: now, data: {
+      toolCallId: id, success: true, result: { structuredContent: {
+        schemeName: "DevPocket", truncated: false, xcresultBundlePath: path.join(f.root, original),
+        counts: { total: selected.length, passed: selected.length, failed: 0, skipped: 0, expectedFailures: 0, notRun: 0 },
+        totalResults: selected.length, results: selected.map((item) =>
+          ({ targetName: item.targetName, identifier: item.testIdentifier, state: "Passed", errorMessages: [] })),
+      } },
+    } });
+    request.tests.find((item) => item.role === target.role).batches.push({
+      binding, workspaceBinding, requestEvent, responseEvent, resultBundle: copy,
+    });
+  }
+  for (const platform of ["ios", "macos"]) {
+    const built = await product(f.root, "products", platform, plan.context.source, directory);
+    const folder = `${directory}/build-${platform}`, log = `${folder}/build.log`, now = new Date().toISOString();
+    const originalLog = path.join(f.root, `${folder}/BuildProject-Log-synthetic.txt`);
+    const bytes = `CodeSign ${built.originalProduct} (in target 'DevPocket' from project 'DevPocket')\n` +
+      `    cd ${path.join(f.root, "apple", "DevPocket")}\n** BUILD SUCCEEDED **\n`;
+    await save(f.root, log, bytes);
+    await save(f.root, path.relative(f.root, originalLog), bytes);
+    const requestEvent = `${folder}/request.json`, responseEvent = `${folder}/response.json`, id = `synthetic-build-${platform}`;
+    await save(f.root, requestEvent, { type: "tool.execution_start", timestamp: now, data: {
+      toolCallId: id, mcpServerName: "xcode", mcpToolName: "BuildProject",
+      arguments: { workspaceIdentifier: handle, buildForTesting: false },
+    } });
+    await save(f.root, responseEvent, { type: "tool.execution_complete", timestamp: now, data: {
+      toolCallId: id, success: true, result: { structuredContent: {
+        buildResult: "The project built successfully.", errors: [], elapsedTime: 0, fullLogPath: originalLog,
+      } },
+    } });
+    request.builds.push({ ...built, binding, workspaceBinding, log, requestEvent, responseEvent });
+  }
+  await save(f.root, binding, await f.invoke({ action: "binding", plan: planFile, before: `${directory}/before.json` }, directory));
+  return { directory, plan, request };
+}
+
+nativeTest("complete local batches qualify original catalogues, handles, native exports and both normal products", async (t) => {
+  const f = await fixture(t, true), native = await fullBatches(f);
+  const result = await f.invoke(native.request, native.directory);
+  assert.equal(result.status, "passed");
+  assert.equal(result.complete, true);
+  assert.equal(result.acceptance, false);
+  assert.equal(result.reviewRequired, true);
+  validateAppleNativeEvidence(result.appleEvidence, await verificationPlan(f.root, f.base), "local-xcode-mcp");
+  assert.equal(result.appleEvidence.tests.length, 4);
+  assert.ok(result.appleEvidence.tests.every((item) => item.mode === "batches" && item.batches.length === 2 && !item.execution));
+  assert.equal(result.appleEvidence.builds.length, 2);
+  const qualification = `${native.directory}/qualification.json`;
+  await save(f.root, qualification, native.request);
+  const gatePlan = await verificationPlan(f.root, f.base);
+  const gate = await executeVerification(f.root, gatePlan, {
+    directory: path.join(f.root, ".data/verification/full-batch-gate"), appleEvidence: qualification,
+  });
+  assert.equal(gate.version, 6);
+  assert.equal(gate.status, "passed", JSON.stringify(gate));
+  assert.equal(gate.complete, true);
+  assert.deepEqual((await readVerificationRun(f.root, gate.run.manifest)).report, gate);
+  assert.equal(combineVerification(gatePlan, [gate]).complete, true);
+  assert.ok(gate.checks.find((item) => item.id === "apple-native").appleEvidence.tests.every((item) =>
+    item.batches.every((batch) => batch.execution.tool === "xcode/RunSomeTests")));
+  const first = native.request.tests[0].batches[0];
+  assert.equal(JSON.parse(await readFile(path.join(f.root, first.requestEvent))).data.arguments.workspaceIdentifier,
+    "synthetic-batch-workspace");
+  await assert.rejects(f.invoke({ action: "apple-catalog", plan: native.request.plan, role: "mac" },
+    `${native.directory}/catalog-mac`), { code: "EEXIST" });
+  const mutate = async (file, edit, reason) => {
+    const original = await readFile(path.join(f.root, file), "utf8"), value = JSON.parse(original);
+    edit(value);
+    await save(f.root, file, value);
+    await assert.rejects(f.invoke(native.request, native.directory), { diagnosticCode: reason });
+    await save(f.root, file, original);
+    await assert.rejects(f.invoke(native.request, native.directory), { diagnosticCode: "apple-batch-invalidated" });
+    const invalidation = `${native.directory}/batch-invalidated.json`;
+    assert.equal(JSON.parse(await readFile(path.join(f.root, invalidation))).kind, "apple-batch-invalidation");
+    // Reset only this synthetic fixture between independent invalid-input cases.
+    await rm(path.join(f.root, invalidation));
+  };
+  await mutate(first.responseEvent, (event) => { event.data.success = false;
+    event.data.error = { code: -32001, message: "Synthetic timeout; no native tests ran" }; }, "case-evidence");
+  await mutate(first.workspaceBinding.responseEvent, (event) => {
+    event.data.result.structuredContent.message = "* workspaceIdentifier: synthetic-batch-workspace, workspacePath: /wrong/project";
+  }, "execution-origin");
+  await mutate(first.binding, (value) => { value.context.source.fingerprint = "0".repeat(64); }, "source-mismatch");
+  await mutate(native.request.tests[0].catalog, (value) => {
+    value.context.environment.preparation.prepared = "0".repeat(64);
+  }, "environment-changed");
+  await mutate(native.request.tests[0].catalog, (value) => {
+    value.data.values[0].enabledTests.pop();
+  }, "artifact-changed");
+  await mutate(`${first.resultBundle}/summary.json`, (value) => { value.skippedTests = 1; }, "artifact-changed");
+  const duplicate = structuredClone(native.request);
+  duplicate.tests[0].batches.push(duplicate.tests[0].batches[0]);
+  await assert.rejects(f.invoke(duplicate, native.directory));
+  await rm(path.join(f.root, native.directory, "batch-invalidated.json"));
+  const missing = structuredClone(native.request);
+  missing.tests[0].batches.pop();
+  await assert.rejects(f.invoke(missing, native.directory), { diagnosticCode: "case-evidence" });
+});
+
+for (const action of ["binding", "qualify"]) nativeTest(`refinement ${action} cannot erase observed drift in a full batch plan`, async (t) => {
+  const f = await fixture(t, true), native = await fullBatches(f);
+  const original = await readFile(path.join(f.root, view), "utf8");
+  await save(f.root, view, original + "// Source changed after batch execution\n");
+  await assert.rejects(f.invoke({ action, plan: native.request.plan }), { diagnosticCode: "source-mismatch" });
+  await save(f.root, view, original);
+  await assert.rejects(f.invoke(native.request, native.directory), { diagnosticCode: "apple-batch-invalidated" });
+});
+
+nativeTest("catalogue output collisions are refused before any enumeration can launch", async (t) => {
+  const f = await fixture(t, true), native = await fullBatches(f);
+  const directory = `${native.directory}/catalog-collision`;
+  await save(f.root, `${directory}/stdout.txt`, "Retained conflicting output\n");
+  await mkdir(path.join(f.root, directory, "enumeration.json"));
+  await assert.rejects(f.invoke({ action: "apple-catalog", plan: native.request.plan, role: "mac" }, directory));
+  await assert.rejects(readFile(path.join(f.root, directory, "command-request.json")), { code: "ENOENT" });
+  assert.equal(await readFile(path.join(f.root, directory, "stdout.txt"), "utf8"), "Retained conflicting output\n");
+  const probes = nativeProbes();
+  probes.catalogOutputRace = true;
+  await save(f.root, ".data/native-probes.json", probes);
+  const raced = `${native.directory}/catalog-race`;
+  await assert.rejects(f.invoke({ action: "apple-catalog", plan: native.request.plan, role: "mac" }, raced),
+    { diagnosticCode: "report-write" });
+  const completion = JSON.parse(await readFile(path.join(f.root, raced, "command-response.json")));
+  assert.equal(completion.status, "failed");
+  assert.equal(completion.outcome.exitCode, 1);
+  assert.equal(completion.cleanup, "completed");
+  assert.equal(completion.failure.reason, "command-failed");
+  assert.equal(completion.retentionFailures.length, 1);
+  const invalidated = JSON.parse(await readFile(path.join(f.root, native.directory, "batch-invalidated.json")));
+  assert.equal(invalidated.execution.id, completion.id);
+  assert.deepEqual(invalidated.execution.outcome, completion.outcome);
+  await assert.rejects(f.invoke(native.request, native.directory), { diagnosticCode: "apple-batch-invalidated" });
+});
+
 function selected(paths = [view]) {
   return {
     reason: "Remove the duplicate promotional entry; session navigation remains covered.",
@@ -132,6 +513,55 @@ function selected(paths = [view]) {
     coverage: paths.map((file) => ({ path: file, tests: [nativeCase], reason: "Exercises the affected workbench and navigation." })),
   };
 }
+
+async function commandPlan(f) {
+  const directory = ".data/verification/commands", file = `${directory}/plan.json`;
+  await save(f.root, view, "Text(\"Changed Apple source fixture\")\n");
+  const plan = await f.invoke({ action: "apple-plan", testMode: "xcodebuild",
+    targets: APPLE_REQUIREMENTS.targets.map((target, index) => ({ role: target.role, deviceId: fixtureDevice(index) })) }, directory);
+  await save(f.root, file, plan);
+  return { directory, file, plan };
+}
+
+nativeTest("local command planning retains all exact roles without executing a native test", async (t) => {
+  const f = await fixture(t, true), p = await commandPlan(f);
+  assert.equal(p.plan.selection.testMode, "xcodebuild");
+  assert.equal(p.plan.selection.fullSuite, true);
+  assert.deepEqual(p.plan.selection.builds, ["ios", "macos"]);
+  assert.deepEqual(p.plan.selection.tests.map((target) => target.deviceId),
+    APPLE_REQUIREMENTS.targets.map((_target, index) => fixtureDevice(index)));
+  assert.equal(p.plan.complete, false);
+  assert.equal(p.plan.acceptance, false);
+  assert.ok(!(await readdir(path.join(f.root, p.directory))).includes("command-started.json"));
+});
+
+nativeTest("a used local command plan cannot start another native run", async (t) => {
+  const f = await fixture(t, true), p = await commandPlan(f);
+  await save(f.root, `${p.directory}/command-started.json`, { original: "Synthetic already admitted run" });
+  await assert.rejects(f.invoke({ action: "apple-run", plan: p.file }, `${p.directory}/execution`),
+    (error) => error.code === "EEXIST" && error.appleCommandNotStarted === true);
+  assert.ok(!(await readdir(path.join(f.root, p.directory))).includes("command-invalidated.json"));
+});
+
+nativeTest("local command qualification cannot turn MCP receipts into command evidence", async (t) => {
+  const f = await fixture(t, true), p = await commandPlan(f);
+  await assert.rejects(f.invoke({ action: "apple-qualify", plan: p.file, tests: [], builds: [] }, p.directory),
+    { diagnosticCode: "configuration" });
+  const file = `${p.directory}/command-invalidated.json`, original = await readFile(path.join(f.root, file), "utf8");
+  assert.equal(JSON.parse(original).kind, "apple-command-invalidation");
+  await assert.rejects(f.invoke({ action: "binding", plan: p.file }, p.directory),
+    { diagnosticCode: "apple-command-invalidated" });
+  assert.equal(await readFile(path.join(f.root, file), "utf8"), original);
+});
+
+nativeTest("source drift permanently invalidates the local command plan", async (t) => {
+  const f = await fixture(t, true), p = await commandPlan(f);
+  const old = await readFile(path.join(f.root, controls), "utf8");
+  await save(f.root, controls, old + "// A real changed source input in this synthetic fixture\n");
+  await assert.rejects(f.invoke({ action: "binding", plan: p.file }, p.directory), { diagnosticCode: "source-mismatch" });
+  await save(f.root, controls, old);
+  await assert.rejects(f.invoke({ action: "binding", plan: p.file }, p.directory), { diagnosticCode: "apple-command-invalidated" });
+});
 
 async function planned(f, files = [view]) {
   for (const file of files) await save(f.root, file, "Text(\"Revised workbench\").font(.callout)\n");
@@ -202,6 +632,24 @@ async function nativeEvidence(f, plan) {
   await save(f.root, directory + "/binding.json", after);
   return { request, summary, tests, directory, originalBundle };
 }
+
+nativeTest("refinement MCP selections must equal the complete plan and native result set", async (t) => {
+  const f = await fixture(t);
+  await save(f.root, view, "Text(\"Revised workbench\").font(.callout)\n");
+  const selection = selected(), second = "DevPocketUITests/testWorkbenchNavigation()";
+  selection.tests[0].identifiers.push(second);
+  const plan = await f.invoke({ action: "plan", checkpoint: ".data/verification/checkpoint.json", selection });
+  await save(f.root, ".data/verification/plan.json", plan);
+  const native = await nativeEvidence(f, plan);
+  native.summary.passedTests = native.summary.totalTestCount = native.summary.devicesAndConfigurations[0].passedTests = 2;
+  native.tests.testNodes[0].children.push({ nodeType: "Test Case", nodeIdentifier: second, result: "Passed" });
+  for (const [kind, data] of [["summary", native.summary], ["tests", native.tests]]) {
+    await save(f.root, `${native.directory}/${kind}.json`, data);
+    await save(f.root, `${native.directory}/result.xcresult/${kind}.json`, data);
+    await save(f.root, path.relative(f.root, path.join(native.originalBundle, `${kind}.json`)), data);
+  }
+  await assert.rejects(f.invoke(native.request), { diagnosticCode: "case-evidence" });
+});
 
 nativeTest("a local Apple refinement retains its full checkpoint and requires independent review", async (t) => {
   const f = await fixture(t), plan = await planned(f), native = await nativeEvidence(f, plan);

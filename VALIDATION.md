@@ -1092,3 +1092,21 @@ relay and owned emulator were stopped, the host credential removed, and the
 original App runtime was unchanged. That preparation is not live acceptance.
 The repaired source needs fresh qualification and review; a rebuilt bridge does
 not inherit the prior artifact-bound live-experiment permission.
+
+## Apple offline milestone: sidebar transition known issue
+
+Opening or closing the left sidebar can transiently fade or displace the shared
+Files/Changes toolbar controls on iPad. Earlier native endpoint assertions passed
+while actual-frame analysis still found missing or displaced controls during the
+transition. Those failed recordings and reports remain retained under
+`.data/apple/sidebar-toolbar-20/`; passing endpoint checks do not prove smooth
+rendered transitions. The later constant native inline-large title is not a
+verified fix for this issue.
+
+The user explicitly accepted this as a **non-blocking known issue** for the
+current Apple milestone and requested no further repair in this delivery.
+Keep functional coverage of settled toolbar placement, unique reachable controls,
+inspector switching/dismissal and draft preservation. This scoped decision does
+not waive other required checks or turn the earlier failures into passes.
+The underlying cause remains unconfirmed; no physical Duo result or platform-bug
+conclusion is claimed.

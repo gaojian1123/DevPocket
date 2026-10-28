@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import {
-  APPLE_NATIVE_REPORT_MAX_BYTES, APPLE_PROBES, APPLE_REQUIREMENTS, appleDigest, appleJSON, appleTestInterval, appleXcodeArguments,
-  inspectAppleScheme, inspectAppleToolchain, normalizeAppleTestResult, selectAppleSimulators,
-  projectAppleCommandOutput, projectAppleXcresult, validateAppleNativeEvidence, validateApplePlan,
+  APPLE_NATIVE_REPORT_MAX_BYTES, APPLE_PROBES, APPLE_REQUIREMENTS, APPLE_RESULT_READINESS_MS,
+  appleDigest, appleEnumerationArguments, appleJSON, appleResultManifestReference, appleTestInterval, appleXcodeArguments,
+  inspectAppleScheme, inspectAppleToolchain, normalizeAppleBatchResult, normalizeAppleTestResult, selectAppleSimulators,
+  localAppleToolchain, normalizeAppleTestCatalog, projectAppleCleanupEvidence, projectAppleCommandOutput, projectAppleXcresult,
+  selectAppleLocalTargets, validateAppleNativeEvidence, validateApplePlan,
 } from "../apple-evidence.mjs";
 import {
-  appleRunnerOutputPath, cleanupAppleSimulators, createAppleSimulator,
-  parseAppleRunnerArguments, requireAppleCIEnvironment,
+  appleRunnerOutputPath, cleanupAppleSimulators, createAppleSimulator, directoryArtifact,
+  parseAppleRunnerArguments, requireAppleCIEnvironment, retainAppleResultManifest,
+  runAppleLocalCommands, validateAppleLocalArtifacts, waitForAppleResult,
 } from "../apple-runner.mjs";
 import { combineVerification, requireToolingShardReport } from "../verification.mjs";
 import { ciReportEnvelope, collectCIReports } from "../verification-ci.mjs";
@@ -175,6 +178,317 @@ function evidenceFixture(modelCases = 2) {
   report.completedAt = new Date(clock + 1000).toISOString();
   return report;
 }
+
+function localCommandFixture(modelCases = 2) {
+  const workspace = "/synthetic-checkout", directory = ".data/verification/local-command-synthetic";
+  const inventory = inventoryFixture(), probes = probeFixture();
+  const requested = APPLE_REQUIREMENTS.targets.map((target, index) => ({
+    role: target.role, deviceId: index === 0 ? "synthetic-native-mac-id" : uuid(index),
+  }));
+  for (const [index, type] of inventory.devicetypes.entries()) {
+    const runtime = inventory.runtimes.find((item) => item.supportedDeviceTypes.some((entry) => entry.identifier === type.identifier));
+    inventory.devices[runtime.identifier].push({ udid: uuid(index + 1), name: `Existing synthetic ${type.name}`,
+      state: "Booted", deviceTypeIdentifier: type.identifier });
+  }
+  probes.simulators = appleJSON(inventory);
+  const targets = selectAppleLocalTargets(inventory, inspectAppleToolchain(probes), requested, true);
+  let clock = Date.parse("2026-10-26T00:00:00.000Z");
+  const report = { version: 1, kind: "apple-native-evidence", origin: "local-xcodebuild",
+    workspace, directory, runId: owner, ...structuredClone(plan),
+    sourceBefore: structuredClone(plan.source), sourceAfter: structuredClone(plan.source),
+    startedAt: new Date(clock).toISOString(), completedAt: null, status: "passed", cleanup: "completed", failures: [],
+    local: { platform: "darwin", targets,
+      plan: { path: ".data/verification/command-plan/plan.json", sha256: appleDigest("Synthetic local plan") },
+      executionRequest: { path: `${directory}/execution-request.json`, sha256: appleDigest("Synthetic local request") },
+      targetsAfterCommandId: "local-targets-after" },
+    toolchain: localAppleToolchain(inspectAppleToolchain(probes), targets),
+    scheme: { path: `${APPLE_REQUIREMENTS.project}/xcshareddata/xcschemes/DevPocket.xcscheme`,
+      xml: scheme, sha256: appleDigest(scheme), targets: inspectAppleScheme(scheme) },
+    commands: [], builds: [], tests: [], resources: [], cleanupEvidence: {} };
+  const command = (id, file, args, stdout = "") => {
+    const request = { id, kind: "owned-command", origin: report.origin, file, args: [...args], cwd: workspace,
+      startedAt: new Date(clock += 1000).toISOString(), completedAt: null, status: "running", cleanup: "unknown" };
+    const value = { ...request, completedAt: new Date(clock += 100).toISOString(), status: "passed", cleanup: "completed",
+      outcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0, signal: "none",
+        capturedBytes: Buffer.byteLength(stdout), outputTruncated: false, cleanupFailure: null },
+      request: outputFile(`${directory}/logs/${id}.request.json`, appleJSON(request)),
+      stdout: outputFile(`${directory}/logs/${id}.stdout.txt`, stdout), stderr: outputFile(`${directory}/logs/${id}.stderr.txt`, "") };
+    value.output = projectAppleCommandOutput(value, stdout, "");
+    value.response = outputFile(`${directory}/logs/${id}.response.json`, appleJSON(value));
+    report.commands.push(value);
+    return value;
+  };
+  const execution = (value) => ({ origin: report.origin, kind: "owned-command", commandId: value.id,
+    workspace: `${workspace}/${APPLE_REQUIREMENTS.project}`, startedAt: value.startedAt, completedAt: value.completedAt });
+  const copies = (item, relative, value) => {
+    item.resultBundle = treeFixture(`${relative}/result.xcresult`, value.id, ["Info.plist", "Data/fixture"]);
+    item.retainedResultBundle = { path: `${relative}/retained/result.xcresult`,
+      producedBy: item.resultBundle.producedBy, sha256: item.resultBundle.sha256 };
+    item.readiness = { commandId: value.id, status: "ready", timeoutMs: APPLE_RESULT_READINESS_MS,
+      polls: 2, startedAt: value.completedAt, completedAt: new Date(Date.parse(value.completedAt) + 10).toISOString(),
+      infoSha256: item.resultBundle.files.find((file) => file.path === "Info.plist").sha256 };
+    if (item.action === "test") item.resultBundle = appleResultManifestReference(item.resultBundle,
+      outputFile(`${relative}/result-files.json`, appleJSON(item.resultBundle.files)));
+  };
+  for (const probe of APPLE_PROBES) command(`probe-${probe.id}`, probe.file, probe.args, probes[probe.id]);
+  report.preparationCommandId = "prepare-components";
+  command(report.preparationCommandId, "/synthetic/node", ["apple/prepare-components.mjs"], "Synthetic preparation\n");
+  for (const platform of ["ios", "macos"]) {
+    const id = `build-${platform}`, relative = `${directory}/${id}`;
+    const product = `${relative}/derived/Build/Products/${platform === "ios" ? "Debug-iphonesimulator" : "Debug"}/DevPocket.app`;
+    const destination = platform === "ios" ? "generic/platform=iOS Simulator" : "platform=macOS,id=synthetic-native-mac-id";
+    const value = command(id, "/usr/bin/xcrun", appleXcodeArguments({ workspace, directory: relative, action: "build", platform, destination }),
+      `CodeSign ${workspace}/${product} (in target 'DevPocket' from project 'DevPocket')\n** BUILD SUCCEEDED **\n`);
+    const item = { platform, action: "build", status: "passed", commandId: id, execution: execution(value),
+      originalProduct: `${workspace}/${product}`,
+      product: treeFixture(product, id, platform === "ios" ? ["Info.plist", "DevPocket"] : ["Contents/Info.plist", "Contents/MacOS/DevPocket"]),
+      signatureCommandId: `${id}-signature`, infoCommandId: `${id}-info` };
+    copies(item, relative, value);
+    item.retainedProduct = { path: `${relative}/retained/DevPocket.app`,
+      producedBy: item.product.producedBy, sha256: item.product.sha256 };
+    item.seal = outputFile(`${relative}/retained/artifact.json`, "Synthetic seal");
+    command(item.signatureCommandId, "/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", item.originalProduct]);
+    command(item.infoCommandId, "/usr/bin/plutil", ["-convert", "json", "-o", "-",
+      item.originalProduct + (platform === "ios" ? "/Info.plist" : "/Contents/Info.plist")],
+    appleJSON({ CFBundleIdentifier: "synthetic.fixtures", [platform === "ios" ? "MinimumOSVersion" : "LSMinimumSystemVersion"]: "27.0" }));
+    report.builds.push(item);
+  }
+  for (const target of targets) {
+    const id = `test-${target.role}`, relative = `${directory}/${id}`, catalogDirectory = `${relative}/catalog`;
+    const beforeCatalogCommandId = `${id}-before-catalog`, beforeTestCommandId = `${id}-before-test`, catalogCommandId = `${id}-catalog`;
+    command(beforeCatalogCommandId, "/usr/bin/xcrun", ["simctl", "list", "--json"], appleJSON(inventory));
+    command(catalogCommandId, "/usr/bin/xcrun", appleEnumerationArguments(workspace, catalogDirectory, target), "Synthetic discovery\n");
+    command(beforeTestCommandId, "/usr/bin/xcrun", ["simctl", "list", "--json"], appleJSON(inventory));
+    const value = command(id, "/usr/bin/xcrun", appleXcodeArguments({ workspace, directory: relative,
+      action: "test", platform: target.role === "mac" ? "macos" : "ios", destination: `platform=${target.platform},id=${target.deviceId}`,
+      testDiagnostics: "never" }),
+    "** TEST SUCCEEDED **\n");
+    const native = nativeFixture(target, value, modelCases), summary = projectAppleXcresult("summary", native.summary);
+    const testTree = projectAppleXcresult("tests", native.tests);
+    const result = normalizeAppleTestResult(summary, testTree, target, value, report.scheme.targets);
+    const catalogData = { errors: [], values: [{ testPlan: "DevPocket", disabledTests: [],
+      enabledTests: result.cases.map((test) => ({ identifier: `${test.target}/${test.identifier}` })) }] };
+    const item = { role: target.role, action: "test", status: "passed", commandId: id, target,
+      execution: execution(value), summary, testTree, result, catalogCommandId, beforeCatalogCommandId, beforeTestCommandId,
+      catalog: { ...outputFile(`${catalogDirectory}/enumeration.json`, appleJSON(catalogData)), data: catalogData },
+      summaryCommandId: `${id}-summary`, testsCommandId: `${id}-tests` };
+    copies(item, relative, value);
+    for (const kind of ["summary", "tests"]) command(`${id}-${kind}`, "/usr/bin/xcrun",
+      ["xcresulttool", "get", "test-results", kind, "--path", `${workspace}/${relative}/result.xcresult`, "--compact"],
+      appleJSON(native[kind]));
+    report.tests.push(item);
+  }
+  command("local-targets-after", "/usr/bin/xcrun", ["simctl", "list", "--json"], appleJSON(inventory));
+  report.completedAt = new Date(clock + 1000).toISOString();
+  return report;
+}
+
+test("local full commands have their own origin, exact existing targets, complete catalogues and sealed copies", () => {
+  const report = localCommandFixture();
+  assert.equal(validateAppleNativeEvidence(report, plan, "local-xcodebuild"), report);
+  assert.throws(() => validateAppleNativeEvidence(report, plan), /origin/);
+  assert.throws(() => validateAppleNativeEvidence(report, plan, "local-xcode-mcp"), /origin/);
+  assert.equal(report.commands.some((item) => item.args[0] === "simctl" &&
+    ["create", "boot", "shutdown", "delete"].includes(item.args[1])), false);
+});
+
+test("cleanup evidence preserves exact JSON identity without inventing lifecycle references", async () => {
+  const localCleanup = { status: "completed", failures: [] }, local = localCommandFixture();
+  local.cleanupEvidence = projectAppleCleanupEvidence(localCleanup);
+  assert.deepEqual(local.cleanupEvidence, {});
+  assert.equal(validateAppleNativeEvidence(local, plan, "local-xcodebuild"), local);
+  assert.deepEqual(JSON.parse(appleJSON(local)), local);
+  const legacy = { beforeCommandId: localCleanup.beforeCommandId, afterCommandId: localCleanup.afterCommandId };
+  assert.notDeepEqual(JSON.parse(appleJSON(legacy)), legacy);
+
+  const empty = await cleanupAppleSimulators([], inventoryFixture(), () => assert.fail("No owned simulator needs a command."));
+  assert.deepEqual(projectAppleCleanupEvidence(empty), { beforeCommandId: null, afterCommandId: null });
+  const ci = evidenceFixture(), original = structuredClone(ci.cleanupEvidence);
+  ci.cleanupEvidence = projectAppleCleanupEvidence({ status: "completed", ...original, failures: [] });
+  assert.deepEqual(ci.cleanupEvidence, original);
+  assert.equal(validateAppleNativeEvidence(ci, plan), ci);
+  assert.deepEqual(JSON.parse(appleJSON(ci)), ci);
+  ci.cleanupEvidence = projectAppleCleanupEvidence(localCleanup);
+  assert.throws(() => validateAppleNativeEvidence(ci, plan));
+});
+
+test("only explicit local tests omit optional long-running diagnostics, without changing other arguments", () => {
+  for (const platform of ["ios", "macos"]) {
+    const input = { workspace: "/synthetic", directory: ".data/verification/native/test",
+      action: "test", platform, destination: platform === "ios" ? `platform=iOS Simulator,id=${uuid(1)}` : "platform=macOS,id=synthetic-mac" };
+    const original = appleXcodeArguments(input);
+    const local = appleXcodeArguments({ ...input, testDiagnostics: "never" });
+    const index = local.indexOf("-collect-test-diagnostics");
+    assert.equal(local[index + 1], "never");
+    assert.deepEqual([...local.slice(0, index), ...local.slice(index + 2)], original);
+    assert.equal(original.includes("-collect-test-diagnostics"), false);
+    assert.equal(appleXcodeArguments({ ...input, action: "build" }).includes("-collect-test-diagnostics"), false);
+    assert.throws(() => appleXcodeArguments({ ...input, action: "build", testDiagnostics: "never" }), /Invalid/);
+    assert.throws(() => appleXcodeArguments({ ...input, testDiagnostics: "on-failure" }), /Invalid/);
+  }
+  const local = localCommandFixture();
+  assert.equal(local.commands.filter(command => command.args.includes("-collect-test-diagnostics")).length, 4);
+  for (const command of local.commands.filter(command => !/^test-(mac|iphone|ipad|duo)$/.test(command.id))) {
+    assert.equal(command.args.includes("-collect-test-diagnostics"), false, command.id);
+  }
+  const ci = evidenceFixture();
+  assert.equal(ci.commands.some(command => command.args.includes("-collect-test-diagnostics")), false);
+  assert.equal(validateAppleNativeEvidence(ci, plan), ci);
+});
+
+test("local command acceptance rejects missing, substituted, stale, failed and extra evidence", () => {
+  const changes = [
+    (r) => { r.ci = evidenceFixture().ci; },
+    (r) => { r.origin = "ci-xcodebuild"; },
+    (r) => { r.commands[0].cleanup = "unknown"; },
+    (r) => { r.commands[0].outcome.reason = "timeout"; },
+    (r) => { delete r.commands[0].request; },
+    (r) => { delete r.commands[0].response; },
+    (r) => { r.commands[0].args.push("unexpected"); },
+    (r) => {
+      const args = r.commands.find(command => command.id === "test-ipad").args;
+      args.splice(args.indexOf("-collect-test-diagnostics"), 2);
+    },
+    (r) => {
+      const args = r.commands.find(command => command.id === "test-ipad").args;
+      args[args.indexOf("-collect-test-diagnostics") + 1] = "on-failure";
+    },
+    (r) => { r.tests[0].target.deviceId = "another-mac"; },
+    (r) => { r.local.targets[1].deviceId = uuid(99); },
+    (r) => { r.tests[0].readiness.status = "timeout"; },
+    (r) => { r.tests[0].readiness.timeoutMs++; },
+    (r) => { r.tests[0].readiness.infoSha256 = "0".repeat(64); },
+    (r) => { r.tests[0].catalog.data.values[0].enabledTests.pop(); },
+    (r) => { r.tests[0].catalog.data.values[0].disabledTests.push({ identifier: "disabled" }); },
+    (r) => { r.tests[0].catalog.data.errors.push("UI runner initialization failed"); },
+    (r) => { r.tests[0].retainedResultBundle.sha256 = "0".repeat(64); },
+    (r) => { r.tests[0].resultBundle.fileManifest.sha256 = "0".repeat(64); },
+    (r) => { r.tests[0].resultBundle.fileManifest.bytes = 16 * 1024 * 1024 + 1; },
+    (r) => { r.tests[0].resultBundle.fileManifest.path = "../unbound-files.json"; },
+    (r) => { r.tests[0].resultBundle.fileCount = 20001; },
+    (r) => { r.builds.pop(); },
+    (r) => { r.builds[0].retainedProduct.sha256 = "0".repeat(64); },
+    (r) => { r.commands.find((c) => c.id === r.builds[0].signatureCommandId).outcome.exitCode = 1; },
+    (r) => { r.commands.push({ ...structuredClone(r.commands[0]), id: "unrequested" }); },
+    (r) => { r.resources.push({ role: "duo", deviceId: uuid(3) }); },
+    (r) => { r.sourceAfter.fingerprint = "0".repeat(64); },
+  ];
+  for (const [index, change] of changes.entries()) {
+    const report = localCommandFixture();
+    change(report);
+    assert.throws(() => validateAppleNativeEvidence(report, plan, "local-xcodebuild"), undefined, `mutation ${index}`);
+  }
+});
+
+test("local commands refuse hosted identity before touching a plan or invoking any native command", async (t) => {
+  const original = process.env.GITHUB_ACTIONS;
+  process.env.GITHUB_ACTIONS = "true";
+  t.after(() => { if (original === undefined) delete process.env.GITHUB_ACTIONS; else process.env.GITHUB_ACTIONS = original; });
+  await assert.rejects(runAppleLocalCommands({}), /local Mac entry/);
+});
+
+test("full four-role results keep large file manifests outside the unchanged publication budget", () => {
+  const report = localCommandFixture(42), privateManifests = new Map();
+  for (const item of report.tests) {
+    const directory = path.posix.dirname(item.resultBundle.path);
+    const tree = treeFixture(item.resultBundle.path, item.commandId,
+      ["Info.plist", ...Array.from({ length: 4000 }, (_, index) => `Data/attachment-${String(index).padStart(8, "0")}`)]);
+    const bytes = appleJSON(tree.files), reference = outputFile(`${directory}/result-files.json`, bytes);
+    assert.ok(Buffer.byteLength(bytes) > APPLE_NATIVE_REPORT_MAX_BYTES);
+    privateManifests.set(reference.path, bytes);
+    item.resultBundle = appleResultManifestReference(tree, reference);
+    item.retainedResultBundle.sha256 = tree.sha256;
+  }
+  assert.equal(privateManifests.size, 4);
+  assert.ok(Buffer.byteLength(appleJSON(report)) < APPLE_NATIVE_REPORT_MAX_BYTES);
+  assert.equal(validateAppleNativeEvidence(report, plan, "local-xcodebuild"), report);
+  assert.equal(report.tests.flatMap((item) => item.result.cases).length, 172);
+  for (const item of report.tests) {
+    const bytes = privateManifests.get(item.resultBundle.fileManifest.path);
+    assert.equal(appleDigest(bytes), item.resultBundle.sha256);
+    assert.equal(JSON.parse(bytes).length, item.resultBundle.fileCount);
+  }
+});
+
+test("local result qualification reopens every manifest and both original and copied file trees", async (t) => {
+  await mkdir(".data/tests", { recursive: true });
+  const root = await mkdtemp(path.resolve(".data/tests/apple-result-manifest-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const directory = ".data/verification/native/test-mac", original = `${directory}/result.xcresult`;
+  await mkdir(path.join(root, original, "Data"), { recursive: true });
+  await writeFile(path.join(root, original, "Info.plist"), "Synthetic metadata\n");
+  await writeFile(path.join(root, original, "Data/attachment"), "Original attachment bytes\n");
+  const full = await directoryArtifact(root, original, "test-mac");
+  const compact = await retainAppleResultManifest(root, full), copy = `${directory}/retained/result.xcresult`;
+  await cp(path.join(root, original), path.join(root, copy), { recursive: true });
+  const catalog = { errors: [], values: [] }, catalogBytes = appleJSON(catalog);
+  await writeFile(path.join(root, directory, "catalog.json"), catalogBytes);
+  const evidence = { commands: [], builds: [], tests: [{ action: "test", resultBundle: compact,
+    retainedResultBundle: { path: copy, producedBy: full.producedBy, sha256: full.sha256 },
+    catalog: { ...outputFile(`${directory}/catalog.json`, catalogBytes), data: catalog } }] };
+  await validateAppleLocalArtifacts(root, evidence, []);
+  const bytes = await readFile(path.join(root, compact.fileManifest.path));
+  assert.equal(bytes.toString(), appleJSON(full.files));
+  await assert.rejects(retainAppleResultManifest(root, full), { code: "EEXIST" });
+  for (const file of [compact.fileManifest.path, `${original}/Data/attachment`, `${copy}/Data/attachment`]) {
+    const saved = await readFile(path.join(root, file));
+    await writeFile(path.join(root, file), "Changed bytes\n");
+    await assert.rejects(validateAppleLocalArtifacts(root, evidence, []), { diagnosticCode: "artifact-changed" });
+    await writeFile(path.join(root, file), saved);
+  }
+  compact.fileCount++;
+  await assert.rejects(validateAppleLocalArtifacts(root, evidence, []), { diagnosticCode: "artifact-changed" });
+  compact.fileCount--;
+  await rm(path.join(root, compact.fileManifest.path));
+  await assert.rejects(validateAppleLocalArtifacts(root, evidence, []), { code: "ENOENT" });
+});
+
+test("local target resolution never substitutes or boots a stopped existing simulator", () => {
+  const report = localCommandFixture(), inventory = JSON.parse(probeFixture().simulators);
+  assert.throws(() => selectAppleLocalTargets(inventory, report.toolchain, report.local.targets, true), /exact local simulator/);
+  const data = report.commands.find((command) => command.id === "probe-simulators").output.data;
+  data.devices[report.local.targets[1].runtimeIdentifier].find((device) => device.udid === report.local.targets[1].deviceId).state = "Shutdown";
+  assert.throws(() => selectAppleLocalTargets(data, report.toolchain, report.local.targets, true), /stopped/);
+});
+
+test("result readiness waits for metadata without inventing a native success", async (t) => {
+  await mkdir(".data/tests", { recursive: true });
+  const root = await mkdtemp(path.resolve(".data/tests/apple-readiness-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, "result.xcresult"));
+  const pending = waitForAppleResult(root, "result.xcresult", "synthetic-test");
+  await writeFile(path.join(root, "result.xcresult/Info.plist"), "Synthetic result metadata\n");
+  const observation = await pending;
+  assert.equal(observation.status, "ready");
+  assert.equal(observation.infoSha256, appleDigest("Synthetic result metadata\n"));
+  assert.equal(observation.timeoutMs, APPLE_RESULT_READINESS_MS);
+});
+
+test("result readiness retains cancellation and timeout instead of returning ready", async (t) => {
+  await mkdir(".data/tests", { recursive: true });
+  const root = await mkdtemp(path.resolve(".data/tests/apple-readiness-failed-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(waitForAppleResult(root, "missing.xcresult", "synthetic-cancel", controller.signal),
+    (error) => error.appleResultReadiness?.status === "cancelled");
+  let calls = 0;
+  t.mock.method(performance, "now", () => calls++ === 0 ? 0 : APPLE_RESULT_READINESS_MS + 1);
+  await assert.rejects(waitForAppleResult(root, "missing.xcresult", "synthetic-timeout"),
+    (error) => error.diagnosticCode === "apple-result-incomplete" && error.appleResultReadiness?.status === "timeout");
+});
+
+test("result readiness rejects linked metadata rather than reading outside its retained directory",
+  { skip: process.platform === "win32" }, async (t) => {
+  await mkdir(".data/tests", { recursive: true });
+  const root = await mkdtemp(path.resolve(".data/tests/apple-readiness-linked-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, "result.xcresult"));
+  await writeFile(path.join(root, "elsewhere.plist"), "Synthetic metadata\n");
+  await symlink("../elsewhere.plist", path.join(root, "result.xcresult/Info.plist"));
+  await assert.rejects(waitForAppleResult(root, "result.xcresult", "synthetic-linked"),
+    (error) => error.appleResultReadiness?.status === "failed" && error.diagnosticCode === "ownership-mismatch");
+});
 
 function changeOutput(report, id, transform, stream = "stdout") {
   const command = report.commands.find((item) => item.id === id);
@@ -522,8 +836,8 @@ test("CI receipts cannot be relabelled as MCP work", () => {
   assert.throws(() => validateAppleNativeEvidence({ ...report, origin: "unrecognized" }, plan, "unrecognized"), /Unknown/);
 });
 
-test("the shared outcome schema accepts distinct original-client receipt envelopes", () => {
-  const report = evidenceFixture();
+function localEvidenceFixture(modelCases = 2) {
+  const report = evidenceFixture(modelCases);
   report.origin = "local-xcode-mcp";
   for (const item of [...report.builds, ...report.tests]) {
     const id = `synthetic-mcp-${item.commandId}`;
@@ -547,9 +861,105 @@ test("the shared outcome schema accepts distinct original-client receipt envelop
     afterTests += 1000;
   }
   report.completedAt = new Date(afterTests).toISOString();
+  return report;
+}
+
+test("the shared outcome schema accepts distinct original-client receipt envelopes", () => {
+  const report = localEvidenceFixture();
   assert.equal(validateAppleNativeEvidence(report, plan, "local-xcode-mcp"), report);
   report.tests[0].execution.tool = "xcode/RunSomeTests";
   assert.throws(() => validateAppleNativeEvidence(report, plan, "local-xcode-mcp"), /original invocation/);
+});
+
+function batchedEvidenceFixture(modelCases = 2) {
+  const report = localEvidenceFixture(modelCases);
+  const reference = (file) => ({ path: `${report.directory}/${file}`, sha256: appleDigest(`Synthetic ${file}`) });
+  report.plan = reference("plan.json");
+  report.tests = report.tests.map((item) => {
+    const selected = item.result.cases.map((test) => ({ targetName: test.target, testIdentifier: test.identifier }));
+    const directory = `${report.directory}/catalog-${item.role}`;
+    const catalog = { version: 2, kind: "local-apple-catalog", status: "enumerated", base: report.base,
+      source: report.source, target: item.target, plan: report.plan, directory,
+      request: reference(`catalog-${item.role}/request.json`), enumeration: reference(`catalog-${item.role}/enumeration.json`),
+      data: { errors: [], values: [{ testPlan: "DevPocket", disabledTests: [],
+        enabledTests: selected.map((test) => ({ identifier: `${test.targetName}/${test.testIdentifier}` })) }] },
+      execution: { id: `catalog-${item.role}`, kind: "owned-command", origin: "local-xcode-enumeration",
+        cwd: report.workspace, file: "/synthetic/bin/xcrun", args: appleEnumerationArguments(report.workspace, directory, item.target),
+        startedAt: report.startedAt, completedAt: report.startedAt, status: "passed", cleanup: "completed",
+        outcome: { observedProcess: "owned-command-supervisor", reason: "exit", exitCode: 0, signal: "none",
+          outputTruncated: false, cleanupFailure: null },
+        ...Object.fromEntries(["request", "response", "stdout", "stderr"].map((key) =>
+          [key, reference(`catalog-${item.role}/${key}.json`)])) } };
+    const batches = [];
+    for (let offset = 0; offset < selected.length; offset += 20) {
+      const tests = selected.slice(offset, offset + 20), id = `${item.execution.toolCallId}-${offset}`;
+      const execution = { ...item.execution, tool: "xcode/RunSomeTests", toolCallId: id,
+        startedAt: new Date(Date.parse(item.execution.startedAt) + offset).toISOString(),
+        completedAt: new Date(Date.parse(item.execution.startedAt) + offset + 1).toISOString() };
+      const summary = structuredClone(item.summary);
+      summary.totalTestCount = summary.passedTests = summary.devicesAndConfigurations[0].passedTests = tests.length;
+      summary.startTime = Date.parse(execution.startedAt) / 1000;
+      summary.finishTime = Date.parse(execution.completedAt) / 1000;
+      const testTree = { devices: item.testTree.devices, testNodes: [{ nodeType: "Test Plan", children:
+        [...new Set(tests.map((test) => test.targetName))].map((target) => ({
+          nodeType: target === "DevPocketTests" ? "Unit test bundle" : "UI test bundle", name: target,
+          children: tests.filter((test) => test.targetName === target).map((test) =>
+            ({ nodeType: "Test Case", nodeIdentifier: test.testIdentifier, result: "Passed" })),
+        })) }] };
+      batches.push({ action: "test", status: "passed", execution, selected: tests, summary, testTree,
+        originalResultBundle: `/synthetic/produced/${id}.xcresult`,
+        resultBundle: treeFixture(`${report.directory}/${id}.xcresult`, id, ["Info.plist", "Data/fixture"]),
+        result: normalizeAppleBatchResult(summary, testTree, item.target, execution, tests) });
+    }
+    return { role: item.role, target: item.target, action: "test", status: "passed", mode: "batches", catalog, batches };
+  });
+  return report;
+}
+
+test("complete batches join the existing Apple outcome contract without a fabricated full-suite call", () => {
+  const report = batchedEvidenceFixture(37);
+  assert.equal(validateAppleNativeEvidence(report, plan, "local-xcode-mcp"), report);
+  assert.ok(report.tests.every((item) => item.batches.length === 2 && item.execution === undefined));
+  assert.ok(Buffer.byteLength(appleJSON(report)) < APPLE_NATIVE_REPORT_MAX_BYTES);
+  assert.throws(() => validateAppleNativeEvidence(report, plan), /origin/);
+  assert.throws(() => validateAppleNativeEvidence({ ...report, origin: "ci-xcodebuild" }, plan));
+});
+
+test("batch qualification rejects omitted, repeated, foreign, cancelled, stale and unbound evidence", () => {
+  for (const edit of [
+    (value) => { value.tests.pop(); },
+    (value) => { value.tests[0].batches.pop(); },
+    (value) => { value.tests[0].batches.push(value.tests[0].batches[0]); },
+    (value) => { value.tests[0].catalog.source = { ...value.source, fingerprint: "f".repeat(64) }; },
+    (value) => { value.tests[0].catalog.target = value.tests[1].target; },
+    (value) => { value.tests[0].catalog.plan = { ...value.plan, sha256: "f".repeat(64) }; },
+    (value) => { value.tests[0].catalog.data.errors.push("Test discovery did not finish"); },
+    (value) => { value.tests[0].catalog.execution.args[value.tests[0].catalog.execution.args.length - 1] = "test-without-building"; },
+    (value) => { value.tests[0].catalog.execution.args.push("-only-testing:DevPocketUITests"); },
+    (value) => { value.tests[0].catalog.execution.cleanup = "unknown"; },
+    (value) => { value.tests[0].catalog.execution.outcome.reason = "timeout"; },
+    (value) => { delete value.tests[0].catalog.execution.request; },
+    (value) => { value.tests[0].batches[0].execution.tool = "xcode/RunAllTests"; },
+    (value) => { value.tests[0].batches[0].execution.evidence = []; },
+    (value) => { value.tests[0].batches[1].execution.toolCallId = value.tests[0].batches[0].execution.toolCallId; },
+    (value) => { value.tests[0].batches[1].execution.startedAt = value.tests[0].batches[0].execution.startedAt; },
+    (value) => { value.tests[0].batches[1].originalResultBundle = value.tests[0].batches[0].originalResultBundle; },
+    (value) => { value.tests[0].batches[0].selected[0].testIdentifier = "Unknown/notInCatalog()"; },
+    (value) => { value.tests[0].batches[0].summary.skippedTests = 1; },
+    (value) => { value.tests[0].batches[0].summary.expectedFailures = 1; },
+    (value) => { value.tests[0].batches[0].summary.result = "Cancelled"; },
+    (value) => { value.tests[0].batches[0].summary.devicesAndConfigurations[0].device.deviceId = uuid(99); },
+    (value) => { value.tests[0].batches[0].testTree.testNodes[0].children[0].children[0].result = "Not Run"; },
+    (value) => { value.tests[0].batches[0].testTree.testNodes[0].children[0].children[0].result = "Failed"; },
+    (value) => { value.tests[0].batches[0].summary.startTime -= 30; },
+    (value) => { value.tests[0].target.osVersion = "27.0.2"; },
+    (value) => { value.builds[0].action = "build-for-testing"; },
+    (value) => { value.sourceAfter = { ...value.source, fingerprint: "f".repeat(64) }; },
+  ]) {
+    const report = batchedEvidenceFixture(21);
+    edit(report);
+    assert.throws(() => validateAppleNativeEvidence(report, plan, "local-xcode-mcp"));
+  }
 });
 
 test("CI still requires tests after both normal builds", () => {

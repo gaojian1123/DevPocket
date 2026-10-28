@@ -335,7 +335,7 @@ function validatedReportChecks(plan, report, inputIndex, allowToolingShard = fal
     }
     if (check.id === "android-device") validateDeviceEvidence(check.deviceEvidence, plan, report.environment?.platform);
     if (check.id === "apple-native") {
-      if (!["ci-xcodebuild", "local-xcode-mcp"].includes(check.appleEvidence?.origin)) {
+      if (!["ci-xcodebuild", "local-xcode-mcp", "local-xcodebuild"].includes(check.appleEvidence?.origin)) {
         throw verificationFault("apple-evidence", { check: check.id });
       }
       try { validateAppleNativeEvidence(check.appleEvidence, plan, check.appleEvidence?.origin); }

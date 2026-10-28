@@ -107,9 +107,19 @@ before `-Resume`; preflight or recovered partial groups are not acceptance.
 For local Apple feature delivery, use the guide's initial checkpoint route:
 capture native inputs in the complete normal gate and prepare the checkpoint
 subject before independent review, so later presentation edits have a usable base.
-When `apple-native` is selected locally, first collect the complete original-client
-Apple evidence using that platform route, then pass its qualification request as
+When `apple-native` is selected locally, first collect complete Apple evidence
+using that platform route, then pass its qualification request as
 `-AppleEvidence` to the ordinary gate. A missing native result is not a skipped pass.
+For full suites exceeding one Xcode MCP call, follow
+[Complete local batches](../../../docs/DEVELOPMENT-WORKFLOW.md#complete-local-batches):
+fresh native catalogues and exact disjoint RunSomeTests coverage remain full-gate
+inputs, with all roles, normal builds and original failed attempts retained.
+Catalogue execution and receiving-worktree adoption require their applicable scope.
+For user-selected local `xcodebuild` acceptance, follow
+[Local xcodebuild acceptance](../../../docs/DEVELOPMENT-WORKFLOW.md#local-xcodebuild-acceptance):
+obtain the exact control/command scope before the native run, retain its distinct
+local command origin, and keep development/project/preview operations in Xcode MCP.
+Both routes preserve the full native matrix and ordinary platform-selected gate.
 
 An eligible local Apple refinement instead follows the guide's planned Xcode
 checks and distinct local refinement report. `full_required` returns to the normal

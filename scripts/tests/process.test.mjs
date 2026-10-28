@@ -219,7 +219,7 @@ class Fixture:
   if self.mode=="inspection" and self.scans>1:return []
   if self.mode=="interrupted-empty" and self.scans%9==0:return []
   return [os.getpid()+1]
- def identity(self,pid):
+ def identity(self,pid,include_zombies=False):
   if self.mode=="inspection":raise RuntimeError("fixture inspection denied")
   return None
  def owned(self):
@@ -263,7 +263,7 @@ class Fixture:
  def processes(self):
   self.scans+=1
   return [os.getpid()+1000000] if self.mode=="persistent" or self.scans<=(8 if self.mode=="transient" else 1) else []
- def identity(self,pid):
+ def identity(self,pid,include_zombies=False):
   if pid==os.getpid()+1000000:
    if self.mode=="inspection":raise RuntimeError("fixture inspection denied")
    return None
@@ -353,7 +353,7 @@ class Fixture:
   if self.scans==1:return [] if self.mode=="late-child" else [os.getpid()+1]
   return [os.getpid()+2]
  def responsible(self,pid):return os.getpid()
- def identity(self,pid):
+ def identity(self,pid,include_zombies=False):
   self.reads+=1
   if pid==os.getpid()+1:
    if self.mode.startswith("before") or self.reads>1:
@@ -462,7 +462,7 @@ class Fixture:
   self.scans+=1
   if self.mode=="transient" and self.scans>1:return []
   return [os.getpid()+1]+([os.getpid()+2] if self.mode=="mixed" and self.alive else [])
- def identity(self,pid):
+ def identity(self,pid,include_zombies=False):
   if pid==os.getpid()+1 and self.mode!="zombie":return None
   return S(bsd=S(pid=pid,status=5 if self.mode=="zombie" else 2),identity=S(unique=pid,version=1))
  def responsible(self,pid):return os.getpid()
@@ -486,6 +486,103 @@ print(json.dumps(results))
       missing: { completed: false, signals: [], rescanned: true },
       mixed: { completed: false, signals: [2], rescanned: true },
     });
+  });
+
+test("macOS only accepts independently identified stable zombies after an ordinary identity miss",
+  { skip: process.platform !== "darwin" }, async () => {
+    const script = `import ctypes,errno,json,os,runpy,sys
+from types import SimpleNamespace as S
+module=runpy.run_path(sys.argv[1],run_name="fixture")
+module["time"].sleep=lambda _:None
+class Fixture(module["Darwin"]):
+ def __init__(self,mode):
+  self.mode=mode;self.scans=0;self.requests=[];self.responsibility=[];self.pid=os.getpid()+1000000
+  self.lib=S(proc_pidinfo=self.query)
+ def processes(self):
+  self.scans+=1
+  return [self.pid]+([self.pid+1] if self.mode=="late-child" and self.scans>=3 else [])
+ def responsible(self,pid):
+  self.responsibility.append(pid);return os.getpid()
+ def query(self,pid,flavor,argument,pointer,size):
+  assert flavor==18 and argument in (0,1) and size==ctypes.sizeof(module["ProcessInfo"])
+  self.requests.append(argument)
+  live=self.mode=="normal-live" or pid==self.pid+1 or self.mode=="reused-live" and self.scans>=2
+  if self.mode=="primary-denied":
+   ctypes.set_errno(errno.EPERM);return 0
+  if not live and not argument:
+   ctypes.set_errno(errno.ESRCH);return 0
+  if not live and (self.mode in ("missing","absent") or self.mode=="lost-after-stable" and self.scans>=3):
+   ctypes.set_errno(errno.ENOENT if self.mode=="absent" else errno.ESRCH);return 0
+  if not live and self.mode=="denied":
+   ctypes.set_errno(errno.EPERM);return 0
+  value=ctypes.cast(pointer,ctypes.POINTER(module["ProcessInfo"])).contents
+  value.bsd.pid=pid+(1 if self.mode=="wrong-pid" else 0);value.bsd.parent=os.getpid()
+  value.bsd.uid=os.getuid();value.bsd.started=100;value.bsd.started_usec=123
+  value.bsd.status=2 if live or self.mode=="live-fallback" else 5
+  value.identity.unique=99 if live else 0 if self.mode=="zero-unique" else 17+self.scans if self.mode=="changing-unique" else 17
+  value.identity.version=4 if live else self.scans if self.mode=="changing-version" else 3
+  ctypes.set_errno(0)
+  return size-1 if self.mode=="short" else size
+results={}
+for mode in ("zombie","missing","absent","live-fallback","lost-after-stable","changing-unique","changing-version",
+             "denied","primary-denied","short","wrong-pid","zero-unique","normal-live","reused-live","late-child"):
+ native=Fixture(mode);owned=[]
+ try:
+  owned=native.owned();status="owned" if owned else "empty"
+ except module["UnstableOwnershipError"]:status="unstable"
+ except RuntimeError:status="refused"
+ results[mode]={"status":status,"scans":native.scans,"fallbackReads":native.requests.count(1),
+                "responsibilityReads":len(native.responsibility),"owned":[info.bsd.pid-native.pid+1 for info in owned]}
+print(json.dumps(results))
+`;
+    const result = await exec("python3", ["-B", "-c", script, path.resolve("scripts/owned-command-darwin.py")],
+      { timeout: 10000 });
+    const cases = JSON.parse(result.stdout);
+    assert.deepEqual(cases.zombie, { status: "empty", scans: 3, fallbackReads: 3, responsibilityReads: 0, owned: [] },
+      "The first zombie observation cannot count toward the two consecutive stable empty scans.");
+    for (const mode of ["missing", "absent", "live-fallback", "lost-after-stable", "changing-unique", "changing-version"]) {
+      assert.deepEqual(cases[mode], { status: "unstable", scans: 8, fallbackReads: 8, responsibilityReads: 0, owned: [] }, mode);
+    }
+    for (const mode of ["denied", "short", "wrong-pid", "zero-unique"]) {
+      assert.deepEqual(cases[mode], { status: "refused", scans: 1,
+        fallbackReads: mode === "denied" ? 8 : 1, responsibilityReads: 0, owned: [] }, mode);
+    }
+    assert.deepEqual(cases["primary-denied"], { status: "refused", scans: 1, fallbackReads: 0, responsibilityReads: 0, owned: [] });
+    assert.deepEqual(cases["normal-live"], { status: "owned", scans: 1, fallbackReads: 0, responsibilityReads: 1, owned: [1] });
+    assert.deepEqual(cases["reused-live"], { status: "owned", scans: 2, fallbackReads: 1, responsibilityReads: 1, owned: [1] });
+    assert.deepEqual(cases["late-child"], { status: "owned", scans: 3, fallbackReads: 3, responsibilityReads: 1, owned: [2] },
+      "A late runnable child must be returned instead of accepting an empty tree.");
+  });
+
+test("macOS zombie-inclusive metadata retains a disposable exited child's kernel identity until reaping",
+  { skip: process.platform !== "darwin" }, async () => {
+    const script = `import json,os,runpy,sys,time
+module=runpy.run_path(sys.argv[1],run_name="fixture")
+native=module["Darwin"]()
+pid=os.fork()
+if pid==0:os._exit(0)
+try:
+ first=None;deadline=time.monotonic()+5
+ while time.monotonic()<deadline:
+  first=native.identity(pid,include_zombies=True)
+  if first is not None and first.bsd.status==5:break
+  time.sleep(0.01)
+ if first is None or first.bsd.status!=5:raise RuntimeError("Disposable child did not enter zombie state.")
+ second=native.identity(pid,include_zombies=True)
+ if second is None:raise RuntimeError("Zombie-inclusive metadata is unavailable.")
+ ordinary=native.identity(pid)
+ def identity(info):return (info.bsd.pid,info.bsd.parent,info.bsd.status,info.identity.unique,info.identity.version)
+ assert first.bsd.pid==pid and first.bsd.parent==os.getpid() and first.identity.unique
+ assert identity(first)==identity(second)
+ print(json.dumps({"stableZombie":True,"parentBound":True,
+                   "ordinaryAbsentOrZombie":ordinary is None or ordinary.bsd.status==5}))
+finally:
+ os.waitpid(pid,0)
+`;
+    const args = ["-B", "-c", script, path.resolve("scripts/owned-command-darwin.py")];
+    const result = await runCommand("python3", args, { cwd: process.cwd(), timeoutMs: 10000 });
+    assert.equal(commandCleanupConfirmed(result, { file: "python3", args, cwd: process.cwd() }), true);
+    assert.deepEqual(JSON.parse(result.stdout), { stableZombie: true, parentBound: true, ordinaryAbsentOrZombie: true });
   });
 
 test("macOS a failed nested scope drains real PID-bound target and sibling processes",

@@ -488,7 +488,11 @@ npm run verify -- -Base BASE_COMMIT -Plan
 
 ### Local full Apple evidence
 
-Keep native execution in the owning original client's Xcode MCP. Planning,
+Keep development, project operations and previews in the owning original client's
+Xcode MCP. Acceptance uses its original MCP evidence by default. When the user
+selects local command acceptance, follow
+[Local xcodebuild acceptance](#local-xcodebuild-acceptance) below after its exact
+control-input and execution decision. Planning,
 receipt collection and qualification do not authorize new devices, deployment or
 changing another session's worktree. A stopped or unavailable required target
 remains a gap; do not boot a user-disabled Duo or count a skipped platform as passed.
@@ -521,6 +525,9 @@ inline Debug scheme and source context. Do not hardcode a past test count.
 `GetTestList` may be incomplete even with `truncated: false`; complete verification
 requires actual model/WK and UI test results, not merely everything shown in a
 cached list.
+When the complete suite cannot finish within one original-client tool call,
+use [Complete local batches](#complete-local-batches) instead of treating a
+timeout as success or weakening the scheme.
 
 Capture `binding` observations with `-AppleRequest` before/after each native
 operation or unchanged-source group, as in the local refinement route. Use
@@ -555,6 +562,220 @@ For an authorized working-tree-to-candidate conversion, collect fresh
 candidate-bound Apple evidence and pass `-AppleEvidence` alongside `-Promote`
 and `-CandidateRequest`. The original signed run still needs validation;
 old native results are not relabelled to the candidate.
+
+#### Complete local batches
+
+This is an alternative **full-gate input**, not visual refinement or a CI shard.
+Create the same four-role `apple-plan` with `"testMode": "batches"`. Keep the
+original base, source, scheme, preparation/renderer/dependency inputs and
+hooks/policy fixed through qualification. The ordinary RunAllTests route and
+hosted CI remain unchanged.
+
+Before batching, obtain a fresh native catalogue for **each** planned role:
+
+```json
+{
+  "action": "apple-catalog",
+  "plan": ".data/verification/apple-N/plan.json",
+  "role": "mac"
+}
+```
+
+```powershell
+npm run verify -- -Base BASE_COMMIT -AppleRequest CATALOG_REQUEST_JSON `
+  -Report .data/verification/apple-N/catalog-mac/catalog.json
+```
+
+Repeat for `iphone`, `ipad` and `duo`, each in a new directory beneath that plan.
+Keep the catalogue request JSON there too, with the other original receipts.
+This action runs a fixed `xcrun xcodebuild test -enumerate-tests` command against
+the original project/Debug scheme and exact role destination, with **fresh
+derived data**, flat JSON output and no test/target/plan filters. It builds and
+may load/install the test host to enumerate tests; it does not execute test
+assertions. Native execution needs authorization for this action and its exact
+target. Simulators must already be booted; the collector never creates or boots
+them. A cancelled/manual Duo preparation remains cancelled.
+The owning session retains its actual command request, completion, logs and
+enumeration JSON. A cached MCP list, caller-written inventory, enumeration error,
+disabled test, duplicate identity, missing scheme target or incomplete output
+cannot supply the catalogue. The flat format uses `values[].enabledTests` with
+target-qualified identifiers; unknown/incomplete formats fail closed.
+Enumeration success is not test success.
+
+Take exact `targetName` and `testIdentifier` pairs from the catalogue (split the
+native identifier only at its first slash). A test's class name need not equal
+its target name. Partition those pairs into short original Xcode MCP
+`RunSomeTests` calls, keeping **every** case and role. No tool timeout is extended.
+Capture `binding` before/after each operation or unchanged-source group, and
+retain each actual request/completion, its in-binding `XcodeListWorkspaces`
+mapping, producing `.xcresult` and distinct byte-identical retained copy.
+The original workspace handle stays in the request.
+
+The `apple-qualify` request still contains the two normal `builds`; each of its
+four `tests` entries now has this shape:
+
+```json
+{
+  "role": "mac",
+  "catalog": ".data/verification/apple-N/catalog-mac/catalog.json",
+  "batches": [{
+    "binding": ".data/verification/apple-N/mac/after.json",
+    "requestEvent": ".data/verification/apple-N/mac/batch-1-request.json",
+    "responseEvent": ".data/verification/apple-N/mac/batch-1-response.json",
+    "workspaceBinding": {
+      "requestEvent": ".data/verification/apple-N/mac/workspaces-request.json",
+      "responseEvent": ".data/verification/apple-N/mac/workspaces-response.json"
+    },
+    "resultBundle": ".data/verification/apple-N/mac/batch-1.xcresult"
+  }]
+}
+```
+
+List all batches chronologically for that role; add the corresponding entries
+for the other three roles. Qualification reopens the raw catalogue receipts,
+both original/copied xcresults and native exports. Every batch must have the
+planned source/environment, exact device/runtime/architecture, request filters
+equal to its actual passed cases and a unique invocation/result bundle. The
+disjoint union must equal the **entire** fresh catalogue, including model/WK and
+UI targets. Cross-device/source splicing, missing/unknown/overlapping cases,
+skipped/not-run/failed/cancelled results, MCP errors/timeouts and missing raw
+evidence block acceptance. A later pass does not replace an earlier failure.
+
+There is no partial retry/last-result-wins policy: a failed batch set remains a
+failed attempt. Preserve its original request/completion, bindings and native
+artifacts (including any earlier RunAllTests timeout). A new full attempt needs
+a new plan/catalogue and fresh complete coverage, with the failed attempt kept
+for independent review; never overwrite or relabel its results. Observed source
+or environment drift invalidates the affected plan, even if later work succeeds.
+The collector keeps the first failed request in `batch-invalidated.json` beneath
+that plan and refuses subsequent collection/qualification against it; restoring
+earlier source, environment or receipts does not clear the failure. Keep this
+record and the original failed artifacts. An already-used catalogue output path
+is refused before invocation, rather than overwriting it. Output paths are checked
+before launch and the completion file is reserved; a later log-write failure
+retains the original command outcome and invalidates the plan. Every request
+referencing a batch plan enforces the same invalidation, including refinement
+`binding` and `qualify`, before observing the execution context.
+Existing artifact/report size limits fail explicitly rather than truncating the
+catalogue or dropping receipts.
+
+Finish with the normal iOS/macOS `BuildProject` calls (`buildForTesting: false`)
+and sealed products/resources. Pass this **qualification request** as
+`-AppleEvidence` to the ordinary version-6 gate. Required platform unions,
+terminal qualification/recovery, independent review and source/authority
+freshness all remain required. The compact gate report preserves separate
+`RunSomeTests` invocations; it never invents a single RunAllTests receipt.
+After review, repeat the same `apple-qualify` request into a new report before
+ordinary reaggregation, so native artifacts and plan invalidation are checked
+again without rerunning tests.
+Synthetic parser/collector regressions are not a real four-role Apple run.
+Adopting these controls into another worktree and running its native matrix need
+the receiving tree's exact diff and applicable execution/target authorization.
+
+Failed Apple preparation also retains a private, create-only diagnostic under
+`.data/verification/preparation-diagnostics/`. It expands the existing preparation
+issues, blocked prerequisites, original exceptions/causes and available command
+outcomes, with the source and actual entry arguments. These files can contain
+private paths and command output; keep them local. Public reports and CI uploads
+remain unchanged. Entry PIDs are not failed-command PIDs, and missing inner PIDs
+or raw cleanup receipts remain unknown. A retention error is reported separately
+without replacing the original preflight failure or its cleanup status. Neither
+this diagnostic nor a later successful probe restores an invalidated plan.
+
+#### Local xcodebuild acceptance
+
+This is an explicitly selected local full-gate route. It does not impersonate a
+successful MCP call or a hosted-CI run. Keep failed MCP invocations and any
+late-readable native results under their original identities.
+
+Prepare the same four exact task-owned targets and an `apple-plan` request with
+`"testMode": "xcodebuild"`. All required simulators must already be booted.
+Development and previews continue to use Xcode MCP; this route changes acceptance
+execution only. Its current command inputs, destination scope and process effects
+need the receiving worktree's applicable approval before execution.
+
+After capturing the plan, place this request outside the new execution directory:
+
+```json
+{
+  "action": "apple-run",
+  "plan": ".data/verification/apple-command-N/plan.json"
+}
+```
+
+```powershell
+npm run verify -- -Base BASE_COMMIT -AppleRequest RUN_REQUEST_JSON `
+  -Report .data/verification/apple-command-N/execution/report.json
+```
+
+The existing Apple runner executes fixed, supervised `xcodebuild` commands:
+normal iOS/macOS builds, fresh unfiltered catalogues and full-scheme tests for
+Mac, iPhone, iPad and Duo. Each operation has independent new derived data and
+result paths. Tests retain the existing per-test allowances and the runner's
+command/cleanup bounds. Catalogue commands may build and load/install the test
+host; full tests run assertions and may occupy native windows. Native host
+authentication remains a user action. The route checks the exact already-booted
+targets before catalogue/test operations; it never creates, boots, shuts down or
+deletes simulators, changes system permissions, or resets ordinary fixture data.
+
+Only the local `test` commands set Apple's `-collect-test-diagnostics never`.
+This omits Apple's extra verbose, long-running sysdiagnose/system-log archives
+that can delay completion after the test suites finish. It does not reduce the
+scheme/cases, change the original exit/cleanup requirements, or discard normal
+test results, screenshots/attachments and retained stdout/stderr. Catalogue,
+normal build, hosted-CI and MCP invocation policies are unchanged. This is an
+explicit diagnostic-collection tradeoff, not a claim that all diagnostics remain
+identical or that a previously timed-out invocation succeeded.
+
+After confirmed command cleanup, result metadata has a bounded 30-second
+readiness wait. Native `xcresulttool` decoding, exact catalogue coverage and zero
+failed/skipped/incomplete tests are still required. Readiness is not test success
+and never retries a build/test command. Timeout, cancellation, unknown cleanup,
+missing output and decoder failures remain retained failures. Unknown command
+cleanup stops further local probes/execution.
+
+Every command retains its original request/completion and stdout/stderr with
+exit/cancellation/ownership facts. Preserve original and distinct copied
+xcresults and normal products, native signature verification, Info.plist data
+and exact renderer bytes. Independent derived data prevents later MCP preview
+asset thinning from modifying the acceptance products.
+Lifecycle-cleanup references are projected only when the cleanup result supplies
+them. Local commands own no simulator lifecycle, so absent references stay absent
+in both memory and retained JSON. The completion comparison stays exact; missing
+lifecycle references never replace per-command cleanup proof or required CI references.
+Local test-result file manifests live in create-only `result-files.json` artifacts
+beside each original xcresult. Reports keep their path, byte count, SHA256, file
+count and Info.plist digest instead of inlining thousands of attachment names.
+Qualification reopens the complete manifest and hashes every file in both the
+original and copied bundle; missing, altered or mismatched manifests fail closed.
+The report budget and native case/coverage requirements are unchanged.
+The report origin is `local-xcodebuild`; `GITHUB_ACTIONS` is never set to enable
+the hosted runner. CI retains its separate `ci-xcodebuild` lifecycle.
+
+One plan admits one full command run. Its `executed` report is not acceptance.
+Failure or drift creates `command-invalidated.json`; keep it and the original
+artifacts. A later attempt needs a fresh plan and complete coverage, not
+partial-result splicing. Reusing an admitted plan does not run its commands again.
+
+Qualify the actual execution report:
+
+```json
+{
+  "action": "apple-qualify",
+  "plan": ".data/verification/apple-command-N/plan.json",
+  "execution": ".data/verification/apple-command-N/execution/report.json"
+}
+```
+
+Qualification reopens the original command receipts, logs, catalogues, native
+results and copied artifacts against the unchanged source/environment/targets.
+Pass this qualification request through `-AppleEvidence` to the fixed-base normal
+gate, retaining every selected platform. Initial checkpoints still require
+`-CaptureRefinementContext`, the actual independent review and final freshness.
+Use each normal build's `retained/artifact.json` and `retained/DevPocket.app` for
+the checkpoint's accepted-product references. After review, repeat qualification
+before ordinary reaggregation and checkpoint finalization. A failed original
+MCP completion is never a successful command receipt on this route.
 
 ### Hosted Apple CI
 
@@ -867,7 +1088,12 @@ snapshot attempt is not a permanent failure if later observations stabilize.
 Persistent uncertainty cannot qualify an empty-tree cleanup acknowledgement.
 Inspection, signalling and nested acknowledgement failures remain failures.
 Fork/exit and zombie transitions require a new observation; two stable empty
-scans confirm completion. Nested cleanup failures are retained while the
+scans confirm completion. If a listed PID has no ordinary identity, a separate
+zombie-inclusive kernel read must return a complete, matching PID with `SZOMB`
+and a nonzero unique identity before the existing stable-zombie path can use it.
+The same PID/unique/version must persist across scans. Missing, denied, changed
+or live fallback observations remain unresolved; no PID or parent is exempted
+or signalled because of this fallback. Nested cleanup failures are retained while the
 supervisor attempts to stop all other verifiably owned processes.
 The in-process emulator recovery dependency is included in both the captured
 candidate/verification implementation and the verifier execution-policy fingerprint.

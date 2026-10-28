@@ -39,6 +39,14 @@ The portable renderer exposes
 Call the returned `dispose()` when its native/container view is removed.
 Chart data remains available as an accessible, paginated table; sorting and
 filtering change only the local view.
+For charts, the optional returned `setChartView(windowSize, dataOnly)` selects
+the last N rows (or all rows for `null`) and switches between the plot and its
+read-only data table. It never mutates the validated spec or transport bytes.
+Hosts can override the component CSS color variables and the optional
+`--chart-foreground` / `--chart-grid` colors for chart axes. Defaults remain
+unchanged when no override is supplied; explicit series colors remain data.
+An optional `--chart-y-ticks` integer from 2 to 12 sets the axis tick-density
+preference without changing any data points. Other values retain automatic ticks.
 
 ## Build and check
 
@@ -91,9 +99,20 @@ response and return to a disabled state on renderer failure.
 The supplied HTML denies network connections, external scripts, images,
 frames and forms. Native adapters must independently restrict resource
 loading and navigation; CSP alone is not the complete isolation policy.
-An Android adapter can use WebViewAssetLoader and an origin-restricted
-WebMessageListener. A future WKWebView adapter can expose the same narrow
-bridge without changing this package. This does not establish iOS acceptance.
+The Android adapter uses WebViewAssetLoader and an origin-restricted
+WebMessageListener. The Apple offline-fixture adapter exposes this same narrow
+bridge through a main-frame WKScriptMessageHandler, a bundled-resource
+WKURLSchemeHandler and independent WK content rules and navigation restrictions.
+Its byte/digest validation does not replace this package's full spec validation.
+The host does not change this message contract or bundle the design prototype.
+The Apple host supplies its own static blue/neutral CSS palette before rendering;
+it does not restyle Android or modify the component payload to apply a theme.
+Its native range/data controls call the bundled page's read-only
+`devPocketPresentation.setChartView(requestId, windowSize, dataOnly)` API. The
+active request ID and argument shapes are checked; this API cannot send chat
+messages, grant permission or replace a component record. Hosts that do not call
+it retain the existing full-range plot and expandable data-table behavior.
+Implementation alone does not establish iOS or physical-device acceptance.
 
 Dependencies retain their upstream licenses in the generated
 `THIRD-PARTY-NOTICES.txt`. This package does not grant rights to redistribute
