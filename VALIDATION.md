@@ -1203,3 +1203,22 @@ The user disabled the simulator's physical-keyboard feature for the replays;
 the agent did not change that system setting. These diagnostic observations do
 not replace a fresh complete native matrix, ordinary gate, independent review
 or physical-device acceptance.
+
+The fourth complete attempt passed Mac and the three repaired iPhone cases.
+Its remaining iPhone failure was the combined Dynamic Type case: the largest
+category reached repeated library scrolling and the unchanged two-minute limit.
+Requiring the entire session row to fit above the footer was incorrect when
+accessibility text made that row taller than the viewport. The library controls
+and status expose their actual native bounds; selection uses a visible hit
+region between them instead of the full row. Standard and accessibility font
+categories are separate cases with all original categories, metric assertions
+and execution allowances retained.
+
+A separate post-run guard detected changed bytes in the ordinary Mac fixture
+store. Comparison with a retained backup matching the exact pre-run hash found
+no semantic JSON changes; the failed byte guard remains failed and the current
+store was not restored or overwritten. The write occurred during native host
+startup, but its writer was not independently attributed. Debug unit-test hosts
+now use in-memory fixtures; an explicit UI-test-store argument still selects the
+isolated persistent store used for relaunch checks. A native regression verifies
+the test-host marker and each storage-routing choice.

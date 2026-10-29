@@ -8,8 +8,8 @@ struct DevPocketApp: App {
         let directory = URL.applicationSupportDirectory.appending(path: "DevPocketFixtures", directoryHint: .isDirectory)
         #if DEBUG
         let arguments = ProcessInfo.processInfo.arguments
-        let file = arguments.contains("--fixture-test-store") ? "ui-tests.json" : "state-v1.json"
-        let url: URL? = arguments.contains("--fixture-in-memory") ? nil : directory.appending(path: file)
+        let url = Self.fixtureStoreURL(directory: directory, arguments: arguments,
+                                       isTestHost: NSClassFromString("XCTestCase") != nil)
         let model = WorkbenchModel(persistenceURL: url)
         if arguments.contains("--fixture-reset") { model.reset() }
         #else
@@ -17,6 +17,14 @@ struct DevPocketApp: App {
         #endif
         _model = State(initialValue: model)
     }
+
+    #if DEBUG
+    static func fixtureStoreURL(directory: URL, arguments: [String], isTestHost: Bool) -> URL? {
+        if arguments.contains("--fixture-in-memory") { return nil }
+        if arguments.contains("--fixture-test-store") { return directory.appending(path: "ui-tests.json") }
+        return isTestHost ? nil : directory.appending(path: "state-v1.json")
+    }
+    #endif
 
     var body: some Scene {
         #if os(macOS)

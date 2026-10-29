@@ -13,6 +13,22 @@ import UIKit
 
 @MainActor
 struct DevPocketTests {
+    @Test func fixtureStorageSeparatesOrdinaryUnitAndUITestHosts() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "fixture-storage-routing")
+        let isTestHost = NSClassFromString("XCTestCase") != nil
+        #expect(isTestHost)
+        #expect(DevPocketApp.fixtureStoreURL(directory: directory, arguments: [], isTestHost: isTestHost) == nil)
+        #expect(DevPocketApp.fixtureStoreURL(directory: directory, arguments: [], isTestHost: false)
+                == directory.appending(path: "state-v1.json"))
+        for host in [false, true] {
+            #expect(DevPocketApp.fixtureStoreURL(directory: directory, arguments: ["--fixture-test-store"],
+                                               isTestHost: host) == directory.appending(path: "ui-tests.json"))
+            #expect(DevPocketApp.fixtureStoreURL(directory: directory,
+                                               arguments: ["--fixture-test-store", "--fixture-in-memory"],
+                                               isTestHost: host) == nil)
+        }
+    }
+
     private func model(_ session: String = "visual", url: URL? = nil) throws -> WorkbenchModel {
         let value = WorkbenchModel(persistenceURL: url, automaticallyConfirm: false)
         #expect(!value.loadBlocked, "\(value.errorMessage ?? "")")

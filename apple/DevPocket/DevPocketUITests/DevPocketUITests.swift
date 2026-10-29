@@ -130,19 +130,37 @@ final class DevPocketUITests: XCTestCase {
 
     private func openSession(_ id: String) {
         let target = element("session-\(id)")
-        let footer = text("未连接真实主机")
+        let header = element("library-controls")
+        let footer = element("library-status")
+        XCTAssertTrue(header.waitForExistence(timeout: 10))
         XCTAssertTrue(footer.waitForExistence(timeout: 10))
+        var visible = CGRect.null
         for _ in 0..<12 {
-            if target.exists && target.isHittable && target.frame.maxY <= footer.frame.minY { break }
             let list = element("session-list")
+            let frame = list.frame
+            let top = max(frame.minY, header.frame.maxY)
+            let bottom = min(frame.maxY, footer.frame.minY)
+            XCTAssertGreaterThan(bottom, top)
+            let viewport = CGRect(x: frame.minX, y: top, width: frame.width, height: bottom - top)
+            visible = target.exists ? target.frame.intersection(viewport) : .null
+            if visible.width >= 44 && visible.height >= 44 { break }
+            let above = target.exists && target.frame.midY < viewport.midY
             #if os(macOS)
-            list.scroll(byDeltaX: 0, deltaY: -300)
+            list.scroll(byDeltaX: 0, deltaY: above ? 300 : -300)
             #else
-            list.swipeUp()
+            if above { list.swipeDown() } else { list.swipeUp() }
             #endif
         }
-        XCTAssertTrue(target.exists && target.isHittable && target.frame.maxY <= footer.frame.minY)
-        activate(target)
+        XCTAssertGreaterThanOrEqual(visible.width, 44)
+        XCTAssertGreaterThanOrEqual(visible.height, 44)
+        let point = target.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: visible.midX - target.frame.minX, dy: visible.midY - target.frame.minY))
+        #if os(macOS)
+        if app.state != .runningForeground { app.activate() }
+        point.click()
+        #else
+        point.tap()
+        #endif
         #if os(iOS)
         let list = element("session-list")
         let pane = element("conversation-pane")
@@ -1318,13 +1336,21 @@ final class DevPocketUITests: XCTestCase {
         XCTAssertEqual(element("composer-draft").value as? String, expected)
     }
 
-    func testEveryDynamicTypeCategoryUsesNativeFontMetrics() throws {
-        defer { if app?.state != .notRunning { app?.terminate() } }
-        let categories: [UIContentSizeCategory] = [
-            .extraSmall, .small, .medium, .large, .extraLarge, .extraExtraLarge, .extraExtraExtraLarge,
+    func testStandardDynamicTypeCategoriesUseNativeFontMetrics() throws {
+        try assertNativeFontMetrics([
+            .extraSmall, .small, .medium, .large, .extraLarge, .extraExtraLarge, .extraExtraExtraLarge
+        ])
+    }
+
+    func testAccessibilityDynamicTypeCategoriesUseNativeFontMetrics() throws {
+        try assertNativeFontMetrics([
             .accessibilityMedium, .accessibilityLarge, .accessibilityExtraLarge,
             .accessibilityExtraExtraLarge, .accessibilityExtraExtraExtraLarge
-        ]
+        ])
+    }
+
+    private func assertNativeFontMetrics(_ categories: [UIContentSizeCategory]) throws {
+        defer { if app?.state != .notRunning { app?.terminate() } }
         var measurements: [String] = []
         for category in categories {
             launch(contentSize: category.rawValue)

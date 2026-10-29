@@ -292,6 +292,8 @@ struct LibraryWorkbench: View {
                 }
                 .padding(.horizontal, 16).padding(.vertical, 10)
                 .background(sidebarMaterial)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("library-controls")
             }
             .navigationTitle("会话")
             .navigationBarTitleDisplayMode(.inline)
@@ -338,6 +340,8 @@ struct LibraryWorkbench: View {
             .font(.caption2).foregroundStyle(.secondary)
             .padding(12)
             .background(sidebarMaterial)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("library-status")
         }
     }
 }
