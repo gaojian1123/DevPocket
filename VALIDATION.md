@@ -1231,3 +1231,34 @@ unconditional final toggle therefore reopened it. The case now checks that
 native dismissal removed the content, explicitly reopens when necessary, then
 still verifies an explicit close, unique reachable controls and settled toolbar
 placement. No product transition code or flicker acceptance limit was changed.
+
+The seventh complete attempt passed Mac, iPhone and iPad. Duo failures shared
+a viewport assumption: its native scroll-view accessibility frame included the
+composer and reserved side-toolbar area. The recorded drag began inside the
+composer, leaving the timeline stationary; a card-open control was likewise
+reported inside that frame while covered by the composer. Timeline reveal and
+reading-context checks now intersect the native conversation pane with its
+header and composer bounds. The composer exposes one containing accessibility
+group, and no Duo hardware dimensions or posture changes are introduced.
+Mobile session selection also waits for its real composer to become reachable before
+the next action, rather than mistaking the outgoing library toolbar for the
+settled conversation when immediately opening Settings.
+
+## Mac Pinyin automation input recovery
+
+The user explicitly chose to keep Simplified Pinyin and repair automated input,
+rather than authorize temporary input-source switching. The original bulk
+`typeText("offline")` reproduced `ffline` on that input source. Sending every key
+separately progressed through repeated exact-text assertions but exceeded the
+native-client invocation limit; its canceled result remains failed.
+
+The input helper now sends the first actual character as a native key, waits
+for the transient `InputSource` indicator, and batches the remainder before the
+existing Return/Tab commit sequence. A retained numeric-input failure showed
+XCTest treating that indicator as a dialog and trying to resolve a disappearing
+button; the added wait observes its disappearance without clicking it.
+Repeated search, numeric answers, uppercase/underscore drafts, references and
+reader resizing passed focused native checks with Pinyin retained. Expected
+strings and time allowances were not weakened. Records remain under
+`.data/apple/ios-delivery-1/mac-pinyin-input-1/`; these checks do not claim complete
+Chinese composition, third-party IME or physical-device compatibility.

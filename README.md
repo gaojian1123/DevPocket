@@ -393,12 +393,12 @@ acceptance. Use the source-selected Apple platform gate with the actual
 native qualification request passed through `-AppleEvidence`. Shared changes in
 the fixed-base cumulative diff still retain their affected-platform checks.
 
-Local Mac UI automation needs an unlocked, interactive desktop. Select the ABC
-input source before running the ASCII fixture-input cases; the app's Chinese
-language launch arguments do not select the keyboard input source. An active
-composition input method can consume synthetic key events. Do not silently switch
-the user's input source, bypass native permissions, or treat an ABC automation
-pass as acceptance of real Chinese/third-party input-method compatibility.
+Local Mac UI automation needs an unlocked, interactive desktop. It keeps the
+user's input source: the input helper sends the first real key, waits for the
+transient input-source hint to disappear, then types and commits the remaining
+fixture text. Chinese language launch arguments do not select the keyboard input
+source. Do not switch that source, bypass native permissions, or treat ASCII
+fixture checks under Pinyin as complete Chinese/third-party input-method acceptance.
 
 The selected Glass Workbench requirements remain in
 [docs/APPLE-CLIENT.md](docs/APPLE-CLIENT.md). Preserve the self-contained visual

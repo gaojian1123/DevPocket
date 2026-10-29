@@ -46,8 +46,15 @@ final class DevPocketUITests: XCTestCase {
     private func enter(_ text: String, into element: XCUIElement) {
         #if os(macOS)
         waitForInputSourceHint()
-        #endif
+        // Let the input-source hint settle after the first real key before batching text.
+        if let first = text.first {
+            element.typeKey(String(first), modifierFlags: [])
+            waitForInputSourceHint()
+            if text.count > 1 { element.typeText(String(text.dropFirst())) }
+        }
+        #else
         element.typeText(text)
+        #endif
         #if os(macOS)
         // Commit the input method's marked text without changing the user's input source.
         waitForInputSourceHint()
@@ -92,19 +99,30 @@ final class DevPocketUITests: XCTestCase {
         #endif
     }
 
+    private func conversationViewport() -> CGRect {
+        let frame = element("conversation-timeline").frame.intersection(element("conversation-pane").frame)
+        let top = max(frame.minY, element("conversation-header").frame.maxY)
+        let bottom = min(frame.maxY, element("conversation-composer").frame.minY)
+        XCTAssertGreaterThan(frame.width, 0)
+        XCTAssertGreaterThan(bottom, top)
+        return CGRect(x: frame.minX, y: top, width: frame.width, height: bottom - top)
+    }
+
     private func reveal(_ target: XCUIElement) {
+        finishEditing()
         let timeline = element("conversation-timeline")
-        if target.exists && target.isHittable && timeline.frame.contains(target.frame) { return }
-        if element("dismiss-keyboard").exists { activate(element("dismiss-keyboard")) }
         for _ in 0..<12 {
-            if target.exists && target.isHittable && timeline.frame.contains(target.frame) { return }
-            let above = target.exists && target.frame.minY < timeline.frame.minY
+            let viewport = conversationViewport()
+            if target.exists && target.isHittable && viewport.contains(target.frame) { return }
+            let above = target.exists && target.frame.minY < viewport.minY
             #if os(macOS)
             timeline.scroll(byDeltaX: 0, deltaY: above ? 250 : -250)
             #else
-            let distance = target.exists ? abs(target.frame.midY - timeline.frame.midY) : timeline.frame.height * 0.45
-            let step = min(max(40, distance), timeline.frame.height * 0.45)
-            let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: above ? 0.3 : 0.7))
+            let distance = target.exists ? abs(target.frame.midY - viewport.midY) : viewport.height * 0.45
+            let step = min(max(40, distance), viewport.height * 0.45)
+            let start = timeline.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+                dx: viewport.midX - timeline.frame.minX,
+                dy: viewport.minY - timeline.frame.minY + viewport.height * (above ? 0.3 : 0.7)))
             let end = start.withOffset(CGVector(dx: 0, dy: above ? step : -step))
             start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
             #endif
@@ -113,10 +131,11 @@ final class DevPocketUITests: XCTestCase {
         hierarchy.name = "unreachable-control-hierarchy"
         hierarchy.lifetime = .keepAlways
         add(hierarchy)
-        XCTAssertTrue(target.isHittable && timeline.frame.contains(target.frame))
+        XCTAssertTrue(target.isHittable && conversationViewport().contains(target.frame))
     }
 
     private func readingAnchor() throws -> String {
+        let viewport = conversationViewport()
         let snapshot = try element("conversation-timeline").snapshot()
         var pending = snapshot.children
         var rows: [any XCUIElementSnapshot] = []
@@ -124,7 +143,7 @@ final class DevPocketUITests: XCTestCase {
             if row.identifier.hasPrefix("entry-") { rows.append(row) }
             pending.append(contentsOf: row.children)
         }
-        return try XCTUnwrap(rows.filter { !$0.frame.isEmpty && $0.frame.intersects(snapshot.frame) }
+        return try XCTUnwrap(rows.filter { !$0.frame.isEmpty && $0.frame.intersects(viewport) }
             .sorted { $0.frame.minY < $1.frame.minY }.first?.identifier)
     }
 
@@ -169,6 +188,9 @@ final class DevPocketUITests: XCTestCase {
             .allElementsBoundByIndex.first(where: \.isHittable) {
             activate(hide)
         }
+        let ready = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND hittable == true"), object: element("composer-draft"))
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
         #endif
     }
 
@@ -601,7 +623,7 @@ final class DevPocketUITests: XCTestCase {
         XCTAssertFalse(app.buttons["取消"].exists)
         activate(element("reader-close"))
         XCTAssertEqual(draft.value as? String, expectedDraft)
-        XCTAssertTrue(element(anchor).frame.intersects(element("conversation-timeline").frame),
+        XCTAssertTrue(element(anchor).frame.intersects(conversationViewport()),
                       "Closing the reader must restore the original visible timeline entry.")
         reveal(open)
         activate(open)

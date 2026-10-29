@@ -39,6 +39,8 @@ struct ComposerView: View {
                 .font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("conversation-composer")
         .onChange(of: model.library.scope) { inputFocused = false }
         .onChange(of: model.showingSettings) { if model.showingSettings { inputFocused = false } }
         .onDisappear { inputFocused = false }
