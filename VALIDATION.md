@@ -1168,3 +1168,38 @@ These are source-bound diagnostic records, not a substitute for the fresh
 complete native matrix, ordinary gate and independent review required for
 delivery. ASCII automation under ABC does not establish real Chinese or
 third-party input-method compatibility, physical Duo behavior or hosted success.
+
+## iPhone local acceptance recovery
+
+The third complete local attempt under
+`.data/verification/apple-local-fallback-3/` passed its Mac command but failed
+three iPhone UI cases; the remaining native roles were not completed by that run.
+It remains a failed matrix, not acceptance.
+
+Focused replays distinguished two test-readiness defects from a form-layout
+defect. Reader-anchor capture now uses one immutable accessibility snapshot,
+rather than index-bound live elements that disappear during lazy layout.
+Session selection checks the real library footer before tapping a partly
+covered row. Returning to the library waits for its native toolbar: a retained
+diagnostic proved the inset scope menu opened normally even while its
+accessibility hit-state reported false. The offline draft and reader assertions
+were not removed.
+
+Actual touch records and the native recording showed a post-keyboard Submit
+tap inside the reported button bounds without a button callback. On that
+iPhone, the lazy timeline retained an offset of 515 while its legal maximum was
+487.67; the next touch initiated a rebound instead of submitting. A lower-input
+comparison also exposed lost keyboard focus. Keeping the decision-form fixture
+thread mounted passed both interactions. Ordinary component threads remain lazy,
+preserving their renderer lifetime policy rather than eagerly mounting every
+WebView. Typing still does not submit; the case requires one separate Submit
+and the exact confirmed answer in history.
+
+The temporary touch probes were removed from application and test sources.
+Original failures, rejected layout comparisons and source-bound native results
+remain under
+`.data/apple/ios-delivery-1/local-fallback-3/iphone-event-route-1/`.
+The user disabled the simulator's physical-keyboard feature for the replays;
+the agent did not change that system setting. These diagnostic observations do
+not replace a fresh complete native matrix, ordinary gate, independent review
+or physical-device acceptance.

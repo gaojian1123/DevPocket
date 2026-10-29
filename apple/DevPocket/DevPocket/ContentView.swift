@@ -261,17 +261,12 @@ struct ConversationPane: View {
             }
             ScrollViewReader { reader in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        Text("本地虚构对话").font(.caption2).foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity).padding(.vertical, 18)
-                        ForEach(Array(session.entries.enumerated()), id: \.element.id) { index, entry in
-                            TimelineRow(model: model, session: session, entry: entry,
-                                startsReply: index == 0 || session.entries[index - 1].origin != entry.origin
-                                    || session.entries[index - 1].kind == .user,
-                                startsComponents: index == 0 || session.entries[index - 1].kind != .component
-                                    || session.entries[index - 1].origin != entry.origin,
-                                renderers: renderers)
-                                .id(entry.id)
+                    Group {
+                        if session.decisions.isEmpty {
+                            LazyVStack(alignment: .leading, spacing: 0) { timelineRows(session) }
+                        } else {
+                            // Keep input forms mounted while the keyboard changes the viewport.
+                            VStack(alignment: .leading, spacing: 0) { timelineRows(session) }
                         }
                     }
                     .scrollTargetLayout()
@@ -303,6 +298,20 @@ struct ConversationPane: View {
         .toolbarBackground(.clear, for: .windowToolbar)
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         #endif
+    }
+
+    @ViewBuilder private func timelineRows(_ session: DemoSession) -> some View {
+        Text("本地虚构对话").font(.caption2).foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity).padding(.vertical, 18)
+        ForEach(Array(session.entries.enumerated()), id: \.element.id) { index, entry in
+            TimelineRow(model: model, session: session, entry: entry,
+                startsReply: index == 0 || session.entries[index - 1].origin != entry.origin
+                    || session.entries[index - 1].kind == .user,
+                startsComponents: index == 0 || session.entries[index - 1].kind != .component
+                    || session.entries[index - 1].origin != entry.origin,
+                renderers: renderers)
+                .id(entry.id)
+        }
     }
 }
 

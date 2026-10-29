@@ -82,6 +82,16 @@ final class DevPocketUITests: XCTestCase {
         app.staticTexts.matching(NSPredicate(format: "label == %@ OR value == %@", value, value)).firstMatch
     }
 
+    private func finishEditing() {
+        #if os(iOS)
+        let done = element("dismiss-keyboard")
+        if done.exists || app.keyboards.firstMatch.exists {
+            activate(done)
+            XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 10))
+        }
+        #endif
+    }
+
     private func reveal(_ target: XCUIElement) {
         let timeline = element("conversation-timeline")
         if target.exists && target.isHittable && timeline.frame.contains(target.frame) { return }
@@ -107,17 +117,23 @@ final class DevPocketUITests: XCTestCase {
     }
 
     private func readingAnchor() throws -> String {
-        let viewport = element("conversation-timeline").frame
-        let rows = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "entry-")).allElementsBoundByIndex
-        return try XCTUnwrap(rows.filter { !$0.frame.isEmpty && $0.frame.intersects(viewport) }
+        let snapshot = try element("conversation-timeline").snapshot()
+        var pending = snapshot.children
+        var rows: [any XCUIElementSnapshot] = []
+        while let row = pending.popLast() {
+            if row.identifier.hasPrefix("entry-") { rows.append(row) }
+            pending.append(contentsOf: row.children)
+        }
+        return try XCTUnwrap(rows.filter { !$0.frame.isEmpty && $0.frame.intersects(snapshot.frame) }
             .sorted { $0.frame.minY < $1.frame.minY }.first?.identifier)
     }
 
     private func openSession(_ id: String) {
         let target = element("session-\(id)")
+        let footer = text("未连接真实主机")
+        XCTAssertTrue(footer.waitForExistence(timeout: 10))
         for _ in 0..<12 {
-            if target.exists && target.isHittable { break }
+            if target.exists && target.isHittable && target.frame.maxY <= footer.frame.minY { break }
             let list = element("session-list")
             #if os(macOS)
             list.scroll(byDeltaX: 0, deltaY: -300)
@@ -125,6 +141,7 @@ final class DevPocketUITests: XCTestCase {
             list.swipeUp()
             #endif
         }
+        XCTAssertTrue(target.exists && target.isHittable && target.frame.maxY <= footer.frame.minY)
         activate(target)
         #if os(iOS)
         let list = element("session-list")
@@ -191,8 +208,13 @@ final class DevPocketUITests: XCTestCase {
 
     private func showLibrary() {
         if element("dismiss-keyboard").exists { activate(element("dismiss-keyboard")) }
-        let scope = element("library-scope")
-        if scope.exists && scope.isHittable { return }
+        #if os(macOS)
+        let visibleControl = element("library-scope")
+        #else
+        // The native toolbar identifies the visible column; inset menus can report stale hit state.
+        let visibleControl = element("library-actions")
+        #endif
+        if visibleControl.exists && visibleControl.isHittable { return }
         #if os(macOS)
         let back = element("library-back")
         if back.exists && back.isHittable {
@@ -209,7 +231,7 @@ final class DevPocketUITests: XCTestCase {
         }
         #endif
         let visible = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "exists == true AND hittable == true"), object: scope)
+            predicate: NSPredicate(format: "exists == true AND hittable == true"), object: visibleControl)
         XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 10), .completed)
     }
 
@@ -551,6 +573,7 @@ final class DevPocketUITests: XCTestCase {
         let expectedDraft = draft.value as? String
         XCTAssertEqual(expectedDraft?.trimmingCharacters(in: .whitespacesAndNewlines), "KEEP_THIS_DRAFT")
         XCTAssertTrue(element("composer-primary").isEnabled, "Nonblank native input must immediately enable Send.")
+        finishEditing()
         let open = element("open-card-fixture-trend")
         reveal(open)
         let anchor = try readingAnchor()
@@ -883,6 +906,7 @@ final class DevPocketUITests: XCTestCase {
         let expectedAnswer = try XCTUnwrap(answer.value as? String)
         XCTAssertEqual(expectedAnswer.trimmingCharacters(in: .whitespacesAndNewlines), "4242")
         XCTAssertTrue(element("submit-answer").isEnabled)
+        finishEditing()
         reveal(element("submit-answer"))
         activate(element("submit-answer"))
         XCTAssertTrue(text("模拟已确认：\(expectedAnswer)").waitForExistence(timeout: 10))

@@ -309,6 +309,8 @@ toolbar, with a leading native inline-large title on iOS and the native window
 title/subtitle on Mac. Component readers are modal on every layout and have
 one Close action; closing preserves the draft and original reading context.
 Text and public tool activity remain in a continuous reply, with separate native component cards.
+The small decision-form fixture threads keep their rows mounted during keyboard
+resizing; other timelines retain lazy mounting for component content.
 The native card summary derives the fictional task total from the validated
 component data; it does not add fields to the component transport.
 Reader range and chart/data controls change only local viewing state, preserving
