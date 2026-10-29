@@ -68,8 +68,9 @@ final class DevPocketUITests: XCTestCase {
     private func clear(_ element: XCUIElement) {
         #if os(macOS)
         activate(element)
-        element.typeKey("a", modifierFlags: .command)
-        element.typeKey(.delete, modifierFlags: [])
+        // Selecting text can replace the field's accessibility element.
+        app.typeKey("a", modifierFlags: .command)
+        app.typeKey(.delete, modifierFlags: [])
         #else
         // Keep the caret at the end after typing; retapping can move it before the text.
         let count = (element.value as? String)?.count ?? 0
@@ -225,11 +226,20 @@ final class DevPocketUITests: XCTestCase {
         #if os(macOS)
         activate(app.menuItems["查看范围"])
         activate(app.menuItems.matching(NSPredicate(format: "title BEGINSWITH %@", "\(title) · ")).firstMatch)
-        XCTAssertTrue(element("library-scope").title.contains(title))
+        let selected = NSPredicate(format: "title CONTAINS %@", title)
         #else
         activate(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "\(title) · ")).firstMatch)
-        XCTAssertTrue(element("library-scope").label.contains(title))
+        let selected = NSPredicate(format: "label CONTAINS %@", title)
         #endif
+        let scope = element("library-scope")
+        let result = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: selected, object: scope)], timeout: 10)
+        if result != .completed {
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "scope-selection-hierarchy"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+        }
+        XCTAssertEqual(result, .completed, "Expected \(title); \(scope.debugDescription)")
     }
 
     private func openSessionMenu(_ id: String) {
@@ -349,17 +359,6 @@ final class DevPocketUITests: XCTestCase {
         XCTAssertFalse(element("session-working").exists)
 
         selectScope("scope-all")
-        refineLibrary("项目", value: "DevPocket · 示例项目")
-        XCTAssertTrue(element("session-visual").exists)
-        XCTAssertTrue(element("session-decisions").exists)
-        XCTAssertFalse(element("session-working").exists)
-        selectScope("scope-all")
-        refineLibrary("电脑", value: "Build Mac · 虚构主机")
-        XCTAssertTrue(element("session-decisions").exists)
-        XCTAssertTrue(element("session-offline").exists)
-        XCTAssertFalse(element("session-visual").exists)
-
-        selectScope("scope-all")
         openSessionMenu("visual")
         sessionMenuAction("archive-session-visual", title: "归档")
         selectScope("scope-archived")
@@ -375,6 +374,21 @@ final class DevPocketUITests: XCTestCase {
         selectScope("scope-all")
         openSession("visual")
         XCTAssertTrue(element("composer-draft").waitForExistence(timeout: 10))
+    }
+
+    func testLibraryProjectAndHostFilters() {
+        launch()
+        defer { app.terminate() }
+        selectScope("scope-all")
+        refineLibrary("项目", value: "DevPocket · 示例项目")
+        XCTAssertTrue(element("session-visual").exists)
+        XCTAssertTrue(element("session-decisions").exists)
+        XCTAssertFalse(element("session-working").exists)
+        selectScope("scope-all")
+        refineLibrary("电脑", value: "Build Mac · 虚构主机")
+        XCTAssertTrue(element("session-decisions").exists)
+        XCTAssertTrue(element("session-offline").exists)
+        XCTAssertFalse(element("session-visual").exists)
     }
 
     func testAddComputerEntryIsOfflineAndPreservesDraft() async throws {
@@ -1081,22 +1095,26 @@ final class DevPocketUITests: XCTestCase {
         launch()
         defer { app.terminate() }
         try await setWindowLayout(wide: false)
-        openSession("visual")
-        app.typeKey("k", modifierFlags: .command)
-        let search = element("session-search")
-        XCTAssertTrue(search.waitForExistence(timeout: 10))
-        waitForInputSourceHint()
-        // Physical key events avoid the active IME dropping the first capital of bulk text injection.
-        for key in "offline" {
-            app.typeKey(String(key), modifierFlags: .shift)
+        for _ in 0..<3 {
+            openSession("visual")
+            app.typeKey("k", modifierFlags: .command)
+            let search = element("session-search")
+            XCTAssertTrue(search.waitForExistence(timeout: 10))
+            // typeText requires keyboard focus; clicking here would hide a failed shortcut.
+            enter("offline", into: search)
+            let query = (search.value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if query != "offline" {
+                let hierarchy = XCTAttachment(string: app.debugDescription)
+                hierarchy.name = "keyboard-search-focus"
+                hierarchy.lifetime = .keepAlways
+                add(hierarchy)
+            }
+            XCTAssertEqual(query, "offline")
+            XCTAssertTrue(element("session-offline").exists)
+            XCTAssertFalse(element("session-visual").exists)
+            clear(search)
+            XCTAssertTrue(element("session-visual").waitForExistence(timeout: 10))
         }
-        waitForInputSourceHint()
-        app.typeKey(.return, modifierFlags: [])
-        waitForInputSourceHint()
-        app.typeKey(.tab, modifierFlags: [])
-        XCTAssertEqual((search.value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), "OFFLINE")
-        XCTAssertTrue(element("session-offline").exists)
-        XCTAssertFalse(element("session-visual").exists)
         try await setWindowLayout(wide: true)
     }
 

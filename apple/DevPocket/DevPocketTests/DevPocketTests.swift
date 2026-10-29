@@ -5,6 +5,7 @@ import Testing
 import WebKit
 #if os(macOS)
 import AppKit
+import SwiftUI
 #else
 import UIKit
 #endif
@@ -458,6 +459,44 @@ struct DevPocketTests {
         let recovered = try model(url: file)
         #expect(recovered.selected?.draft.text == "Saved draft")
     }
+
+    #if os(macOS)
+    @Test func librarySearchFocusWaitsForWindowAttachment() async throws {
+        var requested = true
+        let search = LibrarySearchControl(frame: CGRect(x: 20, y: 20, width: 320, height: 26))
+        search.focusRequested = Binding(get: { requested }, set: { requested = $0 })
+        search.applyFocusRequest()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(requested)
+        #expect(search.window == nil)
+
+        let previousWindow = NSApp.keyWindow
+        let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 400, height: 140),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer {
+            window.contentView = nil
+            window.close()
+            previousWindow?.makeKeyAndOrderFront(nil)
+        }
+        let content = try #require(window.contentView)
+        let original = NSTextField(frame: CGRect(x: 20, y: 80, width: 320, height: 26))
+        content.addSubview(original)
+        window.makeKeyAndOrderFront(nil)
+        try #require(window.makeFirstResponder(original))
+        #expect(window.firstResponder === original.currentEditor())
+
+        content.addSubview(search)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(!requested)
+        let editor = try #require(search.currentEditor())
+        #expect(window.firstResponder === editor)
+    }
+    #endif
 
     @Test func actualWKWebViewRendersBundledComponents() async throws {
         let value = try model()

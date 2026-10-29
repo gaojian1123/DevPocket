@@ -1131,3 +1131,40 @@ review as the delivery route, with merging conditional on repository rules.
 The WK pixel checks, App Sandbox and complete selected platform matrix remain
 required. This decision does not relabel either hosted run or authorize a new
 runner, skipped checks or a native-permission bypass.
+
+## Mac local acceptance recovery
+
+The first local fallback run under `.data/verification/apple-local-fallback-1/`
+remains failed: the Mac console was observed locked after repeated foreground
+activation failures and the owned test command timed out. The original source
+and ordinary fixture stores were unchanged. A lingering task-owned test-store
+app was subsequently identified by its exact producing path, launch arguments
+and process start time, then normally closed; the ordinary store remained intact.
+
+The next complete Mac command under
+`.data/verification/apple-local-fallback-2/` completed with 44 passing and two
+failing tests, not acceptance. It exposed a keyboard-search failure and a combined
+library scenario exceeding the unchanged 120-second per-test allowance.
+The metadata and independent project/host filter scenarios are now separate,
+with their original assertions retained; native scope selection waits for the
+requested visible state rather than assuming menu dismissal is synchronous.
+
+A separate native control regression reproduced a focus request arriving before
+the search control had a window. The control now retries the pending request
+when attached, and the same regression passed with that lifecycle callback.
+The UI regression repeats narrow-window shortcut navigation without clicking
+the search field before typing.
+
+Input-source behavior was isolated separately. With the same instrumented source
+and single native case, Simplified Pinyin (`com.apple.inputmethod.SCIM.ITABC`)
+produced `ffline` instead of `offline` before the value reached the model; focus
+had already been granted. After the user manually selected ABC, that unchanged
+case passed. The original incomplete/timed-out MCP completions and late-readable
+diagnostic results remain distinct under
+`.data/apple/ios-delivery-1/local-fallback-2/macos-diagnosis-1/`.
+No system input source was changed automatically.
+
+These are source-bound diagnostic records, not a substitute for the fresh
+complete native matrix, ordinary gate and independent review required for
+delivery. ASCII automation under ABC does not establish real Chinese or
+third-party input-method compatibility, physical Duo behavior or hosted success.

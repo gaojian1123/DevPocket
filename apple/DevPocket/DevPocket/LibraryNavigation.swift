@@ -382,8 +382,8 @@ private struct LibrarySearchField: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
 
-    func makeNSView(context: Context) -> NSSearchField {
-        let field = NSSearchField()
+    func makeNSView(context: Context) -> LibrarySearchControl {
+        let field = LibrarySearchControl()
         field.placeholderString = "搜索会话库"
         field.sendsSearchStringImmediately = true
         field.sendsWholeSearchString = false
@@ -395,18 +395,14 @@ private struct LibrarySearchField: NSViewRepresentable {
         return field
     }
 
-    func updateNSView(_ field: NSSearchField, context: Context) {
+    func updateNSView(_ field: LibrarySearchControl, context: Context) {
         context.coordinator.text = $text
         if field.stringValue != text { field.stringValue = text }
-        if focusRequested {
-            DispatchQueue.main.async { [weak field] in
-                guard focusRequested, let field, let window = field.window else { return }
-                if window.makeFirstResponder(field) { focusRequested = false }
-            }
-        }
+        field.focusRequested = $focusRequested
+        if focusRequested { field.applyFocusRequest() }
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSSearchField, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: LibrarySearchControl, context: Context) -> CGSize? {
         CGSize(width: proposal.width ?? nsView.intrinsicContentSize.width, height: nsView.intrinsicContentSize.height)
     }
 
@@ -414,6 +410,22 @@ private struct LibrarySearchField: NSViewRepresentable {
         var text: Binding<String>
         init(text: Binding<String>) { self.text = text }
         @objc func searchChanged(_ field: NSSearchField) { text.wrappedValue = field.stringValue }
+    }
+}
+
+final class LibrarySearchControl: NSSearchField {
+    var focusRequested = Binding.constant(false)
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyFocusRequest()
+    }
+
+    func applyFocusRequest() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, focusRequested.wrappedValue, let window else { return }
+            if window.makeFirstResponder(self) { focusRequested.wrappedValue = false }
+        }
     }
 }
 #endif
