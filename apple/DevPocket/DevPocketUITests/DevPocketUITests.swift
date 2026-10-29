@@ -683,6 +683,7 @@ final class DevPocketUITests: XCTestCase {
                 "window": rect(app.windows.firstMatch.frame),
                 "files": rect(files.frame),
                 "changes": rect(changes.frame),
+                "inspectorSelected": files.isSelected,
             ])
             for id in ["inspector-files", "inspector-changes"] {
                 XCTAssertEqual(app.descendants(matching: .any).matching(identifier: id).count, 1)
@@ -712,6 +713,13 @@ final class DevPocketUITests: XCTestCase {
             activate(element("inspector-close"))
         } else {
             try cycle("inspector-open")
+            // Native adaptation may dismiss the inspector when the sidebar reclaims its column.
+            if !files.isSelected {
+                XCTAssertTrue(element("session-files-content").waitForNonExistence(timeout: 10))
+                activate(files)
+                XCTAssertTrue(element("session-files-content").waitForExistence(timeout: 10))
+                XCTAssertTrue(files.isSelected)
+            }
             activate(files)
         }
         XCTAssertTrue(element("session-files-content").waitForNonExistence(timeout: 10))

@@ -1222,3 +1222,12 @@ startup, but its writer was not independently attributed. Debug unit-test hosts
 now use in-memory fixtures; an explicit UI-test-store argument still selects the
 isolated persistent store used for relaunch checks. A native regression verifies
 the test-host marker and each storage-routing choice.
+
+The sixth complete attempt passed Mac and iPhone. Its iPad failure was an
+inspector-test assumption, not the waived toolbar flicker: settled-state
+diagnostics showed the native inspector had already been dismissed and its
+Files toggle deselected when the sidebar reclaimed its column. The test's
+unconditional final toggle therefore reopened it. The case now checks that
+native dismissal removed the content, explicitly reopens when necessary, then
+still verifies an explicit close, unique reachable controls and settled toolbar
+placement. No product transition code or flicker acceptance limit was changed.
