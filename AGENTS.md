@@ -18,7 +18,8 @@ Advice, explanations, planning, read-only reviews and documentation-only edits
 do not start an implementation pipeline. Development retains required verification,
 independent review and scoped authorization; self-review is not independent review.
 
-For PR delivery, read **CI-first delivery and live qualification** in the guide;
+For PR delivery or review-comment follow-ups, read **CI-first delivery and live
+qualification** and **Parallel PR feedback** in the guide;
 for unattended work, also read **Unattended execution**. Use explicit task-scoped
 ordinary CI authority, separate from local control adoption; retain missing scope
 without unattended questions. For interruptions or failed evidence, read

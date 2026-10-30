@@ -1,6 +1,6 @@
 ---
 name: devpocket-development
-description: Implement DevPocket features and bug fixes in the owning session. Use for new implementation, same-task repairs, authorized commit/PR delivery and missing verification evidence. Dispatched agents perform only their assigned phase.
+description: Implement DevPocket features and bug fixes in the owning session. Use for new implementation, same-task repairs, PR review feedback, authorized commit/PR delivery and missing verification evidence. Dispatched agents perform only their assigned phase.
 ---
 
 # DevPocket development
@@ -68,12 +68,17 @@ before the authorized push/Draft PR.
 **Complete when:** the Completion contract's source/delivery bindings are fixed;
 an authorized draft awaiting acceptance is `ci-pending`, not `ready`.
 
-## 4. Verify and request independent inspection
+## 4. Verify and collect independent feedback
 
 On the frozen source, independent code inspection can run alongside CI. Use the
 read/search-only `devpocket-reviewer` in a separate context and follow
 [Independent review and delivery freshness](../../../docs/DEVELOPMENT-WORKFLOW.md#independent-review-and-delivery-freshness)
 for its inputs and final evidence handoff. Code-only feedback is not final acceptance.
+
+For PR delivery and review-comment follow-ups, follow
+[Parallel PR feedback](../../../docs/DEVELOPMENT-WORKFLOW.md#parallel-pr-feedback):
+collect online feedback alongside CI and independent inspection, and send
+confirmed findings to the same owning-session repair loop.
 
 For CI-first, qualify the actual `Required verification` success using the
 guide's live route; changed qualifier inputs use read-only `ci-inspection`
@@ -83,8 +88,8 @@ and run `npm run verify -- -Base BASE_COMMIT`. For recovery, read
 [Selected-group preflight and explicit recovery](../../../docs/DEVELOPMENT-WORKFLOW.md#selected-group-preflight-and-explicit-recovery)
 before `-Resume`.
 
-**Complete when:** the Completion contract's verification and independent-review
-conditions are satisfied for the same frozen target.
+**Complete when:** the Completion contract's verification, PR-feedback and
+independent-review conditions are satisfied for the same frozen target.
 
 ## 5. Repair, check freshness and deliver
 

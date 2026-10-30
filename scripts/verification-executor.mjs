@@ -83,7 +83,7 @@ export async function executeVerification(root, plan, options = {}) {
           options.signal?.throwIfAborted();
           const before = preflight.groups.find((item) => item.group === selectedGroup);
           const reusable = await run.reusable(selectedGroup, before.fingerprint,
-            before.reusable ? await verificationArtifacts(root, plan, selectedGroup) : { available: false }, before.reusable);
+            await verificationArtifacts(root, plan, selectedGroup, { bind: before.reusable }), before.reusable);
           if (reusable.status === "reused") {
             for (const saved of reusable.report.checks.filter((item) => item.status === "passed")) {
               Object.assign(checks.find((item) => item.id === saved.id), saved);

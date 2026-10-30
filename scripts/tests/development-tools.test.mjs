@@ -80,12 +80,21 @@ test("the skill and read-only reviewer share the guide's completion contract", a
   for (const text of [skill, reviewer]) assert.ok(text.includes("DEVELOPMENT-WORKFLOW.md#completion-contract"));
   const contract = guide.replaceAll("\r\n", "\n").split("## Completion contract\n")[1]?.split("\n## ")[0];
   assert.ok(contract);
-  for (const condition of ["Task and source", "Authority", "Verification", "Independent review", "Freshness", "Delivery"]) {
+  for (const condition of ["Task and source", "Authority", "Verification", "Independent review", "PR feedback", "Freshness", "Delivery"]) {
     assert.ok(contract.includes(`**${condition}:**`), condition);
   }
   assert.match(contract, /Code inspection can overlap CI; final `pass` waits for complete evidence/);
   assert.match(guide, /Actual original-client decision references/);
   assert.match(guide, /An agent-written `approved` field, copied file or digest is not proof of consent/);
+  assert.ok(skill.includes("DEVELOPMENT-WORKFLOW.md#parallel-pr-feedback"));
+  assert.ok(reviewer.includes("DEVELOPMENT-WORKFLOW.md#parallel-pr-feedback"));
+  const feedback = guide.replaceAll("\r\n", "\n").split("### Parallel PR feedback\n")[1]?.split("\n## ")[0];
+  assert.ok(feedback);
+  assert.match(feedback, /single writer/);
+  assert.match(feedback, /pending requested review/);
+  assert.match(feedback, /original inline thread/);
+  assert.match(feedback, /outdated.*not.*resolved/s);
+  assert.match(reviewer, /before side effects/);
   const steps = skill.split(/^## \d+\. /m).slice(1);
   assert.ok(steps.length > 0 && steps.every((step) => step.includes("**Complete when:**")));
   for (const [text, relative] of [

@@ -196,9 +196,9 @@ async function nativeConfiguration(root, jdk, sdk, cache) {
   return { inputs, reusable };
 }
 
-async function gradleArtifacts(root) {
-  const directory = path.join(root, ".tools", "gradle-cache"), files = [];
-  let entries = 0;
+async function gradleArtifacts(directory, { bind = true } = {}) {
+  const files = [];
+  let entries = 0, available = true;
   async function collect(current, relative) {
     if (++entries > 100000) throw diagnosticError("output-limit");
     const info = await lstat(current);
@@ -210,8 +210,22 @@ async function gradleArtifacts(root) {
       files.push({ file: current, relative });
     }
   }
-  await collect(path.join(directory, "wrapper", "dists"), path.join("wrapper", "dists"));
-  await collect(path.join(directory, "caches"), "caches");
+  for (const parts of [["wrapper", "dists"], ["caches"]]) {
+    let current = directory, present = true;
+    for (const part of ["", ...parts]) {
+      current = path.join(current, part);
+      let info;
+      try { info = await lstat(current); }
+      catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        available = present = false;
+        break;
+      }
+      if (!info.isDirectory() || info.isSymbolicLink()) throw diagnosticError("preflight-path");
+    }
+    if (present) await collect(current, path.join(...parts));
+  }
+  if (!bind || !available) return null;
   const identities = [];
   for (let start = 0; start < files.length; start += 16) {
     identities.push(...await Promise.all(files.slice(start, start + 16).map(async ({ file, relative }) =>
@@ -388,6 +402,7 @@ export async function verificationArtifacts(root, plan, group, { bind = true } =
       paths.push(...workspace.outputs.map((output) => `${workspace.relative}/${output}`));
   }
   const identities = [];
+  let available = true;
   for (const relative of paths) {
     const file = path.join(root, ...relative.split("/"));
     try {
@@ -396,19 +411,22 @@ export async function verificationArtifacts(root, plan, group, { bind = true } =
       identities.push([relative, info.isDirectory() ? await treeIdentity(file) : await fileIdentity(file)]);
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
-      return { available: false };
+      available = false;
     }
   }
-  if (bind && ["android", "device"].includes(group)) {
+  if (["android", "device"].includes(group)) {
     if (group === "device" && process.platform === "linux" && process.env.GITHUB_ACTIONS === "true" &&
-        process.env.RUNNER_ENVIRONMENT === "github-hosted") return { available: false };
-    let gradle;
-    try { gradle = await gradleArtifacts(root); }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
-    if (!gradle) return { available: false };
-    identities.push(["gradle-executable-dependencies", gradle]);
+        process.env.RUNNER_ENVIRONMENT === "github-hosted") {
+      if (bind) available = false;
+    } else {
+      const gradle = await gradleArtifacts(path.join(root, ".tools", "gradle-cache"), { bind });
+      if (bind) {
+        if (gradle) identities.push(["gradle-executable-dependencies", gradle]);
+        else available = false;
+      }
+    }
   }
-  return { available: true, fingerprint: digest(JSON.stringify(identities)) };
+  return available ? { available: true, fingerprint: digest(JSON.stringify(identities)) } : { available: false };
 }
 
 export async function verificationPreflight(root, plan, options = {}) {
@@ -626,6 +644,7 @@ export async function verificationPreflight(root, plan, options = {}) {
         : path.join(root, ".tools", "gradle-cache");
       await check("gradle-cache", async () => {
         await writable(root, cacheDirectory);
+        await gradleArtifacts(cacheDirectory, { bind: false });
         let initDirectory = null;
         try { initDirectory = await treeIdentity(path.join(cacheDirectory, "init.d"), undefined, { hashFiles: false }); }
         catch (error) { if (error.code !== "ENOENT") throw error; }

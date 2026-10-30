@@ -3146,6 +3146,59 @@ test("script and batch locators cannot inherit direct Node identity through a ph
     } finally { process.env.PATH = previous; }
   });
 
+test("unbound verification rejects nested output links before running builds", async (t) => {
+  const root = await repository(t), outside = await mkdtemp(path.resolve(".data/tests/verification-target-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  const marker = path.join(outside, "must-not-write");
+  await writeFile(marker, "unchanged");
+  await mkdir(path.join(root, "dist"));
+  await symlink(outside, path.join(root, "dist", "extension"), process.platform === "win32" ? "junction" : "dir");
+  const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  manifest.scripts.build = "node -e \"require('fs').writeFileSync('dist/extension/must-not-write','escaped')\"";
+  await writeFile(path.join(root, "package.json"), JSON.stringify(manifest));
+  const driver = path.join(root, ".data", "verify-build.mjs");
+  await mkdir(path.dirname(driver), { recursive: true });
+  await writeFile(driver, [
+    `import {executeVerification,verificationPlan} from ${JSON.stringify(new URL("../verification.mjs", import.meta.url).href)};`,
+    `const root=${JSON.stringify(root)};`,
+    "const plan={...await verificationPlan(root,'HEAD'),requiredChecks:['backend-build'],requiredGroups:['backend'],ciMacos:false};",
+    "console.log(JSON.stringify(await executeVerification(root,plan,{group:'backend',directory:root+'/.data/verification/build'})));",
+  ].join("\n"));
+  const { stdout } = await exec(process.execPath, [driver], { timeout: 120_000, env: {
+    ...isolatedAdmissionEnvironment(root), NODE_OPTIONS: "--conditions=unbound-output-regression",
+  } });
+  const report = JSON.parse(stdout);
+  assert.equal(report.preflight.status, "passed", JSON.stringify(report.preflight));
+  assert.equal(report.preflight.groups[0].reusable, false);
+  assert.equal(await readFile(marker, "utf8"), "unchanged", "Reject the link before a build can write outside the checkout.");
+  assert.equal(report.status, "blocked");
+  assert.equal(report.failure.reason, "preflight-path");
+  assert.ok(report.checks.every((check) => check.status === "not_run"));
+});
+
+test("native readiness validates the selected Gradle cache before artifacts exist", async (t) => {
+  const { verificationPreflight } = await import("../verification-preflight.mjs");
+  const root = await repository(t, { native: true }), tools = toolchains.get(root);
+  const outside = path.join(root, ".data", "outside-cache");
+  await mkdir(outside, { recursive: true });
+  for (const group of ["android", "device"]) {
+    const directory = path.join(root, ".data", "verification", group);
+    const hostedDevice = group === "device" && process.platform === "linux" && process.env.GITHUB_ACTIONS === "true" &&
+      process.env.RUNNER_ENVIRONMENT === "github-hosted";
+    const cache = hostedDevice ? path.join(directory, "device", "gradle-cache") : path.join(root, ".tools", "gradle-cache");
+    const link = path.join(cache, "caches", group);
+    await mkdir(path.dirname(link), { recursive: true });
+    await symlink(outside, link, process.platform === "win32" ? "junction" : "dir");
+    const plan = { ...await verificationPlan(root, "HEAD"),
+      requiredChecks: [group === "android" ? "android-build" : "android-device"], requiredGroups: [group] };
+    const result = await verificationPreflight(root, plan, { group, directory, jdk: tools.jdk, sdk: tools.sdk });
+    assert.equal(result.status, "blocked");
+    assert.ok(result.groups[0].issues.some((issue) => issue.prerequisite === "gradle-cache" &&
+      issue.failure.reason === "preflight-path"), JSON.stringify(result.groups[0]));
+    await rm(link);
+  }
+});
+
 test("directory-entry discovery avoids redundant file stats while retaining digest and replacement checks", async (t) => {
   const { verificationArtifacts } = await import("../verification-preflight.mjs");
   const root = await repository(t), directory = path.join(root, "dist"), plan = { requiredChecks: ["backend-build"] };

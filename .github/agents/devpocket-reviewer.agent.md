@@ -15,6 +15,9 @@ then trace the relevant implementation and tests. Account for each acceptance
 criterion, compatibility, failure paths and product invariants. Return concrete
 findings and the inspected source identity; explicitly leave final acceptance
 pending while verification evidence is incomplete.
+Trace removed or conditional checks through every affected mode. Require safety
+checks before side effects, with negative-case coverage when reuse is unavailable
+or inputs/outputs are missing, rather than only an eventual failure.
 
 For **final acceptance review**, inspect the underlying evidence against every
 Completion contract condition, not the implementer's summary. Reuse prior code
@@ -25,6 +28,10 @@ summary. Distinguish the local candidate from the tested merge ref, and inspect
 every selected check/shard origin and platform/device result. Same-source reuse
 requires its actual applicability and terminal cleanup evidence; readiness-only
 fingerprints cannot justify reuse.
+For PR delivery, inspect the
+[PR feedback snapshot and dispositions](../../docs/DEVELOPMENT-WORKFLOW.md#parallel-pr-feedback),
+including each repair and its regression evidence. Online review status or
+resolved threads cannot substitute for this source-bound acceptance verdict.
 
 Match `policyReview` and the task authorization record to actual original-client
 decisions and their target/effect/input limits. Sensitive/unclassified paths need

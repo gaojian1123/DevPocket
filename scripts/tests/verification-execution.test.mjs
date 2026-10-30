@@ -134,6 +134,63 @@ test("fresh native artifacts stay bound without requiring a reusable Gradle cach
   assert.notDeepEqual(await verificationArtifacts(root, plan, "android", { bind: false }), before);
 });
 
+test("readiness checks Gradle paths without hashing cached payloads", async (t) => {
+  const root = await fixture(t), plan = { requiredChecks: ["android-build"] };
+  const apks = ["debug/app-debug.apk", "androidTest/debug/app-debug-androidTest.apk"];
+  const cached = ["wrapper/dists/fixture/lib/gradle.jar", "caches/modules-2/fixture.jar"]
+    .map((relative) => path.join(root, ".tools", "gradle-cache", relative));
+  for (const file of [...apks.map((relative) => path.join(root, "android/app/build/outputs/apk", relative)), ...cached]) {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, "original artifact");
+  }
+  let reads = 0;
+  const open = fileSystem.open;
+  const observation = t.mock.method(fileSystem, "open", (...args) => {
+    if (cached.includes(args[0])) reads++;
+    return open(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { observation.mock.restore(); syncBuiltinESMExports(); });
+  const ready = await verificationArtifacts(root, plan, "android", { bind: false });
+  await writeFile(cached[0], "changed cache payload");
+  assert.deepEqual(await verificationArtifacts(root, plan, "android", { bind: false }), ready);
+  assert.equal(reads, 0, "Readiness validates paths, not cache contents.");
+  const bound = await verificationArtifacts(root, plan, "android");
+  assert.equal(bound.available, true);
+  assert.ok(reads > 0);
+  await writeFile(cached[1], "another cache change");
+  assert.notDeepEqual(await verificationArtifacts(root, plan, "android"), bound);
+});
+
+test("readiness rejects Gradle directory links even when artifacts are missing", async (t) => {
+  for (const relative of ["wrapper", "wrapper/dists", "wrapper/dists/nested", "caches", "caches/nested"]) {
+    for (const withApks of [false, true]) await t.test(`${relative}, APKs ${withApks}`, async (t) => {
+      const root = await fixture(t), outside = await fixture(t);
+      const link = path.join(root, ".tools", "gradle-cache", relative);
+      await mkdir(path.dirname(link), { recursive: true });
+      await fileSystem.symlink(outside, link, process.platform === "win32" ? "junction" : "dir");
+      if (withApks) for (const relative of ["debug/app-debug.apk", "androidTest/debug/app-debug-androidTest.apk"]) {
+        const file = path.join(root, "android/app/build/outputs/apk", relative);
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, "tested artifact");
+      }
+      for (const bind of [false, true]) {
+        await assert.rejects(verificationArtifacts(root, { requiredChecks: ["android-build"] }, "android", { bind }),
+          { diagnosticCode: "preflight-path" });
+      }
+    });
+  }
+});
+
+test("missing artifacts do not hide later linked workspace outputs", async (t) => {
+  const f = await workspaceFixture(t), outside = await fixture(t);
+  await fileSystem.symlink(outside, path.join(f.workspace, "dist"), process.platform === "win32" ? "junction" : "dir");
+  for (const bind of [false, true]) {
+    await assert.rejects(verificationArtifacts(f.root, { requiredChecks: ["backend-build"] }, "backend", { bind }),
+      { diagnosticCode: "preflight-path" });
+  }
+});
+
 test("SDK preparation initializes matching package metadata without accepting licenses or rewriting existing metadata", async (t) => {
   const root = await fixture(t), entry = await sdkPreparationFixture(root);
   const run = () => exec("pwsh", ["-NoProfile", "-NonInteractive", "-File", entry], { timeout: 30000 });

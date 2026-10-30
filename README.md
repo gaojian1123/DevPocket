@@ -301,7 +301,9 @@ the implementation pipeline. Use the original client's tools and existing CI.
 [Local delivery](docs/DEVELOPMENT-WORKFLOW.md#delivery-targets-and-candidate-preparation)
 does not acquire upload authority. [CI-first PR delivery](docs/DEVELOPMENT-WORKFLOW.md#ci-first-delivery-and-live-qualification)
 uses permitted focused checks, an authorized candidate and pending Draft PR,
-with code inspection alongside CI. The guide's
+with code inspection and
+[PR review feedback](docs/DEVELOPMENT-WORKFLOW.md#parallel-pr-feedback) alongside CI.
+The guide's
 [Completion contract](docs/DEVELOPMENT-WORKFLOW.md#completion-contract) defines
 when verification, independent review and freshness permit ready delivery.
 The original task base stays fixed. Neither route authorizes merge or deployment.
