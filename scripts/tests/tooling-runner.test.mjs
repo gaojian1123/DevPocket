@@ -5,7 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
-import { TOOLING_TEST_FILES, TOOLING_TEST_SHARDS } from "../test-tooling.mjs";
+import { TOOLING_TEST_FILES, TOOLING_TEST_SHARDS, toolingProgressRecord } from "../test-tooling.mjs";
 
 const exec = promisify(execFile);
 
@@ -30,6 +30,72 @@ async function run(item, args) {
     return { code: error.code, signal: error.signal, stdout: error.stdout, stderr: error.stderr };
   }
 }
+
+test("public tooling progress contains source locations, not dynamic names or failure contents", () => {
+  const root = path.resolve(".data/tests/progress-source");
+  const file = TOOLING_TEST_FILES[0];
+  const value = toolingProgressRecord({ type: "test:fail", data: {
+    file: path.join(root, file), line: 42, column: 3,
+    name: "PRIVATE_DYNAMIC_TEST_NAME", details: { error: "PRIVATE_FAILURE_CONTENT" },
+  } }, root);
+  assert.deepEqual(value, { version: 1, kind: "tooling-progress", event: "test:fail", file, line: 42, column: 3 });
+  assert.equal(toolingProgressRecord({ type: "test:stdout", data: { file: path.join(root, file), message: "PRIVATE" } }, root), undefined);
+  assert.equal(toolingProgressRecord({ type: "test:start", data: { file: path.join(root, "../private.mjs") } }, root), undefined);
+  assert.equal(toolingProgressRecord(null, root), undefined);
+});
+
+test("the native test reporter retains bounded progress without changing case selection or failure exit", async (t) => {
+  const item = await fixture(t);
+  item.env.GITHUB_ACTIONS = "true";
+  for (const file of ["diagnostic-publication.mjs", "diagnostic-errors.mjs"]) {
+    await copyFile(path.join("scripts", file), path.join(item.root, "scripts", file));
+  }
+  const files = TOOLING_TEST_SHARDS.find((part) => part.id === "candidate").files;
+  for (const [index, file] of files.entries()) {
+    await writeFile(path.join(item.root, file), [
+      'import assert from "node:assert/strict";',
+      'import { test } from "node:test";',
+      `test("PRIVATE_NAME_${index}", () => {`,
+      '  console.log("PRIVATE_STDOUT");',
+      `  if (process.env.PROGRESS_FAILURE === "true" && ${index} === 0) assert.fail("PRIVATE_ERROR");`,
+      '});',
+    ].join("\n"));
+  }
+  for (const failing of [false, true]) {
+    item.env.PROGRESS_FAILURE = String(failing);
+    const destination = `.data/ci/progress-${failing}/tooling-progress.jsonl`;
+    const result = await run(item, [item.entry, "--tooling-shard", "candidate", "--progress", destination]);
+    assert.equal(result.code, failing ? 1 : 0, result.stdout + result.stderr);
+    const bytes = await readFile(path.join(item.root, destination), "utf8");
+    assert.doesNotMatch(bytes, /PRIVATE_NAME|PRIVATE_STDOUT|PRIVATE_ERROR/);
+    const events = bytes.trim().split("\n").map((line) => JSON.parse(line));
+    assert.ok(events.some((event) => event.event === "test:start"));
+    assert.ok(events.some((event) => event.event === (failing ? "test:fail" : "test:pass")));
+    assert.deepEqual([...new Set(events.map((event) => event.file))].sort(), [...files].sort());
+    assert.ok(events.every((event) => Object.keys(event).every((key) =>
+      ["version", "kind", "event", "file", "line", "column", "observedAt"].includes(key))));
+    const duplicate = await run(item, [item.entry, "--tooling-shard", "candidate", "--progress", destination]);
+    assert.equal(duplicate.code, 1, duplicate.stderr + duplicate.stdout);
+    assert.equal(duplicate.signal, null);
+    assert.equal(await readFile(path.join(item.root, destination), "utf8"), bytes);
+  }
+});
+
+test("tooling progress refuses local execution, missing arguments and unrelated output paths", async (t) => {
+  const item = await fixture(t);
+  for (const [hosted, args] of [
+    [false, ["--progress", ".data/ci/progress/tooling-progress.jsonl"]],
+    [true, ["--progress"]],
+    [true, ["--progress", "../outside/tooling-progress.jsonl"]],
+    [true, ["--progress", ".data/ci/progress/report.json"]],
+    [true, ["--progress", ".data/ci/progress/tooling-progress.jsonl", "--progress", ".data/ci/second/tooling-progress.jsonl"]],
+  ]) {
+    item.env.GITHUB_ACTIONS = String(hosted);
+    const result = await run(item, [item.entry, ...args]);
+    assert.equal(result.code, 1, result.stderr + result.stdout);
+    assert.equal(result.signal, null);
+  }
+});
 
 test("the dedicated tooling entry retains the complete explicit suite without directory discovery", async () => {
   const manifest = JSON.parse(await readFile("package.json", "utf8"));

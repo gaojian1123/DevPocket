@@ -284,12 +284,14 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(apple, /runs-on: xcode-27/);
   assert.match(apple, /DEVELOPER_DIR: \/Applications\/Xcode_27\.1\.app\/Contents\/Developer/);
   assert.match(apple, /npm_config_registry: https:\/\/packagefeedproxy\.microsoft\.io\/npm\//);
-  assert.match(apple, /node scripts\/verify\.mjs --base \$env:BASE_SHA --group apple --report \.data\/ci\/apple\/report\.json/);
-  assert.match(apple, /--seal --unit apple/);
-  assert.match(apple, /name: verification-apple-attempt-[^\n]+\n\s+path: \|\n\s+\.data\/ci\/apple\/report\.json\n\s+\.data\/ci\/apple\/ci-report\.json\n\s+if-no-files-found: error/);
+  assert.match(apple, /role: \[mac, iphone, ipad, duo\]/);
+  assert.match(apple, /fail-fast: false/);
+  assert.match(apple, /node scripts\/verify\.mjs --base "\$BASE_SHA" --group apple --apple-role "\$APPLE_ROLE" --report \.data\/ci\/apple\/report\.json/);
+  assert.match(apple, /--seal --unit "apple-\$APPLE_ROLE"/);
+  assert.match(apple, /name: verification-apple-\$\{\{ matrix\.role \}\}-attempt-[^\n]+\n\s+path: \|\n\s+\.data\/ci\/apple\/report\.json\n\s+\.data\/ci\/apple\/ci-report\.json\n\s+if-no-files-found: error/);
   assert.doesNotMatch(workflow.replace(apple, ""), /^\s+include-hidden-files:/m);
   assert.equal([...apple.matchAll(/^\s+include-hidden-files:/gm)].length, 1);
-  const nativeArtifacts = apple.split("name: apple-native-evidence-attempt-")[1];
+  const nativeArtifacts = apple.split("name: apple-native-evidence-${{ matrix.role }}-attempt-")[1];
   assert.match(nativeArtifacts, /include-hidden-files: true/);
   assert.deepEqual([...nativeArtifacts.matchAll(/^\s+(\.data\/[^\r\n]+)$/gm)].map((match) => match[1]), [
     ".data/ci/apple/apple/apple-owner.json",
@@ -297,6 +299,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
     ".data/ci/apple/apple/logs/",
     ".data/ci/apple/apple/*/result.xcresult/",
     ".data/ci/apple/apple/test-*/result-files.json",
+    ".data/ci/apple/apple/test-*/catalog/enumeration.json",
     ".data/ci/apple/apple/build-*/derived/Build/Products/**/DevPocket.app/",
   ]);
 

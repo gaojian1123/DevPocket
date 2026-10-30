@@ -514,14 +514,15 @@ struct DevPocketTests {
     }
     #endif
 
-    @Test func actualWKWebViewRendersBundledComponents() async throws {
-        let value = try model()
-        for card in try #require(value.selected).entries.compactMap(\.component) {
-            let renderer = ComponentWebSession(card: card, detail: true)
-            renderer.webView.frame = CGRect(x: 0, y: 0, width: 600, height: 600)
-            #if os(macOS)
+    private func withMountedRenderer(
+        _ card: ComponentRecord, check: @MainActor (ComponentWebSession) async throws -> Void
+    ) async throws {
+        let renderer = ComponentWebSession(card: card, detail: true)
+        renderer.webView.frame = CGRect(x: 0, y: 0, width: 600, height: 600)
+        #if os(macOS)
             let previousWindow = NSApp.keyWindow
-            let window = NSWindow(contentRect: renderer.webView.frame, styleMask: [.titled],
+            let window = NSWindow(
+                contentRect: renderer.webView.frame, styleMask: [.titled],
                 backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             window.contentView = renderer.webView
@@ -532,7 +533,7 @@ struct DevPocketTests {
                 window.close()
                 previousWindow?.makeKeyAndOrderFront(nil)
             }
-            #else
+        #else
             let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
             let previousWindow = scene.keyWindow
             let window = UIWindow(windowScene: scene)
@@ -546,101 +547,132 @@ struct DevPocketTests {
                 window.rootViewController = nil
                 previousWindow?.makeKey()
             }
-            #endif
-            for theme in ["light", "dark"] {
-                await renderer.start(theme: theme, scale: 1)
-                for _ in 0..<100 where !renderer.rendered && renderer.failure == nil {
-                    try await Task.sleep(for: .milliseconds(100))
-                }
-                #expect(renderer.rendered, "\(card.id), \(theme): \(renderer.failure ?? "No renderer acknowledgement")")
-                #expect(renderer.failure == nil)
-                if renderer.rendered {
-                    let result = try await renderer.webView.callAsyncJavaScript("""
-                        const style = getComputedStyle(document.getElementById('component'));
-                        const canvas = document.querySelector('canvas');
-                        let hasGridPixels = null;
-                        if (canvas) {
-                          const grid = style.getPropertyValue('--chart-grid').trim();
-                          const rgb = [1, 3, 5].map(offset => parseInt(grid.slice(offset, offset + 2), 16));
-                          const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
-                          hasGridPixels = false;
-                          for (let index = 0; index < pixels.length; index += 4) {
-                            if (pixels[index + 3] > 0 && rgb.every((value, channel) => Math.abs(value - pixels[index + channel]) <= 2)) {
-                              hasGridPixels = true;
-                              break;
-                            }
-                          }
+        #endif
+        try await check(renderer)
+    }
+
+    @Test func actualWKWebViewRendersBundledComponents() async throws {
+        let value = try model()
+        for card in try #require(value.selected).entries.compactMap(\.component) {
+            try await withMountedRenderer(card) { renderer in
+                for theme in ["light", "dark"] {
+                    await renderer.start(theme: theme, scale: 1)
+                    for _ in 0..<100 where !renderer.rendered && renderer.failure == nil {
+                        try await Task.sleep(for: .milliseconds(100))
+                    }
+                    #expect(renderer.rendered, "\(card.id), \(theme): \(renderer.failure ?? "No renderer acknowledgement")")
+                    #expect(renderer.failure == nil)
+                    if renderer.rendered {
+                        let result = try await renderer.webView.callAsyncJavaScript(
+                            """
+                            const style = getComputedStyle(document.getElementById('component'));
+                            return {
+                              background: style.backgroundColor,
+                              text: style.color,
+                              accent: style.getPropertyValue('--accent').trim(),
+                              body: getComputedStyle(document.body).backgroundColor,
+                              grid: style.getPropertyValue('--chart-grid').trim()
+                            };
+                            """, arguments: [:], in: nil, contentWorld: .page)
+                        let style = try #require(result as? [String: Any])
+                        let background = theme == "dark" ? "rgb(33, 38, 47)" : "rgb(255, 255, 255)"
+                        #expect(style["background"] as? String == background)
+                        #expect(style["body"] as? String == background)
+                        #expect(style["text"] as? String == (theme == "dark" ? "rgb(237, 241, 247)" : "rgb(28, 32, 40)"))
+                        #expect(style["accent"] as? String == (theme == "dark" ? "#80baff" : "#0068d9"))
+                        if card.id == "fixture-trend" || card.id == "fixture-bars" {
+                            #expect(style["grid"] as? String == (theme == "dark" ? "#343c48" : "#e4e7ec"))
+                            let description = try await renderer.webView.callAsyncJavaScript(
+                                "return document.querySelector('canvas').getAttribute('aria-label');",
+                                arguments: [:], in: nil, contentWorld: .page)
+                            #expect((description as? String)?.contains("完成数") == true)
                         }
-                        return {
-                          background: style.backgroundColor,
-                          text: style.color,
-                          accent: style.getPropertyValue('--accent').trim(),
-                          body: getComputedStyle(document.body).backgroundColor,
-                          grid: hasGridPixels
-                        };
-                        """, arguments: [:], in: nil, contentWorld: .page)
-                    let style = try #require(result as? [String: Any])
-                    let background = theme == "dark" ? "rgb(33, 38, 47)" : "rgb(255, 255, 255)"
-                    #expect(style["background"] as? String == background)
-                    #expect(style["body"] as? String == background)
-                    #expect(style["text"] as? String == (theme == "dark" ? "rgb(237, 241, 247)" : "rgb(28, 32, 40)"))
-                    #expect(style["accent"] as? String == (theme == "dark" ? "#80baff" : "#0068d9"))
-                    if card.id == "fixture-trend" || card.id == "fixture-bars" {
-                        #expect(style["grid"] as? Bool == true, "Chart canvas must use the host's neutral grid color.")
-                        let description = try await renderer.webView.callAsyncJavaScript(
-                            "return document.querySelector('canvas').getAttribute('aria-label');",
-                            arguments: [:], in: nil, contentWorld: .page)
-                        #expect((description as? String)?.contains("完成数") == true)
                     }
                 }
-            }
-            if renderer.rendered {
-                if ["line", "bar"].contains(renderer.presentation?.type ?? "") {
-                    let original = try card.validatedJSON()
-                    renderer.chartWindowSize = 7
-                    renderer.chartDataOnly = true
-                    await renderer.applyChartPresentation()
-                    #expect(renderer.failure == nil)
-                    #expect(renderer.presentation?.fixtureTaskTotal(windowSize: 7) == 48)
-                    let rows = try await renderer.webView.callAsyncJavaScript(
-                        "return document.querySelectorAll('.chart-data tbody tr').length;",
-                        arguments: [:], in: nil, contentWorld: .page)
-                    #expect(rows as? Int == 7)
-                    let stale = try await renderer.webView.callAsyncJavaScript("""
-                        try { window.devPocketPresentation.setChartView('not-current', 7, true); return false; }
-                        catch { return true; }
+                if renderer.rendered {
+                    if ["line", "bar"].contains(renderer.presentation?.type ?? "") {
+                        let original = try card.validatedJSON()
+                        renderer.chartWindowSize = 7
+                        renderer.chartDataOnly = true
+                        await renderer.applyChartPresentation()
+                        #expect(renderer.failure == nil)
+                        #expect(renderer.presentation?.fixtureTaskTotal(windowSize: 7) == 48)
+                        let rows = try await renderer.webView.callAsyncJavaScript(
+                            "return document.querySelectorAll('.chart-data tbody tr').length;",
+                            arguments: [:], in: nil, contentWorld: .page)
+                        #expect(rows as? Int == 7)
+                        let stale = try await renderer.webView.callAsyncJavaScript(
+                            """
+                            try { window.devPocketPresentation.setChartView('not-current', 7, true); return false; }
+                            catch { return true; }
+                            """, arguments: [:], in: nil, contentWorld: .page)
+                        #expect(stale as? Bool == true)
+                        renderer.chartWindowSize = nil
+                        await renderer.applyChartPresentation()
+                        let allRows = try await renderer.webView.callAsyncJavaScript(
+                            "return document.querySelectorAll('.chart-data tbody tr').length;",
+                            arguments: [:], in: nil, contentWorld: .page)
+                        #expect(allRows as? Int == 14)
+                        #expect(try card.validatedJSON() == original)
+                        renderer.chartDataOnly = false
+                        await renderer.applyChartPresentation()
+                    }
+                    let network = try await renderer.webView.callAsyncJavaScript(
+                        """
+                        const url = 'https://example.invalid/fixture-must-not-connect';
+                        const violations = [];
+                        const record = event => {
+                            if (event.blockedURI === url) violations.push(event.effectiveDirective);
+                        };
+                        document.addEventListener('securitypolicyviolation', record);
+                        try { await fetch(url); } catch {}
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                        document.removeEventListener('securitypolicyviolation', record);
+                        return violations.includes('connect-src');
                         """, arguments: [:], in: nil, contentWorld: .page)
-                    #expect(stale as? Bool == true)
-                    renderer.chartWindowSize = nil
-                    await renderer.applyChartPresentation()
-                    let allRows = try await renderer.webView.callAsyncJavaScript(
-                        "return document.querySelectorAll('.chart-data tbody tr').length;",
-                        arguments: [:], in: nil, contentWorld: .page)
-                    #expect(allRows as? Int == 14)
-                    #expect(try card.validatedJSON() == original)
-                    renderer.chartDataOnly = false
-                    await renderer.applyChartPresentation()
+                    #expect(network as? Bool == true)
+                    renderer.webView.load(URLRequest(url: URL(string: "https://example.invalid/fixture-must-not-navigate")!))
+                    try await Task.sleep(for: .milliseconds(200))
+                    #expect(renderer.webView.url == ComponentBoundary.page)
+                    #expect(renderer.rendered)
                 }
-                let network = try await renderer.webView.callAsyncJavaScript("""
-                    const url = 'https://example.invalid/fixture-must-not-connect';
-                    const violations = [];
-                    const record = event => {
-                        if (event.blockedURI === url) violations.push(event.effectiveDirective);
-                    };
-                    document.addEventListener('securitypolicyviolation', record);
-                    try { await fetch(url); } catch {}
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                    document.removeEventListener('securitypolicyviolation', record);
-                    return violations.includes('connect-src');
-                    """, arguments: [:], in: nil, contentWorld: .page)
-                #expect(network as? Bool == true)
-                renderer.webView.load(URLRequest(url: URL(string: "https://example.invalid/fixture-must-not-navigate")!))
-                try await Task.sleep(for: .milliseconds(200))
-                #expect(renderer.webView.url == ComponentBoundary.page)
-                #expect(renderer.rendered)
+                renderer.dispose()
+                #expect(!renderer.rendered)
             }
-            renderer.dispose()
-            #expect(!renderer.rendered)
+        }
+    }
+
+    @Test func actualWKWebViewRendersChartPixels() async throws {
+        let value = try model()
+        let cards = try #require(value.selected).entries.compactMap(\.component)
+            .filter { ["fixture-trend", "fixture-bars"].contains($0.id) }
+        try #require(cards.count == 2)
+        for card in cards {
+            try await withMountedRenderer(card) { renderer in
+                for theme in ["light", "dark"] {
+                    await renderer.start(theme: theme, scale: 1)
+                    for _ in 0..<100 where !renderer.rendered && renderer.failure == nil {
+                        try await Task.sleep(for: .milliseconds(100))
+                    }
+                    try #require(renderer.rendered, "\(card.id), \(theme): \(renderer.failure ?? "No renderer acknowledgement")")
+                    #expect(renderer.failure == nil)
+                    let hasGridPixels = try await renderer.webView.callAsyncJavaScript(
+                        """
+                        const style = getComputedStyle(document.getElementById('component'));
+                        const canvas = document.querySelector('canvas');
+                        const grid = style.getPropertyValue('--chart-grid').trim();
+                        const rgb = [1, 3, 5].map(offset => parseInt(grid.slice(offset, offset + 2), 16));
+                        const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+                        for (let index = 0; index < pixels.length; index += 4) {
+                          if (pixels[index + 3] > 0 && rgb.every((value, channel) => Math.abs(value - pixels[index + channel]) <= 2)) {
+                            return true;
+                          }
+                        }
+                        return false;
+                        """, arguments: [:], in: nil, contentWorld: .page)
+                    #expect(hasGridPixels as? Bool == true, "Chart canvas must use the host's neutral grid color.")
+                }
+            }
         }
     }
 }

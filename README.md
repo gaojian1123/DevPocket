@@ -392,6 +392,11 @@ results and platform gaps; a successful build or a skipped/unrun UI test is not
 acceptance. Use the source-selected Apple platform gate with the actual
 native qualification request passed through `-AppleEvidence`. Shared changes in
 the fixed-base cumulative diff still retain their affected-platform checks.
+Hosted CI runs the Apple roles independently and retains the real WK loading,
+presentation and security checks. The separate Mac chart-pixel assertion remains
+part of same-candidate complete native acceptance, not a deleted test or a hosted
+pass. Follow the [hosted Apple coverage contract](docs/DEVELOPMENT-WORKFLOW.md#hosted-apple-ci)
+before treating a green CI matrix as ready for delivery.
 
 Local Mac UI automation needs an unlocked, interactive desktop. It keeps the
 user's input source: the input helper sends the first real key, waits for the

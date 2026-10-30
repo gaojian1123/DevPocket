@@ -10,6 +10,7 @@ import { readOnlyGit, sourceSnapshot } from "./git-state.mjs";
 import { requireVerificationOutputDirectory } from "./verification.mjs";
 import {
   APPLE_NATIVE_REPORT_MAX_BYTES, APPLE_PROBES, APPLE_REQUIREMENTS, APPLE_RESULT_READINESS_MS,
+  appleCIShardDescriptor, appleCIDeferredTests, appleCITestSelection,
   appleDeviceId, appleDevices, appleDigest, appleEnumerationArguments, appleJSON, appleResultManifestReference, appleTestSelection,
   appleXcodeArguments, inspectAppleScheme, inspectAppleToolchain, localAppleToolchain,
   normalizeAppleTestCatalog, normalizeAppleTestResult, selectAppleLocalTargets,
@@ -27,13 +28,15 @@ export function parseAppleRunnerArguments(args) {
   const options = {};
   for (let index = 0; index < args.length; index += 2) {
     const key = args[index]?.replace(/^--/, "");
-    requireApple(["repo", "plan", "directory"].includes(key) && args[index] === `--${key}` &&
+    requireApple(["repo", "plan", "directory", "role"].includes(key) && args[index] === `--${key}` &&
       !Object.hasOwn(options, key) && typeof args[index + 1] === "string" &&
       args[index + 1].length > 0 && !args[index + 1].startsWith("--") && !args[index + 1].includes("\0"),
-    "Use --repo ROOT --plan PLAN_JSON --directory OUTPUT_DIRECTORY, once each.", "configuration");
+    "Use --repo ROOT --plan PLAN_JSON --directory OUTPUT_DIRECTORY and an optional --role, once each.", "configuration");
     options[key] = args[index + 1];
   }
-  requireApple(Object.keys(options).length === 3, "All Apple runner arguments are required.", "configuration");
+  requireApple(["repo", "plan", "directory"].every((key) => Object.hasOwn(options, key)),
+    "All Apple runner arguments are required.", "configuration");
+  if (options.role !== undefined) appleCIShardDescriptor(options.role);
   return options;
 }
 
@@ -294,6 +297,7 @@ export async function runAppleCI(options) {
 export async function runAppleLocalCommands(options) {
   requireApple(process.platform === "darwin" && process.env.GITHUB_ACTIONS !== "true",
     "Local Apple commands require the local Mac entry, not a hosted-CI identity.", "configuration");
+  requireApple(options.role === undefined, "Local native acceptance cannot select only one CI role.", "configuration");
   const root = await realpath(path.resolve(options.repo));
   const local = JSON.parse(await smallFile(root, options.plan));
   requireApple(local?.kind === "local-apple-plan" && local.status === "planned" &&
@@ -304,6 +308,8 @@ export async function runAppleLocalCommands(options) {
 }
 
 async function runAppleNative(options, local) {
+  const ciRole = local ? undefined : options.role;
+  if (ciRole !== undefined) appleCIShardDescriptor(ciRole);
   const root = await realpath(path.resolve(options.repo));
   requireApple(root === await realpath(fileURLToPath(new URL("..", import.meta.url))) &&
     root === (await readOnlyGit(root, ["rev-parse", "--show-toplevel"])).trim(),
@@ -325,14 +331,17 @@ async function runAppleNative(options, local) {
   await mkdir(path.join(output, "logs"));
   await mkdir(path.join(output, "scratch"));
   const report = {
-    version: 1, kind: "apple-native-evidence", origin: local ? "local-xcodebuild" : "ci-xcodebuild", runId, workspace: root, directory,
+    version: ciRole ? 2 : 1, kind: "apple-native-evidence", origin: local ? "local-xcodebuild" : "ci-xcodebuild",
+    ...(ciRole ? { ciRole, nativeAcceptanceRequired: true, deferredTests: appleCIDeferredTests(ciRole) } : {}),
+    runId, workspace: root, directory,
     base: plan.base, source: plan.source, sourceBefore: null, sourceAfter: null, apple: APPLE_REQUIREMENTS,
     startedAt: new Date().toISOString(), completedAt: null, status: "blocked", cleanup: "unknown",
     ...(!local ? { ci: { githubActions: process.env.GITHUB_ACTIONS, runnerEnvironment: process.env.RUNNER_ENVIRONMENT,
       platform: process.platform, runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
       job: process.env.GITHUB_JOB, repository: process.env.GITHUB_REPOSITORY, sha: process.env.GITHUB_SHA } } : {}),
     commands: [], builds: ["ios", "macos"].map((platform) => ({ platform, status: "blocked", reason: "not-run" })),
-    tests: APPLE_REQUIREMENTS.targets.map(({ role }) => ({ role, status: "blocked", reason: "not-run" })),
+    tests: APPLE_REQUIREMENTS.targets.filter(({ role }) => !ciRole || role === ciRole)
+      .map(({ role }) => ({ role, status: "blocked", reason: "not-run" })),
     resources: [], failures: [],
   };
   if (local) {
@@ -554,25 +563,31 @@ async function runAppleNative(options, local) {
       const relative = `${directory}/${phase}`;
       await mkdir(path.join(root, relative));
       const destination = mac && !local ? `platform=macOS,arch=${target.architecture}` : `platform=${target.platform},id=${target.deviceId}`;
-      if (local) {
+      let selectedTests;
+      if (local || ciRole) {
         const catalogDirectory = `${relative}/catalog`;
         await mkdir(path.join(root, catalogDirectory));
-        item.beforeCatalogCommandId = await confirmLocalTargets(`${phase}-before-catalog`);
+        if (local) item.beforeCatalogCommandId = await confirmLocalTargets(`${phase}-before-catalog`);
         item.catalogCommandId = `${phase}-catalog`;
-        await execute(item.catalogCommandId, "/usr/bin/xcrun", appleEnumerationArguments(root, catalogDirectory, target),
+        await execute(item.catalogCommandId, "/usr/bin/xcrun", appleEnumerationArguments(root, catalogDirectory, target, ciRole === "mac"),
           { timeoutMs: 180_000 });
         const bytes = await smallFile(root, `${catalogDirectory}/enumeration.json`);
         item.catalog = { path: `${catalogDirectory}/enumeration.json`, bytes: Buffer.byteLength(bytes),
           sha256: appleDigest(bytes), data: JSON.parse(bytes) };
         normalizeAppleTestCatalog(item.catalog.data, report.scheme.targets);
-        item.beforeTestCommandId = await confirmLocalTargets(`${phase}-before-test`);
+        if (local) item.beforeTestCommandId = await confirmLocalTargets(`${phase}-before-test`);
+        else {
+          const selection = appleCITestSelection(item.catalog.data, report.scheme.targets, ciRole);
+          if (selection.deferred.length) selectedTests = selection.tests;
+        }
       }
       item.commandId = phase;
       let execution, originalFailure;
       try {
         execution = await execute(phase, "/usr/bin/xcrun", appleXcodeArguments({ workspace: root, directory: relative,
           action: "test", platform: mac ? "macos" : "ios", destination,
-          ...(local ? { testDiagnostics: "never" } : {}) }), { timeoutMs: 20 * 60_000 });
+          ...(local ? { testDiagnostics: "never" } : {}),
+          ...(selectedTests ? { selectedTests } : {}) }), { timeoutMs: 20 * 60_000 });
         item.execution = nativeExecution(execution);
       } catch (error) {
         originalFailure = error;
@@ -609,11 +624,12 @@ async function runAppleNative(options, local) {
         if (!originalFailure) {
           item.result = normalizeAppleTestResult(item.summary, item.testTree, target, execution, report.scheme.targets);
           item.target = { ...target, deviceId: item.result.device.deviceId };
-          if (local) {
+          if (local || ciRole) {
             requireApple(equal(appleTestSelection(item.result.cases.map((test) =>
               ({ targetName: test.target, testIdentifier: test.identifier }))),
-            normalizeAppleTestCatalog(item.catalog.data, report.scheme.targets)),
-            "The full native command did not cover its complete catalogue.", "case-evidence");
+            ciRole ? appleCITestSelection(item.catalog.data, report.scheme.targets, ciRole).tests
+              : normalizeAppleTestCatalog(item.catalog.data, report.scheme.targets)),
+            "The native command did not cover its declared catalogue.", "case-evidence");
           }
         }
       } catch (error) {

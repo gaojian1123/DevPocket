@@ -14,12 +14,13 @@ import { acquireVerificationLock, openVerificationRun, readVerificationRun } fro
 import { emulatorInputDifference, verificationArtifacts, verificationExecutionPolicy, verificationPreflight } from "./verification-preflight.mjs";
 import { candidateReusableChecks, capturePromotionContext, prepareVerificationTransition, validateCandidateVerification } from "./verification-transition.mjs";
 import { toolingShardDescriptor } from "./verification-tooling.mjs";
+import { appleCIShardDescriptor } from "./apple-evidence.mjs";
 import { acquireHostVerificationSlot } from "./verification-admission.mjs";
 
 function reportFor(plan, group, checks) {
   const failed = checks.some((check) => check.status === "failed");
   const blocked = checks.some((check) => check.status === "blocked");
-  const complete = checks.every((check) => check.status === "passed" && !check.toolingShard);
+  const complete = checks.every((check) => check.status === "passed" && !check.toolingShard && !check.appleShard);
   return { ...plan, group, checks, complete, status: failed ? "failed" : blocked ? "blocked" : complete ? "passed" : "partial",
     environment: { node: process.version, platform: process.platform, architecture: process.arch } };
 }
@@ -35,13 +36,20 @@ export async function executeVerification(root, plan, options = {}) {
     throw verificationFault("configuration");
   }
   if (options.toolingShard && (group !== "tooling" || options.promote)) throw verificationFault("configuration");
-  if (options.captureRefinementContext && (group !== "all" || options.toolingShard || options.promote ||
+  if (options.appleRole !== undefined && (group !== "apple" || options.promote || options.resume ||
+      process.env.GITHUB_ACTIONS !== "true")) throw verificationFault("configuration");
+  if (options.captureRefinementContext && (group !== "all" || options.toolingShard || options.appleRole || options.promote ||
       process.env.GITHUB_ACTIONS === "true" || process.platform !== "darwin")) throw verificationFault("configuration");
   const checks = plan.requiredChecks.map((id) => ({ id, status: "not_run" }));
   if (options.toolingShard) {
     const check = checks.find((check) => check.id === "tooling-tests");
     if (!check) throw verificationFault("configuration");
     check.toolingShard = toolingShardDescriptor(plan, options.toolingShard);
+  }
+  if (options.appleRole !== undefined) {
+    const check = checks.find((check) => check.id === "apple-native");
+    if (!check) throw verificationFault("configuration");
+    check.appleShard = appleCIShardDescriptor(options.appleRole);
   }
   const selected = plan.requiredGroups.filter((item) => group === "all" || item === group);
   await requireVerificationOutputDirectory(root, options.directory, [options.resume, options.promote]);
@@ -153,7 +161,7 @@ export async function executeVerification(root, plan, options = {}) {
               environmentFailure ??= verificationFault(reason, { phase: "preflight", group: before.group,
                 prerequisite: current?.issues[0]?.prerequisite ?? changed?.prerequisite });
             } else if (checks.filter((check) => CHECKS.find((item) => item.id === check.id).group === before.group)
-              .every((check) => check.status === "passed" && !check.toolingShard)) {
+              .every((check) => check.status === "passed" && !check.toolingShard && !check.appleShard)) {
               qualifiedGroups.add(before.group);
             }
           }
@@ -298,11 +306,14 @@ async function executeCheck(root, plan, check, options, backend) {
   };
   let output;
   try {
+    const progress = definition.group === "tooling" && process.env.GITHUB_ACTIONS === "true"
+      ? path.relative(root, path.join(options.directory, "tooling-progress.jsonl")).replaceAll("\\", "/") : undefined;
+    const progressArgument = progress ? ` --progress '${progress.replaceAll("'", "''")}'` : "";
     adapter = definition.group === "tooling" ? {
       args: ["-NoProfile", "-NonInteractive", "-Command", check.toolingShard
-        ? `& ${npm} run test:tooling -- --tooling-shard ${check.toolingShard.id}; exit $LASTEXITCODE`
-        : `& ${npm} run test:tooling; exit $LASTEXITCODE`],
-      timeoutMs: 60 * 60_000, graceMs: 5000,
+        ? `& ${npm} run test:tooling -- --tooling-shard ${check.toolingShard.id}${progressArgument}; exit $LASTEXITCODE`
+        : `& ${npm} run test:tooling${progress ? ` --${progressArgument}` : ""}; exit $LASTEXITCODE`],
+      timeoutMs: progress ? 25 * 60_000 : 60 * 60_000, graceMs: 5000,
     } : definition.group === "backend" ? backendVerification(root, check, backend)
       : definition.group === "apple" ? await appleVerification(root, check, plan, options)
         : await androidVerification(root, check, plan, options);

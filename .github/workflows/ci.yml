@@ -151,6 +151,12 @@ jobs:
             .data\ci\tooling\report.json
             .data\ci\tooling\ci-report.json
           if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always() && hashFiles('.data/ci/tooling/tooling-progress.jsonl') != ''
+        with:
+          name: tooling-progress-${{ matrix.part }}-attempt-${{ github.run_attempt }}
+          path: .data/ci/tooling/tooling-progress.jsonl
+          if-no-files-found: error
 
   macos:
     needs: plan
@@ -158,6 +164,10 @@ jobs:
     name: macOS regressions
     runs-on: macos-latest
     timeout-minutes: 30
+    env:
+      XDG_CACHE_HOME: ${{ runner.temp }}/devpocket-cache
+      DOTNET_MultiCoreJitNoProfileGather: '1'
+      npm_config_registry: https://packagefeedproxy.microsoft.io/npm/
     steps:
       - uses: actions/checkout@v7
         with:
@@ -176,27 +186,24 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - name: Verify macOS native infrastructure
         id: verify
-        shell: pwsh
+        shell: bash
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
         run: |
-          node scripts/verify.mjs --base $env:BASE_SHA --group tooling --tooling-shard native --report .data/ci/macos/report.json
-          exit $LASTEXITCODE
+          node scripts/verify.mjs --base "$BASE_SHA" --group tooling --tooling-shard native --report .data/ci/macos/report.json
       - name: Bind macOS evidence to this CI attempt
         if: always() && hashFiles('scripts/verification-ci.mjs') != ''
-        shell: pwsh
+        shell: bash
         run: |
           node scripts/verification-ci.mjs --seal --unit macos --input .data/ci/macos/report.json --report .data/ci/macos/ci-report.json
-          exit $LASTEXITCODE
       - name: Explain macOS check outcome
         id: diagnostics
         if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
-        shell: pwsh
+        shell: bash
         env:
           STEP_RESULT: ${{ steps.verify.outcome }}
         run: |
-          node scripts/verification-diagnostics.mjs --directory .data/ci/macos --job tooling --step-result $env:STEP_RESULT --github
-          exit $LASTEXITCODE
+          node scripts/verification-diagnostics.mjs --directory .data/ci/macos --job tooling --step-result "$STEP_RESULT" --github
       - uses: actions/upload-artifact@v7
         if: always() && steps.diagnostics.outputs.report_ready == 'true'
         with:
@@ -210,6 +217,12 @@ jobs:
           path: |
             .data/ci/macos/report.json
             .data/ci/macos/ci-report.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: always() && hashFiles('.data/ci/macos/tooling-progress.jsonl') != ''
+        with:
+          name: tooling-progress-macos-attempt-${{ github.run_attempt }}
+          path: .data/ci/macos/tooling-progress.jsonl
           if-no-files-found: error
 
   backend:
@@ -474,12 +487,19 @@ jobs:
   apple:
     needs: plan
     if: needs.plan.outputs.apple == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.backend_diagnostic)
-    name: Apple native verification
+    name: Apple native verification (${{ matrix.role }})
+    strategy:
+      fail-fast: false
+      matrix:
+        role: [mac, iphone, ipad, duo]
     runs-on: xcode-27
     timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
       npm_config_registry: https://packagefeedproxy.microsoft.io/npm/
+      XDG_CACHE_HOME: ${{ runner.temp }}/devpocket-cache
+      DOTNET_MultiCoreJitNoProfileGather: '1'
+      APPLE_ROLE: ${{ matrix.role }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -496,31 +516,28 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - name: Verify the selected Apple platform
         id: verify
-        shell: pwsh
+        shell: bash
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
         run: |
-          node scripts/verify.mjs --base $env:BASE_SHA --group apple --report .data/ci/apple/report.json
-          exit $LASTEXITCODE
+          node scripts/verify.mjs --base "$BASE_SHA" --group apple --apple-role "$APPLE_ROLE" --report .data/ci/apple/report.json
       - name: Bind Apple evidence to this CI attempt
         if: always() && hashFiles('scripts/verification-ci.mjs') != ''
-        shell: pwsh
+        shell: bash
         run: |
-          node scripts/verification-ci.mjs --seal --unit apple --input .data/ci/apple/report.json --report .data/ci/apple/ci-report.json
-          exit $LASTEXITCODE
+          node scripts/verification-ci.mjs --seal --unit "apple-$APPLE_ROLE" --input .data/ci/apple/report.json --report .data/ci/apple/ci-report.json
       - name: Explain Apple verification outcome
         id: diagnostics
         if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''
-        shell: pwsh
+        shell: bash
         env:
           STEP_RESULT: ${{ steps.verify.outcome }}
         run: |
-          node scripts/verification-diagnostics.mjs --directory .data/ci/apple --job apple --step-result $env:STEP_RESULT --github
-          exit $LASTEXITCODE
+          node scripts/verification-diagnostics.mjs --directory .data/ci/apple --job apple --step-result "$STEP_RESULT" --github
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: verification-apple-attempt-${{ github.run_attempt }}
+          name: verification-apple-${{ matrix.role }}-attempt-${{ github.run_attempt }}
           path: |
             .data/ci/apple/report.json
             .data/ci/apple/ci-report.json
@@ -528,13 +545,13 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always() && steps.diagnostics.outputs.report_ready == 'true'
         with:
-          name: check-diagnostics-apple-attempt-${{ github.run_attempt }}
+          name: check-diagnostics-apple-${{ matrix.role }}-attempt-${{ github.run_attempt }}
           path: .data/ci/apple/verification-diagnostics.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: apple-native-evidence-attempt-${{ github.run_attempt }}
+          name: apple-native-evidence-${{ matrix.role }}-attempt-${{ github.run_attempt }}
           include-hidden-files: true
           path: |
             .data/ci/apple/apple/apple-owner.json
@@ -542,6 +559,7 @@ jobs:
             .data/ci/apple/apple/logs/
             .data/ci/apple/apple/*/result.xcresult/
             .data/ci/apple/apple/test-*/result-files.json
+            .data/ci/apple/apple/test-*/catalog/enumeration.json
             .data/ci/apple/apple/build-*/derived/Build/Products/**/DevPocket.app/
           if-no-files-found: error
 
@@ -589,6 +607,10 @@ jobs:
           }
           node @arguments
           if ($LASTEXITCODE -ne 0) { throw 'Required verification is incomplete. Missing or failed device evidence is a blocker, not a skipped success.' }
+          $collected = Get-Content -LiteralPath .data\ci\ci-report.json -Raw | ConvertFrom-Json
+          if ($collected.report.checks | Where-Object { $_.id -eq 'apple-native' -and $_.appleEvidence.nativeAcceptanceRequired -eq $true }) {
+            'Hosted CI checks passed. Same-commit complete native Apple acceptance, including Mac WK pixel checks, is still required before delivery.' >> $env:GITHUB_STEP_SUMMARY
+          }
       - name: Explain aggregate outcome
         id: diagnostics
         if: always() && hashFiles('scripts/verification-diagnostics.mjs') != ''

@@ -309,6 +309,13 @@ narrower. Local unsharded verification still covers its current host, not every
 CI platform. Device instrumentation and layouts remain on Ubuntu/KVM; this Mac
 job does not claim the local HVF emulator path has been exercised.
 
+CI tooling commands have an earlier deadline than their enclosing job so cleanup,
+report sealing and diagnostic publication can finish. The optional CI progress
+artifact records native Node test events with allowlisted source files/locations,
+not dynamic test names, output or assertion contents. Queue events are not proof
+of execution. Mac jobs use job-private PowerShell caches with startup-profile
+gathering disabled; test selection, assertions and native ownership checks remain.
+
 Sealing and collecting CI evidence accepts fork PR heads for eligible checks,
 while retaining the base-repository identity and exact merge-parent checks.
 This lets documentation/tooling-only fork PRs reach their normal gate. It does
@@ -360,6 +367,9 @@ source/index/branch/config checks refuse concurrent changes.
 
 `kind: ci-qualification`, `status: verified` means **CI checks qualified**.
 It is not independent review, a human decision or permission to publish ready work.
+When `nativeAcceptanceRequired` is true, collect the same-candidate complete
+native evidence in [Hosted Apple CI](#hosted-apple-ci) before final review or
+ready delivery. A green hosted matrix does not satisfy that separate requirement.
 The local `candidate` and actual CI `tested` source remain separate: a PR merge
 SHA or LF checkout fingerprint is never rewritten to look like execution on the
 local branch/CRLF checkout. The referenced envelope and ZIP remain evidence
@@ -791,21 +801,45 @@ The compile SDK must provide the iOS 27.1 reserved-region symbols; a runtime
 availability guard and deployment target 27.0 do not make an older SDK sufficient.
 The native Mac host must also meet the app's macOS minimum.
 
-CI restores locked Node dependencies, prepares the existing component renderer,
-performs fresh normal builds and full-scheme tests with isolated derived data, and
-collects actual xcresult evidence for Mac, ordinary iPhone, iPad and Duo. It creates
-only uniquely named run-owned simulators and confirms their cleanup. Developer
-UDIDs are never used in CI. Native UI/desktop failures remain failures, not
-model-only or skipped-platform success.
+CI restores locked Node dependencies and runs Mac, ordinary iPhone, iPad and Duo
+as independent roles. Each role retains its normal builds, fresh unfiltered test
+catalogue, actual selected cases and original command/resource evidence. A failing
+role does not prevent the other roles from producing their results. Only uniquely
+named run-owned simulators are created and cleaned; developer UDIDs are not CI inputs.
+
+The declared hosted exception is the Mac
+`DevPocketTests/actualWKWebViewRendersChartPixels()` case. The full catalogue must
+still contain it. Mac CI selects every other catalogue entry explicitly; mobile
+roles retain their full catalogue. Real WK loading, presentation, CSP/navigation
+checks and supported desktop UI tests remain required online. Other failures stay
+failures, rather than becoming additional exclusions.
+
+Role reports are partial verification inputs, not independent whole-group passes.
+The gate requires the exact four-role union and preserves each native owner,
+workflow context and execution interval in `apple-native-matrix` / `apple-shards`
+records. Missing, duplicate, filtered beyond policy, failed or skipped required
+results do not qualify. The matrix and live qualifier explicitly report
+`nativeAcceptanceRequired: true`.
+
+**Complete native acceptance remains a delivery requirement.** Before independent
+review or marking the PR ready, obtain the existing complete native qualification
+for the same candidate: all four roles, both normal products and all cases,
+including Mac pixels. Retain the original invocation/copy/source bindings and
+repeat qualification after review. Keep the local candidate and CI merge-ref
+identities distinct; verify their relevant Apple/renderer input correspondence
+instead of rewriting either head. The native evidence and actual user decisions
+must accompany the CI envelope in the review. A green hosted check alone is not
+ready delivery.
 
 The Apple job keeps raw logs/artifacts separately and publishes a bounded
 source-bound native report. Hosted test results use complete external file
 manifests, included with the raw artifacts, so each bounded result retains its
 digest, file count and Info.plist binding without inlining thousands of attachment
-names. The report budget, native contents and required case coverage stay unchanged.
-Aggregation requires the actual hosted execution
-origin, complete selected matrix and cleanup; local MCP reports cannot impersonate
-that CI job. A workflow-only branch without the uncommitted Apple implementation
+names. Each role keeps the 256-KiB native-report bound, and the enclosing verification
+report keeps its 512-KiB bound. Compact JSON may carry the combined records without
+discarding invocation or case details. Aggregation requires actual hosted execution
+origins, the complete declared hosted matrix and cleanup; local MCP reports cannot
+impersonate those CI jobs. A workflow-only branch without the uncommitted Apple implementation
 can validate selectors and runner contracts, but cannot claim a real Apple-client
 CI run. Publishing that source remains separately authorized.
 
@@ -1159,6 +1193,9 @@ Read the new report: require `status: passed`, `complete: true` and every requir
 check, platform/device result and per-shard execution origin. A plan, focused
 check, build-only result, preflight or partial shard is not completed verification.
 Retain the report path, original base, `source.head` and `source.fingerprint`.
+The publication limit counts serialized UTF-8 bytes; compact JSON is used when
+indentation alone would exceed it. Report fields and acceptance checks are unchanged,
+and checkpoint subject digests always bind the bytes actually written.
 Local candidate evidence must have `source.head === CANDIDATE_COMMIT`; CI uses
 its separate qualification of the tested merge ref instead.
 For cleanup-confirmed environment failures on unchanged source, use the explicit

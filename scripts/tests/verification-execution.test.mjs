@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { test } from "node:test";
 import { acquireHostVerificationSlot, admissionVariable } from "../verification-admission.mjs";
 import { toolingCatalogue, toolingShardDescriptor } from "../verification-tooling.mjs";
-import { combineVerification, verificationPlan } from "../verification.mjs";
+import { combineVerification, verificationPlan, serializeVerificationReport } from "../verification.mjs";
 import { VERIFICATION_REPORT_VERSION, verificationImpact } from "../verification-policy.mjs";
 import { sdkPreparationFixture, syntheticExecution } from "./fixtures/verification-tools.mjs";
 import { TOOLING_TEST_FILES, TOOLING_TEST_SHARDS } from "../test-tooling.mjs";
@@ -18,6 +18,19 @@ import { ciReportEnvelope, collectCIReports, githubVerificationContext, qualifyG
 import { dependencies, verificationArtifacts } from "../verification-preflight.mjs";
 
 const exec = promisify(execFile);
+
+test("report formatting preserves every field within the unchanged UTF-8 publication budget", () => {
+  const small = { status: "partial", checks: [{ id: "fixture", status: "not_run" }] };
+  assert.equal(serializeVerificationReport(small), JSON.stringify(small, null, 2) + "\n");
+  const large = { cases: Array.from({ length: 5000 }, (_, index) =>
+    ({ target: "DevPocketTests", identifier: `Regression/test${index}()`, result: "Passed" })) };
+  assert.ok(Buffer.byteLength(JSON.stringify(large, null, 2)) > 512 * 1024);
+  const bytes = serializeVerificationReport(large);
+  assert.ok(Buffer.byteLength(bytes) <= 512 * 1024);
+  assert.deepEqual(JSON.parse(bytes), large);
+  assert.throws(() => serializeVerificationReport({ value: "x".repeat(512 * 1024) }), /budget|output/i);
+  assert.throws(() => serializeVerificationReport({ value: "\u754c".repeat(180000) }), /budget|output/i);
+});
 
 async function fixture(t) {
   await mkdir(".data/tests", { recursive: true });

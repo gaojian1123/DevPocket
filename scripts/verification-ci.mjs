@@ -12,19 +12,21 @@ import { combineVerification, requireToolingShardReport, requireVerificationOutp
   verificationFailure, verificationPlan } from "./verification.mjs";
 import { CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "./verification-policy.mjs";
 import { readDiagnosticReport } from "./worker-diagnostics.mjs";
+import { APPLE_CI_ROLES } from "./apple-evidence.mjs";
 
 const exec = promisify(execFile);
 const sha = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const repositoryName = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 const validRepository = (value) => typeof value === "string" && value.length <= 256 && repositoryName.test(value) &&
   value.split("/").every((part) => part !== "." && part !== "..");
-const unitName = /^(?:tooling-(?:all|candidate|verification|diagnostics|native)|macos|backend|android|device|apple|gate)$/;
-const artifactName = /^verification-((?:tooling-(?:all|candidate|verification|diagnostics|native))|macos|backend|android|device|apple)-attempt-([1-9]\d*)$/;
+const unitName = /^(?:tooling-(?:all|candidate|verification|diagnostics|native)|macos|backend|android|device|apple(?:-(?:mac|iphone|ipad|duo))?|gate)$/;
+const artifactName = /^verification-((?:tooling-(?:all|candidate|verification|diagnostics|native))|macos|backend|android|device|apple(?:-(?:mac|iphone|ipad|duo))?)-attempt-([1-9]\d*)$/;
 const digest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const fail = (cause) => diagnosticError("ci-evidence", cause);
 const unitsFor = (plan) => [...plan.requiredGroups.flatMap((group) => group === "tooling"
-  ? (plan.toolingShards?.parts.map((part) => `tooling-${part.id}`) ?? ["tooling-all"]) : [group]),
+  ? (plan.toolingShards?.parts.map((part) => `tooling-${part.id}`) ?? ["tooling-all"])
+  : group === "apple" ? APPLE_CI_ROLES.map((role) => `apple-${role}`) : [group]),
 ...(plan.ciMacos === true ? ["macos"] : [])];
 
 function macosReport(plan, report) {
@@ -49,9 +51,9 @@ function macosReport(plan, report) {
   };
 }
 
-function requireAppleCIContext(report, context, attempt) {
-  const evidence = report.checks?.find((check) => check.id === "apple-native")?.appleEvidence;
-  if (evidence?.origin !== "ci-xcodebuild" || evidence.ci?.repository !== context.repository ||
+function requireAppleCIContext(evidence, context, attempt, role) {
+  if (!APPLE_CI_ROLES.includes(role) || evidence?.version !== 2 || evidence.ciRole !== role ||
+      evidence.origin !== "ci-xcodebuild" || evidence.ci?.repository !== context.repository ||
       evidence.ci.runId !== context.runId || evidence.ci.runAttempt !== String(attempt) ||
       evidence.ci.job !== "apple" || evidence.ci.sha !== context.tested.head) throw fail();
 }
@@ -132,9 +134,15 @@ export function collectCIReports(plan, context, envelopes, upstream) {
         !expectedUnits.includes(value.unit) || seen.has(value.unit) ||
         value.report.source?.head !== context.tested.head || value.report.base !== plan.base) throw fail();
     seen.add(value.unit);
-    const group = value.unit.startsWith("tooling-") || value.unit === "macos" ? "tooling" : value.unit;
+    const group = value.unit.startsWith("tooling-") || value.unit === "macos" ? "tooling"
+      : value.unit.startsWith("apple-") ? "apple" : value.unit;
     if (value.report.group !== group) throw fail();
-    if (group === "apple") requireAppleCIContext(value.report, context, attempt);
+    if (group === "apple") {
+      const role = value.unit.slice("apple-".length);
+      const check = value.report.checks?.find((check) => check.id === "apple-native");
+      if (check?.appleShard?.role !== role) throw fail();
+      requireAppleCIContext(check.appleEvidence, context, attempt, role);
+    }
     if (value.unit === "macos") macos = macosReport(plan, value.report);
     else if (group === "tooling") {
       const descriptor = value.report.checks?.find((check) => check.id === "tooling-tests")?.toolingShard;
@@ -240,7 +248,13 @@ export function validateLiveCIEnvelope(envelope, { repository, pullRequest, base
         !Number.isSafeInteger(input.attempt) || input.attempt < 1 || input.attempt > context.attempt ||
         !/^[a-f0-9]{64}$/.test(input.reportDigest ?? ""))) throw fail();
   if (value.report.requiredGroups.includes("apple")) {
-    requireAppleCIContext(value.report, context, value.inputs.find((input) => input.unit === "apple").attempt);
+    const evidence = value.report.checks.find((check) => check.id === "apple-native")?.appleEvidence;
+    if (evidence?.kind !== "apple-native-matrix" || evidence.nativeAcceptanceRequired !== true ||
+        !Array.isArray(evidence.parts) || evidence.parts.length !== APPLE_CI_ROLES.length) throw fail();
+    for (const role of APPLE_CI_ROLES) {
+      const part = evidence.parts.find((part) => part.ciRole === role);
+      requireAppleCIContext(part, context, value.inputs.find((input) => input.unit === `apple-${role}`).attempt, role);
+    }
   }
   return value;
 }
@@ -325,11 +339,16 @@ export async function qualifyGitHubCI(root, options) {
       after.status || !equal(before.source, after.source) || !equal(before.identity, after.identity) ||
       before.index !== after.index || before.configuration !== after.configuration) throw fail();
   const evidence = await writeEvidence(root, path.join(destination, "ci-report.json"), envelope);
+  const nativeAcceptanceRequired = envelope.report.checks.some((check) =>
+    check.id === "apple-native" && check.appleEvidence?.nativeAcceptanceRequired === true);
   return { version: 1, kind: "ci-qualification", status: "verified", base: plan.base, candidate: before.source,
     tested: envelope.context.tested, pullRequest: { repository, number: pr.number, base: baseReference.object.sha, baseRef: pr.base.ref },
     workflow: { runId: String(run.id), attempt: run.run_attempt, url: run.html_url },
     artifact: { id: artifact.id, digest: artifact.digest }, evidence: path.relative(root, evidence),
-    reportDigest: envelope.reportDigest, qualification: "CI checks only; independent review and delivery authorization remain separate." };
+    reportDigest: envelope.reportDigest, ...(nativeAcceptanceRequired ? { nativeAcceptanceRequired: true } : {}),
+    qualification: nativeAcceptanceRequired
+      ? "Hosted CI checks only; same-candidate complete native acceptance, independent review and delivery authorization remain required."
+      : "CI checks only; independent review and delivery authorization remain separate." };
 }
 
 async function main() {

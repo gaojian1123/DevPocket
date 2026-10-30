@@ -1187,8 +1187,10 @@ final class DevPocketUITests: XCTestCase {
     func testNarrowWindowWorksAtDisplayEdge() async throws {
         launch()
         defer { app.terminate() }
+        try await setWindowLayout(wide: true)
         let window = focusWorkbenchWindow()
         let display = CGDisplayBounds(CGMainDisplayID())
+        XCTAssertLessThanOrEqual(window.frame.width, display.width)
         let titlebar = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
             .withOffset(CGVector(dx: 0, dy: 8))
         let shift = display.maxX - window.frame.maxX
