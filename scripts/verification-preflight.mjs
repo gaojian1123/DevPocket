@@ -391,6 +391,7 @@ export async function verificationExecutionPolicy() {
 }
 
 export async function verificationArtifacts(root, plan, group, { bind = true } = {}) {
+  root = await realpath(root);
   const paths = group === "backend" && plan.requiredChecks.includes("backend-build") ? ["dist"]
     : ["android", "device"].includes(group)
       ? ["android/app/build/outputs/apk/debug/app-debug.apk", "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"] : [];
@@ -404,14 +405,25 @@ export async function verificationArtifacts(root, plan, group, { bind = true } =
   const identities = [];
   let available = true;
   for (const relative of paths) {
-    const file = path.join(root, ...relative.split("/"));
+    const parts = relative.split("/");
+    let file = root, info;
+    for (const [index, part] of parts.entries()) {
+      file = path.join(file, part);
+      try { info = await lstat(file); }
+      catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        available = false;
+        info = undefined;
+        break;
+      }
+      if (info.isSymbolicLink() || index < parts.length - 1 && !info.isDirectory()) throw diagnosticError("preflight-path");
+    }
+    if (!info) continue;
     try {
-      const info = await lstat(file);
-      if (info.isSymbolicLink()) throw diagnosticError("preflight-path");
       identities.push([relative, info.isDirectory() ? await treeIdentity(file) : await fileIdentity(file)]);
     } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-      available = false;
+      if (error.code === "ENOENT") throw diagnosticError("preflight-path", error);
+      throw error;
     }
   }
   if (["android", "device"].includes(group)) {

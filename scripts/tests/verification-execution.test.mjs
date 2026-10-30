@@ -191,6 +191,38 @@ test("missing artifacts do not hide later linked workspace outputs", async (t) =
   }
 });
 
+test("incomplete artifact traversal cannot hide later output links", async (t) => {
+  const root = await fixture(t), outside = await fixture(t), directory = path.join(root, "dist");
+  await mkdir(directory);
+  await fileSystem.symlink(path.join(root, "missing"), path.join(directory, "00-dangling"),
+    process.platform === "win32" ? "junction" : "dir");
+  await fileSystem.symlink(outside, path.join(directory, "extension"), process.platform === "win32" ? "junction" : "dir");
+  for (const bind of [false, true]) {
+    await assert.rejects(verificationArtifacts(root, { requiredChecks: ["backend-build"] }, "backend", { bind }),
+      { diagnosticCode: "preflight-path" });
+  }
+});
+
+test("native artifact checks reject linked parents before inspecting missing or present APKs", async (t) => {
+  for (const relative of ["outputs", "outputs/apk", "outputs/apk/debug"]) {
+    for (const present of [false, true]) await t.test(`${relative}, APK ${present}`, async (t) => {
+      const root = await fixture(t), outside = await fixture(t), build = path.join(root, "android", "app", "build");
+      const link = path.join(build, relative), apk = path.join(build, "outputs/apk/debug/app-debug.apk");
+      await mkdir(path.dirname(link), { recursive: true });
+      await fileSystem.symlink(outside, link, process.platform === "win32" ? "junction" : "dir");
+      if (present) {
+        const target = path.join(outside, path.relative(link, apk));
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, "existing artifact");
+      }
+      for (const group of ["android", "device"]) for (const bind of [false, true]) {
+        await assert.rejects(verificationArtifacts(root, { requiredChecks: ["android-build"] }, group, { bind }),
+          { diagnosticCode: "preflight-path" });
+      }
+    });
+  }
+});
+
 test("SDK preparation initializes matching package metadata without accepting licenses or rewriting existing metadata", async (t) => {
   const root = await fixture(t), entry = await sdkPreparationFixture(root);
   const run = () => exec("pwsh", ["-NoProfile", "-NonInteractive", "-File", entry], { timeout: 30000 });

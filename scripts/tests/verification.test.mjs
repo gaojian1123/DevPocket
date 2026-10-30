@@ -3147,33 +3147,37 @@ test("script and batch locators cannot inherit direct Node identity through a ph
   });
 
 test("unbound verification rejects nested output links before running builds", async (t) => {
-  const root = await repository(t), outside = await mkdtemp(path.resolve(".data/tests/verification-target-"));
-  t.after(() => rm(outside, { recursive: true, force: true }));
-  const marker = path.join(outside, "must-not-write");
-  await writeFile(marker, "unchanged");
-  await mkdir(path.join(root, "dist"));
-  await symlink(outside, path.join(root, "dist", "extension"), process.platform === "win32" ? "junction" : "dir");
-  const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
-  manifest.scripts.build = "node -e \"require('fs').writeFileSync('dist/extension/must-not-write','escaped')\"";
-  await writeFile(path.join(root, "package.json"), JSON.stringify(manifest));
-  const driver = path.join(root, ".data", "verify-build.mjs");
-  await mkdir(path.dirname(driver), { recursive: true });
-  await writeFile(driver, [
-    `import {executeVerification,verificationPlan} from ${JSON.stringify(new URL("../verification.mjs", import.meta.url).href)};`,
-    `const root=${JSON.stringify(root)};`,
-    "const plan={...await verificationPlan(root,'HEAD'),requiredChecks:['backend-build'],requiredGroups:['backend'],ciMacos:false};",
-    "console.log(JSON.stringify(await executeVerification(root,plan,{group:'backend',directory:root+'/.data/verification/build'})));",
-  ].join("\n"));
-  const { stdout } = await exec(process.execPath, [driver], { timeout: 120_000, env: {
-    ...isolatedAdmissionEnvironment(root), NODE_OPTIONS: "--conditions=unbound-output-regression",
-  } });
-  const report = JSON.parse(stdout);
-  assert.equal(report.preflight.status, "passed", JSON.stringify(report.preflight));
-  assert.equal(report.preflight.groups[0].reusable, false);
-  assert.equal(await readFile(marker, "utf8"), "unchanged", "Reject the link before a build can write outside the checkout.");
-  assert.equal(report.status, "blocked");
-  assert.equal(report.failure.reason, "preflight-path");
-  assert.ok(report.checks.every((check) => check.status === "not_run"));
+  for (const dangling of [false, true]) await t.test(`earlier dangling link ${dangling}`, async (t) => {
+    const root = await repository(t), outside = await mkdtemp(path.resolve(".data/tests/verification-target-"));
+    t.after(() => rm(outside, { recursive: true, force: true }));
+    const marker = path.join(outside, "must-not-write");
+    await writeFile(marker, "unchanged");
+    await mkdir(path.join(root, "dist"));
+    await symlink(outside, path.join(root, "dist", "extension"), process.platform === "win32" ? "junction" : "dir");
+    if (dangling) await symlink(path.join(root, "missing"), path.join(root, "dist", "00-dangling"),
+      process.platform === "win32" ? "junction" : "dir");
+    const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+    manifest.scripts.build = "node -e \"require('fs').writeFileSync('dist/extension/must-not-write','escaped')\"";
+    await writeFile(path.join(root, "package.json"), JSON.stringify(manifest));
+    const driver = path.join(root, ".data", "verify-build.mjs");
+    await mkdir(path.dirname(driver), { recursive: true });
+    await writeFile(driver, [
+      `import {executeVerification,verificationPlan} from ${JSON.stringify(new URL("../verification.mjs", import.meta.url).href)};`,
+      `const root=${JSON.stringify(root)};`,
+      "const plan={...await verificationPlan(root,'HEAD'),requiredChecks:['backend-build'],requiredGroups:['backend'],ciMacos:false};",
+      "console.log(JSON.stringify(await executeVerification(root,plan,{group:'backend',directory:root+'/.data/verification/build'})));",
+    ].join("\n"));
+    const { stdout } = await exec(process.execPath, [driver], { timeout: 120_000, env: {
+      ...isolatedAdmissionEnvironment(root), NODE_OPTIONS: "--conditions=unbound-output-regression",
+    } });
+    const report = JSON.parse(stdout);
+    assert.equal(report.preflight.status, "passed", JSON.stringify(report.preflight));
+    assert.equal(report.preflight.groups[0].reusable, false);
+    assert.equal(await readFile(marker, "utf8"), "unchanged", "Reject the link before a build can write outside the checkout.");
+    assert.equal(report.status, "blocked");
+    assert.equal(report.failure.reason, "preflight-path");
+    assert.ok(report.checks.every((check) => check.status === "not_run"));
+  });
 });
 
 test("native readiness validates the selected Gradle cache before artifacts exist", async (t) => {
@@ -3196,6 +3200,44 @@ test("native readiness validates the selected Gradle cache before artifacts exis
     assert.ok(result.groups[0].issues.some((issue) => issue.prerequisite === "gradle-cache" &&
       issue.failure.reason === "preflight-path"), JSON.stringify(result.groups[0]));
     await rm(link);
+  }
+});
+
+test("hosted device readiness checks its private cache on every tooling host", async (t) => {
+  const { verificationPreflight } = await import("../verification-preflight.mjs");
+  const root = await repository(t), directory = path.join(root, ".data", "verification", "hosted");
+  const outside = path.join(root, ".data", "outside-cache");
+  const link = path.join(directory, "device", "gradle-cache", "caches", "linked");
+  await mkdir(outside, { recursive: true });
+  await mkdir(path.dirname(link), { recursive: true });
+  await symlink(outside, link, process.platform === "win32" ? "junction" : "dir");
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  const architecture = Object.getOwnPropertyDescriptor(process, "arch");
+  const environment = { GITHUB_ACTIONS: process.env.GITHUB_ACTIONS, RUNNER_ENVIRONMENT: process.env.RUNNER_ENVIRONMENT };
+  const spawn = childProcess.spawn;
+  const replacement = t.mock.method(childProcess, "spawn", (file, args, options) =>
+    args.some((arg) => /owned-command-(?:windows\.mjs|linux\.py|darwin\.py)$/.test(arg))
+      ? spawn(process.execPath, ["-e", "process.exit(0)"], options) : spawn(file, args, options));
+  syncBuiltinESMExports();
+  try {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    Object.defineProperty(process, "arch", { value: "x64" });
+    process.env.GITHUB_ACTIONS = "true";
+    process.env.RUNNER_ENVIRONMENT = "github-hosted";
+    const plan = { ...await verificationPlan(root, "HEAD"), requiredChecks: ["android-device"], requiredGroups: ["device"] };
+    const result = await verificationPreflight(root, plan, { group: "device", directory });
+    assert.equal(result.status, "blocked", "Synthetic hosted mode does not supply command-ownership or platform acceptance.");
+    assert.ok(result.groups[0].issues.some((issue) => issue.prerequisite === "gradle-cache" &&
+      issue.failure.reason === "preflight-path"), JSON.stringify(result.groups[0]));
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    Object.defineProperty(process, "arch", architecture);
+    for (const [name, value] of Object.entries(environment)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    replacement.mock.restore();
+    syncBuiltinESMExports();
   }
 });
 
