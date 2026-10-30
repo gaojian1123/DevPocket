@@ -101,7 +101,7 @@ test("the dedicated tooling entry retains the complete explicit suite without di
   const manifest = JSON.parse(await readFile("package.json", "utf8"));
   assert.equal(manifest.scripts["test:tooling"], "node scripts/test-tooling.mjs");
   assert.deepEqual(TOOLING_TEST_FILES, [
-    "verification", "verification-execution", "verification-refinement", "verification-refinement-evidence", "verification-apple-batches",
+    "verification", "verification-execution", "verification-refinement", "verification-refinement-context", "verification-refinement-evidence", "verification-apple-batches",
     "verification-diagnostics", "apple-selection", "apple-local", "apple-runner",
     "android-runner", "android-build", "android-diagnostics",
     "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
@@ -112,7 +112,7 @@ test("the dedicated tooling entry retains the complete explicit suite without di
   assert.deepEqual(TOOLING_TEST_SHARDS.flatMap((part) => part.files).sort(), [...TOOLING_TEST_FILES].sort());
   assert.deepEqual(TOOLING_TEST_SHARDS.find((part) => part.id === "candidate").files,
     ["scripts/tests/development-tools.test.mjs", "scripts/tests/development-approval.test.mjs"]);
-  const refinementFiles = ["verification-refinement", "verification-refinement-evidence", "verification-apple-batches"]
+  const refinementFiles = ["verification-refinement", "verification-refinement-context", "verification-refinement-evidence", "verification-apple-batches"]
     .map((name) => `scripts/tests/${name}.test.mjs`);
   const nativeFiles = TOOLING_TEST_SHARDS.find((part) => part.id === "native").files;
   for (const file of refinementFiles) assert.ok(nativeFiles.includes(file));

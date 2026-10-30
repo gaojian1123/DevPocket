@@ -87,6 +87,17 @@ export function checkLogHints(text, root, sources, check = "unknown") {
     }
     const exception = /^[ \t]*(?:error: )?([A-Za-z]+Error)(?::|\s+\[)/.exec(line);
     if (exception && exceptions.includes(exception[1])) add({ kind: "exception", type: exception[1] });
+    const powershell = /^[ \t]*\+?[ \t]*FullyQualifiedErrorId[ \t]*:[ \t]*(.*)$/.exec(line);
+    if (powershell) {
+      const reasons = {
+        "NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand": "process-not-found",
+        GetValueInvocationException: "property-read-failed",
+        MethodInvocationException: "method-call-failed",
+        PreparationWorkerIdentityMismatch: "worker-identity-mismatch",
+        PreparationWorkerExited: "worker-exited-before-observation",
+      };
+      add({ kind: "powershell-failure", reason: Object.hasOwn(reasons, powershell[1]) ? reasons[powershell[1]] : "unclassified" });
+    }
     const owner = /^Owned macOS command failed: ([A-Za-z]+Error): (.*)$/.exec(line);
     if (owner && macosOwnerTypes.includes(owner[1])) {
       const [, type, message] = owner;
@@ -120,7 +131,7 @@ export function checkLogHints(text, root, sources, check = "unknown") {
       if (source) add({ kind: "test-declaration-hint", ...source });
     }
     for (const code of ["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND", "ERR_ASSERTION", "ENOSPC", "EBUSY", "EISDIR",
-      "ENOTDIR", "EACCES", "EPERM", "EADDRINUSE", "ECONNREFUSED"]) {
+      "ENOTDIR", "EACCES", "EPERM", "EADDRINUSE", "ECONNREFUSED", "EMULATOR_SLOT_TIMEOUT"]) {
       if (new RegExp(`^[ \\t]*(?:code: ['"])?${code}(?:['":,]|$)`).test(line)) add({ kind: "error-code", code });
     }
   }

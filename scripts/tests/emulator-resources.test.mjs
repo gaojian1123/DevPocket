@@ -459,32 +459,44 @@ test("killing only a lease controller cannot admit another worktree while its pr
   assert.ok(Number.isSafeInteger(worker.pid) && worker.pid > 0);
   let workerStarted;
   if (process.platform === "win32") {
-    const identity = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
-      `$ErrorActionPreference='Stop'; $p=Get-Process -Id ${worker.pid}; ` +
-      "try { $null=$p.SafeHandle; if($p.HasExited) { throw 'Preparation worker exited before the fixture was ready.' }; " +
-      "$p.StartTime.ToUniversalTime().Ticks.ToString() } finally { $p.Dispose() }"]);
+    let identity;
+    await assert.doesNotReject(async () => {
+      identity = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
+        `$ErrorActionPreference='Stop'; $ErrorView='NormalView'; ` +
+        `$record=Get-CimInstance Win32_Process -Filter 'ProcessId=${worker.pid}'; ` +
+        `if($null -eq $record -or $record.ParentProcessId -ne ${holder.child.pid}) { throw 'PreparationWorkerIdentityMismatch' }; ` +
+        `$p=Get-Process -Id ${worker.pid}; try { if($p.HasExited) { throw 'PreparationWorkerExited' }; $null=$p.SafeHandle; ` +
+        "$format='yyyyMMddHHmmssffffff'; $culture=[Globalization.CultureInfo]::InvariantCulture; " +
+        "if($p.StartTime.ToUniversalTime().ToString($format,$culture) -cne " +
+        "$record.CreationDate.ToUniversalTime().ToString($format,$culture)) { throw 'PreparationWorkerIdentityMismatch' }; " +
+        "$p.StartTime.ToUniversalTime().Ticks.ToString() } finally { $p.Dispose() }"]);
+    });
     workerStarted = identity.stdout.trim();
     assert.match(workerStarted, /^\d{10,20}$/);
   }
   // Windows can recycle the PID; observe and stop only the original native process.
   const workerCommand = (stop) => workerStarted === undefined
     ? `if (Get-Process -Id ${worker.pid} -ErrorAction SilentlyContinue) { ${stop ? `Stop-Process -Id ${worker.pid} -Force` : "'alive'"} }`
-    : `$ErrorActionPreference='Stop'; $p=Get-Process -Id ${worker.pid} -ErrorAction SilentlyContinue; ` +
-      `if($null -ne $p) { try { $null=$p.SafeHandle; ` +
-      `if($p.StartTime.ToUniversalTime().Ticks.ToString() -ceq '${workerStarted}' -and -not $p.HasExited) ` +
-      `{ ${stop ? "$p.Kill()" : "'alive'"} } } finally { $p.Dispose() } }`;
+    : `$ErrorActionPreference='Stop'; $ErrorView='NormalView'; $p=Get-Process -Id ${worker.pid} -ErrorAction SilentlyContinue; ` +
+      `if($null -ne $p) { try { if(-not $p.HasExited) { $null=$p.SafeHandle; ` +
+      `if(-not $p.HasExited -and $p.StartTime.ToUniversalTime().Ticks.ToString() -ceq '${workerStarted}') ` +
+      `{ ${stop ? "$p.Kill()" : "'alive'"} } } } finally { $p.Dispose() } }`;
   pool.cleanup(async () => {
-    await exec("pwsh", ["-NoProfile", "-Command", workerCommand(true)]);
+    await assert.doesNotReject(exec("pwsh", ["-NoProfile", "-Command", workerCommand(true)]));
   });
-  await exec("pwsh", ["-NoProfile", "-Command", `Stop-Process -Id ${holder.child.pid} -Force`]);
+  await assert.doesNotReject(exec("pwsh", ["-NoProfile", "-Command", `Stop-Process -Id ${holder.child.pid} -Force`]));
   if (process.platform === "darwin") {
     await assert.rejects(acquireEmulatorLease({
       ...pool, workspace: pool.first, runId: randomUUID(), timeoutMs: 250,
     }), { code: "EMULATOR_SLOT_TIMEOUT" });
     return;
   }
-  const next = await acquireEmulatorLease({ ...pool, workspace: pool.first, runId: randomUUID(), timeoutMs: 15_000 });
+  let next;
+  await assert.doesNotReject(async () => {
+    next = await acquireEmulatorLease({ ...pool, workspace: pool.first, runId: randomUUID(), timeoutMs: 15_000 });
+  });
   pool.cleanup(() => next.release());
-  const running = await exec("pwsh", ["-NoProfile", "-Command", workerCommand(false)]);
+  let running;
+  await assert.doesNotReject(async () => { running = await exec("pwsh", ["-NoProfile", "-Command", workerCommand(false)]); });
   assert.equal(running.stdout.trim(), "", "The original owned preparation must be gone before another run is admitted.");
 });

@@ -573,7 +573,7 @@ async function runAppleNative(options, local) {
       }
       const destination = mac && !local ? `platform=macOS,arch=${target.architecture}` : `platform=${target.platform},id=${target.deviceId}`;
       let selectedTests;
-      if (local || ciRole) {
+      const discover = async () => {
         const catalogDirectory = `${relative}/catalog`;
         if (local) await mkdir(path.join(root, catalogDirectory));
         if (local) item.beforeCatalogCommandId = await confirmLocalTargets(`${phase}-before-catalog`);
@@ -588,7 +588,8 @@ async function runAppleNative(options, local) {
         else {
           const selection = appleCITestSelection(item.catalog.data, report.scheme.targets, ciRole);
           if (selection.deferred.length) selectedTests = selection.tests;
-        }
+        };
+        if (local || ciRole === "mac") await discover();
       }
       item.commandId = phase;
       let execution, originalFailure;
@@ -634,6 +635,7 @@ async function runAppleNative(options, local) {
         if (!originalFailure) {
           item.result = normalizeAppleTestResult(item.summary, item.testTree, target, execution, report.scheme.targets);
           item.target = { ...target, deviceId: item.result.device.deviceId };
+          if (ciRole && !mac) await discover();
           if (local || ciRole) {
             requireApple(equal(appleTestSelection(item.result.cases.map((test) =>
               ({ targetName: test.target, testIdentifier: test.identifier }))),

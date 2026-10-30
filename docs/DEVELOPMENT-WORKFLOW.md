@@ -820,6 +820,12 @@ test-only DerivedData for fresh unfiltered discovery and execution. This keeps
 cold compilation out of the discovery allowance without extending it. The two
 normal App builds and their original products remain separate; a
 `build-for-testing` result cannot replace either normal build.
+Mac discovers first to select its exact pixel exception. Mobile roles execute the
+entire unfiltered scheme first, retain the native results, then enumerate the
+same prepared scheme and target independently. Thus cold test-host startup stays
+inside the existing test invocation, not the shorter discovery allowance.
+Every passing role still requires exact equality with its fresh full catalogue;
+post-run discovery is not permitted for a filtered invocation or local acceptance.
 The gate requires the exact four-role union and preserves each native owner,
 workflow context and execution interval in `apple-native-matrix` / `apple-shards`
 records. Missing, duplicate, filtered beyond policy, failed or skipped required
@@ -857,7 +863,7 @@ entry refuses GitHub Actions and combinations with ordinary planning, aggregatio
 recovery, promotion or Android toolchain flags.
 Native refinement runs on macOS. Its integration regressions use the existing
 macOS native tooling shard; portable CI-refusal checks also run on other hosts.
-Batch/command, checkpoint/source and native-result contracts use separate Node
+Batch/command, presentation, checkpoint/context and native-result contracts use separate Node
 test files so one serial file does not consume the whole hosted deadline.
 The complete catalogue remains selected, with serial tests inside each isolated
 file and unchanged command/job limits.

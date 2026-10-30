@@ -979,7 +979,8 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
       }
       fileReference(catalog, evidence.directory);
       requireApple(catalog.path === `${catalogDirectory}/enumeration.json` &&
-        discovered.startedAt >= preparation.completedAt && discovered.completedAt <= value.startedAt,
+        discovered.startedAt >= preparation.completedAt &&
+        (local || ciRole === "mac" ? discovered.completedAt <= value.startedAt : discovered.startedAt >= value.completedAt),
       "The full command requires its own fresh, unfiltered native catalogue.", "discovery");
       for (const [id, followedBy] of local
         ? [[item.beforeCatalogCommandId, discovered], [item.beforeTestCommandId, value]] : []) {

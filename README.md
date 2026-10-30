@@ -1023,7 +1023,7 @@ layouts remain on Ubuntu/KVM, and the local macOS HVF path still needs Mac
 hardware acceptance.
 
 The Apple acceptance-contract regressions use separate Node test files for
-batch/command, checkpoint/source and native-result evidence. All cases remain
+batch/command, presentation, checkpoint/context and native-result evidence. All cases remain
 in the native shard; each file keeps serial tests and its own isolated process.
 
 The macOS command owner uses kernel responsibility scopes and PID-version-bound

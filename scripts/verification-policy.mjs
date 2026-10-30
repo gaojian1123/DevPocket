@@ -60,7 +60,7 @@ const rules = [
       "scripts/worker-diagnostics.mjs", "scripts/native-lifecycle.mjs"].includes(file), checks: tooling },
   { id: "tooling-regression", description: "Named synthetic tooling regressions run the complete tooling suite without provisioning application toolchains.",
     matches: (file) => [
-      "verification", "verification-execution", "verification-refinement", "verification-refinement-evidence", "verification-apple-batches",
+      "verification", "verification-execution", "verification-refinement", "verification-refinement-context", "verification-refinement-evidence", "verification-apple-batches",
       "verification-diagnostics", "apple-selection", "apple-local",
       "android-runner", "android-build", "android-diagnostics",
       "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
@@ -131,7 +131,7 @@ const otherPlatformInputs = new Set([
 ]);
 const selectsMacos = (file, rule) => !otherPlatformInputs.has(file) && (
   macosRules.has(rule.id) || rule.id === "android-execution" || rule.id === "apple-execution" ||
-  rule.id === "tooling-regression" && /^scripts\/tests\/(?:verification(?:-execution|-diagnostics|-refinement(?:-evidence)?|-apple-batches)?|development-(?:tools|approval)|android-runner|android-build|native-lifecycle|process|emulator-resources|manual-emulator|xcode-mcp|tooling-runner|macos-host)\.test\.mjs$/.test(file) ||
+  rule.id === "tooling-regression" && /^scripts\/tests\/(?:verification(?:-execution|-diagnostics|-refinement(?:-(?:context|evidence))?|-apple-batches)?|development-(?:tools|approval)|android-runner|android-build|native-lifecycle|process|emulator-resources|manual-emulator|xcode-mcp|tooling-runner|macos-host)\.test\.mjs$/.test(file) ||
   ["scripts/tests/fixtures/emulator-lease-peer.mjs", "scripts/tests/fixtures/verification-tools.mjs",
     "scripts/tests/fixtures/apple-refinement.mjs"].includes(file));
 const orderedChecks = (ids) => allChecks.filter((id) => ids.includes(id));

@@ -173,7 +173,7 @@ function evidenceFixture(modelCases = 2, ciRole) {
       const data = { errors: [], values: [{ testPlan: "DevPocket", disabledTests: [],
         enabledTests: all.tests.testNodes[0].children.flatMap((bundle) =>
           bundle.children.map((test) => ({ identifier: `${bundle.name}/${test.nodeIdentifier}` }))) }] };
-      command(`${id}-catalog`, "/usr/bin/xcrun",
+      if (mac) command(`${id}-catalog`, "/usr/bin/xcrun",
         appleEnumerationArguments(workspace, catalogDirectory, target, mac), "Synthetic unfiltered enumeration\n");
       catalog = { ...outputFile(`${catalogDirectory}/enumeration.json`, appleJSON(data)), data };
       if (mac) selectedTests = normalizeAppleTestCatalog(data, report.scheme.targets)
@@ -187,6 +187,8 @@ function evidenceFixture(modelCases = 2, ciRole) {
     const native = nativeFixture(target, execution, modelCases, Boolean(ciRole) && !mac);
     for (const kind of ["summary", "tests"]) command(`${id}-${kind}`, "/usr/bin/xcrun",
       ["xcresulttool", "get", "test-results", kind, "--path", `${workspace}/${relative}/result.xcresult`, "--compact"], appleJSON(native[kind]));
+    if (ciRole && !mac) command(`${id}-catalog`, "/usr/bin/xcrun",
+      appleEnumerationArguments(workspace, catalogDirectory, target), "Synthetic unfiltered enumeration\n");
     const summary = projectAppleXcresult("summary", native.summary), testTree = projectAppleXcresult("tests", native.tests);
     report.tests.push({ role: target.role, action: "test", status: "passed", commandId: id,
       execution: executionReference(execution), target: { ...target, deviceId: native.summary.devicesAndConfigurations[0].device.deviceId },
@@ -802,6 +804,11 @@ test("CI discovery reuses prepared test products without replacing normal App bu
     assert.equal(derived(built), derived(discovered));
     assert.equal(derived(built), derived(tested));
     assert.ok(evidence.builds.every((build) => derived(command(evidence, build.commandId)) !== derived(built)));
+    if (role === "mac") assert.ok(discovered.completedAt <= tested.startedAt);
+    else {
+      assert.ok(discovered.startedAt >= tested.completedAt);
+      assert.ok(tested.args.every((arg) => !/^-only-testing:|-skip-testing:/.test(arg)));
+    }
     assert.equal(validateAppleNativeEvidence(evidence, plan), evidence);
     for (const change of [
       (value) => { delete value.tests[0].buildForTestingCommandId; },
@@ -811,6 +818,8 @@ test("CI discovery reuses prepared test products without replacing normal App bu
       (value) => { const invocation = command(value, item.commandId);
         invocation.args[invocation.args.indexOf("-derivedDataPath") + 1] = derived(command(value, value.builds[0].commandId)); },
       (value) => { command(value, item.buildForTestingCommandId).cleanup = "unknown"; },
+      (value) => { const invocation = command(value, item.catalogCommandId);
+        invocation.startedAt = tested.startedAt; invocation.completedAt = tested.completedAt; },
     ]) {
       const invalid = structuredClone(evidence);
       change(invalid);
