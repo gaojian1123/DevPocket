@@ -369,7 +369,9 @@ final class DevPocketUITests: XCTestCase {
         for identifier in ["inspector-files", "inspector-changes"] {
             let control = element(identifier)
             XCTAssertTrue(control.waitForExistence(timeout: 10))
-            XCTAssertTrue(control.isHittable)
+            XCTAssertTrue(control.isEnabled)
+            XCTAssertFalse(control.frame.isEmpty)
+            XCTAssertTrue(app.windows.firstMatch.frame.contains(control.frame))
             XCTAssertEqual(app.descendants(matching: .any).matching(identifier: identifier).count, 1)
         }
     }
@@ -857,6 +859,14 @@ final class DevPocketUITests: XCTestCase {
         checkTools()
         XCTAssertFalse(element("inspector-toggle").exists)
         let identifiers = ["inspector-files", "inspector-changes"]
+        func activateTool(_ identifier: String) {
+            let point = element(identifier).coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            #if os(macOS)
+            point.click()
+            #else
+            point.tap()
+            #endif
+        }
         func toolbarAnchors() -> [CGPoint] {
             let window = app.windows.firstMatch.frame
             return identifiers.map { identifier in
@@ -872,7 +882,7 @@ final class DevPocketUITests: XCTestCase {
             }
         }
 
-        activate(element("inspector-files"))
+        activateTool("inspector-files")
         let filesVisible = element("session-files-content").waitForExistence(timeout: 10)
         if !filesVisible {
             let hierarchy = XCTAttachment(string: app.debugDescription)
@@ -886,7 +896,8 @@ final class DevPocketUITests: XCTestCase {
         }
         XCTAssertTrue(filesVisible)
         let sections = element("inspector-sections")
-        if sections.exists {
+        let usesSheet = sections.exists
+        if usesSheet {
             XCTAssertTrue(sections.buttons["文件"].isSelected)
             XCTAssertTrue(element("inspector-close").isHittable)
             activate(sections.buttons["更改"])
@@ -899,7 +910,7 @@ final class DevPocketUITests: XCTestCase {
             XCTAssertTrue(element("session-changes-content").waitForNonExistence(timeout: 10))
             checkTools()
 
-            activate(element("inspector-changes"))
+            activateTool("inspector-changes")
             XCTAssertTrue(sections.waitForExistence(timeout: 10))
             XCTAssertTrue(element("session-changes-content").waitForExistence(timeout: 10))
             XCTAssertTrue(sections.buttons["更改"].isSelected)
@@ -913,16 +924,30 @@ final class DevPocketUITests: XCTestCase {
             XCTAssertFalse(element("inspector-close").exists)
             checkTools(selected: "inspector-files")
             checkStableToolbar()
-            activate(element("inspector-changes"))
+            activateTool("inspector-changes")
             XCTAssertTrue(element("session-changes-content").waitForExistence(timeout: 10))
             checkTools(selected: "inspector-changes")
             checkStableToolbar()
-            activate(element("inspector-changes"))
+            activateTool("inspector-changes")
         }
         XCTAssertTrue(sections.waitForNonExistence(timeout: 10))
         XCTAssertTrue(element("session-files-content").waitForNonExistence(timeout: 10))
         XCTAssertTrue(element("session-changes-content").waitForNonExistence(timeout: 10))
         checkTools()
+        if usesSheet {
+            // Exercise both controls after dismissal instead of relying on cached AX hit points.
+            for section in ["files", "changes"] {
+                activateTool("inspector-\(section)")
+                XCTAssertTrue(sections.waitForExistence(timeout: 10))
+                let content = element("session-\(section)-content")
+                XCTAssertTrue(content.waitForExistence(timeout: 10))
+                XCTAssertTrue(sections.buttons[section == "files" ? "文件" : "更改"].isSelected)
+                activate(element("inspector-close"))
+                XCTAssertTrue(content.waitForNonExistence(timeout: 10))
+            }
+            XCTAssertTrue(sections.waitForNonExistence(timeout: 10))
+            checkTools()
+        }
         checkStableToolbar()
         XCTAssertTrue(element("conversation-timeline").exists)
         if !draft.isHittable {

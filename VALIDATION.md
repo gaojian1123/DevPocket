@@ -1273,3 +1273,13 @@ chooses an on-screen left or right resize border from actual display bounds.
 Native tiling is reserved for the case where neither border is available, with
 an observed-frame wait. Draft equality, narrow/wide thresholds and time
 allowances remain unchanged.
+
+The tenth complete attempt passed Mac, iPhone and iPad. Its only Duo failure
+was XCTest's hit-point accessor throwing after native sheet swipe dismissal;
+the retained hierarchy still had unique, nonempty, in-window toolbar controls,
+and an unchanged focused replay passed. The inspector test now checks enabled
+state, bounds, uniqueness and toggle state, then uses actual native frame-based
+clicks/taps. After sheet dismissal it explicitly opens and closes both Files and
+Changes and retains the draft and settled-placement checks. This replaces a
+fragile accessibility inference with observable control behavior, not a skipped
+interaction or a change to the waived sidebar animation.
