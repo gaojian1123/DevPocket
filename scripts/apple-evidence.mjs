@@ -354,17 +354,18 @@ export function inspectAppleScheme(xml) {
   return targets;
 }
 
-export function appleXcodeArguments({ workspace, directory, action, platform, destination, testDiagnostics, selectedTests }) {
-  requireApple(["build", "test"].includes(action) && ["ios", "macos"].includes(platform) &&
+export function appleXcodeArguments({ workspace, directory, action, platform, destination, testDiagnostics, selectedTests, derivedDataDirectory }) {
+  requireApple(["build", "build-for-testing", "test"].includes(action) && ["ios", "macos"].includes(platform) &&
     text(destination) && relative(directory) &&
     (testDiagnostics === undefined || action === "test" && testDiagnostics === "never") &&
-    (selectedTests === undefined || action === "test"),
+    (selectedTests === undefined || action === "test") &&
+    (derivedDataDirectory === undefined || action === "test" && relative(derivedDataDirectory)),
   "Invalid Apple build/test arguments.", "configuration");
   return ["xcodebuild", "-project", path.posix.join(workspace, APPLE_REQUIREMENTS.project),
     "-scheme", APPLE_REQUIREMENTS.scheme, "-configuration", "Debug",
     "-sdk", platform === "ios" ? "iphonesimulator" : "macosx",
     "-destination", destination, "-destination-timeout", "120",
-    "-derivedDataPath", path.posix.join(workspace, directory, "derived"),
+    "-derivedDataPath", path.posix.join(workspace, derivedDataDirectory ?? `${directory}/derived`),
     "-resultBundlePath", path.posix.join(workspace, directory, "result.xcresult"),
     "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile", "-skipPackageUpdates",
     ...(action === "test" ? ["-parallel-testing-enabled", "NO", "-test-timeouts-enabled", "YES",
@@ -880,6 +881,7 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
     const value = command(item.commandId, "/usr/bin/xcrun",
       appleXcodeArguments({ workspace: evidence.workspace, directory, action, platform, destination,
         ...(local && action === "test" ? { testDiagnostics: "never" } : {}),
+        ...(ciRole && action === "test" ? { derivedDataDirectory: `${directory}/catalog/derived` } : {}),
         ...(ciRole === "mac" && action === "test"
           ? { selectedTests: appleCITestSelection(item.catalog?.data, evidence.scheme.targets, ciRole).tests } : {}) }));
     requireApple(!nativeCommands.has(value.id) && value.startedAt >= preparation.completedAt &&
@@ -965,6 +967,16 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
       const catalogTarget = ciRole === "mac" ? { ...target, deviceId: undefined } : target;
       const discovered = command(item.catalogCommandId, "/usr/bin/xcrun",
         appleEnumerationArguments(evidence.workspace, catalogDirectory, catalogTarget, ciRole === "mac"));
+      if (ciRole) {
+        const built = command(item.buildForTestingCommandId, "/usr/bin/xcrun",
+          appleXcodeArguments({ workspace: evidence.workspace, directory: catalogDirectory, action: "build-for-testing",
+            platform: mac ? "macos" : "ios",
+            destination: mac ? `platform=macOS,arch=${toolchain.architecture}` : "generic/platform=iOS Simulator" }));
+        requireApple(built.startedAt >= evidence.builds.map((build) => commands.get(build.commandId).completedAt).sort().at(-1) &&
+          built.completedAt <= discovered.startedAt &&
+          (mac || built.completedAt <= commands.get(evidence.resources.find((entry) => entry.role === target.role).createCommandId).startedAt),
+        "CI test products must be prepared after normal builds and before simulator startup/discovery.", "execution-origin");
+      }
       fileReference(catalog, evidence.directory);
       requireApple(catalog.path === `${catalogDirectory}/enumeration.json` &&
         discovered.startedAt >= preparation.completedAt && discovered.completedAt <= value.startedAt,

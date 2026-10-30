@@ -1189,19 +1189,24 @@ final class DevPocketUITests: XCTestCase {
         defer { app.terminate() }
         // Leave enough title-bar travel on a narrow virtual display to initiate a native window move.
         try await setWindowLayout(wide: true, width: 900)
-        let window = focusWorkbenchWindow()
+        let window = app.windows.matching(identifier: "workbench").firstMatch
         let display = CGDisplayBounds(CGMainDisplayID())
         XCTAssertLessThanOrEqual(window.frame.width, display.width)
-        let titlebar = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
-            .withOffset(CGVector(dx: 0, dy: 8))
-        let shift = display.maxX - window.frame.maxX
-        if abs(shift) > 2 {
+        var placements = ["Display: \(display)"]
+        // Native window placement can adjust the frame during a drag; correct from the observed result.
+        for _ in 0..<3 {
+            let shift = display.maxX - window.frame.maxX
+            if abs(shift) <= 2 { break }
+            placements.append("Before: \(window.frame); translation: \(shift)")
+            let titlebar = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+                .withOffset(CGVector(dx: 0, dy: 8))
             titlebar.click(forDuration: 0.2, thenDragTo: titlebar.withOffset(CGVector(dx: shift, dy: 0)))
+            for _ in 0..<30 where abs(window.frame.maxX - display.maxX) > 2 {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            placements.append("After: \(window.frame)")
         }
-        for _ in 0..<30 where abs(window.frame.maxX - display.maxX) > 2 {
-            try await Task.sleep(for: .milliseconds(100))
-        }
-        let placement = XCTAttachment(string: "Display: \(display)\nRequested translation: \(shift)\nWindow: \(window.frame)")
+        let placement = XCTAttachment(string: placements.joined(separator: "\n"))
         placement.name = "native-mac-edge-placement"
         placement.lifetime = .keepAlways
         add(placement)

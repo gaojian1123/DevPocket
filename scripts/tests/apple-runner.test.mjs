@@ -139,6 +139,12 @@ function evidenceFixture(modelCases = 2, ciRole) {
   for (const [index, requirement] of APPLE_REQUIREMENTS.targets.entries()) {
     if (ciRole && requirement.role !== ciRole) continue;
     const mac = requirement.role === "mac";
+    const id = `test-${requirement.role}`, relative = `${directory}/${id}`, catalogDirectory = `${relative}/catalog`;
+    const buildForTestingCommandId = `${id}-build`;
+    if (ciRole) command(buildForTestingCommandId, "/usr/bin/xcrun",
+      appleXcodeArguments({ workspace, directory: catalogDirectory, action: "build-for-testing",
+        platform: mac ? "macos" : "ios",
+        destination: mac ? "platform=macOS,arch=arm64" : "generic/platform=iOS Simulator" }), "** TEST BUILD SUCCEEDED **\n");
     let target = { role: "mac", platform: "macOS", osVersion: "27.0.1", architecture: "arm64" };
     if (!mac) {
       const selection = report.toolchain.simulators.find((item) => item.role === requirement.role);
@@ -158,7 +164,6 @@ function evidenceFixture(modelCases = 2, ciRole) {
       report.resources.push(resource);
       target = { ...selection, deviceId: resource.deviceId, architecture: "arm64" };
     }
-    const id = `test-${target.role}`, relative = `${directory}/${id}`;
     const destination = mac ? "platform=macOS,arch=arm64" : `platform=iOS Simulator,id=${target.deviceId}`;
     let catalog, selectedTests;
     if (ciRole) {
@@ -168,7 +173,6 @@ function evidenceFixture(modelCases = 2, ciRole) {
       const data = { errors: [], values: [{ testPlan: "DevPocket", disabledTests: [],
         enabledTests: all.tests.testNodes[0].children.flatMap((bundle) =>
           bundle.children.map((test) => ({ identifier: `${bundle.name}/${test.nodeIdentifier}` }))) }] };
-      const catalogDirectory = `${relative}/catalog`;
       command(`${id}-catalog`, "/usr/bin/xcrun",
         appleEnumerationArguments(workspace, catalogDirectory, target, mac), "Synthetic unfiltered enumeration\n");
       catalog = { ...outputFile(`${catalogDirectory}/enumeration.json`, appleJSON(data)), data };
@@ -177,6 +181,7 @@ function evidenceFixture(modelCases = 2, ciRole) {
     }
     const execution = command(id, "/usr/bin/xcrun", appleXcodeArguments({
       workspace, directory: relative, action: "test", platform: mac ? "macos" : "ios", destination,
+      ...(ciRole ? { derivedDataDirectory: `${catalogDirectory}/derived` } : {}),
       ...(selectedTests ? { selectedTests } : {}),
     }), "** TEST SUCCEEDED **\n");
     const native = nativeFixture(target, execution, modelCases, Boolean(ciRole) && !mac);
@@ -186,7 +191,7 @@ function evidenceFixture(modelCases = 2, ciRole) {
     report.tests.push({ role: target.role, action: "test", status: "passed", commandId: id,
       execution: executionReference(execution), target: { ...target, deviceId: native.summary.devicesAndConfigurations[0].device.deviceId },
       summary, testTree, summaryCommandId: `${id}-summary`, testsCommandId: `${id}-tests`,
-      ...(catalog ? { catalog, catalogCommandId: `${id}-catalog` } : {}),
+      ...(catalog ? { catalog, catalogCommandId: `${id}-catalog`, buildForTestingCommandId } : {}),
       resultBundle: treeFixture(`${relative}/result.xcresult`, id, ["Info.plist", "Data/synthetic"]),
       result: normalizeAppleTestResult(summary, testTree, target, execution, report.scheme.targets) });
   }
@@ -784,6 +789,39 @@ test("hosted role selection defers only the declared Mac pixel case and retains 
   mac.tests[0].catalog.data.values[0].enabledTests =
     mac.tests[0].catalog.data.values[0].enabledTests.filter((test) => !test.identifier.includes("RendersChartPixels"));
   assert.throws(() => validateAppleNativeEvidence(mac, plan));
+});
+
+test("CI discovery reuses prepared test products without replacing normal App builds", () => {
+  const derived = (command) => command.args[command.args.indexOf("-derivedDataPath") + 1];
+  for (const role of APPLE_CI_ROLES) {
+    const evidence = evidenceFixture(2, role), item = evidence.tests[0];
+    const command = (report, id) => report.commands.find((entry) => entry.id === id);
+    const built = command(evidence, item.buildForTestingCommandId);
+    const discovered = command(evidence, item.catalogCommandId), tested = command(evidence, item.commandId);
+    assert.equal(built.args.at(-1), "build-for-testing");
+    assert.equal(derived(built), derived(discovered));
+    assert.equal(derived(built), derived(tested));
+    assert.ok(evidence.builds.every((build) => derived(command(evidence, build.commandId)) !== derived(built)));
+    assert.equal(validateAppleNativeEvidence(evidence, plan), evidence);
+    for (const change of [
+      (value) => { delete value.tests[0].buildForTestingCommandId; },
+      (value) => { command(value, item.buildForTestingCommandId).args.splice(-1, 1, "build"); },
+      (value) => { command(value, item.buildForTestingCommandId).startedAt = value.startedAt; },
+      (value) => { command(value, item.buildForTestingCommandId).completedAt = tested.completedAt; },
+      (value) => { const invocation = command(value, item.commandId);
+        invocation.args[invocation.args.indexOf("-derivedDataPath") + 1] = derived(command(value, value.builds[0].commandId)); },
+      (value) => { command(value, item.buildForTestingCommandId).cleanup = "unknown"; },
+    ]) {
+      const invalid = structuredClone(evidence);
+      change(invalid);
+      assert.throws(() => validateAppleNativeEvidence(invalid, plan));
+    }
+  }
+  const local = localCommandFixture();
+  assert.equal(validateAppleNativeEvidence(local, plan, "local-xcodebuild"), local);
+  assert.ok(local.tests.every((item) => item.buildForTestingCommandId === undefined));
+  assert.throws(() => appleXcodeArguments({ workspace: "/fixture", directory: ".data/test", platform: "ios",
+    destination: "generic/platform=iOS Simulator", action: "build", derivedDataDirectory: ".data/test/derived" }), /Invalid/);
 });
 
 test("Apple matrix aggregation requires every role and preserves each real execution origin", () => {

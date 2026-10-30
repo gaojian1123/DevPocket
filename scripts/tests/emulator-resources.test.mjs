@@ -456,9 +456,25 @@ test("killing only a lease controller cannot admit another worktree while its pr
   await holder.wait("acquired");
   holder.send({ type: "prepare" });
   const worker = await holder.wait("preparing");
+  assert.ok(Number.isSafeInteger(worker.pid) && worker.pid > 0);
+  let workerStarted;
+  if (process.platform === "win32") {
+    const identity = await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command",
+      `$ErrorActionPreference='Stop'; $p=Get-Process -Id ${worker.pid}; ` +
+      "try { $null=$p.SafeHandle; if($p.HasExited) { throw 'Preparation worker exited before the fixture was ready.' }; " +
+      "$p.StartTime.ToUniversalTime().Ticks.ToString() } finally { $p.Dispose() }"]);
+    workerStarted = identity.stdout.trim();
+    assert.match(workerStarted, /^\d{10,20}$/);
+  }
+  // Windows can recycle the PID; observe and stop only the original native process.
+  const workerCommand = (stop) => workerStarted === undefined
+    ? `if (Get-Process -Id ${worker.pid} -ErrorAction SilentlyContinue) { ${stop ? `Stop-Process -Id ${worker.pid} -Force` : "'alive'"} }`
+    : `$ErrorActionPreference='Stop'; $p=Get-Process -Id ${worker.pid} -ErrorAction SilentlyContinue; ` +
+      `if($null -ne $p) { try { $null=$p.SafeHandle; ` +
+      `if($p.StartTime.ToUniversalTime().Ticks.ToString() -ceq '${workerStarted}' -and -not $p.HasExited) ` +
+      `{ ${stop ? "$p.Kill()" : "'alive'"} } } finally { $p.Dispose() } }`;
   pool.cleanup(async () => {
-    await exec("pwsh", ["-NoProfile", "-Command",
-      `if (Get-Process -Id ${worker.pid} -ErrorAction SilentlyContinue) { Stop-Process -Id ${worker.pid} -Force }`]);
+    await exec("pwsh", ["-NoProfile", "-Command", workerCommand(true)]);
   });
   await exec("pwsh", ["-NoProfile", "-Command", `Stop-Process -Id ${holder.child.pid} -Force`]);
   if (process.platform === "darwin") {
@@ -469,7 +485,6 @@ test("killing only a lease controller cannot admit another worktree while its pr
   }
   const next = await acquireEmulatorLease({ ...pool, workspace: pool.first, runId: randomUUID(), timeoutMs: 15_000 });
   pool.cleanup(() => next.release());
-  const running = await exec("pwsh", ["-NoProfile", "-Command",
-    `if (Get-Process -Id ${worker.pid} -ErrorAction SilentlyContinue) { 'alive' }`]);
-  assert.equal(running.stdout.trim(), "", "The old owned preparation must be gone before another run is admitted.");
+  const running = await exec("pwsh", ["-NoProfile", "-Command", workerCommand(false)]);
+  assert.equal(running.stdout.trim(), "", "The original owned preparation must be gone before another run is admitted.");
 });

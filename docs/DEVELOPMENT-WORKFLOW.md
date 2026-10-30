@@ -815,6 +815,11 @@ checks and supported desktop UI tests remain required online. Other failures sta
 failures, rather than becoming additional exclusions.
 
 Role reports are partial verification inputs, not independent whole-group passes.
+Each CI role prepares its test bundles before simulator startup, then reuses that
+test-only DerivedData for fresh unfiltered discovery and execution. This keeps
+cold compilation out of the discovery allowance without extending it. The two
+normal App builds and their original products remain separate; a
+`build-for-testing` result cannot replace either normal build.
 The gate requires the exact four-role union and preserves each native owner,
 workflow context and execution interval in `apple-native-matrix` / `apple-shards`
 records. Missing, duplicate, filtered beyond policy, failed or skipped required

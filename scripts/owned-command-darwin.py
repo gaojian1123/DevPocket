@@ -45,7 +45,37 @@ DEBUG_APPLE_OWNER = (os.getenv("DEVPOCKET_APPLE_OWNER_DEBUG") == "1" and
 
 def debug_apple_owner(phase, **facts):
     if DEBUG_APPLE_OWNER:
-        print("[DEBUG-ci-sim-owner] " + json.dumps({"phase": phase, **facts}), file=sys.stderr, flush=True)
+        print("[DEBUG-ci-sim-owner] " + json.dumps({"phase": phase, "observedAt": time.time(), **facts}),
+              file=sys.stderr, flush=True)
+
+
+def debug_apple_resources():
+    if not DEBUG_APPLE_OWNER:
+        return
+    facts = {"logicalCpus": os.cpu_count()}
+    try:
+        facts["loadAverage"] = os.getloadavg()
+        result = subprocess.run(["/usr/bin/vm_stat"], stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, timeout=2, check=True)
+        page_size = re.search(r"page size of (\d+) bytes", result.stdout)
+        wanted = {"Pages free", "Pages active", "Pages inactive", "Pages speculative",
+                  "Pages wired down", "Pages occupied by compressor", "Pageouts", "Swapouts"}
+        pages = {}
+        for line in result.stdout.splitlines():
+            name, separator, value = line.partition(":")
+            if separator and name in wanted:
+                pages[name] = int(value.strip().rstrip("."))
+        if page_size is None or set(pages) != wanted:
+            raise ValueError("Unrecognized virtual-memory counters.")
+        facts["memory"] = {"pageSize": int(page_size.group(1)), "pages": pages}
+    except subprocess.TimeoutExpired:
+        facts["measurementUnavailable"] = "timeout"
+    except subprocess.CalledProcessError as error:
+        facts["measurementUnavailable"] = "command-failed"
+        facts["measurementExitCode"] = error.returncode
+    except (OSError, ValueError) as error:
+        facts["measurementUnavailable"] = type(error).__name__
+    debug_apple_owner("resources", **facts)
 
 
 class Darwin:
@@ -444,9 +474,11 @@ def supervise(native, bootstrap_pid):
         if state["stop"]:
             control("cancel-accepted")
             return 130
+        debug_apple_resources()
         child = subprocess.Popen([request["file"], *request["arguments"]], stdin=subprocess.PIPE,
                                  start_new_session=True, close_fds=True, env=scope.environment())
         debug_apple_owner("target-started")
+        next_debug_sample = time.monotonic() + 30
         control("active")
         while True:
             scope.poll()
@@ -480,6 +512,9 @@ def supervise(native, bootstrap_pid):
                     break
             if stopping_at is not None and now >= stopping_at:
                 break
+            if DEBUG_APPLE_OWNER and not state["stop"] and now >= next_debug_sample:
+                debug_apple_resources()
+                next_debug_sample = time.monotonic() + 30
             time.sleep(0.02)
     except (OSError, ValueError, RuntimeError, AttributeError) as error:
         # The cleanup receipt must remain the final output for this command.

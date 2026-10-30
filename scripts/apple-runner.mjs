@@ -554,6 +554,16 @@ async function runAppleNative(options, local) {
     for (const item of report.tests) {
       phase = `test-${item.role}`; active = item; item.status = "running"; item.action = "test"; delete item.reason;
       const mac = item.role === "mac";
+      const relative = `${directory}/${phase}`;
+      await mkdir(path.join(root, relative));
+      if (ciRole) {
+        await mkdir(path.join(root, relative, "catalog"));
+        item.buildForTestingCommandId = `${phase}-build`;
+        await execute(item.buildForTestingCommandId, "/usr/bin/xcrun",
+          appleXcodeArguments({ workspace: root, directory: `${relative}/catalog`, action: "build-for-testing",
+            platform: mac ? "macos" : "ios", destination: mac ? `platform=macOS,arch=${report.toolchain.architecture}`
+              : "generic/platform=iOS Simulator" }), { timeoutMs: 20 * 60_000 });
+      }
       let target = local ? local.selection.tests.find((target) => target.role === item.role)
         : { role: "mac", platform: "macOS", osVersion: report.toolchain.macOS, architecture: report.toolchain.architecture };
       if (!mac && !local) {
@@ -561,13 +571,11 @@ async function runAppleNative(options, local) {
         const resource = await createAppleSimulator(selection, runId, report.resources, inventory, simulatorCommand());
         target = { ...selection, deviceId: resource.deviceId, architecture: report.toolchain.architecture };
       }
-      const relative = `${directory}/${phase}`;
-      await mkdir(path.join(root, relative));
       const destination = mac && !local ? `platform=macOS,arch=${target.architecture}` : `platform=${target.platform},id=${target.deviceId}`;
       let selectedTests;
       if (local || ciRole) {
         const catalogDirectory = `${relative}/catalog`;
-        await mkdir(path.join(root, catalogDirectory));
+        if (local) await mkdir(path.join(root, catalogDirectory));
         if (local) item.beforeCatalogCommandId = await confirmLocalTargets(`${phase}-before-catalog`);
         item.catalogCommandId = `${phase}-catalog`;
         await execute(item.catalogCommandId, "/usr/bin/xcrun", appleEnumerationArguments(root, catalogDirectory, target, ciRole === "mac"),
@@ -588,6 +596,7 @@ async function runAppleNative(options, local) {
         execution = await execute(phase, "/usr/bin/xcrun", appleXcodeArguments({ workspace: root, directory: relative,
           action: "test", platform: mac ? "macos" : "ios", destination,
           ...(local ? { testDiagnostics: "never" } : {}),
+          ...(ciRole ? { derivedDataDirectory: `${relative}/catalog/derived` } : {}),
           ...(selectedTests ? { selectedTests } : {}) }), { timeoutMs: 20 * 60_000 });
         item.execution = nativeExecution(execution);
       } catch (error) {

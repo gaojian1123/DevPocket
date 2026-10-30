@@ -560,6 +560,7 @@ jobs:
             .data/ci/apple/apple/*/result.xcresult/
             .data/ci/apple/apple/test-*/result-files.json
             .data/ci/apple/apple/test-*/catalog/enumeration.json
+            .data/ci/apple/apple/test-*/catalog/result.xcresult/
             .data/ci/apple/apple/build-*/derived/Build/Products/**/DevPocket.app/
           if-no-files-found: error
 
