@@ -59,7 +59,7 @@ const reasons = {
   "ci-base-changed": "The live pull-request base branch differs from the tested CI base. Update and verify the candidate before qualifying it.",
   "ci-policy-mismatch": "The CI tested ref uses different protected execution inputs; review or reconcile the candidate and base policy.",
   "candidate-transition": "The working-tree evidence has no valid, unchanged native candidate transition proof.",
-  "candidate-evidence-required": "Candidate reuse requires explicit local proof validation; ordinary aggregation cannot promote old execution evidence.",
+  "candidate-evidence-required": "Verification requires execution on the current source; run fresh checks instead of converting older evidence.",
   "execution-origin": "A current verification result requires its actual execution source and completed timestamps.",
   unknown: "The failure category is unavailable.",
 };

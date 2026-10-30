@@ -49,20 +49,20 @@ test("the dedicated tooling entry retains the complete explicit suite without di
   assert.doesNotMatch(development, /import\(["']\.\/xcode-mcp\.test\.mjs["']\)/);
 });
 
-test("the standalone approval contracts run without Git, PowerShell, signing or candidate fixtures", async (t) => {
+test("standalone path-classification cases run without Git, PowerShell, signing or candidate fixtures", async (t) => {
   const item = await fixture(t);
   item.env.PATH = item.root;
   const entry = path.resolve("scripts/tests/development-approval.test.mjs");
   const result = await run(item, ["--test", "--test-reporter=tap", entry]);
   assert.equal(result.code, 0, result.stderr + result.stdout);
-  assert.match(result.stdout, /^# tests 10\r?$/m);
   assert.match(result.stdout, /^# skipped 0\r?$/m);
   assert.match(result.stdout, /^# fail 0\r?$/m);
   const quick = await readFile(entry, "utf8");
   const full = await readFile("scripts/tests/development-tools.test.mjs", "utf8");
   const names = [...quick.matchAll(/^test\("([^"]+)"/gm)].map((match) => match[1]);
-  assert.equal(names.length, 10);
-  assert.ok(names.every((name) => !full.includes(`test("${name}"`)), "Moved contracts must run exactly once in the full suite.");
+  assert.ok(names.length > 0);
+  assert.match(result.stdout, new RegExp(`^# tests ${names.length}\\r?$`, "m"));
+  assert.ok(names.every((name) => !full.includes(`test("${name}"`)), "Focused cases must run exactly once in the full suite.");
   assert.doesNotMatch(quick,
     /(?:from\s+|import\(\s*)["'](?:node:(?:child_process|fs(?:\/promises)?)|\.\.\/(?:candidate-commit|native-candidate|verification)\.mjs)["']/);
 });

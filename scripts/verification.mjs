@@ -93,7 +93,7 @@ export function verificationFailure(error, phase = "command") {
     ...(["node", "command-ownership", "powershell", "output-directory", "root-dependencies", "npm", "native-npm", "git",
       "ssh-keygen", "python", "azure-dependencies", "probe-python", "operations-python", "jdk", "android-platform-35", "android-platform-37.2",
       "gradle-wrapper", "android-entry", "android-output", "backend-output", "gradle-cache", "native-configuration",
-      "android-image", "adb", "emulator-acceleration", "typecheck-contract"]
+      "android-image", "adb", "emulator-acceleration"]
       .includes(ownValue(context, "prerequisite")) ? { prerequisite: ownValue(context, "prerequisite") } : {}),
   };
 }
@@ -180,14 +180,12 @@ export function verificationCleanupConfirmed(check) {
 }
 
 export async function validateVerificationEvidence(root, plan, reports, options = {}) {
+  if (Object.hasOwn(options, "candidateEvidence")) throw verificationFault("configuration");
   if (options.requireComplete === true &&
       (reports.length !== 1 || reports[0]?.status !== "passed" || reports[0].complete !== true)) {
     throw verificationFault("check-failed");
   }
-  if (!reports.some((report) => report?.transition)) return combineVerification(plan, reports);
-  if (!options.candidateEvidence || reports.length !== 1) throw verificationFault("candidate-evidence-required");
-  const { validateCandidateVerification } = await import("./verification-transition.mjs");
-  return validateCandidateVerification(root, plan, reports[0], options);
+  return combineVerification(plan, reports);
 }
 
 export function requireCheckPolicy(plan) {
@@ -335,11 +333,12 @@ export function requireToolingShardReport(plan, report) {
   return checks;
 }
 
-export function requireCompletedVerificationGroup(plan, report, group, validatedReuse = new Map()) {
+export function requireCompletedVerificationGroup(plan, report, group) {
+  if (arguments.length > 3) throw verificationFault("configuration");
   requirePlanCollection(plan);
   requireCheckPolicy(plan);
   if (!plan.requiredGroups.includes(group) || report.group !== group) throw verificationFault("check-group", { group });
-  const checks = requireVerificationResults(plan, report, validatedReuse);
+  const checks = requireVerificationResults(plan, report);
   const required = CHECKS.filter((check) => check.group === group && plan.requiredChecks.includes(check.id)).map((check) => check.id);
   if (JSON.stringify(checks.map((check) => check.id)) !== JSON.stringify(required) ||
       report.sourceValidation?.status === "failed" || report.failure ||
@@ -351,17 +350,11 @@ export function requireCompletedVerificationGroup(plan, report, group, validated
   return checks;
 }
 
-export function requireVerificationResults(plan, report, validatedReuse = new Map()) {
+export function requireVerificationResults(plan, report) {
+  if (arguments.length > 2) throw verificationFault("configuration");
   requirePlanCollection(plan);
   requireCheckPolicy(plan);
-  if (!Array.isArray(report.checks)) throw verificationFault("report-invalid");
-  for (const check of report.checks.filter((item) => item?.candidateReuse)) {
-    if (!validatedReuse.has(check.id) || JSON.stringify(check) !== JSON.stringify(validatedReuse.get(check.id))) {
-      throw verificationFault("candidate-evidence-required", { check: check.id });
-    }
-  }
-  const checks = validatedReportChecks(plan, { ...report, checks: report.checks.filter((item) => !item?.candidateReuse) });
-  return report.checks.filter((item) => item?.candidateReuse || checks.includes(item));
+  return validatedReportChecks(plan, report);
 }
 
 export function validateDeviceEvidence(evidence, plan, platform) {

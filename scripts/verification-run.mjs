@@ -213,7 +213,7 @@ export async function readVerificationRun(root, file) {
   if (path.basename(file) !== "run.json") throw diagnosticError("run-invalid");
   const directory = path.dirname(file), signing = codec(await localKey(root, true));
   const manifest = signing.decode(await readOwned(root, file));
-  if (manifest.version !== version || manifest.kind !== "verification-run" || !uuid.test(manifest.id ?? "") ||
+  if (manifest.version !== version || manifest.kind !== "verification-run" || manifest.transition != null || !uuid.test(manifest.id ?? "") ||
       !samePath(manifest.root ?? "", await realpath(root)) || !manifest.plan) throw diagnosticError("run-invalid");
   requireCheckPolicy(manifest.plan);
   const persistedTooling = manifest.binding?.trustedTooling;
@@ -226,14 +226,10 @@ export async function readVerificationRun(root, file) {
   return { manifest, directory, ...await history(root, directory, manifest, signing) };
 }
 
-export async function readCandidateInput(root, file) {
-  ({ root, file } = await verificationStorageLocation(root, file));
-  const bytes = await readOwned(root, file, 1024 * 1024);
-  return { bytes, value: JSON.parse(bytes) };
-}
-
-export async function openVerificationRun(root, plan, options, policy, promotionContext = null) {
-  const location = await requireVerificationOutputDirectory(root, options.directory, [options.resume, options.promote]);
+export async function openVerificationRun(root, plan, options, policy) {
+  if (arguments.length > 4 || ["promote", "candidateRequest", "candidateEvidence", "transition"]
+    .some((key) => Object.hasOwn(options, key))) throw diagnosticError("configuration");
+  const location = await requireVerificationOutputDirectory(root, options.directory, [options.resume]);
   const resume = options.resume ? (await verificationStorageLocation(root, options.resume)).file : undefined;
   root = location.root;
   options = { ...options, directory: location.file, resume };
@@ -246,7 +242,7 @@ export async function openVerificationRun(root, plan, options, policy, promotion
     if (manifest.binding.base !== plan.base || !equal(manifest.binding.source, plan.source)) {
       throw verificationFault("source-mismatch", { phase: "source-validation" });
     }
-    if (!equal(manifest.binding, expected) || !equal(manifest.transition ?? null, options.transition ?? null)) {
+    if (!equal(manifest.binding, expected)) {
       throw verificationFault("policy-mismatch", { phase: "preflight" });
     }
   } else {
@@ -254,7 +250,7 @@ export async function openVerificationRun(root, plan, options, policy, promotion
     await safeDirectory(root, path.resolve(options.directory), true);
     await mkdir(directory);
     manifest = { version, kind: "verification-run", id: randomUUID(), root: await realpath(root), binding: expected,
-      plan, promotionContext, transition: options.transition ?? null, createdAt: new Date().toISOString() };
+      plan, createdAt: new Date().toISOString() };
     await writeNew(root, path.join(directory, "run.json"), signing.encode(manifest));
   }
   if (count >= 128) throw diagnosticError("run-limit");
@@ -282,26 +278,23 @@ export async function openVerificationRun(root, plan, options, policy, promotion
   await updateTip("started");
   return {
     reference: { version, id: manifest.id, manifest: path.relative(root, path.join(directory, "run.json")), attempt },
-    promotion: { status: manifest.promotionContext?.eligible ? "available" : "unavailable",
-      ...(manifest.promotionContext?.reason ? { reason: manifest.promotionContext.reason } : {}),
-      ...(manifest.promotionContext?.failure ? { failure: manifest.promotionContext.failure } : {}) },
-    async reusable(group, fingerprint, artifacts, reusable = false, validatedReuse = new Map()) {
+    async reusable(group, fingerprint, artifacts, reusable = false) {
       const receipt = latest.get(group);
       if (receipt?.invalidated) return { status: "invalidated", reason: receipt.invalidated };
       if (!receipt || !["passed", "partial"].includes(receipt.report.status)) return { status: "pending" };
       if (receipt.environment !== fingerprint) return { status: "invalidated", reason: "environment-changed" };
       if (!reusable || receipt.reusable !== true) return { status: "invalidated", reason: "environment-unbound" };
       if (artifacts.available !== true || !equal(receipt.artifacts, artifacts)) return { status: "invalidated", reason: "artifact-changed" };
-      requireCompletedVerificationGroup(plan, receipt.report, group, validatedReuse);
+      requireCompletedVerificationGroup(plan, receipt.report, group);
       return { status: "reused", attempt: receipt.attempt, report: receipt.report };
     },
-    async record(report, environment, artifacts, reusable = false, validatedReuse = new Map()) {
+    async record(report, environment, artifacts, reusable = false) {
       if (!CHECK_GROUPS.includes(report.group) || groups.includes(report.group)) throw diagnosticError("run-invalid");
       if (["passed", "partial"].includes(report.status)) {
         if (report.checks.some((check) => check.toolingShard)) {
           requireToolingShardReport(plan, report);
           reusable = false;
-        } else requireCompletedVerificationGroup(plan, report, report.group, validatedReuse);
+        } else requireCompletedVerificationGroup(plan, report, report.group);
       }
       await write(`${attempt}-${report.group}.json`, { version, run: manifest.id, attempt, report, environment, artifacts, reusable });
       groups.push(report.group);

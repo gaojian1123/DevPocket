@@ -2,7 +2,7 @@ const executionScripts = new Set([
   "development-paths", "development-policy", "candidate-commit", "native-candidate",
   "git-state", "verification", "verification-policy", "verify", "verification-executor", "test-tooling",
   "verification-backend", "verification-android", "process", "owned-command", "owned-command-windows",
-  "verification-preflight", "verification-run", "verification-transition",
+  "verification-preflight", "verification-run",
   "verification-tooling", "verification-admission", "verification-ci", "verification-ci-artifact",
   "owned-command-linux", "owned-command-darwin", "local-ipc", "device-run", "worker-diagnostics", "device-diagnostics", "diagnostic-errors",
   "bounded-worker-log", "diagnostic-publication", "native-lifecycle", "backend-diagnostics",

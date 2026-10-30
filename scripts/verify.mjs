@@ -19,9 +19,6 @@ async function main() {
     group: { type: "string", default: "all" },
     "tooling-shard": { type: "string" },
     resume: { type: "string" },
-    promote: { type: "string" },
-    "candidate-request": { type: "string" },
-    "candidate-evidence": { type: "boolean", default: false },
     jdk: { type: "string" },
     sdk: { type: "string" },
     image: { type: "string" },
@@ -37,7 +34,7 @@ async function main() {
   if (!["verification", "ci"].some((folder) => relative.startsWith(path.join(".data", folder) + path.sep))) {
     throw verificationFault("ownership-mismatch");
   }
-  await requireVerificationReportPath(root, reportPath, [values.resume, values.promote]);
+  await requireVerificationReportPath(root, reportPath, [values.resume]);
   let parent = root;
   for (const part of path.relative(root, path.dirname(reportPath)).split(path.sep)) {
     parent = path.join(parent, part);
@@ -57,15 +54,12 @@ async function main() {
       plan = await verificationPlan(root, values.base, values.all);
       requirePlanCollection(plan);
       if (!["all", ...CHECK_GROUPS].includes(values.group)) throw verificationFault("configuration");
-      if (values["tooling-shard"] && (values.group !== "tooling" || values.plan || values.combine || values.promote)) {
+      if (values["tooling-shard"] && (values.group !== "tooling" || values.plan || values.combine)) {
         throw verificationFault("configuration");
       }
       if (values.plan && values.combine || values.resume && (values.plan || values.combine || values.input.length)) {
         throw verificationFault("configuration");
       }
-      if (values.promote && (values.plan || values.combine || values.resume || values.input.length || values.group !== "all") ||
-          Boolean(values.promote) !== Boolean(values["candidate-request"]) ||
-          values["candidate-evidence"] && !values.combine) throw verificationFault("configuration");
       if (values.combine) {
         phase = "aggregate";
         if (values.input.length > 32) throw verificationFault("report-invalid");
@@ -76,8 +70,7 @@ async function main() {
           if (value === null) throw verificationFault("report-missing", { inputIndex });
           return value;
         }));
-        report = await validateVerificationEvidence(root, plan, reports, { ...values,
-          candidateEvidence: values["candidate-evidence"], backendDiagnostics: values["backend-diagnostics"] });
+        report = await validateVerificationEvidence(root, plan, reports);
         const upstream = new Map();
         for (const result of values.upstream) {
           const [group, outcome, extra] = result.split(":");
@@ -95,7 +88,6 @@ async function main() {
         report = values.plan ? { ...plan, status: "planned", complete: false, checks: [] }
           : await executeVerification(root, plan, { ...values, backendDiagnostics: values["backend-diagnostics"],
             toolingShard: values["tooling-shard"],
-            candidateRequest: values["candidate-request"],
             directory: path.dirname(reportPath), signal: cancellation.signal });
       }
       if (["failed", "blocked"].includes(report.status)) process.exitCode = 1;

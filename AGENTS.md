@@ -7,9 +7,9 @@ Use `README.md` for setup and build instructions. Consult `VALIDATION.md` for re
 For new user requests to implement a feature or fix a bug, use the repository's
 `devpocket-development` skill by default. Its source of truth is
 `.github\skills\devpocket-development\SKILL.md`: invoke the skill when available,
-otherwise read that file directly. It defines workspace selection, the task
-contract and completion criteria, with conditional links to the full rules in
-`docs\DEVELOPMENT-WORKFLOW.md`.
+otherwise read that file directly. It supplies the ordered route and conditional
+references. **Completion contract** in `docs\DEVELOPMENT-WORKFLOW.md` is the
+single acceptance definition.
 
 Continue the existing task and workspace for follow-ups. Dispatched implementers
 and reviewers perform their assigned step, rather than starting another pipeline.
@@ -49,7 +49,7 @@ Preserve protocol identifiers such as `cliVersion`, `terminal` and
 ## Checks and operations
 
 - Select npm dependencies from the latest stable versions actually downloadable from the Microsoft registry (`https://packagefeedproxy.microsoft.io/npm/`). Pin direct versions and respect upstream ranges for transitive dependencies. Regenerate lockfiles with npm and verify `npm ci` against that registry using command-scoped configuration.
-- Use `npm run verify -- -Base BASE_COMMIT` for the diff-selected gate; planning, partial shards and skipped required tests are not completed verification. For authorized commit delivery, create the candidate after focused checks and before final verification and independent review.
+- Use `npm run verify -- -Base BASE_COMMIT` for the diff-selected gate. For authorized commit delivery, create the candidate after focused checks and before formal verification; code inspection may overlap CI under the guide's Completion contract.
 - Use the relevant checks in `package.json` for backend changes and `scripts\build-android.ps1 -Lint` for Android changes. Documentation-only edits need no application build.
 - Restore dependencies and install task-required tools within the worktree without another project approval after a relevant manifest change or an actual missing-prerequisite failure. Follow **Workspace-local prerequisites** in `docs\DEVELOPMENT-WORKFLOW.md`; native tool permissions and authorization for effects outside that scope remain unchanged.
 - Real GitHub Copilot checks use explicitly opted-in disposable sessions in the intended client; CLI checks use disposable terminals. Extension installation/reload, host/device enrollment and cloud operations require authorization for the specific target; previous trial approvals are not standing permission.

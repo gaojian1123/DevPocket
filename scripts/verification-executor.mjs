@@ -9,9 +9,8 @@ import { combineVerification, requireCheckPolicy, requirePlanCollection, require
   verificationFailure, verificationFault, verificationProcessCleanupConfirmed, verificationCleanupConfirmed } from "./verification.mjs";
 import { backendVerification, prepareBackendVerification } from "./verification-backend.mjs";
 import { androidVerification } from "./verification-android.mjs";
-import { acquireVerificationLock, openVerificationRun, readVerificationRun } from "./verification-run.mjs";
+import { acquireVerificationLock, openVerificationRun } from "./verification-run.mjs";
 import { emulatorInputDifference, verificationArtifacts, verificationExecutionPolicy, verificationPreflight } from "./verification-preflight.mjs";
-import { candidateReusableChecks, capturePromotionContext, prepareVerificationTransition, validateCandidateVerification } from "./verification-transition.mjs";
 import { toolingShardDescriptor } from "./verification-tooling.mjs";
 import { acquireHostVerificationSlot } from "./verification-admission.mjs";
 
@@ -24,13 +23,14 @@ function reportFor(plan, group, checks) {
 }
 
 export async function executeVerification(root, plan, options = {}) {
-  if (["evidenceRoot", "trustedToolingRunner", "isolatedTooling", "deviceDirectory", "deviceCleanup", "operationsPython"]
+  if (["evidenceRoot", "trustedToolingRunner", "isolatedTooling", "deviceDirectory", "deviceCleanup", "operationsPython",
+    "promote", "candidateRequest", "candidateEvidence", "transition"]
     .some((key) => Object.hasOwn(options, key))) throw verificationFault("configuration");
   requirePlanCollection(plan);
   requireCheckPolicy(plan);
   const group = options.group ?? "all";
   if (!["all", ...CHECK_GROUPS].includes(group)) throw verificationFault("configuration");
-  if (options.toolingShard && (group !== "tooling" || options.promote)) throw verificationFault("configuration");
+  if (options.toolingShard && group !== "tooling") throw verificationFault("configuration");
   const checks = plan.requiredChecks.map((id) => ({ id, status: "not_run" }));
   if (options.toolingShard) {
     const check = checks.find((check) => check.id === "tooling-tests");
@@ -38,13 +38,12 @@ export async function executeVerification(root, plan, options = {}) {
     check.toolingShard = toolingShardDescriptor(plan, options.toolingShard);
   }
   const selected = plan.requiredGroups.filter((item) => group === "all" || item === group);
-  await requireVerificationOutputDirectory(root, options.directory, [options.resume, options.promote]);
+  await requireVerificationOutputDirectory(root, options.directory, [options.resume]);
   const release = await acquireVerificationLock(root);
-  let run, preflight, report, sourceFailure, policy, transition, qualificationFailed = false,
+  let run, preflight, report, sourceFailure, policy, qualificationFailed = false,
     policyChanged = false, changed = false, safe = true, processesStopped = true, finished = false;
-  const recovery = { reused: [], reusedChecks: [], invalidated: [], executed: [] };
+  const recovery = { reused: [], invalidated: [], executed: [] };
   const qualifiedGroups = new Set();
-  let candidateChecks = new Map();
   let admission, admissionReleased = false;
   let initialEmulator, finalEmulator, emulatorChanges;
   try {
@@ -60,10 +59,7 @@ export async function executeVerification(root, plan, options = {}) {
         }
       }
       policy = await verificationExecutionPolicy();
-      transition = options.promote ? await prepareVerificationTransition(root, plan, options)
-        : options.resume ? (await readVerificationRun(root, options.resume)).manifest.transition : null;
-      const promotionContext = transition ? null : await capturePromotionContext(root, plan);
-      run = await openVerificationRun(root, plan, { ...options, transition }, policy, promotionContext);
+      run = await openVerificationRun(root, plan, options, policy);
       const backend = await prepareBackendVerification(root, plan, options);
       preflight = await verificationPreflight(root, plan, { ...options,
         onEmulatorIdentity: (value) => { initialEmulator = value; } });
@@ -83,12 +79,11 @@ export async function executeVerification(root, plan, options = {}) {
             preflight.groups.find((item) => item.group === "tooling")?.candidateSafe !== true)) {
           throw verificationFault("environment-unbound", { phase: "preflight", group: "tooling" });
         }
-        candidateChecks = transition ? await candidateReusableChecks(root, plan, transition, preflight, options) : new Map();
         for (const selectedGroup of selected) {
           options.signal?.throwIfAborted();
           const before = preflight.groups.find((item) => item.group === selectedGroup);
           const reusable = await run.reusable(selectedGroup, before.fingerprint,
-            await verificationArtifacts(root, plan, selectedGroup), before.reusable, candidateChecks);
+            before.reusable ? await verificationArtifacts(root, plan, selectedGroup) : { available: false }, before.reusable);
           if (reusable.status === "reused") {
             for (const saved of reusable.report.checks.filter((item) => item.status === "passed")) {
               Object.assign(checks.find((item) => item.id === saved.id), saved);
@@ -100,11 +95,6 @@ export async function executeVerification(root, plan, options = {}) {
           recovery.executed.push(selectedGroup);
           const selectedChecks = checks.filter((check) => CHECKS.find((item) => item.id === check.id).group === selectedGroup);
           for (const check of selectedChecks) {
-            if (candidateChecks.has(check.id)) {
-              Object.assign(check, candidateChecks.get(check.id));
-              recovery.reusedChecks.push(check.id);
-              continue;
-            }
             safe = false;
             processesStopped = false;
             await executeCheck(root, plan, check, { ...options, admissionEnvironment: admission?.environment }, backend);
@@ -114,7 +104,7 @@ export async function executeVerification(root, plan, options = {}) {
           }
           const groupChecks = checks.map((check) => selectedChecks.includes(check) ? structuredClone(check) : { id: check.id, status: "not_run" });
           await run.record(reportFor(plan, selectedGroup, groupChecks), before.fingerprint,
-            await verificationArtifacts(root, plan, selectedGroup), before.reusable, candidateChecks);
+            await verificationArtifacts(root, plan, selectedGroup, { bind: before.reusable }), before.reusable);
           try {
             const current = await sourceSnapshot(root);
             changed ||= current.head !== plan.source.head || current.fingerprint !== plan.source.fingerprint;
@@ -150,7 +140,7 @@ export async function executeVerification(root, plan, options = {}) {
             if (!qualifiedGroups.has(reused.group)) continue;
             const current = after.groups.find((item) => item.group === reused.group);
             if ((await run.reusable(reused.group, current.fingerprint,
-              await verificationArtifacts(root, plan, reused.group), current.reusable, candidateChecks)).status !== "reused") {
+              await verificationArtifacts(root, plan, reused.group), current.reusable)).status !== "reused") {
               qualifiedGroups.delete(reused.group);
               environmentFailure ??= verificationFault("artifact-changed", { phase: "artifact-validation", group: reused.group });
             }
@@ -162,13 +152,12 @@ export async function executeVerification(root, plan, options = {}) {
           }
         }
       }
-      report = { ...reportFor(plan, group, checks), preflight, run: run.reference, recovery,
-        ...(transition ? { transition } : { candidateConversion: run.promotion }) };
+      report = { ...reportFor(plan, group, checks), preflight, run: run.reference, recovery };
     } catch (error) {
       if (error.processTreeStopped === false) { safe = false; processesStopped = false; }
       const failure = verificationFailure(contextualFailure(error, options.signal), error.verificationContext?.phase ?? "preflight");
       report = { ...reportFor(plan, group, checks), status: "blocked", complete: false, failure, error: failure.summary,
-        ...(preflight ? { preflight } : {}), ...(run ? { run: run.reference } : {}), recovery, ...(transition ? { transition } : {}),
+        ...(preflight ? { preflight } : {}), ...(run ? { run: run.reference } : {}), recovery,
         ...(emulatorChanges ? { emulatorInputChanges: emulatorChanges } : {}) };
     }
     try {
@@ -198,8 +187,7 @@ export async function executeVerification(root, plan, options = {}) {
     }
     if (report.complete) {
       try {
-        if (transition) await validateCandidateVerification(root, plan, report, { ...options, recorded: false, preflight });
-        else combineVerification(plan, [report]);
+        combineVerification(plan, [report]);
       } catch (error) {
         qualificationFailed = true;
         const failure = verificationFailure(error, error.verificationContext?.phase ?? "aggregate");

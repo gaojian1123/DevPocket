@@ -67,7 +67,7 @@ test("declared internal workspaces bind their source and generated artifacts wit
   await mkdir(outside);
   await fileSystem.symlink(outside, path.join(f.root, "node_modules", "unapproved"),
     process.platform === "win32" ? "junction" : "dir");
-  await assert.rejects(dependencies(f.root), /preflight|path/i);
+  for (const bind of [false, true]) await assert.rejects(dependencies(f.root, { bind }), /preflight|path/i);
 });
 
 test("workspace declarations cannot escape, redirect, use globs or disagree with the lockfile", async (t) => {
@@ -89,8 +89,49 @@ test("workspace declarations cannot escape, redirect, use globs or disagree with
       await copyFile(path.join(f.workspace, "package.json"), path.join(target, "package.json"));
       await fileSystem.symlink(target, f.link, process.platform === "win32" ? "junction" : "dir");
     }
-    await assert.rejects(dependencies(f.root), /preflight|dependencies|path/i, scenario);
+    for (const bind of [false, true])
+      await assert.rejects(dependencies(f.root, { bind }), /preflight|dependencies|path/i, scenario);
   }
+});
+
+test("readiness validates dependency paths without hashing installed payloads", async (t) => {
+  const f = await workspaceFixture(t), dependency = path.join(f.root, "node_modules", "payload");
+  await mkdir(dependency);
+  await writeFile(path.join(dependency, "package.json"), JSON.stringify({ name: "payload", version: "1.0.0" }));
+  const payload = path.join(dependency, "index.js");
+  await writeFile(payload, "export const value = 1;\n");
+  let reads = 0;
+  const open = fileSystem.open;
+  const observation = t.mock.method(fileSystem, "open", (...args) => {
+    if (args[0] === payload) reads++;
+    return open(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { observation.mock.restore(); syncBuiltinESMExports(); });
+  const before = await dependencies(f.root, { bind: false });
+  await writeFile(payload, "export const value = 2;\n");
+  assert.deepEqual(await dependencies(f.root, { bind: false }), before);
+  assert.equal(reads, 0, "Readiness must not read installed code merely to bind an unusable cache.");
+  const bound = await dependencies(f.root);
+  assert.ok(reads > 0);
+  await writeFile(payload, "export const value = 3;\n");
+  assert.notDeepEqual(await dependencies(f.root), bound, "Eligible reuse still binds actual installed bytes.");
+});
+
+test("fresh native artifacts stay bound without requiring a reusable Gradle cache", async (t) => {
+  const root = await fixture(t), directory = path.join(root, "android", "app", "build", "outputs", "apk");
+  const app = path.join(directory, "debug", "app-debug.apk");
+  const testApk = path.join(directory, "androidTest", "debug", "app-debug-androidTest.apk");
+  for (const file of [app, testApk]) {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, "tested artifact");
+  }
+  const plan = { requiredChecks: ["android-build"] };
+  const before = await verificationArtifacts(root, plan, "android", { bind: false });
+  assert.equal(before.available, true);
+  assert.equal((await verificationArtifacts(root, plan, "android")).available, false);
+  await writeFile(app, "different artifact");
+  assert.notDeepEqual(await verificationArtifacts(root, plan, "android", { bind: false }), before);
 });
 
 test("SDK preparation initializes matching package metadata without accepting licenses or rewriting existing metadata", async (t) => {
