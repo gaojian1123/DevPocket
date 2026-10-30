@@ -1262,3 +1262,14 @@ reader resizing passed focused native checks with Pinyin retained. Expected
 strings and time allowances were not weakened. Records remain under
 `.data/apple/ios-delivery-1/mac-pinyin-input-1/`; these checks do not claim complete
 Chinese composition, third-party IME or physical-device compatibility.
+
+The ninth complete attempt retained two Mac window-state failures. The draft
+relaunch snapshot had an application menu but no accessible window; it did not
+establish lost draft content. The display-edge case still had its chosen right
+resize border at the screen boundary after native tiling. Both cases passed in
+an unchanged focused replay. The UI harness now uses its existing native
+activation/window-focus path after every Mac launch, including relaunch, and
+chooses an on-screen left or right resize border from actual display bounds.
+Native tiling is reserved for the case where neither border is available, with
+an observed-frame wait. Draft equality, narrow/wide thresholds and time
+allowances remain unchanged.

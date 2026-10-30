@@ -14,7 +14,14 @@ final class DevPocketUITests: XCTestCase {
         app = XCUIApplication()
         app.launchArguments = ["--fixture-test-store", "--fixture-reset", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         if let contentSize { app.launchArguments += ["-UIPreferredContentSizeCategoryName", contentSize] }
+        launchApplication()
+    }
+
+    private func launchApplication() {
         app.launch()
+        #if os(macOS)
+        _ = focusWorkbenchWindow()
+        #endif
     }
 
     private func element(_ id: String) -> XCUIElement {
@@ -567,7 +574,7 @@ final class DevPocketUITests: XCTestCase {
         XCTAssertEqual(element("composer-draft").value as? String, expected)
         app.terminate()
         app.launchArguments.removeAll { $0 == "--fixture-reset" }
-        app.launch()
+        launchApplication()
         XCTAssertTrue(element("composer-draft").waitForExistence(timeout: 10))
         XCTAssertEqual(element("composer-draft").value as? String, expected)
         showLibrary()
@@ -972,7 +979,7 @@ final class DevPocketUITests: XCTestCase {
         XCTAssertEqual(expectedDraft?.trimmingCharacters(in: .whitespacesAndNewlines), "PERSIST_LOCAL_DRAFT")
         app.terminate()
         app.launchArguments.removeAll { $0 == "--fixture-reset" }
-        app.launch()
+        launchApplication()
         XCTAssertTrue(element("composer-draft").waitForExistence(timeout: 10))
         XCTAssertEqual(element("composer-draft").value as? String, expectedDraft)
     }
@@ -1108,19 +1115,35 @@ final class DevPocketUITests: XCTestCase {
         let original = window.frame
         let display = CGDisplayBounds(CGMainDisplayID())
         let targetWidth: CGFloat = wide ? 1000 : 600
+        func rightEdgeAvailable() -> Bool {
+            let frame = window.frame
+            return frame.maxX + 1 < display.maxX && frame.minX + targetWidth + 1 < display.maxX
+        }
+        func leftEdgeAvailable() -> Bool {
+            let frame = window.frame
+            return frame.minX - 1 > display.minX && frame.maxX - targetWidth - 1 > display.minX
+        }
         if abs(window.frame.width - targetWidth) > 2 {
-            if window.frame.maxX + 1 >= display.maxX || window.frame.minX + targetWidth + 1 >= display.maxX {
+            if !rightEdgeAvailable() && !leftEdgeAvailable() {
                 // Native tiling exposes an on-screen resize border without moving a filled window offscreen.
                 activate(app.menuBars.menuBarItems["窗口"])
                 activate(app.menuItems["移动与调整大小"])
                 activate(app.menuItems["左侧"])
+                for _ in 0..<50 where !rightEdgeAvailable() && !leftEdgeAvailable() {
+                    try await Task.sleep(for: .milliseconds(100))
+                }
             }
-            XCTAssertLessThan(window.frame.maxX + 1, display.maxX)
-            XCTAssertLessThan(window.frame.minX + targetWidth + 1, display.maxX)
             // Reach the native resize border instead of the content's scroll hit area.
-            let edge = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
-                .withOffset(CGVector(dx: 1, dy: 0))
-            edge.click(forDuration: 0.2, thenDragTo: edge.withOffset(CGVector(dx: targetWidth - window.frame.width, dy: 0)))
+            if rightEdgeAvailable() {
+                let edge = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
+                    .withOffset(CGVector(dx: 1, dy: 0))
+                edge.click(forDuration: 0.2, thenDragTo: edge.withOffset(CGVector(dx: targetWidth - window.frame.width, dy: 0)))
+            } else {
+                XCTAssertTrue(leftEdgeAvailable())
+                let edge = window.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
+                    .withOffset(CGVector(dx: -1, dy: 0))
+                edge.click(forDuration: 0.2, thenDragTo: edge.withOffset(CGVector(dx: window.frame.width - targetWidth, dy: 0)))
+            }
         }
         for _ in 0..<50 {
             let width = app.windows.firstMatch.frame.width
