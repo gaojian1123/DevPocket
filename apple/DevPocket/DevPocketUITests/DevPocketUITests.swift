@@ -1135,11 +1135,11 @@ final class DevPocketUITests: XCTestCase {
         return window
     }
 
-    private func setWindowLayout(wide: Bool) async throws {
+    private func setWindowLayout(wide: Bool, width: CGFloat? = nil) async throws {
         let window = focusWorkbenchWindow()
         let original = window.frame
         let display = CGDisplayBounds(CGMainDisplayID())
-        let targetWidth: CGFloat = wide ? 1000 : 600
+        let targetWidth: CGFloat = width ?? (wide ? 1000 : 600)
         func rightEdgeAvailable() -> Bool {
             let frame = window.frame
             return frame.maxX + 1 < display.maxX && frame.minX + targetWidth + 1 < display.maxX
@@ -1187,7 +1187,8 @@ final class DevPocketUITests: XCTestCase {
     func testNarrowWindowWorksAtDisplayEdge() async throws {
         launch()
         defer { app.terminate() }
-        try await setWindowLayout(wide: true)
+        // Leave enough title-bar travel on a narrow virtual display to initiate a native window move.
+        try await setWindowLayout(wide: true, width: 900)
         let window = focusWorkbenchWindow()
         let display = CGDisplayBounds(CGMainDisplayID())
         XCTAssertLessThanOrEqual(window.frame.width, display.width)
@@ -1200,6 +1201,10 @@ final class DevPocketUITests: XCTestCase {
         for _ in 0..<30 where abs(window.frame.maxX - display.maxX) > 2 {
             try await Task.sleep(for: .milliseconds(100))
         }
+        let placement = XCTAttachment(string: "Display: \(display)\nRequested translation: \(shift)\nWindow: \(window.frame)")
+        placement.name = "native-mac-edge-placement"
+        placement.lifetime = .keepAlways
+        add(placement)
         XCTAssertEqual(window.frame.maxX, display.maxX, accuracy: 2)
         try await setWindowLayout(wide: false)
         try await setWindowLayout(wide: true)

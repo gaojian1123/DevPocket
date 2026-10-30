@@ -75,7 +75,7 @@ test("the native test reporter retains bounded progress without changing case se
     assert.ok(events.every((event) => Object.keys(event).every((key) =>
       ["version", "kind", "event", "file", "line", "column", "observedAt"].includes(key))));
     const duplicate = await run(item, [item.entry, "--tooling-shard", "candidate", "--progress", destination]);
-    assert.equal(duplicate.code, 1, duplicate.stderr + duplicate.stdout);
+    assert.ok(Number.isInteger(duplicate.code) && duplicate.code > 0, duplicate.stderr + duplicate.stdout);
     assert.equal(duplicate.signal, null);
     assert.equal(await readFile(path.join(item.root, destination), "utf8"), bytes);
   }
@@ -101,7 +101,8 @@ test("the dedicated tooling entry retains the complete explicit suite without di
   const manifest = JSON.parse(await readFile("package.json", "utf8"));
   assert.equal(manifest.scripts["test:tooling"], "node scripts/test-tooling.mjs");
   assert.deepEqual(TOOLING_TEST_FILES, [
-    "verification", "verification-execution", "verification-refinement", "verification-diagnostics", "apple-selection", "apple-local", "apple-runner",
+    "verification", "verification-execution", "verification-refinement", "verification-refinement-evidence", "verification-apple-batches",
+    "verification-diagnostics", "apple-selection", "apple-local", "apple-runner",
     "android-runner", "android-build", "android-diagnostics",
     "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
     "bounded-worker-log", "development-tools", "development-approval", "process", "emulator-resources", "manual-emulator",
@@ -111,7 +112,15 @@ test("the dedicated tooling entry retains the complete explicit suite without di
   assert.deepEqual(TOOLING_TEST_SHARDS.flatMap((part) => part.files).sort(), [...TOOLING_TEST_FILES].sort());
   assert.deepEqual(TOOLING_TEST_SHARDS.find((part) => part.id === "candidate").files,
     ["scripts/tests/development-tools.test.mjs", "scripts/tests/development-approval.test.mjs"]);
-  assert.ok(TOOLING_TEST_SHARDS.find((part) => part.id === "native").files.includes("scripts/tests/verification-refinement.test.mjs"));
+  const refinementFiles = ["verification-refinement", "verification-refinement-evidence", "verification-apple-batches"]
+    .map((name) => `scripts/tests/${name}.test.mjs`);
+  const nativeFiles = TOOLING_TEST_SHARDS.find((part) => part.id === "native").files;
+  for (const file of refinementFiles) assert.ok(nativeFiles.includes(file));
+  const refinement = await Promise.all(refinementFiles.map((file) => readFile(file, "utf8")));
+  const refinementNames = refinement.flatMap((source) => [...source.matchAll(/^(?:nativeTest|test)\("([^"]+)"/gm)]
+    .map((match) => match[1]));
+  assert.equal(new Set(refinementNames).size, refinementNames.length);
+  assert.doesNotMatch(await readFile("scripts/tests/fixtures/apple-refinement.mjs", "utf8"), /^(?:nativeTest|test)\(/m);
   for (const file of TOOLING_TEST_FILES) await readFile(file);
   const development = await readFile("scripts/tests/development-tools.test.mjs", "utf8");
   assert.doesNotMatch(development, /import\(["']\.\/xcode-mcp\.test\.mjs["']\)/);

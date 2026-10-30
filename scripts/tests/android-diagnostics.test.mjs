@@ -221,7 +221,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   for (const action of actions) counts[action] = (counts[action] ?? 0) + 1;
   assert.deepEqual(counts, {
     "actions/checkout@v7": 8, "actions/setup-node@v7": 8, "actions/setup-python@v7": 4,
-    "actions/upload-artifact@v7": 22, "actions/setup-java@v6": 2, "actions/download-artifact@v8": 1,
+    "actions/upload-artifact@v7": 24, "actions/setup-java@v6": 2, "actions/download-artifact@v8": 1,
   });
   assert.equal([...normalWorkflow.matchAll(
     /- uses: actions\/checkout@v7\n\s+with:\n\s+fetch-depth: 0\n\s+persist-credentials: false/g,
@@ -349,8 +349,11 @@ test("the independent tooling CI job runs the complete tooling suite without app
   const adapter = executor.split('definition.group === "tooling" ? {')[1]?.split('} : definition.group === "backend"')[0];
   assert.ok(adapter);
   assert.ok(executor.includes('const npm = process.platform === "win32" ? "npm.cmd" : "npm"'));
-  assert.ok(adapter.includes("& ${npm} run test:tooling; exit $LASTEXITCODE"));
-  assert.ok(adapter.includes("& ${npm} run test:tooling -- --tooling-shard ${check.toolingShard.id}; exit $LASTEXITCODE"));
+  assert.ok(adapter.includes('& ${npm} run test:tooling${progress ? ` --${progressArgument}` : ""}; exit $LASTEXITCODE'));
+  assert.ok(adapter.includes("& ${npm} run test:tooling -- --tooling-shard ${check.toolingShard.id}${progressArgument}; exit $LASTEXITCODE"));
+  assert.ok(executor.includes('process.env.GITHUB_ACTIONS === "true"'));
+  assert.ok(executor.includes('tooling-progress.jsonl'));
+  assert.match(adapter, /timeoutMs: progress \? 25 \* 60_000 : 60 \* 60_000/);
 });
 
 test("native startup diagnostics are manual-only, reuse the owned entry and never become a verification shard", async () => {

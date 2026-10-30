@@ -589,7 +589,8 @@ test("tooling and application regression deadlines remain bounded without maskin
     "scripts/verification-executor.mjs", "scripts/verification-backend.mjs",
     "scripts/verification-android.mjs", ".github/workflows/ci.yml",
   ].map((file) => readFile(file, "utf8")));
-  assert.match(executor, /definition\.group === "tooling" \? \{[\s\S]*?timeoutMs: 60 \* 60_000, graceMs: 5000/);
+  assert.match(executor, /definition\.group === "tooling" \? \{[\s\S]*?timeoutMs: progress \? 25 \* 60_000 : 60 \* 60_000, graceMs: 5000/);
+  assert.ok(executor.includes('progressPath.startsWith(".data/ci/")'));
   assert.match(backend, /timeoutMs: 30 \* 60_000/);
   assert.match(android, /timeoutMs: 30 \* 60_000/);
   const tooling = ci.replaceAll("\r\n", "\n").split("\n  tooling:")[1].split("\n  backend:")[0];

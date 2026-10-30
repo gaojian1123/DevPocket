@@ -4,14 +4,15 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const TOOLING_TEST_FILES = Object.freeze([
-  "verification", "verification-execution", "verification-refinement", "verification-diagnostics", "apple-selection", "apple-local", "apple-runner",
+  "verification", "verification-execution", "verification-refinement", "verification-refinement-evidence", "verification-apple-batches",
+  "verification-diagnostics", "apple-selection", "apple-local", "apple-runner",
   "android-runner", "android-build", "android-diagnostics",
   "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
   "bounded-worker-log", "development-tools", "development-approval", "process", "emulator-resources", "manual-emulator",
   "linux-emulator", "linux-runtime", "xcode-mcp", "tooling-runner", "macos-host",
 ].map((name) => `scripts/tests/${name}.test.mjs`));
 
-const shardFor = (file) => file === "scripts/tests/verification-refinement.test.mjs" ? "native"
+const shardFor = (file) => /\/verification-(?:refinement(?:-evidence)?|apple-batches)\.test\.mjs$/.test(file) ? "native"
   : /\/apple-(?:selection|local)\.test\.mjs$/.test(file) ? "verification"
   : /\/development-(?:tools|approval)\.test\.mjs$/.test(file) ? "candidate"
   : /\/(?:verification[^/]*|git-state)\.test\.mjs$/.test(file) ? "verification"

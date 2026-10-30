@@ -306,8 +306,9 @@ async function executeCheck(root, plan, check, options, backend) {
   };
   let output;
   try {
-    const progress = definition.group === "tooling" && process.env.GITHUB_ACTIONS === "true"
-      ? path.relative(root, path.join(options.directory, "tooling-progress.jsonl")).replaceAll("\\", "/") : undefined;
+    const progressPath = path.relative(root, path.join(options.directory, "tooling-progress.jsonl")).replaceAll("\\", "/");
+    const progress = definition.group === "tooling" && plan.toolingShards && process.env.GITHUB_ACTIONS === "true" &&
+      progressPath.startsWith(".data/ci/") ? progressPath : undefined;
     const progressArgument = progress ? ` --progress '${progress.replaceAll("'", "''")}'` : "";
     adapter = definition.group === "tooling" ? {
       args: ["-NoProfile", "-NonInteractive", "-Command", check.toolingShard

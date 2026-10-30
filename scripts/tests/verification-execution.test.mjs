@@ -178,6 +178,8 @@ test("macOS CI selection includes shared infrastructure without adding a local d
     "scripts/verification-policy.mjs", "scripts/verification-ci.mjs", "scripts/test-tooling.mjs",
     "scripts/tests/process.test.mjs", "scripts/tests/emulator-resources.test.mjs",
     "scripts/tests/macos-host.test.mjs", "scripts/tests/android-runner.test.mjs",
+    "scripts/tests/verification-refinement-evidence.test.mjs", "scripts/tests/verification-apple-batches.test.mjs",
+    "scripts/tests/fixtures/apple-refinement.mjs",
     "package.json", "package-lock.json", ".github/workflows/ci.yml", "scripts/unknown-owner.mjs",
   ]) {
     const plan = verificationImpact([file]);

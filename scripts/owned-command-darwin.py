@@ -39,6 +39,15 @@ class UnstableOwnershipError(RuntimeError):
     pass
 
 
+DEBUG_APPLE_OWNER = (os.getenv("DEVPOCKET_APPLE_OWNER_DEBUG") == "1" and
+                     os.getenv("GITHUB_ACTIONS") == "true" and os.getenv("RUNNER_ENVIRONMENT") == "github-hosted")
+
+
+def debug_apple_owner(phase, **facts):
+    if DEBUG_APPLE_OWNER:
+        print("[DEBUG-ci-sim-owner] " + json.dumps({"phase": phase, **facts}), file=sys.stderr, flush=True)
+
+
 class Darwin:
     def __init__(self):
         if sys.platform != "darwin":
@@ -303,6 +312,7 @@ class Scope:
         deadline = time.monotonic() + 15
         signalled = set()
         failure = None
+        observed_members = False
         while True:
             try:
                 if child is not None:
@@ -338,6 +348,14 @@ class Scope:
                 snapshot_error = error
             except (OSError, ValueError, RuntimeError) as error:
                 failure = failure or error
+            if DEBUG_APPLE_OWNER and owned is not None and not observed_members:
+                categories = {"CoreSimulator": 0, "launchd_sim": 0, "simctl": 0, "other": 0}
+                for info in owned:
+                    name = bytes(info.bsd.name).split(b"\0", 1)[0].decode(errors="replace")
+                    category = next((key for key in categories if key != "other" and key in name), "other")
+                    categories[category] += 1
+                debug_apple_owner("cleanup-members", categories=categories, nested=len(self.nested))
+                observed_members = True
             for info in owned or []:
                 if info.bsd.pid not in protected:
                     try:
@@ -347,6 +365,7 @@ class Scope:
             if owned == [] and not pending:
                 if failure is not None:
                     raise failure
+                debug_apple_owner("cleanup-complete")
                 return
             if time.monotonic() >= deadline:
                 raise RuntimeError("Owned macOS processes did not confirm exit.") from (failure or snapshot_error)
@@ -427,6 +446,7 @@ def supervise(native, bootstrap_pid):
             return 130
         child = subprocess.Popen([request["file"], *request["arguments"]], stdin=subprocess.PIPE,
                                  start_new_session=True, close_fds=True, env=scope.environment())
+        debug_apple_owner("target-started")
         control("active")
         while True:
             scope.poll()
@@ -449,6 +469,7 @@ def supervise(native, bootstrap_pid):
                     pass
             result = child.poll()
             if result is not None:
+                debug_apple_owner("target-exited", exitCode=result)
                 try:
                     finished = not request.get("persistent") or not native.owned()
                 except UnstableOwnershipError:

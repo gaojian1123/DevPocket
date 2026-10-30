@@ -852,6 +852,10 @@ entry refuses GitHub Actions and combinations with ordinary planning, aggregatio
 recovery, promotion or Android toolchain flags.
 Native refinement runs on macOS. Its integration regressions use the existing
 macOS native tooling shard; portable CI-refusal checks also run on other hosts.
+Batch/command, checkpoint/source and native-result contracts use separate Node
+test files so one serial file does not consume the whole hosted deadline.
+The complete catalogue remains selected, with serial tests inside each isolated
+file and unchanged command/job limits.
 
 Use the owning session and its original Xcode MCP tools. The refinement actions capture
 source/evidence and reads retained `.xcresult` bundles with `xcresulttool`; it never

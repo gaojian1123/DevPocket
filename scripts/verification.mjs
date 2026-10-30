@@ -253,19 +253,19 @@ export function combineVerification(plan, reports) {
     if (expected.length !== toolingParts.size || expected.some((part) => !toolingParts.has(part.id))) {
       throw verificationFault("shard-missing", { missing: ["tooling-tests"] });
     }
-    if (appleParts.size) {
-      if (appleParts.size !== APPLE_CI_ROLES.length || APPLE_CI_ROLES.some((role) => !appleParts.has(role))) {
-        throw verificationFault("shard-missing", { missing: ["apple-native"] });
-      }
-      const parts = APPLE_CI_ROLES.map((role) => appleParts.get(role));
-      passed.set("apple-native", { id: "apple-native", status: "passed", exitCode: 0,
-        execution: { kind: "apple-shards", source: structuredClone(plan.source),
-          parts: parts.map(({ shard, execution }) => ({ shard, execution })) },
-        appleEvidence: combineAppleCIEvidence(plan, parts.map(({ evidence }) => evidence)) });
-    }
     passed.set("tooling-tests", { id: "tooling-tests", status: "passed", exitCode: 0,
       execution: { kind: "tooling-shards", source: structuredClone(plan.source),
         parts: expected.map((part) => toolingParts.get(part.id)) } });
+  }
+  if (appleParts.size) {
+    if (appleParts.size !== APPLE_CI_ROLES.length || APPLE_CI_ROLES.some((role) => !appleParts.has(role))) {
+      throw verificationFault("shard-missing", { missing: ["apple-native"] });
+    }
+    const parts = APPLE_CI_ROLES.map((role) => appleParts.get(role));
+    passed.set("apple-native", { id: "apple-native", status: "passed", exitCode: 0,
+      execution: { kind: "apple-shards", source: structuredClone(plan.source),
+        parts: parts.map(({ shard, execution }) => ({ shard, execution })) },
+      appleEvidence: combineAppleCIEvidence(plan, parts.map(({ evidence }) => evidence)) });
   }
   const missing = plan.requiredChecks.filter((id) => !passed.has(id));
   if (missing.length) throw verificationFault("shard-missing", { missing });
