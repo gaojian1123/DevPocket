@@ -4,13 +4,12 @@ import path from "node:path";
 import { classifyDevelopmentPath } from "./development-paths.mjs";
 export { isVerificationPolicyPath } from "./development-paths.mjs";
 
-// Local authorization is independent of CI impact and never overrides native tool permissions.
+// These inspections describe required decisions; they do not authenticate or grant permission.
 const packageMetadata = new Set(["name", "version", "description", "author", "contributors", "license", "keywords",
   "homepage", "bugs", "repository", "funding"]);
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const canonical = (value) => JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
   ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item);
-const identity = (value) => hash(canonical(value));
 const sameFile = (left, right) => ["dev", "ino", "mode", "size", "mtimeMs"].every((key) => left[key] === right[key]);
 const reasons = {
   execution: { stage: "execution", title: "Execution and acceptance policy",
@@ -24,11 +23,6 @@ const reasons = {
   unknown: { stage: "independent", title: "Unclassified changes",
     why: "Independent review must classify actual effects. Unresolved execution scope remains blocked, not implicitly authorized." },
 };
-
-const workspaceSetupGuidance =
-  "Required workspace-local dependency restoration and tool installation are included without a separate project approval. " +
-  "After a relevant manifest change or an actual missing-prerequisite failure, use lockfiles or pinned, integrity-verified releases and install into this worktree. " +
-  "Inspect installer/lifecycle effects and keep environment changes command-scoped; global or user-profile installation, administrator privileges and persistent system configuration remain outside this scope.";
 
 function changedPaths(value) {
   if (!Array.isArray(value) || value.length > 2000 || value.some((file) => typeof file !== "string" ||
@@ -138,152 +132,4 @@ export function developmentApprovalDetails(base, policy, files) {
   return `Original task base: ${base}\n` + [...files].sort().map((file) =>
     `\n=== ${file} ===\n--- Original ---\n${text(policy.beforeContents, file, "(absent)")}\n` +
     `--- Proposed ---\n${text(policy.contents, file, "(deleted)")}\n`).join("");
-}
-
-function requireCiTarget(ci, branch) {
-  if (!ci || typeof ci.repository !== "string" ||
-      !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(ci.repository) ||
-      ci.repository.split("/").some((part) => part === "." || part === "..") ||
-      ci.ref !== branch || !/^refs\/heads\/[^\x00-\x20]+$/.test(ci.ref) ||
-      Object.keys(ci).some((key) => !["repository", "ref"].includes(key))) {
-    throw new TypeError("CI execution needs this task's exact repository and branch.");
-  }
-}
-
-export function developmentApprovalRequest(scope, policy, stage, hooks) {
-  if (!scope || !scope.sessionId || !scope.runId || !scope.base || !scope.workspace || !scope.task ||
-      !["execution", "review"].includes(stage)) throw new TypeError("A task-scoped approval subject is required.");
-  if (scope.ci !== undefined) requireCiTarget(scope.ci, scope.workspace.branch);
-  const selected = policy.reasons.filter((item) => item.stage === stage);
-  const paths = selected.flatMap((item) => item.paths).sort();
-  if (!paths.length) return null;
-  const details = developmentApprovalDetails(scope.base, policy, paths);
-  const request = {
-    version: 1, scope, stage,
-    action: stage === "execution" ? "Use the listed execution policy for this task" : "Accept the listed sensitive code changes",
-    reasons: selected,
-    inputs: policy.inputs.filter((input) => paths.includes(input.path)),
-    detailsSha256: hash(details), detailsBytes: Buffer.byteLength(details),
-    hooks,
-    effects: stage === "execution"
-      ? ["Use these exact policy inputs for local checks and task-scoped candidate commits.",
-        workspaceSetupGuidance,
-        ...(scope.ci ? [`Run the reviewed .github/workflows/ci.yml hosted-runner setup and checks for candidates on ${scope.ci.repository} ${scope.ci.ref}, including their pull-request merge ref.`] : []),
-        "Record human review of these policy changes; still require source-bound verification and independent review."]
-      : ["Satisfy the local human-review requirement for these exact changes after verification and independent review."],
-    exclusions: ["No push, PR creation, merge, deployment, extension installation/reload or live runtime control.",
-      "No global or user-profile installation, administrator privileges, persistent PATH changes, device enrollment, shared-machine configuration or bypass of native permissions.",
-      ...(scope.ci ? ["No new infrastructure."] : [])],
-    validity: "Only this task, workspace and listed input versions. Ordinary source repairs do not expand this grant. Changed inputs or targets require a new decision.",
-  };
-  if (request.inputs.length !== paths.length) throw new Error("Approval inputs do not cover every requested path.");
-  return { ...request, id: identity(request) };
-}
-
-export function developmentTaskApprovalRequest(scope, hooks, implementation) {
-  if (!scope?.sessionId || !scope.runId || !scope.workspace?.root || !scope.workspace.branch ||
-      !scope.task?.goal || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(scope.base ?? "") ||
-      !hooks?.fingerprint || !implementation?.files?.length) {
-    throw new TypeError("Task authorization requires the original session, task, workspace, hooks and trusted implementation.");
-  }
-  if (scope.task.execution !== undefined) {
-    throw new TypeError("The former isolated execution scope is retired. Ordinary CI needs its own repository/branch-bound task scope.");
-  }
-  const delivery = scope.task.delivery ?? "local-commit";
-  if (!["working-tree", "local-commit", "pull-request"].includes(delivery)) throw new TypeError("Unknown delivery target.");
-  const publication = delivery === "pull-request";
-  const ci = scope.ci;
-  if (publication || scope.ci !== undefined) requireCiTarget(ci, scope.workspace.branch);
-  const actions = ["edit", "check", "independent-review", "repair",
-    ...(delivery !== "working-tree" ? ["commit"] : []),
-    ...(publication ? ["push"] : []),
-    ...(delivery === "pull-request" ? ["create-draft-pr", "mark-pr-ready"] : []),
-    ...(publication ? ["ordinary-ci"] : [])];
-  const effects = [
-    `Allow ${actions.join(", ")} for this task and ${scope.workspace.branch}; reuse this scope across ordinary source repairs.`,
-    `Use existing local checks ${publication ? "when their local execution is authorized" : "only"}. Changed executable inputs still need their exact local execution approval.`,
-    workspaceSetupGuidance,
-    ...(publication ? [`Authorize automatic repository CI for ${ci.repository} ${ci.ref}, including existing-PR synchronization and PR creation. Candidate dependencies, install scripts and changed tools run as the ordinary disposable runner identity without per-revision project approval. Public network access is permitted. This is ordinary CI, not an adversarial sandbox or permission to adopt new local control.`] : []),
-    "Retain required checks, independent review and source-bound results. Keep approved local tooling unchanged until separately authorized adoption.",
-  ];
-  const exclusions = [
-    "No merge, deployment, release, production secrets, cloud administration, device enrollment, live runtime control, extension installation/reload or Git hook changes.",
-    "No global or user-profile installation, administrator privileges, persistent PATH changes or shared-machine configuration.",
-    "No automatic local tool/instruction/hook adoption, native permission bypass, new targets or increased user-selected limits.",
-    ...(delivery === "working-tree" ? ["No commit, push or PR creation."] : []),
-  ];
-  const snapshot = canonical({ scope, hooks, implementation, actions, effects, exclusions });
-  const request = {
-    version: 1, scope, stage: "task", action: "Authorize this task's unattended development and delivery scope",
-    reasons: [{ code: "task", title: "Task-scoped authority",
-      why: "Establish the actual actions and execution target once, before implementation, rather than asking at each phase.", paths: [] }],
-    inputs: [], hooks, implementation, actions, effects, exclusions,
-    detailsSha256: hash(snapshot), detailsBytes: Buffer.byteLength(snapshot),
-    validity: "Only this original session/run, task, workspace, baseline, hooks and trusted implementation. Ordinary candidate edits do not change the grant. A different target, authority or trusted version requires a new decision.",
-  };
-  return { request: { ...request, id: identity(request) }, snapshot };
-}
-
-export function developmentTaskActionAllowed(scope, hooks, implementation, receipts, action) {
-  const { request } = developmentTaskApprovalRequest(scope, hooks, implementation);
-  return request.actions.includes(action) && developmentApprovalSatisfied(request, receipts);
-}
-
-export function developmentExecutionAuthorization(scope, policy, hooks, implementation, receipts, target = "local") {
-  if (scope.task.execution !== undefined) throw new TypeError("The former isolated execution scope is retired.");
-  if (!["local", "ci"].includes(target)) throw new TypeError("Choose local execution or ordinary CI explicitly.");
-  if (target === "ci") {
-    if (scope.task.delivery !== "pull-request") {
-      return { status: "needs_human", route: "github-hosted",
-        reason: "Ordinary CI-first execution needs explicit PR delivery scope; no publication was authorized." };
-    }
-    return developmentTaskActionAllowed(scope, hooks, implementation, receipts, "ordinary-ci")
-      ? { status: "allowed", route: "github-hosted", subjectPaths: [...policy.protectedPaths], adoption: "not-authorized" }
-      : { status: "needs_human", route: "github-hosted",
-        request: developmentTaskApprovalRequest(scope, hooks, implementation).request };
-  }
-  if (!policy.protectedPaths.length) return { status: "allowed", route: "local" };
-  const request = developmentApprovalRequest(scope, policy, "execution", hooks);
-  return developmentApprovalSatisfied(request, receipts)
-    ? { status: "allowed", route: "local" }
-    : { status: "needs_human", route: "local", request };
-}
-
-export function formatDevelopmentApproval(request, details, summary, snapshot, showDetails = false) {
-  if (typeof snapshot !== "string" || Buffer.byteLength(snapshot) !== request.detailsBytes ||
-      hash(snapshot) !== request.detailsSha256) throw new TypeError("An exact immutable approval snapshot is required.");
-  if (!showDetails && (typeof summary !== "string" || !summary.trim())) {
-    throw new TypeError("A nonblank behavior summary is required when full details are hidden.");
-  }
-  let contents = "Full diff/contents: available on request; viewing them does not approve this request.";
-  if (showDetails) {
-    let fence = "```";
-    for (const match of snapshot.matchAll(/`+/g)) {
-      if (match[0].length >= fence.length) fence = "`".repeat(match[0].length + 1);
-    }
-    contents = `Contents to approve (immutable native-question snapshot):\n${fence}text\n${snapshot}\n${fence}`;
-  }
-  return [
-    `Approval requested: ${request.action}`,
-    `Why now: ${request.reasons.map((item) => item.why).join(" ")}`,
-    `Target: ${request.scope.workspace.root} (${request.scope.workspace.branch}); task ${request.scope.runId}.`,
-    ...(request.scope.ci ? [`CI target: ${request.scope.ci.repository} at ${request.scope.ci.ref}; ${request.stage === "task" ? "automatic repository checks" : ".github/workflows/ci.yml only"}.`] : []),
-    `Task goal (context, not authority): ${JSON.stringify(request.scope.task.goal)}`,
-    ...(summary ? [`Behavior change (implementation description; check against the actual details): ${JSON.stringify(summary)}`] : []),
-    request.stage === "task" ? `Requested actions: ${request.actions.join(", ")}`
-      : `Changes: ${request.inputs.map((input) => `${input.path} [${input.kind}]`).join(", ")}`,
-    `After approval: ${request.effects.join(" ")}`,
-    `Not included: ${request.exclusions.join(" ")}`,
-    `Valid for: ${request.validity}`,
-    `Local detail copy (not authoritative): ${details}`,
-    `Details SHA256: ${request.detailsSha256}`,
-    `Request identity: ${request.id}`,
-    contents,
-  ].join("\n\n");
-}
-
-export function developmentApprovalSatisfied(request, receipts) {
-  return request === null || Array.isArray(receipts) && receipts.some((receipt) => receipt?.version === 1 &&
-    receipt.requestId === request.id && receipt.origin === "original-client" && receipt.decision === "approved" &&
-    Object.keys(receipt).every((key) => ["version", "requestId", "origin", "decision"].includes(key)));
 }

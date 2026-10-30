@@ -67,7 +67,7 @@ test("declared internal workspaces bind their source and generated artifacts wit
   await mkdir(outside);
   await fileSystem.symlink(outside, path.join(f.root, "node_modules", "unapproved"),
     process.platform === "win32" ? "junction" : "dir");
-  await assert.rejects(dependencies(f.root), /preflight|path/i);
+  for (const bind of [false, true]) await assert.rejects(dependencies(f.root, { bind }), /preflight|path/i);
 });
 
 test("workspace declarations cannot escape, redirect, use globs or disagree with the lockfile", async (t) => {
@@ -89,7 +89,137 @@ test("workspace declarations cannot escape, redirect, use globs or disagree with
       await copyFile(path.join(f.workspace, "package.json"), path.join(target, "package.json"));
       await fileSystem.symlink(target, f.link, process.platform === "win32" ? "junction" : "dir");
     }
-    await assert.rejects(dependencies(f.root), /preflight|dependencies|path/i, scenario);
+    for (const bind of [false, true])
+      await assert.rejects(dependencies(f.root, { bind }), /preflight|dependencies|path/i, scenario);
+  }
+});
+
+test("readiness validates dependency paths without hashing installed payloads", async (t) => {
+  const f = await workspaceFixture(t), dependency = path.join(f.root, "node_modules", "payload");
+  await mkdir(dependency);
+  await writeFile(path.join(dependency, "package.json"), JSON.stringify({ name: "payload", version: "1.0.0" }));
+  const payload = path.join(dependency, "index.js");
+  await writeFile(payload, "export const value = 1;\n");
+  let reads = 0;
+  const open = fileSystem.open;
+  const observation = t.mock.method(fileSystem, "open", (...args) => {
+    if (args[0] === payload) reads++;
+    return open(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { observation.mock.restore(); syncBuiltinESMExports(); });
+  const before = await dependencies(f.root, { bind: false });
+  await writeFile(payload, "export const value = 2;\n");
+  assert.deepEqual(await dependencies(f.root, { bind: false }), before);
+  assert.equal(reads, 0, "Readiness must not read installed code merely to bind an unusable cache.");
+  const bound = await dependencies(f.root);
+  assert.ok(reads > 0);
+  await writeFile(payload, "export const value = 3;\n");
+  assert.notDeepEqual(await dependencies(f.root), bound, "Eligible reuse still binds actual installed bytes.");
+});
+
+test("fresh native artifacts stay bound without requiring a reusable Gradle cache", async (t) => {
+  const root = await fixture(t), directory = path.join(root, "android", "app", "build", "outputs", "apk");
+  const app = path.join(directory, "debug", "app-debug.apk");
+  const testApk = path.join(directory, "androidTest", "debug", "app-debug-androidTest.apk");
+  for (const file of [app, testApk]) {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, "tested artifact");
+  }
+  const plan = { requiredChecks: ["android-build"] };
+  const before = await verificationArtifacts(root, plan, "android", { bind: false });
+  assert.equal(before.available, true);
+  assert.equal((await verificationArtifacts(root, plan, "android")).available, false);
+  await writeFile(app, "different artifact");
+  assert.notDeepEqual(await verificationArtifacts(root, plan, "android", { bind: false }), before);
+});
+
+test("readiness checks Gradle paths without hashing cached payloads", async (t) => {
+  const root = await fixture(t), plan = { requiredChecks: ["android-build"] };
+  const apks = ["debug/app-debug.apk", "androidTest/debug/app-debug-androidTest.apk"];
+  const cached = ["wrapper/dists/fixture/lib/gradle.jar", "caches/modules-2/fixture.jar"]
+    .map((relative) => path.join(root, ".tools", "gradle-cache", relative));
+  for (const file of [...apks.map((relative) => path.join(root, "android/app/build/outputs/apk", relative)), ...cached]) {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, "original artifact");
+  }
+  let reads = 0;
+  const open = fileSystem.open;
+  const observation = t.mock.method(fileSystem, "open", (...args) => {
+    if (cached.includes(args[0])) reads++;
+    return open(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { observation.mock.restore(); syncBuiltinESMExports(); });
+  const ready = await verificationArtifacts(root, plan, "android", { bind: false });
+  await writeFile(cached[0], "changed cache payload");
+  assert.deepEqual(await verificationArtifacts(root, plan, "android", { bind: false }), ready);
+  assert.equal(reads, 0, "Readiness validates paths, not cache contents.");
+  const bound = await verificationArtifacts(root, plan, "android");
+  assert.equal(bound.available, true);
+  assert.ok(reads > 0);
+  await writeFile(cached[1], "another cache change");
+  assert.notDeepEqual(await verificationArtifacts(root, plan, "android"), bound);
+});
+
+test("readiness rejects Gradle directory links even when artifacts are missing", async (t) => {
+  for (const relative of ["wrapper", "wrapper/dists", "wrapper/dists/nested", "caches", "caches/nested"]) {
+    for (const withApks of [false, true]) await t.test(`${relative}, APKs ${withApks}`, async (t) => {
+      const root = await fixture(t), outside = await fixture(t);
+      const link = path.join(root, ".tools", "gradle-cache", relative);
+      await mkdir(path.dirname(link), { recursive: true });
+      await fileSystem.symlink(outside, link, process.platform === "win32" ? "junction" : "dir");
+      if (withApks) for (const relative of ["debug/app-debug.apk", "androidTest/debug/app-debug-androidTest.apk"]) {
+        const file = path.join(root, "android/app/build/outputs/apk", relative);
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, "tested artifact");
+      }
+      for (const bind of [false, true]) {
+        await assert.rejects(verificationArtifacts(root, { requiredChecks: ["android-build"] }, "android", { bind }),
+          { diagnosticCode: "preflight-path" });
+      }
+    });
+  }
+});
+
+test("missing artifacts do not hide later linked workspace outputs", async (t) => {
+  const f = await workspaceFixture(t), outside = await fixture(t);
+  await fileSystem.symlink(outside, path.join(f.workspace, "dist"), process.platform === "win32" ? "junction" : "dir");
+  for (const bind of [false, true]) {
+    await assert.rejects(verificationArtifacts(f.root, { requiredChecks: ["backend-build"] }, "backend", { bind }),
+      { diagnosticCode: "preflight-path" });
+  }
+});
+
+test("incomplete artifact traversal cannot hide later output links", async (t) => {
+  const root = await fixture(t), outside = await fixture(t), directory = path.join(root, "dist");
+  await mkdir(directory);
+  await fileSystem.symlink(path.join(root, "missing"), path.join(directory, "00-dangling"),
+    process.platform === "win32" ? "junction" : "dir");
+  await fileSystem.symlink(outside, path.join(directory, "extension"), process.platform === "win32" ? "junction" : "dir");
+  for (const bind of [false, true]) {
+    await assert.rejects(verificationArtifacts(root, { requiredChecks: ["backend-build"] }, "backend", { bind }),
+      { diagnosticCode: "preflight-path" });
+  }
+});
+
+test("native artifact checks reject linked parents before inspecting missing or present APKs", async (t) => {
+  for (const relative of ["outputs", "outputs/apk", "outputs/apk/debug"]) {
+    for (const present of [false, true]) await t.test(`${relative}, APK ${present}`, async (t) => {
+      const root = await fixture(t), outside = await fixture(t), build = path.join(root, "android", "app", "build");
+      const link = path.join(build, relative), apk = path.join(build, "outputs/apk/debug/app-debug.apk");
+      await mkdir(path.dirname(link), { recursive: true });
+      await fileSystem.symlink(outside, link, process.platform === "win32" ? "junction" : "dir");
+      if (present) {
+        const target = path.join(outside, path.relative(link, apk));
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, "existing artifact");
+      }
+      for (const group of ["android", "device"]) for (const bind of [false, true]) {
+        await assert.rejects(verificationArtifacts(root, { requiredChecks: ["android-build"] }, group, { bind }),
+          { diagnosticCode: "preflight-path" });
+      }
+    });
   }
 });
 

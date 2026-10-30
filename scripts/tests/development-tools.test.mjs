@@ -3,11 +3,11 @@ import { execFile } from "node:child_process";
 import fs, { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import { assertCandidate, changedPaths, inspectWorktree, prepareCandidate, sha256, validateCandidateCommit,
-  validateCandidateReceiptProof, activeHookSnapshot } from "../candidate-commit.mjs";
+  activeHookSnapshot } from "../candidate-commit.mjs";
 import { executeVerification, git, sourceSnapshot, verificationPlan } from "../verification.mjs";
 import { captureCandidateImplementation, nativeCandidateCommand, requireCandidateImplementation } from "../native-candidate.mjs";
 import { developmentApprovalDetails, developmentReviewRequirements, inspectDevelopmentPolicy,
@@ -17,7 +17,7 @@ import { originRepository, requirePushTarget } from "../git-state.mjs";
 const exec = promisify(execFile);
 const verificationInputs = ["verification-executor.mjs", "verification-backend.mjs",
   "verification-android.mjs", "backend-diagnostics.mjs", "verification-preflight.mjs", "verification-run.mjs",
-  "verification-transition.mjs", "test-tooling.mjs", "verification-tooling.mjs",
+  "test-tooling.mjs", "verification-tooling.mjs",
   "verification-admission.mjs", "verification-ci.mjs", "verification-ci-artifact.ps1", "development-paths.mjs",
   "owned-command-darwin.py", "local-ipc.mjs", "android-platform.mjs", "emulator-resources.mjs"];
 // Top-level tests stay serial; only fresh-workspace cases without shared environment writes use this limit.
@@ -68,95 +68,65 @@ async function runFixtureCandidate(prepared, env = process.env) {
   return { ...receipt, nativeExitCode: failure?.code ?? 0, stderr: failure?.stderr ?? "" };
 }
 
-test("repository development uses the skill and shared tools", async () => {
-  const [agents, skill, readme, issue, guide, reviewer] = await Promise.all([
+test("the skill and read-only reviewer share the guide's completion contract", async () => {
+  const [agents, skill, reviewer, guide] = await Promise.all([
     "../../AGENTS.md", "../../.github/skills/devpocket-development/SKILL.md",
-    "../../README.md", "../../.github/ISSUE_TEMPLATE/ai-task.yml", "../../docs/DEVELOPMENT-WORKFLOW.md",
-    "../../.github/agents/devpocket-reviewer.agent.md",
+    "../../.github/agents/devpocket-reviewer.agent.md", "../../docs/DEVELOPMENT-WORKFLOW.md",
   ].map((file) => readFile(new URL(file, import.meta.url), "utf8")));
-  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(skill)?.[1];
-  assert.ok(frontmatter);
-  assert.match(frontmatter, /^name: devpocket-development$/m);
-  assert.match(frontmatter, /^description: .+features and bug fixes/m);
-  assert.doesNotMatch(frontmatter, /disable-model-invocation:\s*true/);
   assert.match(agents, /`devpocket-development` skill by default/);
-  assert.ok(agents.includes(".github\\skills\\devpocket-development\\SKILL.md"));
-  assert.match(agents, /otherwise read that file directly/);
-  assert.match(skill, /clean linked worktree, implement in the current session/);
-  assert.match(skill, /--no-optional-locks -c core\.fsmonitor=false status --porcelain --untracked-files=all --ignore-submodules=none/);
-  assert.match(skill, /Continue an existing task in its own worktree/);
-  assert.match(skill, /npm run verify -- -Base BASE_COMMIT/);
-  assert.match(skill, /read\/search-only `devpocket-reviewer` in a separate context/);
-  assert.match(skill, /source identity matches the review/);
-  assert.match(skill, /developmentReviewRequirements/);
-  assert.match(skill, /CI reports do not supply/);
-  assert.match(agents, /within the worktree without another project approval/);
-  assert.match(skill, /\[Workspace-local prerequisites\]/);
-  assert.match(skill, /concise behavior summary/);
-  assert.match(guide, /### Workspace-local prerequisites/);
-  assert.match(guide, /This setup scope does not approve changed\s+dependency\/build inputs/);
-  assert.match(guide, /Viewing details grants no authority/);
-  assert.match(skill, /Stating the contract is not another plan-approval/);
-  assert.match(skill, /no project-default repair cap/);
-  assert.match(skill, /`ci-inspection` procedure instead of adopting candidate control/);
-  assert.match(readme, /skill\*\* is the default agent route/);
-  assert.match(issue, /devpocket-development skill and AGENTS\.md/);
-  assert.match(guide, /There is no additional project-default time, cost or repair-round ceiling/);
-  assert.match(guide, /It never excuses failed, partial or unavailable evidence/);
-  assert.match(reviewer, /For working-tree implementation/);
-  assert.match(reviewer, /For candidate-commit delivery/);
-  assert.match(reviewer, /Diagnosis never establishes acceptance, approval or publication readiness/);
-  assert.match(reviewer, /underlying live API\/archive\/source records/);
-  assert.equal([...skill.matchAll(/^\*\*Complete when:\*\*/gm)].length, 8);
-  for (const anchor of ["delivery-targets-and-candidate-preparation", "local-verification-and-acceptance",
-    "ci-first-delivery-and-live-qualification", "selected-group-preflight-and-explicit-recovery",
-    "working-tree-evidence-to-an-authorized-candidate", "independent-review-and-delivery-freshness", "stops-and-recovery"]) {
-    assert.ok(skill.includes(`DEVELOPMENT-WORKFLOW.md#${anchor}`), anchor);
+  assert.match(skill, /^name: devpocket-development$/m);
+  assert.match(skill, /^description: .+features and bug fixes/m);
+  assert.match(reviewer, /^tools: \["read", "search"\]$/m);
+  for (const text of [skill, reviewer]) assert.ok(text.includes("DEVELOPMENT-WORKFLOW.md#completion-contract"));
+  const contract = guide.replaceAll("\r\n", "\n").split("## Completion contract\n")[1]?.split("\n## ")[0];
+  assert.ok(contract);
+  for (const condition of ["Task and source", "Authority", "Verification", "Independent review", "PR feedback", "Freshness", "Delivery"]) {
+    assert.ok(contract.includes(`**${condition}:**`), condition);
   }
-  for (const match of skill.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
-    const [file, anchor] = match[1].split("#");
-    const target = new URL(file, new URL("../../.github/skills/devpocket-development/SKILL.md", import.meta.url));
-    const text = await readFile(target, "utf8");
-    if (anchor) {
-      const headings = [...text.matchAll(/^#{1,6} (.+)$/gm)].map((item) =>
-        item[1].toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s/g, "-"));
-      assert.ok(headings.includes(anchor), `Missing skill reference: ${match[1]}`);
+  assert.match(contract, /Code inspection can overlap CI; final `pass` waits for complete evidence/);
+  assert.match(guide, /Actual original-client decision references/);
+  assert.match(guide, /An agent-written `approved` field, copied file or digest is not proof of consent/);
+  assert.ok(skill.includes("DEVELOPMENT-WORKFLOW.md#parallel-pr-feedback"));
+  assert.ok(reviewer.includes("DEVELOPMENT-WORKFLOW.md#parallel-pr-feedback"));
+  const feedback = guide.replaceAll("\r\n", "\n").split("### Parallel PR feedback\n")[1]?.split("\n## ")[0];
+  assert.ok(feedback);
+  assert.match(feedback, /single writer/);
+  assert.match(feedback, /pending requested review/);
+  assert.match(feedback, /original inline thread/);
+  assert.match(feedback, /outdated.*not.*resolved/s);
+  assert.match(reviewer, /before side effects/);
+  const steps = skill.split(/^## \d+\. /m).slice(1);
+  assert.ok(steps.length > 0 && steps.every((step) => step.includes("**Complete when:**")));
+  for (const [text, relative] of [
+    [skill, "../../.github/skills/devpocket-development/SKILL.md"],
+    [reviewer, "../../.github/agents/devpocket-reviewer.agent.md"],
+  ]) {
+    for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
+      const [file, anchor] = match[1].split("#"), target = new URL(file, new URL(relative, import.meta.url));
+      const inside = path.relative(process.cwd(), fileURLToPath(target));
+      assert.ok(!path.isAbsolute(inside) && inside !== ".." && !inside.startsWith(`..${path.sep}`));
+      const document = await readFile(target, "utf8");
+      if (anchor) {
+        const headings = [...document.matchAll(/^#{1,6} (.+)$/gm)].map((item) =>
+          item[1].trim().toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s/g, "-"));
+        assert.ok(headings.includes(anchor), `Missing reference: ${match[1]}`);
+      }
     }
   }
-  assert.ok((await fs.stat(new URL("../../extension", import.meta.url))).isDirectory());
 });
 
-test("the skill freezes an authorized delivery candidate before final verification and review", async () => {
-  const [skill, guide] = await Promise.all([
-    "../../.github/skills/devpocket-development/SKILL.md", "../../docs/DEVELOPMENT-WORKFLOW.md",
-  ].map((file) => readFile(new URL(file, import.meta.url), "utf8")));
-  const sections = skill.split(/^## \d+\. /m).slice(1);
-  assert.deepEqual(sections.map((section) => section.split(/\r?\n/, 1)[0]), [
-    "Establish the task", "Select the workspace", "Implement in the owning session",
-    "Freeze the verification target", "Obtain source-bound verification",
-    "Request independent review", "Repair and recheck", "Hand off or publish",
-  ]);
-  const [contract, , , target, verification, review, repair, handoff] = sections;
-  assert.match(contract, /working-tree implementation/);
-  assert.match(contract, /PR delivery/);
-  assert.match(contract, /local commit, push and PR creation authorization\s+separately/);
-  assert.match(target, /retains the edits without creating a commit/);
-  assert.match(target, /matching commit and hook authority/);
-  assert.match(target, /clean tracked and non-ignored working\s+tree/);
-  assert.match(target, /Keep `BASE_COMMIT` unchanged/);
-  assert.match(verification, /evidence binds `source.head` to `CANDIDATE_COMMIT`/);
-  assert.match(verification, /CI keeps candidate and tested\s+merge ref distinct/);
-  assert.match(target, /pending draft is `ci-pending`, not `ready`/);
-  assert.match(review, /Only after complete evidence/);
-  assert.match(repair, /new follow-up\s+commit, with amendment only when explicitly requested/);
-  assert.match(repair, /candidate is still clean at\s+`CANDIDATE_COMMIT`/);
-  assert.match(handoff, /mark the\s+same authorized draft ready only after freshness/);
-  assert.match(guide, /Missing execution consent blocks CI-triggering publication/);
-  assert.match(guide, /blocks ready delivery, not an otherwise authorized pending draft/);
-  assert.match(guide, /An unchanged push does not invalidate local source evidence/);
-  assert.match(guide, /Required remote CI\s+and checks of a different PR\/merge ref still apply/);
-  assert.match(guide, /`pass` with blockers, `changes_requested` without a blocker/);
-  assert.match(guide, /keep the\s+approved local tools fixed/);
+test("native candidate commits do not consume verification-reuse keys", async (t) => {
+  const { root } = await workspace(t);
+  const directory = path.join(root, ".data", "verification", "local");
+  await mkdir(directory, { recursive: true });
+  const key = path.join(directory, "receipt.key"), original = Buffer.from("unavailable verification key");
+  await writeFile(key, original);
+  const prepared = await prepareFixtureCandidate(root);
+  const result = await runFixtureCandidate(prepared);
+  assert.equal(result.status, "committed");
+  assert.equal(result.candidate.parent, prepared.before.source.head);
+  assert.equal(result.verificationProof, undefined);
+  assert.deepEqual(await readFile(key), original);
 });
 
 async function workspace(t, { separateGitDir = false } = {}) {
@@ -326,48 +296,6 @@ test("a configured hook changed after candidate preparation cannot execute", asy
   const after = await inspectWorktree(root);
   assert.equal(after.source.head, before.source.head);
   assert.equal(after.index, before.index);
-});
-
-test("native receipt proof prerequisites are checked before candidate mutation", isolatedCases, async (t) => {
-  await Promise.all(["missing", "valid", "truncated", "hook-change"].map((scenario) =>
-    t.test(scenario, async (t) => {
-      const { root, main } = await workspace(t), directory = path.join(root, ".data", "verification", "local");
-      await mkdir(directory, { recursive: true });
-      const key = path.join(directory, "receipt.key");
-      if (scenario !== "missing") await writeFile(key, Buffer.alloc(scenario === "truncated" ? 31 : 32, 7), { mode: 0o600 });
-      if (scenario === "hook-change") await writeFile(path.join(main, ".git", "hooks", "pre-commit"),
-        "#!/bin/sh\nprintf changed > .data/verification/local/receipt.key\n", { mode: 0o755 });
-      const before = await inspectWorktree(root);
-      await writeFile(path.join(root, "README.md"), "Candidate proof fixture\n");
-      const { request } = await prepareCandidate(root, before, await sourceSnapshot(root),
-        ["README.md"], "fixture-session", "Keep commit outcome separate from proof availability",
-        undefined, await captureCandidateImplementation());
-      const file = path.join(root, ".data", "candidate-proof.json"), bytes = JSON.stringify(request) + "\n";
-      await writeFile(file, bytes);
-      let failure;
-      try {
-        await exec("pwsh", ["-NoProfile", "-NonInteractive", "-Command", nativeCandidateCommand(file, sha256(bytes))],
-          { cwd: root, timeout: 60000 });
-      } catch (error) { failure = error; }
-      const receipt = JSON.parse(await readFile(`${file}.result.json`, "utf8")), after = await inspectWorktree(root);
-      if (scenario === "truncated") {
-        assert.equal(receipt.status, "blocked");
-        assert.equal(failure?.code, 1);
-        assert.equal(after.source.head, before.source.head, "Invalid proof storage must stop before advancing HEAD.");
-        assert.equal(after.index, before.index);
-      } else {
-        assert.equal(receipt.status, "committed", failure?.stderr);
-        assert.equal(failure, undefined);
-        assert.equal(receipt.candidate.commit, after.source.head);
-        assert.equal(receipt.candidate.parent, before.source.head);
-        if (scenario === "valid") await validateCandidateReceiptProof(root, sha256(bytes), receipt);
-        else if (scenario === "missing") assert.equal(receipt.verificationProof, undefined);
-        else {
-          assert.match(receipt.verificationProof.signature, /^[a-f0-9]{64}$/);
-          await assert.rejects(validateCandidateReceiptProof(root, sha256(bytes), receipt));
-        }
-      }
-    })));
 });
 
 test("read-only Git probes do not execute configured filesystem monitors", async (t) => {

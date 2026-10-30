@@ -13,9 +13,7 @@ import { copyTypeScript, npmPackageDirectory, syntheticExecution, verificationTo
 import { combineVerification, executeVerification, verificationPlan } from "../verification.mjs";
 import { openVerificationRun, readVerificationRun } from "../verification-run.mjs";
 import { emulatorInputDifference, npmLaunchersBound, resolveVerificationExecutable, verificationExecutionPolicy } from "../verification-preflight.mjs";
-import { capturePromotionContext, prepareVerificationTransition } from "../verification-transition.mjs";
 import { TOOLING_TEST_FILES } from "../test-tooling.mjs";
-import { committedInputsMatch, committedSourceInputs, commitSourceProjection, sourceInputs } from "../git-state.mjs";
 import { androidImageArchitecture } from "../android-platform.mjs";
 
 const exec = promisify(execFile);
@@ -121,9 +119,10 @@ test("storage roots accept direct reports without admitting sibling or linked di
     { diagnosticCode: "ownership-mismatch" });
 });
 
-test("retired sandbox execution options fail before starting ordinary checks", async (t) => {
+test("unsupported execution options fail before starting ordinary checks", async (t) => {
   const root = await repository(t), plan = await verificationPlan(root, "HEAD");
-  for (const option of ["evidenceRoot", "trustedToolingRunner", "isolatedTooling", "deviceDirectory", "deviceCleanup", "operationsPython"]) {
+  for (const option of ["evidenceRoot", "trustedToolingRunner", "isolatedTooling", "deviceDirectory", "deviceCleanup", "operationsPython",
+    "promote", "candidateRequest", "candidateEvidence", "transition"]) {
     const directory = path.join(root, ".data", "verification", option);
     await assert.rejects(executeVerification(root, plan, { directory, [option]: true }), { diagnosticCode: "configuration" });
     await assert.rejects(fileSystem.stat(directory), { code: "ENOENT" });
@@ -133,6 +132,21 @@ test("retired sandbox execution options fail before starting ordinary checks", a
   await assert.rejects(openVerificationRun(root, plan, {
     directory: path.join(root, ".data", "verification", "retired"), trustedToolingRunner: "retired",
   }, policy), { diagnosticCode: "configuration" });
+});
+
+test("retired conversion options are rejected before creating reports or starting checks", async (t) => {
+  const root = await repository(t), report = path.join(root, ".data", "verification", "retired", "report.json");
+  for (const option of [["--promote", "old-run.json"], ["--candidate-request", "request.json"], ["--candidate-evidence"]]) {
+    await assert.rejects(exec(process.execPath, [entry, "--repo", root, "--base", "HEAD", "--report", report, ...option]),
+      (error) => error.code === 1 && error.stderr.includes("configuration"));
+    await assert.rejects(fileSystem.stat(report), { code: "ENOENT" });
+  }
+  for (const option of ["-Promote", "-CandidateRequest"]) {
+    await assert.rejects(exec("pwsh", ["-NoProfile", "-NonInteractive", "-File",
+      path.resolve("scripts/verify.ps1"), "-Base", "HEAD", "-Report", report, option, "old.json"], { cwd: root }),
+    (error) => error.code !== 0 && error.stderr.includes("parameter"));
+    await assert.rejects(fileSystem.stat(report), { code: "ENOENT" });
+  }
 });
 
 test("report destinations cannot occupy private verification control storage", async (t) => {
@@ -272,7 +286,7 @@ test("the compatibility facade plans and combines real tooling results without l
   await writeFile(guard, [
     'import { registerHooks } from "node:module";',
     'const forbidden = new Set(["verification-executor.mjs", "verification-backend.mjs", "verification-android.mjs",',
-    '"verification-preflight.mjs", "verification-run.mjs", "verification-transition.mjs",',
+    '"verification-preflight.mjs", "verification-run.mjs",',
     '"process.mjs", "android-runner.mjs", "backend-diagnostics.mjs", "device-run.mjs"]);',
     'registerHooks({ resolve(specifier, context, next) {',
     '  if (forbidden.has(specifier.split("/").at(-1))) throw new Error("Pure verification loaded execution");',
@@ -1527,13 +1541,19 @@ test("a device shard accepts current complete case and APK evidence without fabr
     "Both deviceEvidence and the direct worker projection must exclude raw process fields.");
   await writeFile(path.join(root, ".data", "emulator-drift"), "mutate");
   const drifted = await verify(root, ["--group", "device"]);
-  assert.equal(drifted.report.status, "blocked");
   assert.equal(drifted.report.complete, false);
-  assert.equal(drifted.report.failure.reason, "environment-changed");
   assert.equal(drifted.report.checks.find((check) => check.id === "android-device").status, "passed");
-  assert.deepEqual(drifted.report.emulatorInputChanges.facts.map((fact) => fact.name), ["tree"]);
-  assert.equal(drifted.report.emulatorInputChanges.files.entries[0].path, "fixture-library");
-  assert.equal(drifted.report.emulatorInputChanges.files.entries[0].before, null);
+  if (drifted.report.preflight.groups[0].fingerprintKind === "environment") {
+    assert.equal(drifted.report.status, "blocked");
+    assert.equal(drifted.report.failure.reason, "environment-changed");
+    assert.deepEqual(drifted.report.emulatorInputChanges.facts.map((fact) => fact.name), ["tree"]);
+    assert.equal(drifted.report.emulatorInputChanges.files.entries[0].path, "fixture-library");
+    assert.equal(drifted.report.emulatorInputChanges.files.entries[0].before, null);
+  } else {
+    assert.equal(drifted.report.status, "partial");
+    assert.equal(drifted.report.preflight.groups[0].reusable, false);
+    assert.equal(drifted.report.emulatorInputChanges, undefined);
+  }
   assert.ok(!JSON.stringify(drifted.report).includes("SDK_MUTATION_CANARY"));
   await rm(path.join(root, ".data", "emulator-drift"));
   await rm(path.join(root, ".tools", "android-sdk", "emulator", "fixture-library"));
@@ -1684,14 +1704,13 @@ async function recoveryFixture(t, { candidate = false, sensitive = false } = {})
   return { root, base, counts };
 }
 
-async function recordedVerification(root, base, { promotion = false } = {}) {
+async function recordedVerification(root, base) {
   const plan = await verificationPlan(root, base);
   assert.ok(plan.requiredChecks.every((id) => ["tooling", "backend"].includes(CHECKS.find((check) => check.id === id).group)),
     "Ledger fixtures do not manufacture native acceptance.");
   const directory = path.join(root, ".data", "verification", randomUUID());
   const policy = await verificationExecutionPolicy();
-  const run = await openVerificationRun(root, plan, { directory }, policy,
-    promotion ? await capturePromotionContext(root, plan) : null);
+  const run = await openVerificationRun(root, plan, { directory }, policy);
   const checks = plan.requiredChecks.map((id) => ({
     id, status: "passed", exitCode: 0, durationMs: 1, execution: syntheticExecution(plan.source), executionState: "exited",
     privateLog: { availability: "retained" },
@@ -1748,6 +1767,12 @@ test("ordinary aggregates retain execution origins and reject a HEAD-only relabe
   const { root, base } = await recoveryFixture(t);
   const first = await recordedVerification(root, base);
   assert.equal(first.report.status, "passed", JSON.stringify(first.report));
+  for (const conversion of ["transition", "candidateReuse"]) {
+    const report = structuredClone(first.report);
+    if (conversion === "transition") report.transition = { version: 2, from: "old-run.json" };
+    else report.checks[0].candidateReuse = { run: "old-run", check: report.checks[0].id };
+    assert.throws(() => combineVerification(first.plan, [report]), { diagnosticCode: "candidate-evidence-required" });
+  }
   const once = await verify(root, ["--combine", "--input", first.reportPath]);
   const twice = await verify(root, ["--combine", "--input", once.reportPath]);
   assert.equal(twice.report.complete, true);
@@ -1770,6 +1795,58 @@ test("ordinary aggregates retain execution origins and reject a HEAD-only relabe
       : kind === "origins-removed" ? "execution-origin" : "policy-mismatch");
   }
   assert.deepEqual(await readFile(once.reportPath), bytes);
+});
+
+test("unbound native preflight skips JDK, SDK and image payload inventories", async (t) => {
+  const { verificationPreflight } = await import("../verification-preflight.mjs");
+  const root = await repository(t, { native: true }), tools = toolchains.get(root);
+  await mkdir(path.join(root, "scripts"));
+  await writeFile(path.join(root, "scripts", "test-android.ps1"), "# inspected only\n");
+  const jdkPayload = path.join(tools.jdk, "lib", "payload.jar");
+  const sdkPayload = path.join(tools.sdk, "build-tools", "37.0.0", "payload.jar");
+  const image = path.join(tools.sdk, "system-images", "android-37.0", "google_apis", androidImageArchitecture(), "system.img");
+  for (const file of [jdkPayload, sdkPayload]) {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, "installed payload");
+  }
+  const previous = process.env.ESBUILD_VERIFICATION_FIXTURE;
+  t.after(() => {
+    if (previous === undefined) delete process.env.ESBUILD_VERIFICATION_FIXTURE;
+    else process.env.ESBUILD_VERIFICATION_FIXTURE = previous;
+  });
+  const payloads = new Set([jdkPayload, sdkPayload, image]), opened = [];
+  const open = fileSystem.open;
+  const observation = t.mock.method(fileSystem, "open", (...args) => {
+    if (payloads.has(args[0])) opened.push(args[0]);
+    return open(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { observation.mock.restore(); syncBuiltinESMExports(); });
+  for (const trigger of ["environment", "gradle-init", "jvm-properties"]) await t.test(trigger, async () => {
+    const init = path.join(root, ".tools", "gradle-cache", "init.gradle");
+    const properties = path.join(root, "android", "gradle.properties");
+    if (trigger === "environment") process.env.ESBUILD_VERIFICATION_FIXTURE = "unbound";
+    else delete process.env.ESBUILD_VERIFICATION_FIXTURE;
+    if (trigger === "gradle-init") {
+      await mkdir(path.dirname(init), { recursive: true });
+      await writeFile(init, "// fixture startup\n");
+    }
+    if (trigger === "jvm-properties") await writeFile(properties, "org.gradle.jvmargs=-Dfixture=unrecognized\n");
+    try {
+      opened.length = 0;
+      const result = await verificationPreflight(root, await verificationPlan(root, "HEAD"), {
+        group: "device", jdk: tools.jdk, sdk: tools.sdk,
+        directory: path.join(root, ".data", "verification", trigger),
+      });
+      assert.equal(result.status, "passed", JSON.stringify(result));
+      assert.equal(result.groups[0].reusable, false);
+      assert.equal(result.groups[0].fingerprintKind, "readiness");
+      assert.deepEqual(opened, []);
+    } finally {
+      if (trigger === "gradle-init") await rm(init);
+      if (trigger === "jvm-properties") await rm(properties);
+    }
+  });
 });
 
 test("failed or unknown device-data cleanup retains the owner and blocks recovery after confirmed process exit", async (t) => {
@@ -2034,7 +2111,7 @@ test("preflight-only failures invalidate affected history even after its origina
 });
 
 test("verification output cannot add files or attempts inside an immutable retained ledger", async (t) => {
-  for (const mode of ["resume", "promote", "plan", "combine", "execute", "open", "reserved-name"]) await t.test(mode, async (t) => {
+  for (const mode of ["resume", "plan", "combine", "execute", "open", "reserved-name"]) await t.test(mode, async (t) => {
     const root = await repository(t);
     await writeFile(path.join(root, "README.md"), "Ledger output fixture\n");
     const first = await recordedVerification(root, "HEAD");
@@ -2050,7 +2127,6 @@ test("verification output cannot add files or attempts inside an immutable retai
     } else {
       const report = mode === "reserved-name" ? path.join(root, ".data", "verification", "new", "run.json") : output;
       const args = mode === "resume" ? ["--resume", first.report.run.manifest]
-        : mode === "promote" ? ["--promote", first.report.run.manifest, "--candidate-request", path.join(root, ".data", "unused.json")]
           : mode === "plan" ? ["--plan"] : mode === "combine" ? ["--combine", "--input", first.reportPath] : [];
       await assert.rejects(exec(process.execPath, [entry, "--repo", root, "--base", "HEAD", "--report", report, ...args],
         { timeout: 30000 }), (error) => error.code === 1 && /run-output-reused/.test(error.stderr));
@@ -2104,18 +2180,24 @@ test("observed environment drift cannot be erased by restoring the initial depen
     await writeFile(path.join(root, ".data", "release"), "release");
     first = await running;
   }
-  assert.equal(first.report.failure.reason, "environment-changed");
-  assert.equal(first.report.failure.prerequisite, "root-dependencies");
+  const bound = first.report.preflight.groups[0].fingerprintKind === "environment";
+  if (bound) {
+    assert.equal(first.report.failure.reason, "environment-changed");
+    assert.equal(first.report.failure.prerequisite, "root-dependencies");
+  } else {
+    assert.equal(first.report.status, "passed", JSON.stringify(first.report));
+    assert.equal(first.report.preflight.groups[0].reusable, false);
+  }
   assert.equal(first.report.checks[0].status, "passed");
   const bytes = await readFile(first.reportPath);
   const finish = JSON.parse(await readFile(path.join(path.dirname(first.reportPath), "run", "0001-finish.json"), "utf8")).record;
-  assert.deepEqual(finish.qualifiedGroups, []);
+  assert.deepEqual(finish.qualifiedGroups, bound ? [] : ["tooling"]);
   await writeFile(flag, "fail");
   const resumed = await verify(root, ["--resume", first.report.run.manifest]);
   assert.equal(resumed.report.status, "failed", JSON.stringify(resumed.report));
   assert.equal(resumed.report.checks[0].exitCode, 23);
   assert.deepEqual(resumed.report.recovery.reused, []);
-  assert.equal(resumed.report.recovery.invalidated[0].reason, "environment-changed");
+  assert.equal(resumed.report.recovery.invalidated[0].reason, bound ? "environment-changed" : "environment-unbound");
   assert.equal((await readFile(path.join(root, ".data", "count"), "utf8")).trim().split("\n").length, 2);
   assert.deepEqual(await readFile(first.reportPath), bytes);
 });
@@ -2444,16 +2526,24 @@ test("optimized Python cannot bypass the actual prerequisite probe comparisons",
   const { verificationPreflight } = await import("../verification-preflight.mjs");
   const root = await repository(t, { operations: true, capturePython: true }), tools = toolchains.get(root);
   const plan = { ...await verificationPlan(root, "HEAD"), requiredChecks: ["operations-tests"], requiredGroups: ["backend"] };
-  const originalPath = process.env.PATH;
+  const originalPath = process.env.PATH, originalOverride = process.env.ESBUILD_PYTHON_FIXTURE;
   process.env.PATH = tools.env.PATH;
+  process.env.ESBUILD_PYTHON_FIXTURE = "unbound";
   try {
     const result = await verificationPreflight(root, plan, {
       group: "backend", directory: path.join(root, ".data", "verification", "python"),
     });
     assert.equal(result.status, "passed", JSON.stringify(result));
-  } finally { process.env.PATH = originalPath; }
+    assert.equal(result.groups[0].fingerprintKind, "readiness");
+  } finally {
+    process.env.PATH = originalPath;
+    if (originalOverride === undefined) delete process.env.ESBUILD_PYTHON_FIXTURE;
+    else process.env.ESBUILD_PYTHON_FIXTURE = originalOverride;
+  }
   const script = await readFile(path.join(root, ".data", "python-probe.py"), "utf8");
   assert.ok(script.includes("cryptography"));
+  assert.ok(!script.includes("read_bytes") && !script.includes("d.files"),
+    "Readiness must check Python package versions without traversing package payloads.");
   const invoke = (version, dependency) => exec("python", ["-B", "-c", [
     "import sys,types,importlib.metadata as m",
     `sys.version_info=(${version.join(",")})`,
@@ -2494,8 +2584,15 @@ test("emulator prerequisites bind capability and version rather than per-process
   assert.ok(!JSON.stringify(after).includes("PRIVATE_PROBE_PATH"));
   await writeFile(library, "modified-code");
   const changed = await preflight();
-  assert.notEqual(changed.groups[0].fingerprint, before.groups[0].fingerprint);
-  assert.equal(emulatorInputDifference(observed[0], observed[2]).files.entries[0].path, "fixture-library");
+  const difference = emulatorInputDifference(observed[0], observed[2]);
+  if (before.groups[0].fingerprintKind === "environment") {
+    assert.notEqual(changed.groups[0].fingerprint, before.groups[0].fingerprint);
+    assert.equal(difference.files.entries[0].path, "fixture-library");
+  } else {
+    assert.equal(changed.groups[0].fingerprint, before.groups[0].fingerprint);
+    assert.equal(changed.groups[0].reusable, false);
+    assert.deepEqual(difference.files.entries, []);
+  }
   assert.equal(Object.hasOwn(changed, "files"), false);
 });
 
@@ -2786,12 +2883,14 @@ test("Android recovery binds installed Node input bytes even when source and APK
   assert.deepEqual(await verificationArtifacts(root, plan, "android"), artifacts);
   const after = (await preflight()).groups[0];
   assert.equal(after.status, "passed", JSON.stringify(after));
-  assert.notEqual(after.fingerprint, before.fingerprint);
+  const bound = before.fingerprintKind === "environment";
+  if (bound) assert.notEqual(after.fingerprint, before.fingerprint);
+  else assert.equal(after.fingerprint, before.fingerprint);
   const next = await openVerificationRun(root, plan, {
     group: "android", directory: path.join(root, ".data", "verification", "next"), resume: first.reference.manifest,
   }, policy);
   assert.deepEqual(await next.reusable("android", after.fingerprint, artifacts, after.reusable),
-    { status: "invalidated", reason: "environment-changed" });
+    { status: "invalidated", reason: bound ? "environment-changed" : "environment-unbound" });
   await next.finish({ ...report, checks: report.checks.map(({ id }) => ({ id, status: "not_run" })) }, true, []);
   await rm(path.join(dependency, "package.json"));
   const missing = (await preflight()).groups[0];
@@ -2987,8 +3086,7 @@ test("script and batch locators cannot inherit direct Node identity through a ph
     try {
       const control = await preflight();
       assert.equal(control.status, "passed", JSON.stringify(control));
-      const eligibility = control.groups[0].candidateEligibility;
-      assert.ok(eligibility.status === "bound" || eligibility.reason === "npm-unrecognized");
+      assert.ok(["readiness", "environment"].includes(control.groups[0].fingerprintKind));
       for (const extension of ["ps1", "cmd", "bat"]) await t.test(extension, async () => {
         const file = path.join(directory, `node.${extension}`);
         await writeFile(file, extension === "ps1" ? "throw 'ALIAS_MUST_NOT_EXECUTE'\n" : "@echo off\r\nexit /b 23\r\n");
@@ -3036,7 +3134,7 @@ test("script and batch locators cannot inherit direct Node identity through a ph
           assert.ok(aliases > 0, "The simulated physical-target alias must be exercised.");
           assert.equal(result.status, "passed", JSON.stringify(result));
           assert.equal(result.groups[0].reusable, false);
-          assert.equal(result.groups[0].candidateEligibility.status, "unbound");
+          assert.equal(result.groups[0].fingerprintKind, "readiness");
           assert.notEqual(result.groups[0].fingerprint, control.groups[0].fingerprint);
         } finally {
           resolve.mock.restore();
@@ -3047,6 +3145,101 @@ test("script and batch locators cannot inherit direct Node identity through a ph
       });
     } finally { process.env.PATH = previous; }
   });
+
+test("unbound verification rejects nested output links before running builds", async (t) => {
+  for (const dangling of [false, true]) await t.test(`earlier dangling link ${dangling}`, async (t) => {
+    const root = await repository(t), outside = await mkdtemp(path.resolve(".data/tests/verification-target-"));
+    t.after(() => rm(outside, { recursive: true, force: true }));
+    const marker = path.join(outside, "must-not-write");
+    await writeFile(marker, "unchanged");
+    await mkdir(path.join(root, "dist"));
+    await symlink(outside, path.join(root, "dist", "extension"), process.platform === "win32" ? "junction" : "dir");
+    if (dangling) await symlink(path.join(root, "missing"), path.join(root, "dist", "00-dangling"),
+      process.platform === "win32" ? "junction" : "dir");
+    const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+    manifest.scripts.build = "node -e \"require('fs').writeFileSync('dist/extension/must-not-write','escaped')\"";
+    await writeFile(path.join(root, "package.json"), JSON.stringify(manifest));
+    const driver = path.join(root, ".data", "verify-build.mjs");
+    await mkdir(path.dirname(driver), { recursive: true });
+    await writeFile(driver, [
+      `import {executeVerification,verificationPlan} from ${JSON.stringify(new URL("../verification.mjs", import.meta.url).href)};`,
+      `const root=${JSON.stringify(root)};`,
+      "const plan={...await verificationPlan(root,'HEAD'),requiredChecks:['backend-build'],requiredGroups:['backend'],ciMacos:false};",
+      "console.log(JSON.stringify(await executeVerification(root,plan,{group:'backend',directory:root+'/.data/verification/build'})));",
+    ].join("\n"));
+    const { stdout } = await exec(process.execPath, [driver], { timeout: 120_000, env: {
+      ...isolatedAdmissionEnvironment(root), NODE_OPTIONS: "--conditions=unbound-output-regression",
+    } });
+    const report = JSON.parse(stdout);
+    assert.equal(report.preflight.status, "passed", JSON.stringify(report.preflight));
+    assert.equal(report.preflight.groups[0].reusable, false);
+    assert.equal(await readFile(marker, "utf8"), "unchanged", "Reject the link before a build can write outside the checkout.");
+    assert.equal(report.status, "blocked");
+    assert.equal(report.failure.reason, "preflight-path");
+    assert.ok(report.checks.every((check) => check.status === "not_run"));
+  });
+});
+
+test("native readiness validates the selected Gradle cache before artifacts exist", async (t) => {
+  const { verificationPreflight } = await import("../verification-preflight.mjs");
+  const root = await repository(t, { native: true }), tools = toolchains.get(root);
+  const outside = path.join(root, ".data", "outside-cache");
+  await mkdir(outside, { recursive: true });
+  for (const group of ["android", "device"]) {
+    const directory = path.join(root, ".data", "verification", group);
+    const hostedDevice = group === "device" && process.platform === "linux" && process.env.GITHUB_ACTIONS === "true" &&
+      process.env.RUNNER_ENVIRONMENT === "github-hosted";
+    const cache = hostedDevice ? path.join(directory, "device", "gradle-cache") : path.join(root, ".tools", "gradle-cache");
+    const link = path.join(cache, "caches", group);
+    await mkdir(path.dirname(link), { recursive: true });
+    await symlink(outside, link, process.platform === "win32" ? "junction" : "dir");
+    const plan = { ...await verificationPlan(root, "HEAD"),
+      requiredChecks: [group === "android" ? "android-build" : "android-device"], requiredGroups: [group] };
+    const result = await verificationPreflight(root, plan, { group, directory, jdk: tools.jdk, sdk: tools.sdk });
+    assert.equal(result.status, "blocked");
+    assert.ok(result.groups[0].issues.some((issue) => issue.prerequisite === "gradle-cache" &&
+      issue.failure.reason === "preflight-path"), JSON.stringify(result.groups[0]));
+    await rm(link);
+  }
+});
+
+test("hosted device readiness checks its private cache on every tooling host", async (t) => {
+  const { verificationPreflight } = await import("../verification-preflight.mjs");
+  const root = await repository(t), directory = path.join(root, ".data", "verification", "hosted");
+  const outside = path.join(root, ".data", "outside-cache");
+  const link = path.join(directory, "device", "gradle-cache", "caches", "linked");
+  await mkdir(outside, { recursive: true });
+  await mkdir(path.dirname(link), { recursive: true });
+  await symlink(outside, link, process.platform === "win32" ? "junction" : "dir");
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  const architecture = Object.getOwnPropertyDescriptor(process, "arch");
+  const environment = { GITHUB_ACTIONS: process.env.GITHUB_ACTIONS, RUNNER_ENVIRONMENT: process.env.RUNNER_ENVIRONMENT };
+  const spawn = childProcess.spawn;
+  const replacement = t.mock.method(childProcess, "spawn", (file, args, options) =>
+    args.some((arg) => /owned-command-(?:windows\.mjs|linux\.py|darwin\.py)$/.test(arg))
+      ? spawn(process.execPath, ["-e", "process.exit(0)"], options) : spawn(file, args, options));
+  syncBuiltinESMExports();
+  try {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    Object.defineProperty(process, "arch", { value: "x64" });
+    process.env.GITHUB_ACTIONS = "true";
+    process.env.RUNNER_ENVIRONMENT = "github-hosted";
+    const plan = { ...await verificationPlan(root, "HEAD"), requiredChecks: ["android-device"], requiredGroups: ["device"] };
+    const result = await verificationPreflight(root, plan, { group: "device", directory });
+    assert.equal(result.status, "blocked", "Synthetic hosted mode does not supply command-ownership or platform acceptance.");
+    assert.ok(result.groups[0].issues.some((issue) => issue.prerequisite === "gradle-cache" &&
+      issue.failure.reason === "preflight-path"), JSON.stringify(result.groups[0]));
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    Object.defineProperty(process, "arch", architecture);
+    for (const [name, value] of Object.entries(environment)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    replacement.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
 
 test("directory-entry discovery avoids redundant file stats while retaining digest and replacement checks", async (t) => {
   const { verificationArtifacts } = await import("../verification-preflight.mjs");
@@ -3163,7 +3356,7 @@ test("unbound Node preloads cannot be cached merely because their option text st
   assert.equal(await readFile(path.join(root, ".data", "preload-ran"), "utf8"), "yes");
 });
 
-test("ordinary verification supports a detached linked worktree without granting candidate conversion", async (t) => {
+test("ordinary verification supports a detached linked worktree", async (t) => {
   const primary = await repository(t), root = `${primary}-detached`;
   await exec("git", ["worktree", "add", "--quiet", "--detach", root, "HEAD"], { cwd: primary });
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -3171,12 +3364,11 @@ test("ordinary verification supports a detached linked worktree without granting
   const first = await verify(root, []);
   assert.equal(first.report.status, "passed", JSON.stringify(first.report));
   assert.equal(first.report.complete, true);
-  assert.deepEqual(first.report.candidateConversion, { status: "unavailable", reason: "attached-branch-required" });
   const resumed = await verify(root, ["--resume", first.report.run.manifest]);
   assert.equal(resumed.report.status, "passed", JSON.stringify(resumed.report));
 });
 
-test("dangling hook links disable optional conversion without blocking ordinary verification", async (t) => {
+test("ordinary verification is independent of candidate-only hook inspection", async (t) => {
   const primary = await repository(t), root = `${primary}-hooks`;
   await exec("git", ["worktree", "add", "--quiet", "-b", "hook-fixture", root, "HEAD"], { cwd: primary });
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -3192,12 +3384,8 @@ test("dangling hook links disable optional conversion without blocking ordinary 
     assert.equal(first.report.status, "passed");
     assert.equal(first.report.complete, true);
     assert.deepEqual(first.report.checks, []);
-    assert.equal(first.report.candidateConversion.status, "unavailable");
-    assert.equal(first.report.candidateConversion.reason, "candidate-inspection-unavailable");
-    assert.equal(first.report.candidateConversion.failure.osCode, "ENOENT");
     const resumed = await verify(root, ["--resume", first.report.run.manifest]);
     assert.equal(resumed.report.status, "passed", JSON.stringify(resumed.report));
-    assert.deepEqual(resumed.report.candidateConversion, first.report.candidateConversion);
   });
   await t.test("native candidate preparation remains strict", async () => {
     const { inspectWorktree } = await import("../candidate-commit.mjs");
@@ -3208,7 +3396,6 @@ test("dangling hook links disable optional conversion without blocking ordinary 
   await rm(hook);
   const restored = await verify(root, []);
   assert.equal(restored.report.status, "passed", JSON.stringify(restored.report));
-  assert.equal(restored.report.candidateConversion.status, "available");
 });
 
 test("a changed captured execution policy cannot resume an earlier successful run", async (t) => {
@@ -3255,7 +3442,7 @@ async function commitFixtureCandidate(root) {
   const { captureCandidateImplementation, nativeCandidateCommand } = await import("../native-candidate.mjs");
   const before = await inspectWorktree(root);
   const { request } = await prepareCandidate(root, before, before.source, await changedPaths(root, before.source.head),
-    "verification-transition-fixture", "Commit the verified fixture", undefined, await captureCandidateImplementation());
+    "verification-candidate-fixture", "Commit the fixture before verification", undefined, await captureCandidateImplementation());
   const directory = path.join(root, ".data", "verification", randomUUID());
   await mkdir(directory);
   const file = path.join(directory, "candidate.json"), bytes = JSON.stringify(request) + "\n";
@@ -3264,203 +3451,25 @@ async function commitFixtureCandidate(root) {
   return file;
 }
 
-test("a native candidate transition reuses content-only execution across Git normalization without rewriting its old HEAD or time", async (t) => {
-  const { root, base, counts } = await recoveryFixture(t, { candidate: true });
-  // CI's process-level Git override otherwise takes precedence over the disposable repository's config.
-  const index = Number(process.env.GIT_CONFIG_COUNT ?? 0);
-  assert.ok(Number.isSafeInteger(index) && index >= 0 && index < 128);
-  const key = `GIT_CONFIG_KEY_${index}`, value = `GIT_CONFIG_VALUE_${index}`;
-  const originalGit = new Map(["GIT_CONFIG_COUNT", key, value].map((name) => [name, process.env[name]]));
-  Object.assign(process.env, { GIT_CONFIG_COUNT: String(index + 1), [key]: "core.autocrlf", [value]: "true" });
-  t.after(() => {
-    for (const [name, saved] of originalGit) {
-      if (saved === undefined) delete process.env[name];
-      else process.env[name] = saved;
-    }
-  });
-  await exec("git", ["config", "core.autocrlf", "true"], { cwd: root });
-  await writeFile(path.join(root, "backend", "tests", "normalized.txt"), "unchanged execution input\r\n");
-  await rm(path.join(root, "README.md"));
-  const { executeVerification, verificationPlan } = await import("../verification.mjs");
-  let typecheckCommands = 0;
-  const spawn = childProcess.spawn;
-  const observation = t.mock.method(childProcess, "spawn", (file, args, options) => {
-    const child = spawn(file, args, options);
-    if (options?.cwd === root && args.some((arg) => /owned-command-(?:windows\.mjs|linux\.py|darwin\.py)$/.test(arg))) {
-      const write = child.stdin.write;
-      let initial = true;
-      child.stdin.write = function (chunk, ...rest) {
-        if (initial) {
-          initial = false;
-          const request = JSON.parse(chunk);
-          if (request.arguments?.includes("& npm run typecheck; exit $LASTEXITCODE")) typecheckCommands++;
-        }
-        return write.call(this, chunk, ...rest);
-      };
-    }
-    return child;
-  });
-  syncBuiltinESMExports();
-  t.after(() => { observation.mock.restore(); syncBuiltinESMExports(); });
-  const run = async (options = {}) => {
-    const directory = path.join(root, ".data", "verification", randomUUID());
-    const report = await executeVerification(root, await verificationPlan(root, base), { ...options, directory });
-    const reportPath = path.join(directory, "report.json");
-    await writeFile(reportPath, JSON.stringify(report), { flag: "wx" });
-    return { report, reportPath };
-  };
-  const first = await run();
-  assert.equal(first.report.status, "passed", JSON.stringify(first.report));
-  const toolingReusable = first.report.preflight.groups.find((group) => group.group === "tooling").reusable;
-  assert.equal(typecheckCommands, 1, "Observe the real npm typecheck command, not just its report.");
-  const eligibility = first.report.preflight.groups.find((group) => group.group === "backend").candidateEligibility;
-  const supportsReuse = eligibility.status === "bound";
-  if (process.platform === "win32") assert.ok(supportsReuse || eligibility.reason === "npm-unrecognized", JSON.stringify(eligibility));
-  const original = await readFile(first.reportPath), check = first.report.checks.find((item) => item.id === "typecheck");
-  const request = await commitFixtureCandidate(root);
-  assert.equal(await readFile(path.join(root, "backend", "tests", "normalized.txt"), "utf8"), "unchanged execution input\r\n");
-  assert.equal((await exec("git", ["show", "HEAD:backend/tests/normalized.txt"], { cwd: root })).stdout, "unchanged execution input\n");
-  const result = await run({ promote: first.report.run.manifest, candidateRequest: request });
-  assert.equal(result.report.status, "passed", JSON.stringify(result.report));
-  assert.equal(result.report.complete, true);
-  assert.notEqual(result.report.source.head, first.report.source.head);
-  const reused = result.report.checks.find((item) => item.id === "typecheck");
-  if (supportsReuse) {
-    assert.deepEqual(reused.execution, check.execution);
-    assert.equal(reused.candidateReuse.run, first.report.run.id);
-    assert.equal(typecheckCommands, 1);
-  } else {
-    assert.equal(reused.execution.source.head, result.report.source.head);
-    assert.equal(typecheckCommands, 2, "An unrecognized compiler launcher must execute on the candidate.");
-  }
-  assert.deepEqual(await counts(), { tooling: 2, "backend-tests": 2, "backend-build": 2, schema: 2 });
-  assert.deepEqual(await readFile(first.reportPath), original);
-  const ordinary = await verify(root, ["--base", base, "--combine", "--input", result.reportPath]);
-  assert.equal(ordinary.report.failure.reason, "candidate-evidence-required");
-  const qualified = await verify(root, ["--base", base, "--combine", "--candidate-evidence", "--input", result.reportPath]);
-  assert.equal(qualified.report.status, "passed", JSON.stringify(qualified.report));
-  assert.deepEqual(await counts(), { tooling: 2, "backend-tests": 2, "backend-build": 2, schema: 2 });
-  await t.test("candidate conversion proves added and deleted inputs against real committed blobs, not fingerprint equality alone", async () => {
-    assert.notEqual(result.report.source.fingerprint, first.report.source.fingerprint);
-    assert.equal(result.report.recovery.reusedChecks.includes("typecheck"), supportsReuse);
-  });
-  await t.test("converted candidate failures resume their own run without promoting the original reports again", async () => {
-    const marker = path.join(root, ".data", "fail-backend-tests");
-    await writeFile(marker, "transient candidate check failure");
-    await rm(path.join(root, "dist", "result.js"));
-    const failed = await run({ resume: result.report.run.manifest });
-    assert.equal(failed.report.status, "failed", JSON.stringify(failed.report));
-    const backendReusable = result.report.preflight.groups.find((group) => group.group === "backend").reusable;
-    assert.ok(failed.report.recovery.invalidated.some((item) =>
-      item.group === "backend" && item.reason === (backendReusable ? "artifact-changed" : "environment-unbound")));
-    await rm(marker);
-    const resumed = await run({ resume: failed.report.run.manifest });
-    assert.equal(resumed.report.status, "passed", JSON.stringify(resumed.report));
-    assert.equal(resumed.report.recovery.reusedChecks.includes("typecheck"), supportsReuse);
-    assert.deepEqual(await counts(), { tooling: toolingReusable ? 2 : 4, "backend-tests": 4, "backend-build": 3, schema: 3 });
-    assert.equal(typecheckCommands, supportsReuse ? 1 : 4);
-    assert.deepEqual(await readFile(first.reportPath), original);
-  });
-});
-
-test("commit projections bind text policy and permit only the proven storage representation", async (t) => {
-  const root = await repository(t);
-  await exec("git", ["config", "core.autocrlf", "false"], { cwd: root });
-  await writeFile(path.join(root, ".gitattributes"), "*.txt text=auto eol=lf\n*.bin -text\n");
-  await writeFile(path.join(root, "text.txt"), "checked bytes\r\n");
-  await writeFile(path.join(root, "opaque.bin"), Buffer.from([0, 13, 10, 255]));
-  const inputs = await sourceInputs(root), projection = await commitSourceProjection(root, inputs);
-  assert.equal(projection.status, "bound");
-  assert.deepEqual(projection.normalized.map(([file]) => file), ["text.txt"]);
-  await exec("git", ["add", "."], { cwd: root });
-  await exec("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--quiet", "-m", "Text conversion"], { cwd: root });
-  const head = (await exec("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
-  const committed = await committedSourceInputs(root, head);
-  assert.deepEqual(await sourceInputs(root), inputs);
-  assert.notDeepEqual(committed, inputs);
-  assert.equal(committedInputsMatch(inputs, committed, projection), true);
-  for (const change of [
-    (rows) => rows.pop(),
-    (rows) => rows.push(["unexpected.txt", "100644", "file", "a".repeat(64)]),
-    (rows) => { rows.find(([file]) => file === "text.txt")[1] = "100755"; },
-    (rows) => { rows.find(([file]) => file === "text.txt")[3] = "a".repeat(64); },
-    (rows) => { rows.find(([file]) => file === "opaque.bin")[3] = "a".repeat(64); },
-  ]) {
-    const altered = structuredClone(committed); change(altered);
-    assert.equal(committedInputsMatch(inputs, altered, projection), false);
-  }
-  await writeFile(path.join(root, ".git", "info", "attributes"), "*.txt -text\n");
-  const changedPolicy = await commitSourceProjection(root, inputs);
-  assert.notEqual(changedPolicy.policy, projection.policy);
-  assert.equal(committedInputsMatch(inputs, committed, changedPolicy), false);
-  await exec("git", ["config", "filter.unsafe.clean",
-    "node -e \"require('node:fs').writeFileSync('.data/filter-executed','unexpected')\""], { cwd: root });
-  for (const attribute of ["filter=unsafe", "-filter", "working-tree-encoding=UTF-16", "ident"]) {
-    await writeFile(path.join(root, ".git", "info", "attributes"), `*.txt ${attribute}\n`);
-    assert.equal((await commitSourceProjection(root, inputs)).status, "unsupported");
-  }
-  await assert.rejects(readFile(path.join(root, ".data", "filter-executed")), { code: "ENOENT" });
-});
-
-test("a changed or commit-sensitive command cannot inherit content-only reuse", async (t) => {
+test("a verified working tree becoming a commit runs fresh checks on the actual candidate", async (t) => {
   const { root, base, counts } = await recoveryFixture(t, { candidate: true, sensitive: true });
   const first = await verify(root, []);
   assert.equal(first.report.status, "passed", JSON.stringify(first.report));
-  const request = await commitFixtureCandidate(root);
-  const result = await verify(root, ["--base", base, "--promote", first.report.run.manifest, "--candidate-request", request]);
+  const original = await readFile(first.reportPath);
+  await commitFixtureCandidate(root);
+  const candidate = (await exec("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+  const result = await verify(root, ["--base", base]);
   assert.equal(result.report.status, "passed", JSON.stringify(result.report));
-  assert.deepEqual(result.report.recovery.reusedChecks, []);
-  assert.equal(result.report.checks.find((check) => check.id === "typecheck").execution.source.head, result.report.source.head);
-  assert.equal((await counts())["head-sensitive"], 2);
+  assert.equal(result.report.complete, true);
+  assert.notEqual(candidate, first.report.source.head);
+  assert.equal(result.report.source.head, candidate);
+  assert.ok(result.report.checks.every((check) => check.execution.source.head === candidate));
+  assert.deepEqual(result.report.recovery.reused, []);
+  assert.deepEqual(await counts(), { tooling: 2, "head-sensitive": 2, "backend-tests": 2, "backend-build": 2, schema: 2 });
+  assert.deepEqual(await readFile(first.reportPath), original);
 });
 
-test("an unchanged HEAD-sensitive compiler shim or implementation cannot inherit the official typecheck contract", async (t) => {
-  const { verificationPreflight } = await import("../verification-preflight.mjs");
-  const { root, base } = await recoveryFixture(t, { candidate: true });
-  const plan = await verificationPlan(root, base);
-  const preflight = () => verificationPreflight(root, plan, {
-    group: "backend", directory: path.join(root, ".data", "verification", "compiler-contract"),
-  });
-  const control = await preflight();
-  assert.equal(control.status, "passed", JSON.stringify(control));
-  const eligibility = control.groups[0].candidateEligibility;
-  assert.ok(eligibility.status === "bound" || ["npm-unrecognized", "startup-unrecognized"].includes(eligibility.reason));
-  const guard = `require('node:fs').appendFileSync('.data/compiler-count','called\\n');` +
-    `if(require('node:child_process').execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim()!==${JSON.stringify(base)})process.exit(23);\n`;
-  for (const kind of ["shim", "implementation"]) await t.test(kind, async () => {
-    const file = kind === "shim"
-      ? path.join(root, "node_modules", ".bin", process.platform === "win32" ? "tsc.cmd" : "tsc")
-      : path.join(root, "node_modules", "typescript", "lib", "tsc.js");
-    const backup = path.join(root, ".data", `${kind}-original`);
-    await cp(file, backup, { verbatimSymlinks: true });
-    try {
-      if (kind === "shim") {
-        await rm(file);
-        await writeFile(file, process.platform === "win32"
-          ? `@echo off\r\n"${process.execPath}" .data\\compiler.cjs\r\nexit /b %ERRORLEVEL%\r\n`
-          : `#!/bin/sh\n"${process.execPath}" .data/compiler.cjs\n`);
-        if (process.platform !== "win32") await chmod(file, 0o755);
-        await writeFile(path.join(root, ".data", "compiler.cjs"), guard);
-      } else await writeFile(file,
-        "import {createRequire as fixtureCreateRequire} from 'node:module';const fixtureRequire=fixtureCreateRequire(import.meta.url);\n" +
-        guard.replaceAll("require(", "fixtureRequire(") + await readFile(file, "utf8"));
-      const result = await preflight();
-      assert.equal(result.status, "passed", JSON.stringify(result));
-      assert.equal(result.groups[0].candidateEligibility.status, "unbound");
-      assert.equal(result.groups[0].candidateEligibility.reason,
-        eligibility.status === "bound" ? "compiler-unrecognized" : eligibility.reason);
-      assert.equal(result.groups[0].reusable, control.groups[0].reusable);
-      assert.notEqual(result.groups[0].fingerprint, control.groups[0].fingerprint);
-      await assert.rejects(readFile(path.join(root, ".data", "compiler-count")), { code: "ENOENT" });
-    } finally {
-      await rm(file);
-      await cp(backup, file, { verbatimSymlinks: true });
-      await rm(backup);
-    }
-  });
-});
-
-test("an unchanged HEAD-sensitive npm launcher cannot qualify typecheck and altered npm code is unrecognized",
+test("unbound npm launchers run fresh checks and cannot reuse earlier execution",
   { skip: process.platform !== "win32" }, async (t) => {
     const { verificationPreflight } = await import("../verification-preflight.mjs");
     const { root, base } = await recoveryFixture(t, { candidate: true });
@@ -3490,9 +3499,18 @@ test("an unchanged HEAD-sensitive npm launcher cannot qualify typecheck and alte
         });
       } finally { process.env.PATH = previous; }
     };
-    const control = (await preflight()).groups[0].candidateEligibility;
-    assert.ok(control.status === "bound" || control.reason === "npm-unrecognized",
-      "A genuine but unrecognized npm distribution must use fresh execution.");
+    const control = (await preflight()).groups[0];
+    assert.equal(control.status, "passed");
+    await t.test("readiness still rejects escaping npm directory links", async () => {
+      const outside = path.join(root, ".data", "outside-npm"), link = path.join(wrapper, "node_modules", "npm", "redirect");
+      await mkdir(outside);
+      await symlink(outside, link, "junction");
+      try {
+        const result = await preflight();
+        assert.equal(result.status, "blocked");
+        assert.ok(result.groups[0].issues.some((item) => item.prerequisite === "npm" && item.failure.reason === "preflight-path"));
+      } finally { await rm(link); }
+    });
     await t.test("npm stderr cannot corrupt metadata, disappear from identity or enable reuse", async () => {
       const diagnostic = path.join(wrapper, "stderr.txt");
       const warning = "[Console]::Error.WriteLine([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'stderr.txt')))\n";
@@ -3501,7 +3519,7 @@ test("an unchanged HEAD-sensitive npm launcher cannot qualify typecheck and alte
         await writeFile(diagnostic, "PRIVATE_NPM_STDERR_FIRST");
         const first = await preflight(), before = first.groups[0];
         assert.equal(first.status, "passed", JSON.stringify(first));
-        assert.equal(before.candidateEligibility.reason, "npm-unrecognized");
+        assert.equal(before.fingerprintKind, "readiness");
         assert.equal(before.reusable, false);
         assert.equal(JSON.stringify(first).includes("PRIVATE_NPM_STDERR"), false);
         await writeFile(diagnostic, "PRIVATE_NPM_STDERR_SECOND");
@@ -3530,11 +3548,10 @@ test("an unchanged HEAD-sensitive npm launcher cannot qualify typecheck and alte
     await t.test("an unrecognized wrapper cannot supply reusable execution evidence", async () => {
       const report = await preflight();
       assert.equal(report.status, "passed");
-      assert.equal(report.groups[0].candidateEligibility.reason, "npm-unrecognized");
       assert.equal(report.groups[0].reusable, false);
       await assert.rejects(readFile(path.join(root, ".data", "npm-count")), { code: "ENOENT" });
     });
-    await t.test("an unchanged launcher cannot hide changes in the npm implementation", async () => {
+    await t.test("an unbound npm implementation cannot authorize result reuse", async () => {
       await writeFile(entry, original);
       const cli = path.join(wrapper, "node_modules", "npm", "bin", "npm-cli.js");
       const bytes = await readFile(cli, "utf8");
@@ -3544,7 +3561,6 @@ test("an unchanged HEAD-sensitive npm launcher cannot qualify typecheck and alte
       await writeFile(cli, bytes.replace("\n", "\n" + guard));
       const report = await preflight();
       assert.equal(report.status, "passed");
-      assert.equal(report.groups[0].candidateEligibility.reason, "npm-unrecognized");
       assert.equal(report.groups[0].reusable, false);
     });
     await t.test("a relocated npm implementation cannot attest unrecognized effective execution", async () => {
@@ -3555,14 +3571,13 @@ test("an unchanged HEAD-sensitive npm launcher cannot qualify typecheck and alte
       const first = await verify(root, [], redirectedEnv);
       assert.equal(first.report.status, "passed", JSON.stringify(first.report));
       const backend = first.report.preflight.groups.find((group) => group.group === "backend");
-      assert.equal(backend.candidateEligibility.reason, "npm-unrecognized");
       assert.equal(backend.reusable, false);
       assert.equal((await readVerificationRun(root, first.report.run.manifest)).latest.get("backend").reusable, false);
       const before = await readFile(first.reportPath);
-      const request = await commitFixtureCandidate(root);
-      const result = await verify(root, ["--base", base, "--promote", first.report.run.manifest, "--candidate-request", request], redirectedEnv);
+      await commitFixtureCandidate(root);
+      const result = await verify(root, ["--base", base], redirectedEnv);
       assert.equal(result.report.status, "failed", JSON.stringify(result.report));
-      assert.deepEqual(result.report.recovery.reusedChecks, []);
+      assert.deepEqual(result.report.recovery.reused, []);
       assert.equal(result.report.checks.find((check) => check.id === "typecheck").exitCode, 23);
       assert.equal((await readFile(path.join(root, ".data", "npm-count"), "utf8")).trim().split(/\r?\n/).length, 2);
       assert.deepEqual(await readFile(first.reportPath), before);
@@ -3624,7 +3639,7 @@ test("Windows lookup matches native and CMD selection, including COM, PATH quoti
     } finally { restore(); }
   });
 
-test("an unchanged HEAD-sensitive node.com cannot qualify candidate reuse or hide same-source binary changes",
+test("HEAD-sensitive Node launchers run on the actual candidate and retain binary-drift checks",
   { skip: process.platform !== "win32" }, async (t) => {
     const { verificationPreflight } = await import("../verification-preflight.mjs");
     const { root, base } = await recoveryFixture(t, { candidate: true });
@@ -3637,7 +3652,7 @@ test("an unchanged HEAD-sensitive node.com cannot qualify candidate reuse or hid
     assert.equal(first.report.status, "passed", JSON.stringify(first.report));
     const backend = first.report.preflight.groups.find((group) => group.group === "backend");
     assert.equal(backend.reusable, false);
-    assert.equal(backend.candidateEligibility.reason, "startup-unrecognized");
+    assert.equal(backend.fingerprintKind, "readiness");
     const original = await readFile(file), reportBytes = await readFile(first.reportPath);
     const saved = process.env.PATH;
     process.env.PATH = env.PATH;
@@ -3660,7 +3675,7 @@ test("an unchanged HEAD-sensitive node.com cannot qualify candidate reuse or hid
           assert.equal((await resolveVerificationExecutable(root, "node", { shell: true })).toLowerCase(), command.toLowerCase());
           const result = await verificationPreflight(root, plan, options);
           assert.equal(result.status, "passed", JSON.stringify(result));
-          assert.equal(result.groups[0].candidateEligibility.reason, "startup-unrecognized");
+          assert.equal(result.groups[0].fingerprintKind, "readiness");
           assert.equal(result.groups[0].reusable, false);
         } finally {
           await rm(command);
@@ -3669,64 +3684,15 @@ test("an unchanged HEAD-sensitive node.com cannot qualify candidate reuse or hid
         }
       });
     } finally { process.env.PATH = saved; await writeFile(file, original); }
-    const request = await commitFixtureCandidate(root);
-    const result = await verify(root, ["--base", base, "--promote", first.report.run.manifest, "--candidate-request", request], env);
+    await commitFixtureCandidate(root);
+    const result = await verify(root, ["--base", base], env);
     assert.equal(result.report.status, "failed", JSON.stringify(result.report));
-    assert.deepEqual(result.report.recovery.reusedChecks, []);
+    assert.deepEqual(result.report.recovery.reused, []);
     assert.equal(result.report.checks.find((check) => check.id === "typecheck").exitCode, 23);
     assert.equal((await readFile(path.join(root, ".data", "node-launch-count"), "utf8")).trim().split(/\r?\n/).length, 3);
     assert.deepEqual(await readFile(first.reportPath), reportBytes);
     assert.deepEqual(await readFile(file), original);
   });
-
-test("candidate conversion rejects forged receipts, changed hooks, index modes, source and extra history", async (t) => {
-  for (const change of ["mode", "source"]) await t.test(change, async (t) => {
-    const { root, base, counts } = await recoveryFixture(t, { candidate: true });
-    const first = await recordedVerification(root, base, { promotion: true });
-    if (change === "source") await writeFile(path.join(root, "backend", "tests", "change.test.ts"), "// different tested bytes\n");
-    if (change === "mode") {
-      if (process.platform !== "win32") await chmod(path.join(root, "fixture.mjs"), 0o755);
-      await exec("git", ["update-index", "--chmod=+x", "fixture.mjs"], { cwd: root });
-    }
-    const request = await commitFixtureCandidate(root);
-    const before = await counts();
-    await assert.rejects(prepareVerificationTransition(root, await verificationPlan(root, base), {
-      promote: first.report.run.manifest, candidateRequest: request,
-    }));
-    assert.deepEqual(await counts(), before);
-  });
-  const { root, base, counts } = await recoveryFixture(t, { candidate: true });
-  const first = await recordedVerification(root, base, { promotion: true }), request = await commitFixtureCandidate(root);
-  const receiptFile = `${request}.result.json`, receiptBytes = await readFile(receiptFile);
-  const hooks = (await exec("git", ["rev-parse", "--git-path", "hooks"], { cwd: root })).stdout.trim();
-  const hook = path.join(path.resolve(root, hooks), "pre-commit");
-  for (const change of ["receipt", "hooks", "dangling-hook", "history"]) await t.test(change, async () => {
-    if (change === "receipt") {
-      const receipt = JSON.parse(receiptBytes);
-      receipt.verificationProof.signature = "0".repeat(64);
-      await writeFile(receiptFile, JSON.stringify(receipt));
-    }
-    if (change === "hooks") await writeFile(hook, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    if (change === "dangling-hook") await symlink(path.join(root, ".data", "missing-hook-target"), hook,
-      process.platform === "win32" ? "junction" : "dir");
-    if (change === "history") await exec("git", ["commit", "--quiet", "--allow-empty", "-m", "Extra history"], { cwd: root });
-    const before = await counts();
-    try {
-      await assert.rejects(prepareVerificationTransition(root, await verificationPlan(root, base), {
-        promote: first.report.run.manifest, candidateRequest: request,
-      }), change === "dangling-hook" ? { code: "ENOENT" } : undefined);
-      if (change === "receipt") {
-        const result = await verify(root, ["--base", base, "--promote", first.report.run.manifest, "--candidate-request", request]);
-        assert.equal(result.report.status, "blocked", JSON.stringify(result.report));
-        assert.equal(result.report.complete, false);
-      }
-      assert.deepEqual(await counts(), before);
-    } finally {
-      if (change === "receipt") await writeFile(receiptFile, receiptBytes);
-      if (["hooks", "dangling-hook"].includes(change)) await rm(hook);
-    }
-  });
-});
 
 test("the build prerequisite gate blocks before spending a code-repair round", async (t) => {
   const root = await repository(t);

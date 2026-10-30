@@ -301,7 +301,11 @@ the implementation pipeline. Use the original client's tools and existing CI.
 [Local delivery](docs/DEVELOPMENT-WORKFLOW.md#delivery-targets-and-candidate-preparation)
 does not acquire upload authority. [CI-first PR delivery](docs/DEVELOPMENT-WORKFLOW.md#ci-first-delivery-and-live-qualification)
 uses permitted focused checks, an authorized candidate and pending Draft PR,
-then the complete hosted gate, independent review and live freshness before ready.
+with code inspection and
+[PR review feedback](docs/DEVELOPMENT-WORKFLOW.md#parallel-pr-feedback) alongside CI.
+The guide's
+[Completion contract](docs/DEVELOPMENT-WORKFLOW.md#completion-contract) defines
+when verification, independent review and freshness permit ready delivery.
 The original task base stays fixed. Neither route authorizes merge or deployment.
 
 **Execution scope:** [Scoped approvals](docs/DEVELOPMENT-WORKFLOW.md#scoped-development-approvals)
@@ -319,12 +323,13 @@ limits/cancellation without a project-default time, credit or repair-round cap.
 without acceptance. Shared execution, CI/dependencies and unknown paths retain
 conservative coverage; mixed changes take the union. Preflight reports independent
 missing prerequisites together and distinguishes safely unrun dependent probes.
-For failed runs or verified edits becoming a commit, follow the guide's
+For failed runs, follow the guide's
 [recovery](docs/DEVELOPMENT-WORKFLOW.md#selected-group-preflight-and-explicit-recovery)
-or [conversion](docs/DEVELOPMENT-WORKFLOW.md#working-tree-evidence-to-an-authorized-candidate)
-route without rewriting old evidence.
+route. Verified working-tree changes later becoming a commit need fresh candidate
+verification, not converted reports. Preflight skips full installed-file hashing
+when the group cannot reuse results, while retaining readiness and path checks.
 
-For lightweight approval feedback:
+For focused policy-classification feedback:
 
 ```powershell
 node --test scripts/tests/development-approval.test.mjs
@@ -487,8 +492,6 @@ installed extension or running relay.
 TypeScript 7 supplies the native compiler. Bounded test diagnostics use
 `@babel/parser` for syntax-only declaration locations; they do not load a
 TypeScript project, follow imports or evaluate test source.
-The older content-only compiler-reuse contract is not assumed to cover this
-native compiler; unbound toolchains run fresh verification instead.
 
 ```powershell
 npm ci

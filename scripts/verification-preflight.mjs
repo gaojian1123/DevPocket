@@ -18,7 +18,7 @@ const directNode = (value, kind) => value?.kind === kind && /\.(?:com|exe)$/i.te
   samePath(value.file, process.execPath) && samePath(value.target, process.execPath);
 const policyInputs = [
   "verify.mjs", "verify.ps1", "verification.mjs", "verification-policy.mjs", "verification-executor.mjs", "verification-preflight.mjs",
-  "verification-run.mjs", "verification-transition.mjs", "verification-backend.mjs", "verification-android.mjs",
+  "verification-run.mjs", "verification-backend.mjs", "verification-android.mjs",
   "test-tooling.mjs", "verification-tooling.mjs", "verification-admission.mjs", "verification-ci.mjs",
   "verification-ci-artifact.ps1", "development-policy.mjs", "development-paths.mjs",
   "candidate-commit.mjs", "native-candidate.mjs", "git-state.mjs", "process.mjs",
@@ -62,7 +62,7 @@ async function fileIdentity(file, { optional = false } = {}) {
   } finally { await handle.close(); }
 }
 
-async function treeInputs(directory, requiredFile, { directoryLinks = new Map(), excludedRootDirectories = [] } = {}) {
+async function treeInputs(directory, requiredFile, { directoryLinks = new Map(), excludedRootDirectories = [], hashFiles = true } = {}) {
   const root = await realpath(directory), files = [], identities = [];
   let count = 0;
   async function visit(current, relative, entry) {
@@ -82,7 +82,8 @@ async function treeInputs(directory, requiredFile, { directoryLinks = new Map(),
       const target = await realpath(current), rel = path.relative(root, target);
       if (!rel || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel) ||
           !(await lstat(target)).isFile()) throw diagnosticError("preflight-path");
-      files.push({ file: target, relative, target: rel });
+      if (hashFiles) files.push({ file: target, relative, target: rel });
+      else identities.push([relative, { target: rel }]);
     } else if (info.isDirectory()) {
       if (entry) {
         const actual = await lstat(current);
@@ -99,14 +100,16 @@ async function treeInputs(directory, requiredFile, { directoryLinks = new Map(),
         await visit(path.join(current, child.name), path.join(relative, child.name), child);
       }
     } else {
-      // fileIdentity still opens and checks every file before and after hashing.
-      files.push({ file: current, relative });
+      if (!info.isFile()) throw diagnosticError("preflight-path");
+      if (hashFiles || relative === requiredFile) files.push({ file: current, relative });
     }
   }
   await visit(directory, "");
   if (requiredFile && !files.some(({ relative, target }) => relative === requiredFile && target === undefined)) {
     throw diagnosticError("preflight-path");
   }
+  // Readiness still checks directory/link scope, but cannot qualify unchanged file contents for reuse.
+  if (!hashFiles) return identities;
   for (let start = 0; start < files.length; start += 16) {
     identities.push(...await Promise.all(files.slice(start, start + 16).map(async ({ file, relative, target }) => {
       const identity = await fileIdentity(file);
@@ -193,9 +196,9 @@ async function nativeConfiguration(root, jdk, sdk, cache) {
   return { inputs, reusable };
 }
 
-async function gradleArtifacts(root) {
-  const directory = path.join(root, ".tools", "gradle-cache"), files = [];
-  let entries = 0;
+async function gradleArtifacts(directory, { bind = true } = {}) {
+  const files = [];
+  let entries = 0, available = true;
   async function collect(current, relative) {
     if (++entries > 100000) throw diagnosticError("output-limit");
     const info = await lstat(current);
@@ -207,8 +210,22 @@ async function gradleArtifacts(root) {
       files.push({ file: current, relative });
     }
   }
-  await collect(path.join(directory, "wrapper", "dists"), path.join("wrapper", "dists"));
-  await collect(path.join(directory, "caches"), "caches");
+  for (const parts of [["wrapper", "dists"], ["caches"]]) {
+    let current = directory, present = true;
+    for (const part of ["", ...parts]) {
+      current = path.join(current, part);
+      let info;
+      try { info = await lstat(current); }
+      catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        available = present = false;
+        break;
+      }
+      if (!info.isDirectory() || info.isSymbolicLink()) throw diagnosticError("preflight-path");
+    }
+    if (present) await collect(current, path.join(...parts));
+  }
+  if (!bind || !available) return null;
   const identities = [];
   for (let start = 0; start < files.length; start += 16) {
     identities.push(...await Promise.all(files.slice(start, start + 16).map(async ({ file, relative }) =>
@@ -315,7 +332,7 @@ async function declaredWorkspaces(root, manifest) {
   return result;
 }
 
-export async function dependencies(root) {
+export async function dependencies(root, { bind = true } = {}) {
   const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
   const declared = { ...manifest.dependencies, ...manifest.devDependencies };
   const workspaces = await declaredWorkspaces(root, manifest), workspaceByPath = new Map(workspaces.map((item) => [item.relative, item]));
@@ -350,6 +367,7 @@ export async function dependencies(root) {
       const workspace = workspaceByPath.get(item.resolved), file = path.join(root, name);
       if (!workspace || name.split("node_modules/").at(-1) !== workspace.manifest.name ||
           !(await lstat(file)).isSymbolicLink()) throw diagnosticError("preflight-dependencies");
+      if (!samePath(await realpath(file), workspace.directory)) throw diagnosticError("preflight-path");
       directoryLinks.set(file, { target: workspace.directory, relative: workspace.relative });
       continue;
     }
@@ -360,96 +378,11 @@ export async function dependencies(root) {
     if (installed.version !== item.version) throw diagnosticError("preflight-dependencies");
   }
   return { manifest: digest(JSON.stringify(manifest)), lock: digest(JSON.stringify(lock)),
-    installed: await treeIdentity(path.join(root, "node_modules"), undefined, { directoryLinks }),
+    installed: await treeIdentity(path.join(root, "node_modules"), undefined, { directoryLinks, hashFiles: bind }),
     ...(workspaces.length ? { workspaces: await Promise.all(workspaces.map(async (workspace) => ({
       path: workspace.relative, source: await treeIdentity(workspace.directory, "package.json",
-        { directoryLinks, excludedRootDirectories: workspace.outputs }),
+        { directoryLinks, excludedRootDirectories: workspace.outputs, hashFiles: bind }),
     }))) } : {}) };
-}
-
-const typecheckInputs = [
-  ["node_modules/typescript/bin/tsc", "8d5fa5bd883fec0979fc2004f1fe1d99aef40570155d550eadc0b03b55513bf0"],
-  ["node_modules/typescript/lib/tsc.js", "2cffde0b8c6760dfb0b5b0382bbb7e00ba6a8b2d981b9205b256a700a481d983"],
-  ["node_modules/typescript/lib/_tsc.js", "1f62c69e832fbbbd05a6dac950f152937f594a4d0b88087be5406ace348efcb5"],
-  ["node_modules/typescript/package.json", "ebb0ce176c85ac13ce82f5be7e6f15114732ba0f064ccc893fd9051426d35d3a"],
-  ["node_modules/.bin/tsc.cmd", "98ed79f5b1c9abc1e791fc2e39f133264fb2e8278b5f9dce63c299a4790939b4", true],
-  ["backend/tsconfig.json", "3ab66fc1027c208e9ef0fcd7ad9728aa7e809e1eefb26736ebb645364e24a5ca", true],
-  ["backend/tsconfig.cli-proof.json", "a7654c02f2b9349dbde6e7574190a0072251c4d29edcba6017c5f2a0dbe59037", true],
-];
-
-async function typecheckContract(root, inputs, node, npm, commandNode, signal) {
-  const unbound = (reason) => ({ status: "unbound", reason });
-  if (process.platform !== "win32" || !npm?.candidateSafe ||
-      !samePath(node?.child?.file ?? "", process.execPath) ||
-      !directNode(commandNode, "native") ||
-      !directNode(npm?.powershellNode, "Application") ||
-      !samePath(process.env.ComSpec ?? process.env.COMSPEC ?? "",
-        path.join(process.env.SystemRoot ?? process.env.WINDIR ?? "", "System32", "cmd.exe")) ||
-      !/^\.COM;\.EXE;\.BAT;\.CMD(?:;|$)/i.test(process.env.PATHEXT ?? "") ||
-      /development/i.test(process.env.NODE_ENV ?? "")) return unbound("startup-unrecognized");
-  if (npm.candidateImplementation !== true) return unbound("npm-unrecognized");
-  const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
-  if (pkg.scripts?.typecheck !== "tsc -p backend/tsconfig.json --noEmit && tsc -p backend/tsconfig.cli-proof.json" ||
-      pkg.scripts.pretypecheck || pkg.scripts.posttypecheck || pkg.devDependencies?.typescript !== "5.8.3") {
-    return unbound("command-unrecognized");
-  }
-  if ((await readdir(root)).some((name) => /^(?:node|tsc)(?:\.[^.]+)?$/i.test(name))) return unbound("command-shadowed");
-  for (let directory = path.resolve(root);;) {
-    let names;
-    try { names = await readdir(path.join(directory, "node_modules", ".bin")); }
-    catch (error) { if (error.code !== "ENOENT") throw error; names = []; }
-    if (names.some((name) => /^node(?:\.[^.]+)?$/i.test(name) ||
-        samePath(directory, root) && /^tsc\.(?:com|exe|bat)$/i.test(name))) return unbound("command-shadowed");
-    if (directory === path.dirname(directory)) break;
-    directory = path.dirname(directory);
-  }
-  for (const [relative, expected, text] of typecheckInputs) {
-    const file = path.join(root, ...relative.split("/"));
-    let bytes;
-    try {
-      if (!(await lstat(file)).isFile()) return unbound("compiler-unrecognized");
-      bytes = await readFile(file);
-    } catch (error) { if (error.code === "ENOENT") return unbound("compiler-unrecognized"); throw error; }
-    if (digest(text ? bytes.toString("utf8").replaceAll("\r\n", "\n") : bytes) !== expected) {
-      return unbound("compiler-unrecognized");
-    }
-  }
-  const sourcePaths = new Set(inputs.filter((entry) => entry[1] !== "deleted")
-    .map(([file]) => path.resolve(root, file).toLowerCase()));
-  const modules = await realpath(path.join(root, "node_modules")), files = new Set();
-  for (const config of ["tsconfig.json", "tsconfig.cli-proof.json"]) {
-    let output;
-    try {
-      output = await runCommand(process.execPath, [path.join(root, "node_modules", "typescript", "lib", "tsc.js"),
-        "-p", path.join(root, "backend", config), "--noEmit", "--listFilesOnly", "--pretty", "false"],
-      { cwd: root, env: { ...process.env, NODE_DISABLE_COMPILE_CACHE: "1" }, signal, timeoutMs: 30000 });
-    } catch (error) {
-      if (error.processTreeStopped !== true) throw error;
-      return { status: "unavailable", failure: failureDetails(error, "preflight-tool") };
-    }
-    if (Buffer.byteLength(output.stdout) > 256 * 1024) return unbound("inputs-unrecognized");
-    const selected = output.stdout.split(/\r?\n/).filter(Boolean);
-    if (!selected.length || selected.length > 4096) return unbound("inputs-unrecognized");
-    for (const name of selected) {
-      if (!path.isAbsolute(name)) return unbound("inputs-unrecognized");
-      const file = path.resolve(name), physical = await realpath(file), relative = path.relative(modules, physical);
-      const dependency = relative && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-      if (!dependency && (!sourcePaths.has(file.toLowerCase()) || !samePath(file, physical))) {
-        return unbound("inputs-unrecognized");
-      }
-      if (!dependency) {
-        for (let directory = path.dirname(file); samePath(directory, root) || directory.startsWith(root + path.sep);
-          directory = path.dirname(directory)) {
-          const manifest = path.join(directory, "package.json");
-          if (await fileIdentity(manifest, { optional: true }) && !sourcePaths.has(manifest.toLowerCase())) {
-            return unbound("inputs-unrecognized");
-          }
-        }
-      }
-      files.add(path.relative(root, physical));
-    }
-  }
-  return { status: "bound", fingerprint: digest(JSON.stringify([...files].sort())) };
 }
 
 export async function verificationExecutionPolicy() {
@@ -457,7 +390,8 @@ export async function verificationExecutionPolicy() {
     [name, await fileIdentity(path.join(scripts, name))]))));
 }
 
-export async function verificationArtifacts(root, plan, group) {
+export async function verificationArtifacts(root, plan, group, { bind = true } = {}) {
+  root = await realpath(root);
   const paths = group === "backend" && plan.requiredChecks.includes("backend-build") ? ["dist"]
     : ["android", "device"].includes(group)
       ? ["android/app/build/outputs/apk/debug/app-debug.apk", "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"] : [];
@@ -469,27 +403,42 @@ export async function verificationArtifacts(root, plan, group) {
       paths.push(...workspace.outputs.map((output) => `${workspace.relative}/${output}`));
   }
   const identities = [];
+  let available = true;
   for (const relative of paths) {
-    const file = path.join(root, ...relative.split("/"));
+    const parts = relative.split("/");
+    let file = root, info;
+    for (const [index, part] of parts.entries()) {
+      file = path.join(file, part);
+      try { info = await lstat(file); }
+      catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        available = false;
+        info = undefined;
+        break;
+      }
+      if (info.isSymbolicLink() || index < parts.length - 1 && !info.isDirectory()) throw diagnosticError("preflight-path");
+    }
+    if (!info) continue;
     try {
-      const info = await lstat(file);
-      if (info.isSymbolicLink()) throw diagnosticError("preflight-path");
       identities.push([relative, info.isDirectory() ? await treeIdentity(file) : await fileIdentity(file)]);
     } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-      return { available: false };
+      if (error.code === "ENOENT") throw diagnosticError("preflight-path", error);
+      throw error;
     }
   }
   if (["android", "device"].includes(group)) {
     if (group === "device" && process.platform === "linux" && process.env.GITHUB_ACTIONS === "true" &&
-        process.env.RUNNER_ENVIRONMENT === "github-hosted") return { available: false };
-    let gradle;
-    try { gradle = await gradleArtifacts(root); }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
-    if (!gradle) return { available: false };
-    identities.push(["gradle-executable-dependencies", gradle]);
+        process.env.RUNNER_ENVIRONMENT === "github-hosted") {
+      if (bind) available = false;
+    } else {
+      const gradle = await gradleArtifacts(path.join(root, ".tools", "gradle-cache"), { bind });
+      if (bind) {
+        if (gradle) identities.push(["gradle-executable-dependencies", gradle]);
+        else available = false;
+      }
+    }
   }
-  return { available: true, fingerprint: digest(JSON.stringify(identities)) };
+  return available ? { available: true, fingerprint: digest(JSON.stringify(identities)) } : { available: false };
 }
 
 export async function verificationPreflight(root, plan, options = {}) {
@@ -527,7 +476,7 @@ export async function verificationPreflight(root, plan, options = {}) {
   });
   const powershell = () => once("pwsh", () => tool("pwsh",
     ["-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"], (text) => /^7\./.test(text)));
-  const npm = () => once("npm", async () => {
+  const npm = (bind = false) => once(`npm:${bind}`, async () => {
     const shell = await powershell();
     const probeResult = await runCommand(shell.file, ["-NoProfile", "-NonInteractive", "-Command",
       "$ErrorActionPreference='Stop'; $command=Get-Command npm -CommandType Application,ExternalScript | Select-Object -First 1; " +
@@ -555,6 +504,15 @@ export async function verificationPreflight(root, plan, options = {}) {
       config.push([name, await fileIdentity(name, { optional: true })]);
     }
     const actual = await realpath(output.file);
+    const binary = await fileIdentity(actual);
+    const candidateSafe = ["", "null"].includes(output.nodeOptions) && ["", "null"].includes(output.scriptShell) &&
+      !process.execArgv.some((value) => /^--(?:import|require|loader|experimental-loader)(?:=|$)|^-r$/.test(value)) &&
+      !Object.entries(process.env).some(([name, value]) =>
+        /^(?:NODE_OPTIONS|NODE_PATH|NPM_CONFIG_NODE_OPTIONS|NPM_CONFIG_SCRIPT_SHELL)$/i.test(name) && value);
+    const full = bind && process.platform === "win32" && candidateSafe && !probeResult.stderr.trim() &&
+      output.version === "11.16.0" && samePath(path.resolve(output.file), actual) &&
+      ["e8aedc8c76d6cb9423b70ede071228f7cb1644094c114b8721ae6d121100d4fe",
+        "3bf7c5ef339b71d6f8bc4ef4a7b7adb90727788674f0a3cef2ede8f5969ca327"].includes(binary.sha256);
     const candidates = [path.join(path.dirname(actual), "node_modules", "npm"), path.resolve(path.dirname(actual), "..")];
     let packageIdentity;
     for (const directory of candidates) {
@@ -562,22 +520,16 @@ export async function verificationPreflight(root, plan, options = {}) {
       try { value = JSON.parse(await readFile(path.join(directory, "package.json"), "utf8")); }
       catch (error) { if (error.code === "ENOENT") continue; throw error; }
       if (value.name === "npm") {
-        packageIdentity = await treeIdentity(directory);
+        const tree = await treeIdentity(directory, undefined, { hashFiles: full });
+        packageIdentity = full ? tree : digest(JSON.stringify({
+          manifest: await fileIdentity(path.join(directory, "package.json")), tree,
+        }));
         break;
       }
     }
     if (!packageIdentity) throw diagnosticError("preflight-tool");
-    const binary = await fileIdentity(actual);
-    const candidateSafe = ["", "null"].includes(output.nodeOptions) && ["", "null"].includes(output.scriptShell) &&
-      !process.execArgv.some((value) => /^--(?:import|require|loader|experimental-loader)(?:=|$)|^-r$/.test(value)) &&
-      !Object.entries(process.env).some(([name, value]) =>
-        /^(?:NODE_OPTIONS|NODE_PATH|NPM_CONFIG_NODE_OPTIONS|NPM_CONFIG_SCRIPT_SHELL)$/i.test(name) && value);
-    let candidateImplementation = process.platform === "win32" && candidateSafe && !probeResult.stderr.trim() &&
-      output.version === "11.16.0" &&
-      samePath(path.resolve(output.file), actual) &&
-      packageIdentity === "0f3af07d0eef7aeeeadb0efc710993da57bdbfacd9edbfc3cde3fd63a0a4206a" &&
-      ["e8aedc8c76d6cb9423b70ede071228f7cb1644094c114b8721ae6d121100d4fe",
-        "3bf7c5ef339b71d6f8bc4ef4a7b7adb90727788674f0a3cef2ede8f5969ca327"].includes(binary.sha256);
+    let candidateImplementation = full &&
+      packageIdentity === "0f3af07d0eef7aeeeadb0efc710993da57bdbfacd9edbfc3cde3fd63a0a4206a";
     let prefixResolution = { status: "unrecognized" };
     if (candidateImplementation) {
       const node = path.join(path.dirname(actual), "node.exe");
@@ -605,11 +557,11 @@ export async function verificationPreflight(root, plan, options = {}) {
     return { version: output.version, file: output.file, binary, packageIdentity, config, stderr: digest(probeResult.stderr),
       candidateImplementation, candidateSafe, prefixResolution, powershellNode };
   });
-  const nativeNpm = () => once("native-npm", async () => {
+  const nativeNpm = (bind = false) => once(`native-npm:${bind}`, async () => {
     // Gradle and tooling shards use npm.cmd to preserve forwarded arguments on Windows.
     const windows = process.platform === "win32";
     const file = await resolveVerificationExecutable(root, windows ? "npm.cmd" : "npm", { shell: windows });
-    const actual = await realpath(file), binary = await fileIdentity(actual), identity = await npm();
+    const actual = await realpath(file), binary = await fileIdentity(actual), identity = await npm(bind);
     const known = await realpath(identity.file);
     const sameBootstrap = samePath(path.dirname(actual), path.dirname(known));
     let interpreter;
@@ -627,7 +579,7 @@ export async function verificationPreflight(root, plan, options = {}) {
     return { file, actual, binary, ...(interpreter ? { interpreter } : {}), bound,
       ...(sameBootstrap ? { packageIdentity: identity.packageIdentity, prefixResolution: identity.prefixResolution } : {}) };
   });
-  const python = (file, requirements) => once(`python:${file}:${requirements ?? ""}`, async () => {
+  const python = (file, requirements, bind = false) => once(`python:${file}:${requirements ?? ""}:${bind}`, async () => {
     const program = path.isAbsolute(file) ? file : await resolveVerificationExecutable(root, file, { shell: process.platform !== "win32" });
     const script = "import sys,json,importlib.metadata as m,hashlib\n" +
       "if sys.version_info < (3,12): raise RuntimeError('Python 3.12 or newer is required')\n" +
@@ -636,14 +588,16 @@ export async function verificationPreflight(root, plan, options = {}) {
         `if m.version('cryptography') != ${JSON.stringify(requirements)}: raise RuntimeError('cryptography version does not match the declared pin')\n` +
         "h=hashlib.sha256()\n" +
         "for name in ('cryptography','cffi','pycparser'):\n" +
-        " try: d=m.distribution(name)\n" +
+        " try: version=m.version(name)\n" +
         " except m.PackageNotFoundError:\n" +
         "  if name=='cryptography': raise\n" +
         "  continue\n" +
-        " for f in sorted(d.files or []):\n" +
-        "  if str(f).endswith('.pyc'): continue\n" +
-        "  p=d.locate_file(f)\n" +
-        "  if p.is_file(): h.update(str(f).encode());h.update(p.read_bytes())\n" +
+        " h.update(name.encode());h.update(version.encode())\n" +
+        (bind ? " d=m.distribution(name)\n" +
+          " for f in sorted(d.files or []):\n" +
+          "  if str(f).endswith('.pyc'): continue\n" +
+          "  p=d.locate_file(f)\n" +
+          "  if p.is_file(): h.update(str(f).encode());h.update(p.read_bytes())\n" : "") +
         "result['dependencies']=h.hexdigest()\n" : "") +
       "print(json.dumps(result))";
     const output = JSON.parse(await probe(program, ["-B", "-c", script]));
@@ -656,6 +610,7 @@ export async function verificationPreflight(root, plan, options = {}) {
   let ownershipFailure;
   for (const group of groups) {
     const identities = [], issues = [], notProbed = [], passed = new Set();
+    let bindDependencies = false;
     const check = async (prerequisite, operation, reason = "preflight-tool", requires = []) => {
       const blockedBy = requires.filter((name) => !passed.has(name));
       if (blockedBy.length) {
@@ -663,9 +618,12 @@ export async function verificationPreflight(root, plan, options = {}) {
         return;
       }
       try {
-        identities.push([prerequisite, await operation()]);
+        const value = await operation(), previous = identities.find(([name]) => name === prerequisite);
+        if (previous) previous[1] = value;
+        else identities.push([prerequisite, value]);
         passed.add(prerequisite);
       } catch (error) {
+        passed.delete(prerequisite);
         const failure = failureDetails(error, reason);
         issues.push({ prerequisite, failure });
         if (failure.observedProcess === "owned-command-supervisor" && failure.processTreeStopped !== true) {
@@ -675,6 +633,10 @@ export async function verificationPreflight(root, plan, options = {}) {
       }
     };
     const has = (id) => selected.some((item) => item.group === group && item.id === id);
+    const injected = (pattern) => Object.entries(process.env).some(([name, value]) => value && pattern.test(name));
+    const java = ["android", "device"].includes(group);
+    const device = group === "device";
+    let jdk, sdk, cacheDirectory;
     await check("command-ownership", () => {
       if (ownershipFailure) throw ownershipFailure;
       return owner();
@@ -686,11 +648,30 @@ export async function verificationPreflight(root, plan, options = {}) {
     }), "preflight-tool", ["command-ownership"]);
     await check("powershell", powershell, "preflight-tool", ["command-ownership"]);
     await check("output-directory", () => writable(root, options.directory), "preflight-path");
+    if (java) {
+      jdk = path.resolve(root, options.jdk ?? (device ? process.env.DEVPOCKET_JDK : undefined) ?? path.join(".tools", "jdk-25"));
+      sdk = path.resolve(root, options.sdk ?? (device ? process.env.DEVPOCKET_ANDROID_SDK : undefined) ?? path.join(".tools", "android-sdk"));
+      cacheDirectory = device && process.platform === "linux" && process.env.GITHUB_ACTIONS === "true" &&
+        process.env.RUNNER_ENVIRONMENT === "github-hosted" ? path.join(options.directory, "device", "gradle-cache")
+        : path.join(root, ".tools", "gradle-cache");
+      await check("gradle-cache", async () => {
+        await writable(root, cacheDirectory);
+        await gradleArtifacts(cacheDirectory, { bind: false });
+        let initDirectory = null;
+        try { initDirectory = await treeIdentity(path.join(cacheDirectory, "init.d"), undefined, { hashFiles: false }); }
+        catch (error) { if (error.code !== "ENOENT") throw error; }
+        return { properties: await fileIdentity(path.join(cacheDirectory, "gradle.properties"), { optional: true }),
+          init: await fileIdentity(path.join(cacheDirectory, "init.gradle"), { optional: true }),
+          initKotlin: await fileIdentity(path.join(cacheDirectory, "init.gradle.kts"), { optional: true }), initDirectory };
+      }, "preflight-path");
+      await check("native-configuration", () => nativeConfiguration(root, jdk, sdk, cacheDirectory), "preflight-sdk");
+      identities.push(["java-environment", environment(/^(?:JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|GRADLE_OPTS|JAVA_OPTS|ORG_GRADLE_PROJECT_.*)$/i)]);
+    }
     const usesNpm = ["tooling", "backend", "android", "device"].includes(group);
     if (usesNpm) {
-      await check("root-dependencies", () => once("root-dependencies", () => dependencies(root)), "preflight-dependencies");
+      await check("root-dependencies", () => once("root-dependencies", () => dependencies(root, { bind: false })), "preflight-dependencies");
       await check("npm", npm, "preflight-tool", ["command-ownership", "node", "powershell"]);
-      if (group === "tooling") await check("native-npm", nativeNpm, "preflight-tool", ["command-ownership", "npm"]);
+      if (group === "tooling" || java) await check("native-npm", nativeNpm, "preflight-tool", ["command-ownership", "npm"]);
       await check("node-command", () => once("node-command", async () => {
         if ((await npm()).candidateSafe !== true) return { status: "unbound" };
         const child = (await memo.get("node")).child;
@@ -708,12 +689,32 @@ export async function verificationPreflight(root, plan, options = {}) {
         return { file, target, kind, binary, output: digest(output) };
       }), "preflight-tool", ["command-ownership", "npm"]);
       identities.push(["node-environment", environment(/^(?:NODE_.*|TSX_.*|TS_NODE_.*|ESBUILD_.*|NPM_CONFIG_.*|PATH|COMSPEC|PATHEXT|NODEFAULTCURRENTDIRECTORYINEXEPATH|SHELL|SYSTEMROOT|WINDIR|CI|TZ|LANG|LC_.*)$/i)]);
-    }
-    if (has("typecheck")) {
-      await check("typecheck-contract", () => typecheckContract(root, inputs,
-        identities.find(([name]) => name === "node")?.[1], identities.find(([name]) => name === "npm")?.[1],
-        identities.find(([name]) => name === "node-command")?.[1], options.signal),
-      "preflight-tool", ["command-ownership", "root-dependencies", "node-command"]);
+      const npmInput = identities.find(([name]) => name === "npm")?.[1];
+      const startupBound = (input) => input?.candidateSafe === true &&
+        samePath(identities.find(([name]) => name === "node")?.[1]?.child?.file ?? "", process.execPath) &&
+        directNode(identities.find(([name]) => name === "node-command")?.[1], "native") &&
+        directNode(input.powershellNode, "Application");
+      const cache = identities.find(([name]) => name === "gradle-cache")?.[1];
+      const mayBind = process.platform === "win32" && npmInput?.version === "11.16.0" &&
+        passed.has("root-dependencies") && !sourceHasLinks && startupBound(npmInput) &&
+        !injected(/^(?:TSX_|TS_NODE_|ESBUILD_)/i) &&
+        !(java && (identities.find(([name]) => name === "root-dependencies")?.[1]?.workspaces?.length ||
+          !passed.has("gradle-cache") || !passed.has("native-configuration") ||
+          cache?.init || cache?.initKotlin || cache?.initDirectory ||
+          identities.find(([name]) => name === "native-configuration")?.[1]?.reusable !== true ||
+          injected(/^(?:JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|GRADLE_OPTS|JAVA_OPTS)$/i))) &&
+        !((group === "tooling" || has("setup") || has("operations-tests") || has("azure-tests")) &&
+          injected(/^(?:PYTHONPATH|PYTHONHOME|PYTHONSTARTUP|PYTHONUSERBASE)$/i));
+      if (mayBind) {
+        await check("npm", () => npm(true), "preflight-tool", ["command-ownership", "node", "powershell"]);
+        if (group === "tooling" || java)
+          await check("native-npm", () => nativeNpm(true), "preflight-tool", ["command-ownership", "npm"]);
+        const boundNpm = identities.find(([name]) => name === "npm")?.[1];
+        bindDependencies = startupBound(boundNpm) &&
+          npmLaunchersBound(group, boundNpm, identities.find(([name]) => name === "native-npm")?.[1]);
+        if (bindDependencies)
+          await check("root-dependencies", () => once("bound-root-dependencies", () => dependencies(root)), "preflight-dependencies");
+      }
     }
     if (has("backend-build")) await check("backend-output", () => writable(root, path.join(root, "dist")), "preflight-path");
     if (group === "tooling" || has("backend-tests")) {
@@ -735,7 +736,7 @@ export async function verificationPreflight(root, plan, options = {}) {
     }
     if (has("azure-tests")) {
       const azure = path.join(root, "deployment", "azure");
-      await check("azure-dependencies", () => once("azure-dependencies", () => dependencies(azure)), "preflight-dependencies");
+      await check("azure-dependencies", () => once("azure-dependencies", () => dependencies(azure, { bind: bindDependencies })), "preflight-dependencies");
       await check("probe-python", async () => {
         const requirements = await readFile(path.join(azure, "probe", "requirements-test.txt"), "utf8");
         const match = requirements.trim().match(/^cryptography==(\d+\.\d+\.\d+)$/);
@@ -743,7 +744,7 @@ export async function verificationPreflight(root, plan, options = {}) {
         const file = process.env.DEVPOCKET_PROBE_PYTHON ??
           path.join(root, ".tools", "probe-python", process.platform === "win32" ? "Scripts" : "bin",
             process.platform === "win32" ? "python.exe" : "python");
-        return python(file, match[1]);
+        return python(file, match[1], bindDependencies);
       }, "preflight-dependencies", ["command-ownership"]);
     }
     if (has("operations-tests")) {
@@ -751,53 +752,34 @@ export async function verificationPreflight(root, plan, options = {}) {
         const requirements = await readFile(path.join(root, "deployment", "azure", "probe", "requirements-test.txt"), "utf8");
         const match = requirements.trim().match(/^cryptography==(\d+\.\d+\.\d+)$/);
         if (!match) throw diagnosticError("preflight-dependencies");
-        return python("python", match[1]);
+        return python("python", match[1], bindDependencies);
       }, "preflight-dependencies", ["command-ownership"]);
     }
     if (["android", "device"].includes(group)) {
-      const device = group === "device";
-      await check("native-npm", nativeNpm, "preflight-tool", ["command-ownership", "npm"]);
       await check("android-entry", () => fileIdentity(path.join(root, "scripts", device ? "test-android.ps1" : "build-android.ps1")), "preflight-path");
-      const jdk = path.resolve(root, options.jdk ?? (device ? process.env.DEVPOCKET_JDK : undefined) ?? path.join(".tools", "jdk-25"));
-      const sdk = path.resolve(root, options.sdk ?? (device ? process.env.DEVPOCKET_ANDROID_SDK : undefined) ?? path.join(".tools", "android-sdk"));
-      const cacheDirectory = device && process.platform === "linux" && process.env.GITHUB_ACTIONS === "true" &&
-        process.env.RUNNER_ENVIRONMENT === "github-hosted" ? path.join(options.directory, "device", "gradle-cache")
-        : path.join(root, ".tools", "gradle-cache");
       const executableName = (name) => process.platform === "win32" ? `${name}.exe` : name;
-      await check("jdk", () => once(`jdk:${jdk}`, async () => {
+      await check("jdk", () => once(`jdk:${jdk}:${bindDependencies}`, async () => {
         const java = path.join(jdk, "bin", executableName("java"));
         await access(java, constants.R_OK | constants.X_OK);
         const output = await probe(java, ["-version"]);
         if (!/(?:openjdk|java) version "25(?:\.\d+)*"/.test(output)) throw diagnosticError("preflight-version");
         return { jdk, java: await fileIdentity(java), release: await fileIdentity(path.join(jdk, "release")),
-          tree: await treeIdentity(jdk), version: digest(output) };
+          tree: await treeIdentity(jdk, undefined, { hashFiles: bindDependencies }), version: digest(output) };
       }), "preflight-sdk", ["command-ownership"]);
-      await check("android-platform-37.2", () => once(`sdk:${sdk}`, async () => ({
+      await check("android-platform-37.2", () => once(`sdk:${sdk}:${bindDependencies}`, async () => ({
         sdk, platform: await fileIdentity(path.join(sdk, "platforms", "android-37.2", "android.jar")),
         platformMetadata: await fileIdentity(path.join(sdk, "platforms", "android-37.2", "package.xml")),
         license: await fileIdentity(path.join(sdk, "licenses", "android-sdk-license")),
         aapt: await fileIdentity(path.join(sdk, "build-tools", "37.0.0", executableName("aapt2"))),
         zipalign: await fileIdentity(path.join(sdk, "build-tools", "37.0.0", executableName("zipalign"))),
         buildToolsMetadata: await fileIdentity(path.join(sdk, "build-tools", "37.0.0", "package.xml")),
-        buildTools: await treeIdentity(path.join(sdk, "build-tools", "37.0.0")),
+        buildTools: await treeIdentity(path.join(sdk, "build-tools", "37.0.0"), undefined, { hashFiles: bindDependencies }),
       })), "preflight-sdk");
       await check("gradle-wrapper", () => once("gradle-wrapper", async () => ({
         jar: await fileIdentity(path.join(root, "android", "gradle", "wrapper", "gradle-wrapper.jar")),
         properties: await fileIdentity(path.join(root, "android", "gradle", "wrapper", "gradle-wrapper.properties")),
       })), "preflight-sdk");
       await check("android-output", () => writable(root, path.join(root, "android", "app", "build")), "preflight-path");
-      await check("gradle-cache", async () => {
-        const directory = cacheDirectory;
-        await writable(root, directory);
-        let initDirectory = null;
-        try { initDirectory = await treeIdentity(path.join(directory, "init.d")); }
-        catch (error) { if (error.code !== "ENOENT") throw error; }
-        return { properties: await fileIdentity(path.join(directory, "gradle.properties"), { optional: true }),
-          init: await fileIdentity(path.join(directory, "init.gradle"), { optional: true }),
-          initKotlin: await fileIdentity(path.join(directory, "init.gradle.kts"), { optional: true }), initDirectory };
-      }, "preflight-path");
-      await check("native-configuration", () => nativeConfiguration(root, jdk, sdk, cacheDirectory), "preflight-sdk");
-      identities.push(["java-environment", environment(/^(?:JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|GRADLE_OPTS|JAVA_OPTS|ORG_GRADLE_PROJECT_.*)$/i)]);
       if (device) {
         const emulatorSdk = path.resolve(root, process.env.DEVPOCKET_EMULATOR_SDK ?? sdk);
         const architecture = androidImageArchitecture();
@@ -808,8 +790,11 @@ export async function verificationPreflight(root, plan, options = {}) {
             throw diagnosticError("preflight-sdk");
           }
           const directory = path.join(emulatorSdk, ...image.split("/"));
+          const system = await lstat(path.join(directory, "system.img"));
+          if (!system.isFile() || system.isSymbolicLink()) throw diagnosticError("preflight-path");
           return { emulatorSdk, image, properties: await fileIdentity(path.join(directory, "source.properties")),
-            tree: await treeIdentity(directory, "system.img") };
+            tree: await treeIdentity(directory, "system.img", { hashFiles: bindDependencies }),
+            ...(!bindDependencies ? { imageFile: { size: system.size, mode: system.mode, mtimeMs: system.mtimeMs } } : {}) };
         }), "preflight-sdk");
         await check("adb", () => once(`adb:${emulatorSdk}`, async () => {
           const adb = path.join(emulatorSdk, "platform-tools", executableName("adb"));
@@ -829,36 +814,22 @@ export async function verificationPreflight(root, plan, options = {}) {
           const versions = [...new Set([...versionOutput.matchAll(/Android emulator version ([A-Za-z0-9._+-]+)/g)]
             .map((match) => diagnosticVersion(match[1])))];
           if (versions.length !== 1 || !versions[0]) throw diagnosticError("preflight-version");
-          const binary = await fileIdentity(emulator), files = await treeInputs(path.join(emulatorSdk, "emulator"));
+          const binary = await fileIdentity(emulator);
+          const files = await treeInputs(path.join(emulatorSdk, "emulator"), undefined, { hashFiles: bindDependencies });
           const identity = { binary, acceleration: digest(acceleration[0]),
             version: digest(versions[0]), tree: digest(JSON.stringify(files)) };
-          options.onEmulatorIdentity?.(structuredClone({ identity, files }));
+          options.onEmulatorIdentity?.(structuredClone({ identity, files: bindDependencies ? files : [] }));
           return identity;
         }), "preflight-acceleration", ["command-ownership"]);
       }
     }
     const npmIdentity = identities.find(([name]) => name === "npm")?.[1];
     const candidateSafe = npmIdentity?.candidateSafe === true;
-    const injected = (pattern) => Object.entries(process.env).some(([name, value]) => value && pattern.test(name));
-    const java = ["android", "device"].includes(group), cache = identities.find(([name]) => name === "gradle-cache")?.[1];
-    // shortcut: Native workspace builds cannot reuse until their loader/compiler input contract is closed.
-    const workspaceBuild = java && Boolean(identities.find(([name]) => name === "root-dependencies")?.[1]?.workspaces?.length);
-    const unbound = sourceHasLinks || workspaceBuild || usesNpm &&
-      (!npmLaunchersBound(group, npmIdentity, identities.find(([name]) => name === "native-npm")?.[1]) ||
-        injected(/^(?:TSX_|TS_NODE_|ESBUILD_)/i) ||
-        !samePath(identities.find(([name]) => name === "node")?.[1]?.child?.file ?? "", process.execPath) ||
-        !directNode(identities.find(([name]) => name === "node-command")?.[1], "native") ||
-        !directNode(npmIdentity?.powershellNode, "Application")) ||
-      (group === "tooling" || has("setup") || has("operations-tests") || has("azure-tests")) &&
-        injected(/^(?:PYTHONPATH|PYTHONHOME|PYTHONSTARTUP|PYTHONUSERBASE)$/i) ||
-      java && (injected(/^(?:JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|JDK_JAVA_OPTIONS|GRADLE_OPTS|JAVA_OPTS)$/i) ||
-        cache?.init || cache?.initKotlin || cache?.initDirectory ||
-        identities.find(([name]) => name === "native-configuration")?.[1]?.reusable !== true);
+    const unbound = !bindDependencies;
     const blocked = issues.length > 0 || notProbed.length > 0;
     results.push({ group, status: blocked ? "blocked" : "passed", issues, notProbed,
       candidateSafe, reusable: !blocked && !unbound,
-      ...(has("typecheck") ? { candidateEligibility: identities.find(([name]) => name === "typecheck-contract")?.[1] ??
-        { status: "unavailable", reason: "prerequisites-blocked" } } : {}),
+      fingerprintKind: blocked ? "unavailable" : unbound ? "readiness" : "environment",
       ...(blocked ? {} : {
         fingerprint: digest(JSON.stringify({ platform: process.platform, arch: process.arch, identities })),
         prerequisites: identities.map(([prerequisite, value]) => ({ prerequisite, fingerprint: digest(JSON.stringify(value)) })),
