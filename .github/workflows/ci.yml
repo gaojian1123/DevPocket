@@ -165,7 +165,6 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 30
     env:
-      XDG_CACHE_HOME: ${{ runner.temp }}/devpocket-cache
       DOTNET_MultiCoreJitNoProfileGather: '1'
       npm_config_registry: https://packagefeedproxy.microsoft.io/npm/
     steps:
@@ -189,6 +188,7 @@ jobs:
         shell: bash
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
+          XDG_CACHE_HOME: ${{ runner.temp }}/devpocket-cache
         run: |
           node scripts/verify.mjs --base "$BASE_SHA" --group tooling --tooling-shard native --report .data/ci/macos/report.json
       - name: Bind macOS evidence to this CI attempt
@@ -497,7 +497,6 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
       npm_config_registry: https://packagefeedproxy.microsoft.io/npm/
-      XDG_CACHE_HOME: ${{ runner.temp }}/devpocket-cache
       DOTNET_MultiCoreJitNoProfileGather: '1'
       APPLE_ROLE: ${{ matrix.role }}
     steps:
@@ -519,6 +518,7 @@ jobs:
         shell: bash
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
+          XDG_CACHE_HOME: ${{ runner.temp }}/devpocket-cache
         run: |
           node scripts/verify.mjs --base "$BASE_SHA" --group apple --apple-role "$APPLE_ROLE" --report .data/ci/apple/report.json
       - name: Bind Apple evidence to this CI attempt

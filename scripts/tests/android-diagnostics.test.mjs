@@ -383,6 +383,17 @@ test("native startup diagnostics are manual-only, reuse the owned entry and neve
   assert.doesNotMatch(startup, /Required verification|name: verification-|continue-on-error|pull_request|pull_request_target|push:|schedule:|workflow_run:|workflow_call:|container:|self-hosted/);
 });
 
+test("Mac CI cache paths use a step context while preserving private profile gathering settings", async () => {
+  const workflow = await readFile(".github/workflows/ci.yml", "utf8");
+  for (const job of ["macos", "apple"]) {
+    const body = workflow.split(`\n  ${job}:`)[1].split(/\n  [a-z][a-z-]*:/)[0];
+    const header = body.split("\n    steps:")[0];
+    assert.doesNotMatch(header, /\$\{\{\s*runner\./);
+    assert.match(header, /DOTNET_MultiCoreJitNoProfileGather: '1'/);
+    assert.match(body, /\n {10}XDG_CACHE_HOME: \$\{\{ runner\.temp \}\}\/devpocket-cache/);
+  }
+});
+
 test("CI binds exactly the first Python executable when command discovery returns multiple matches", async (t) => {
   const item = await fixture(t);
   const directories = [path.join(item.root, "first Python"), path.join(item.root, "second Python")];
