@@ -15,7 +15,10 @@ export type RenderOptions = {
   onOpenLink(url: string): void;
   onSizeChanged?(height: number): void;
 };
-export type RenderedComponent = { dispose(): void };
+export type RenderedComponent = {
+  dispose(): void;
+  setChartView?(windowSize: number | null, dataOnly: boolean): number;
+};
 
 const colors = ["#006b5d", "#2563eb", "#c17a16", "#8856a7", "#c54c4c", "#407c90"];
 const text = (value: CellValue | undefined): string => value === null || value === undefined ? "\u2014" : String(value);
@@ -140,17 +143,19 @@ function renderTable(parent: HTMLElement, spec: TableSpec, options: RenderOption
   draw();
 }
 
-function renderChart(parent: HTMLElement, spec: ChartSpec, options: RenderOptions): () => void {
+function renderChart(parent: HTMLElement, spec: ChartSpec, options: RenderOptions): RenderedComponent {
   if (!spec.data.length) {
     parent.append(element("p", "empty", "图表没有数据"));
-    return () => {};
+    return { dispose: () => {} };
   }
   const chartBox = element("div", "chart-box");
   const canvas = element("canvas");
   canvas.setAttribute("role", "img");
-  canvas.setAttribute("aria-label", `${spec.title ?? "图表"}，${spec.series.length} 个系列；完整数值可在下方数据表查看`);
+  canvas.setAttribute("aria-label", `${spec.title ?? "图表"}，系列：${spec.series.map((series) => series.name).join("、")}；完整数值可在数据视图查看`);
   chartBox.append(canvas);
   const legend = element("ul", "legend");
+  // The chart description already includes the names; the visual key is not a separate control.
+  legend.setAttribute("aria-hidden", "true");
   spec.series.forEach((series, index) => {
     const item = element("li"), swatch = element("span", "swatch");
     swatch.style.backgroundColor = series.color ?? colors[index % colors.length]!;
@@ -158,34 +163,42 @@ function renderChart(parent: HTMLElement, spec: ChartSpec, options: RenderOption
     legend.append(item);
   });
   const details = element("details", "chart-data");
-  details.append(element("summary", undefined, "查看图表完整数据"));
-  const values = spec.data.flatMap((row) => spec.series.map((series) => ({
-    category: row[spec.xAxisKey]!, series: series.name, value: row[series.dataKey]!,
-  })));
+  const summary = element("summary", undefined, "查看图表完整数据");
+  details.append(summary);
+  let visibleRows = spec.data;
   let dataRendered = false;
+  const renderData = () => {
+    dataRendered = true;
+    renderTable(details, { type: "datagrid", columns: [
+      { key: "category", label: "类别" }, { key: "series", label: "系列" },
+      { key: "value", label: spec.yAxisLabel ?? "数值", type: "number" },
+    ], rows: visibleRows.flatMap((row) => spec.series.map((series) => ({
+      category: row[spec.xAxisKey]!, series: series.name, value: row[series.dataKey]!,
+    }))) }, { ...options, view: "detail" });
+  };
   details.addEventListener("toggle", () => {
-    if (details.open && !dataRendered) {
-      dataRendered = true;
-      renderTable(details, { type: "datagrid", columns: [
-        { key: "category", label: "类别" }, { key: "series", label: "系列" },
-        { key: "value", label: spec.yAxisLabel ?? "数值", type: "number" },
-      ], rows: values }, { ...options, view: "detail" });
-    }
+    if (details.open && !dataRendered) renderData();
   });
   parent.append(chartBox, legend, details);
-  const foreground = options.theme === "dark" ? "#d6e4dc" : "#34483e";
-  const grid = options.theme === "dark" ? "#354b41" : "#e1e9e3";
+  const style = getComputedStyle(parent);
+  const foreground = style.getPropertyValue("--chart-foreground").trim() ||
+    (options.theme === "dark" ? "#d6e4dc" : "#34483e");
+  const grid = style.getPropertyValue("--chart-grid").trim() ||
+    (options.theme === "dark" ? "#354b41" : "#e1e9e3");
+  const requestedTicks = Number(style.getPropertyValue("--chart-y-ticks").trim());
+  const maxTicksLimit = Number.isInteger(requestedTicks) && requestedTicks >= 2 && requestedTicks <= 12 ? requestedTicks : undefined;
+  const valuesFor = (rows: ChartSpec["data"], key: string) => rows.map((row) => {
+    const value = row[key];
+    if (value === null || typeof value === "number") return value;
+    throw new ComponentError("COMPONENT_INVALID", "The chart series contains an invalid value.");
+  });
   const common: ChartConfiguration<"line" | "bar", (number | null)[], string> = {
     type: spec.type,
     data: {
       labels: spec.data.map((row) => text(row[spec.xAxisKey])),
       datasets: spec.series.map((series, index) => ({
         label: series.name,
-        data: spec.data.map((row) => {
-          const value = row[series.dataKey];
-          if (value === null || typeof value === "number") return value;
-          throw new ComponentError("COMPONENT_INVALID", "The chart series contains an invalid value.");
-        }),
+        data: valuesFor(spec.data, series.dataKey),
         borderColor: series.color ?? colors[index % colors.length],
         backgroundColor: series.color ?? colors[index % colors.length],
         borderWidth: spec.type === "line" ? 2 : 0,
@@ -202,13 +215,38 @@ function renderChart(parent: HTMLElement, spec: ChartSpec, options: RenderOption
       plugins: { tooltip: { enabled: true } },
       scales: {
         x: { ticks: { color: foreground, maxTicksLimit: options.view === "inline" ? 5 : 8 }, grid: { display: false } },
-        y: { beginAtZero: true, ticks: { color: foreground }, grid: { color: grid },
+        y: { beginAtZero: true, ticks: { color: foreground, maxTicksLimit }, grid: { color: grid },
           title: { display: Boolean(spec.yAxisLabel), text: spec.yAxisLabel, color: foreground } },
       },
     },
   };
   const chart = new Chart(canvas, common);
-  return () => chart.destroy();
+  return {
+    dispose: () => chart.destroy(),
+    setChartView: (windowSize, dataOnly) => {
+      if (windowSize !== null && (!Number.isInteger(windowSize) || windowSize < 1 || windowSize > spec.data.length)) {
+        throw new ComponentError("COMPONENT_INVALID", "The chart viewing range is invalid.");
+      }
+      if (typeof dataOnly !== "boolean") throw new ComponentError("COMPONENT_INVALID", "The chart display mode is invalid.");
+      const rows = windowSize === null ? spec.data : spec.data.slice(-windowSize);
+      if (rows.length !== visibleRows.length) {
+        visibleRows = rows;
+        chart.data.labels = rows.map((row) => text(row[spec.xAxisKey]));
+        chart.data.datasets.forEach((dataset, index) => {
+          dataset.data = valuesFor(rows, spec.series[index]!.dataKey);
+        });
+        details.replaceChildren(summary);
+        dataRendered = false;
+      }
+      chartBox.style.display = dataOnly ? "none" : "";
+      legend.style.display = dataOnly ? "none" : "";
+      details.open = dataOnly;
+      if (dataOnly && !dataRendered) renderData();
+      if (!dataOnly) chart.update("none");
+      parent.dataset.chartDataOnly = String(dataOnly);
+      return visibleRows.length;
+    },
+  };
 }
 
 function renderMarkdown(parent: HTMLElement, content: string, options: RenderOptions): void {
@@ -247,8 +285,8 @@ export function renderComponent(root: HTMLElement, input: unknown, options: Rend
   root.dataset.theme = options.theme;
   root.dataset.view = options.view;
   root.className = "component";
-  let release = () => {};
-  if (spec.type === "line" || spec.type === "bar") release = renderChart(root, spec, options);
+  let chart: RenderedComponent | undefined;
+  if (spec.type === "line" || spec.type === "bar") chart = renderChart(root, spec, options);
   else if (spec.type === "datagrid") renderTable(root, spec, options);
   else renderMarkdown(root, spec.content, options);
   provenance(root, spec);
@@ -260,5 +298,8 @@ export function renderComponent(root: HTMLElement, input: unknown, options: Rend
   const observer = new ResizeObserver(measure);
   observer.observe(root);
   measure();
-  return { dispose: () => { observer.disconnect(); release(); root.replaceChildren(); } };
+  return {
+    dispose: () => { observer.disconnect(); chart?.dispose(); root.replaceChildren(); delete root.dataset.chartDataOnly; },
+    ...(chart?.setChartView ? { setChartView: chart.setChartView } : {}),
+  };
 }

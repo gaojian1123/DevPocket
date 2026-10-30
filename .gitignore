@@ -40,5 +40,8 @@ infra/modules/*.json
 **/*.sqlite*
 **/captures/
 .idea/
+**/xcuserdata/
+**/*.xcuserstate
+/apple/DevPocket/Renderer/
 .DS_Store
 Thumbs.db

@@ -11,9 +11,26 @@ Apple-only product changes need the complete Apple gate, not unrelated Android o
 backend product suites. Apple execution/configuration changes also need tooling;
 shared/mixed inputs retain all affected consumers. Require both model/WK and UI
 test coverage for each required Apple role, not just the cached GetTestList count.
-Local evidence must retain original Xcode MCP invocations and source/workspace
+Local MCP evidence must retain original Xcode MCP invocations and source/workspace
 bindings; CI evidence must retain its own actual commands, runtime/device selection
 and owned-resource cleanup. A local MCP record is not a hosted-CI execution.
+For **complete local batches**, follow that section of the development guide.
+Inspect the fresh, unfiltered native enumeration and its command receipts for
+every role; `GetTestList` alone cannot establish completeness. Match each original
+RunSomeTests filter set to its native result identities and prove an exact disjoint
+catalogue union on the same role/device/source/environment. Retain original failed
+attempts, workspace mappings and producing/copied xcresults; a later success cannot
+erase a timeout, cancellation or observed drift. Require the normal builds and
+ordinary version-6 gate, not refinement acceptance or synthetic native fixtures.
+The owner repeats `apple-qualify` before post-review ordinary reaggregation.
+For user-selected **Local xcodebuild acceptance**, follow that section of the
+development guide. Require `local-xcodebuild` origin, original owned-command
+requests/completions, bounded result readiness, full unfiltered catalogue equality,
+all four exact already-booted roles and both normal builds. Reopen original/copied
+xcresults, product/signature/renderer evidence and unchanged source/environment
+bindings. A late-readable result cannot replace an old failed MCP completion;
+local commands cannot acquire hosted-CI identity or simulator lifecycle authority.
+The full ordinary gate, failure retention, checkpoint review and freshness remain.
 
 When an initial Apple checkpoint subject is supplied, review that exact subject
 and its original terminal-qualified full gate, native input context, raw native

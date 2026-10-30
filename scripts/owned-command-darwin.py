@@ -51,10 +51,10 @@ class Darwin:
         self.lib.proc_signal_with_audittoken.argtypes = [ctypes.c_void_p, ctypes.c_int]
         self.lib.responsibility_get_pid_responsible_for_pid.argtypes = [ctypes.c_int]
 
-    def identity(self, pid):
+    def identity(self, pid, *, include_zombies=False):
         for attempt in range(8):
             value = ProcessInfo()
-            size = self.lib.proc_pidinfo(pid, 18, 0, ctypes.byref(value), ctypes.sizeof(value))
+            size = self.lib.proc_pidinfo(pid, 18, int(include_zombies), ctypes.byref(value), ctypes.sizeof(value))
             code = ctypes.get_errno()
             if size == 0 and code in (errno.ESRCH, errno.ENOENT):
                 return None
@@ -103,8 +103,11 @@ class Darwin:
                     continue
                 info = self.identity(pid)
                 if info is None:
-                    stable = False
-                    continue
+                    # A nonzero proc_pidinfo argument also searches the kernel's zombie list.
+                    info = self.identity(pid, include_zombies=True)
+                    if info is None or info.bsd.status != 5:
+                        stable = False
+                        continue
                 identity = (pid, info.identity.unique, info.identity.version)
                 if info.bsd.status == 5:
                     observed_zombies.add(identity)

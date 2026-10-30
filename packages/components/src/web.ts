@@ -20,15 +20,31 @@ const request = z.object({
 const root = document.getElementById("component");
 if (!root) throw new Error("The component root is missing.");
 let rendered: RenderedComponent | undefined;
+let currentRequestId: string | undefined;
 function showError(message: string): void {
   rendered?.dispose();
   rendered = undefined;
+  currentRequestId = undefined;
   if (root) root.textContent = message;
 }
 const send = (message: object) => {
   if (!window.devPocketHost) throw new Error("The native component host is unavailable.");
   window.devPocketHost.postMessage(JSON.stringify({ version: COMPONENT_VERSION, ...message }));
 };
+
+Object.defineProperty(window, "devPocketPresentation", {
+  value: Object.freeze({
+    setChartView(requestId: unknown, windowSize: unknown, dataOnly: unknown): number {
+      if (typeof requestId !== "string" || requestId !== currentRequestId || !rendered?.setChartView ||
+          (windowSize !== null && typeof windowSize !== "number") || typeof dataOnly !== "boolean") {
+        throw new ComponentError("COMPONENT_INVALID", "The active chart view does not match this presentation request.");
+      }
+      return rendered.setChartView(windowSize, dataOnly);
+    },
+  }),
+  writable: false,
+  configurable: false,
+});
 
 window.addEventListener("message", (event: MessageEvent<unknown>) => {
   if (typeof event.data !== "string" || new TextEncoder().encode(event.data).byteLength > MAX_COMPONENT_BYTES + 4096) {
@@ -46,6 +62,7 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
   if (!input.success) { showError("组件消息协议不受支持。"); return; }
   rendered?.dispose();
   rendered = undefined;
+  currentRequestId = undefined;
   const { requestId, spec, view, theme } = input.data;
   try {
     rendered = renderComponent(root, spec, {
@@ -53,6 +70,7 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
       onOpenLink: (url) => send({ type: "open-link", requestId, url }),
       onSizeChanged: (height) => send({ type: "height", requestId, height }),
     });
+    currentRequestId = requestId;
     send({ type: "rendered", requestId });
   } catch (error) {
     if (!(error instanceof ComponentError)) {

@@ -1,12 +1,13 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, lstat, open, readFile, readdir, readlink, realpath } from "node:fs/promises";
+import { access, lstat, mkdir, open, readFile, readdir, readlink, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { inspect } from "node:util";
 import { runCommand } from "./process.mjs";
 import { readOnlyGit, sourceInputs } from "./git-state.mjs";
-import { diagnosticError, diagnosticVersion, failureDetails } from "./diagnostic-errors.mjs";
+import { diagnosticError, diagnosticVersion, failureDetails, ownValue } from "./diagnostic-errors.mjs";
 import { CHECKS } from "./verification-policy.mjs";
 import { verificationStorageLocation } from "./verification-run.mjs";
 import { androidImageArchitecture, androidImagePattern, macOSAcceleration } from "./android-platform.mjs";
@@ -656,7 +657,7 @@ export async function verificationPreflight(root, plan, options = {}) {
   const results = [];
   let ownershipFailure;
   for (const group of groups) {
-    const identities = [], issues = [], notProbed = [], passed = new Set();
+    const identities = [], issues = [], notProbed = [], preparationFailures = [], passed = new Set();
     const check = async (prerequisite, operation, reason = "preflight-tool", requires = []) => {
       const blockedBy = requires.filter((name) => !passed.has(name));
       if (blockedBy.length) {
@@ -669,6 +670,7 @@ export async function verificationPreflight(root, plan, options = {}) {
       } catch (error) {
         const failure = failureDetails(error, reason);
         issues.push({ prerequisite, failure });
+        if (options.nativePreparation) preparationFailures.push({ group, prerequisite, failure, error });
         if (failure.observedProcess === "owned-command-supervisor" && failure.processTreeStopped !== true) {
           ownershipFailure = error;
           passed.delete("command-ownership");
@@ -851,7 +853,7 @@ export async function verificationPreflight(root, plan, options = {}) {
       }
     }
     const npmIdentity = identities.find(([name]) => name === "npm")?.[1];
-    if (options.nativePreparation) options.onPreparationIdentity?.(Object.fromEntries(identities));
+    if (options.nativePreparation) options.onPreparationIdentity?.(Object.fromEntries(identities), preparationFailures);
     const candidateSafe = npmIdentity?.candidateSafe === true;
     const injected = (pattern) => Object.entries(process.env).some(([name, value]) => value && pattern.test(name));
     const java = ["android", "device"].includes(group), cache = identities.find(([name]) => name === "gradle-cache")?.[1];
@@ -881,18 +883,65 @@ export async function verificationPreflight(root, plan, options = {}) {
   return { version: 1, status: results.some((item) => item.status !== "passed") ? "blocked" : "passed", groups: results };
 }
 
+export async function retainApplePreparationFailure(root, source, error) {
+  root = await realpath(root);
+  let directory = root;
+  for (const part of [".data", "verification", "preparation-diagnostics"]) {
+    directory = path.join(directory, part);
+    try { await mkdir(directory, { mode: 0o700 }); }
+    catch (failure) { if (failure.code !== "EEXIST") throw failure; }
+    const info = await lstat(directory);
+    if (!info.isDirectory() || info.isSymbolicLink() || await realpath(directory) !== directory) {
+      throw diagnosticError("preflight-path");
+    }
+  }
+  const record = {
+    version: 1, kind: "private-apple-preparation-failure", acceptance: false,
+    observedAt: new Date().toISOString(), workspace: root, source,
+    entry: { executable: process.execPath, version: process.version, argv: process.argv,
+      execArgv: process.execArgv, pid: process.pid, parentPid: process.ppid, cwd: process.cwd() },
+    error,
+    unavailable: (ownValue(error, "preparationFailures") ?? []).map((item) => ({
+      group: item.group, prerequisite: item.prerequisite,
+      failedProcessId: ownValue(item.error, "pid") ?? "unknown",
+      rawCleanupReceipt: ownValue(item.error, "rawCleanupReceipt") ?? "unknown",
+    })),
+    note: "Private diagnostic only. Entry PIDs are not failed-command PIDs; missing process identities or raw receipts remain unknown. No cleanup or acceptance is inferred.",
+  };
+  const bytes = inspect(record, { depth: null, colors: false, compact: false, showHidden: true,
+    maxArrayLength: null, maxStringLength: null, customInspect: false, getters: false }) + "\n";
+  const file = path.join(directory, `${randomUUID()}.txt`), output = await open(file, "wx", 0o600);
+  try {
+    await output.writeFile(bytes);
+    await output.sync();
+  } finally { await output.close(); }
+  return { path: path.relative(root, file).replaceAll("\\", "/"), sha256: digest(bytes), bytes: Buffer.byteLength(bytes) };
+}
+
 export async function applePreparationInputs(root, source, signal) {
   if (process.platform !== "darwin") throw diagnosticError("configuration");
   let identity;
+  const preparationFailures = [];
   const result = await verificationPreflight(root, { source, requiredChecks: ["backend-build"] }, {
     directory: path.join(root, ".data", "verification", "refinement-inputs"),
-    nativePreparation: true, onPreparationIdentity: (value) => { identity = value; }, signal,
+    nativePreparation: true, onPreparationIdentity: (value, failures) => {
+      identity = value;
+      preparationFailures.push(...failures);
+    }, signal,
   });
   const group = result.groups[0];
   if (result.status !== "passed") {
     const unsafe = result.groups.some((item) => item.issues.some(({ failure }) =>
       failure.observedProcess === "owned-command-supervisor" && failure.processTreeStopped !== true));
-    throw Object.assign(diagnosticError("preflight-dependencies"), { processTreeStopped: !unsafe, preparation: result });
+    const error = Object.assign(diagnosticError("preflight-dependencies"),
+      { processTreeStopped: !unsafe, preparation: result, preparationFailures });
+    try { error.preparationDiagnostic = await retainApplePreparationFailure(root, source, error); }
+    catch (failure) {
+      error.preparationRetentionFailure = failure;
+      console.error(JSON.stringify({ kind: "apple-preparation-diagnostic-failure",
+        failure: failureDetails(diagnosticError("report-write", failure)), originalFailure: failureDetails(error) }));
+    }
+    throw error;
   }
   const node = await realpath(process.execPath), npm = identity.npm, native = identity["native-npm"];
   if (!group.candidateSafe || identity.node.child.file !== node || identity["node-command"].target !== node ||

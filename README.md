@@ -270,28 +270,147 @@ its matching pre-upgrade database backup rather than opening newer summaries
 with the old strict decoder. Installation, reload and deployment remain separate
 operator-authorized actions.
 
-## Apple client design handoff
+## Apple native offline milestone
 
-The selected Apple client design and implementation requirements are in
-[docs\APPLE-CLIENT.md](docs/APPLE-CLIENT.md). The self-contained visual reference
-is `docs\prototypes\apple-client\index.html`. Open a terminal in that directory
-and run `node serve.mjs` on Windows or macOS, then open the loopback URL it prints.
-No prototype dependency installation or build is needed.
+`apple/DevPocket/DevPocket.xcodeproj` is a native SwiftUI app targeting
+**iOS/iPadOS 27.0 and macOS 27.0**. Duo-specific reserved-region APIs are used
+only when available on iOS 27.1 or later. Its first milestone uses only explicitly labeled,
+fictional, resettable local fixtures. It has no relay pairing, runtime connection,
+host/device credentials, push registration or production account support.
+The session-list actions menu includes an **Add computer** entry that opens
+a native pairing page explicitly marked as not yet connected. This offline
+entry does not collect pairing credentials, request camera access or pretend
+that a computer has been paired.
 
-The reference covers iPhone, iPad, Mac and iPhone Duo, including chronological
-conversation/Canvas content, the single-close reader and Duo's compact,
-expanded and partially folded layouts. It contains only the selected design,
-uses in-memory fictional data, and does not contact a real runtime.
-Custom transition animation is deferred.
+The workbench, navigation, conversation, composer, decisions and read-only
+file/change examples are SwiftUI. Only component contents use a restricted
+WKWebView with the existing `packages/components` renderer and its `line`, `bar`,
+`datagrid` and `markdown` contract. The HTML design prototype is not bundled.
+Component bytes retain their base64 and SHA256 identity; renderer success gates
+native references. Later replies append cards rather than replacing old ones.
+Native controls keep their platform styles with an adaptive blue accent. The
+Apple WK host uses Glass Workbench's neutral surfaces and blue links in both
+appearances, without changing Android's component theme or supplied series colors.
+All Apple layouts share a session library: all sessions, pinned, attention,
+archived, projects and computers. Project and computer filters can be combined
+with native search across titles, projects, computers and branches. Pin, rename,
+archive and restore change local metadata only; archiving does not confirm or
+cancel work, and unresolved items remain reachable through Attention.
+One native navigation hierarchy presents the session list and conversation:
+compact windows navigate between them, while wider windows show adjacent panes.
+The list's scope menu switches collections; projects and computers are filters,
+not an additional permanent navigation column.
+iPad has no additional app-level tab/sidebar hierarchy. Files and read-only
+changes belong to the selected conversation, not separate app destinations.
+Two persistent native toolbar toggles open, switch and close their inspector.
+Its compact sheet has a Files/Changes picker and Close action; a wide inspector
+has no duplicate toolbar. The conversation remains visible beneath the shared
+toolbar, with a leading native inline-large title on iOS and the native window
+title/subtitle on Mac. Component readers are modal on every layout and have
+one Close action; closing preserves the draft and original reading context.
+Text and public tool activity remain in a continuous reply, with separate native component cards.
+The small decision-form fixture threads keep their rows mounted during keyboard
+resizing; other timelines retain lazy mounting for component content.
+The native card summary derives the fictional task total from the validated
+component data; it does not add fields to the component transport.
+Reader range and chart/data controls change only local viewing state, preserving
+the original card and its payload when closing, reopening or resizing the reader.
 
-This is not a native Apple client or Apple-device acceptance. Implementation
-should reuse the existing protocol and `packages\components` contract, while
-building a native shell and its platform-specific integration.
+On a Mac with Xcode 27.1, Node 26.12.1+ and npm 12.2.1:
+
+```sh
+npm ci --registry=https://packagefeedproxy.microsoft.io/npm/
+node apple/prepare-components.mjs
+open apple/DevPocket/DevPocket.xcodeproj
+```
+
+Select the shared **DevPocket** scheme and an eligible Mac or simulator, then
+Run or Test in Xcode (or the explicitly bound Xcode MCP workspace). The preparation
+command invokes the existing component build, validates `apple/Fixtures/components.json`
+and writes ignored `apple/DevPocket/Renderer` assets, including dependency notices.
+Run it again after renderer or fixture changes. Missing resources fail explicitly.
+No Swift package download, development team or distribution signing is required
+for the local Mac/simulator build; physical installation is separate.
+
+Settings has one primary entry: the native Mac Settings menu,
+or the mobile session-list actions menu. Its shared form exposes appearance,
+offline fixtures, the next simulated receipt and a confirmed reset; conversations
+and readers do not repeat a settings button. Mac keeps its native search field
+and filter menu above the session list, with Command-K to reveal and focus search.
+Library scope, search, filters, drafts and fictional history persist in the app's
+own backup-excluded Application Support `DevPocketFixtures/state-v1.json`; interrupted operations
+become uncertain, never automatically resubmitted. View-only chart/table state is
+retained by the in-process renderer while navigating and resizing, not after a
+fixture reset or app termination. The renderer cache retains recent surfaces
+(16 cached views, evicting detached views first and never evicting attached views);
+eviction discards only view state, never historical card data or draft references.
+Component references preserve draft text and
+consume one attachment position in the existing contract; there is no real
+attachment staging or runtime delivery in this milestone.
+The current fixtures span two fictional projects and two fictional computers.
+Updated fixtures do not overwrite existing saved sessions, cards, colors or drafts;
+use the confirmed local-example reset to load the revised set. Older saved stores
+without library preferences remain readable.
+Unrelated message or decision receipts cannot clear an outstanding cancellation
+or enable a duplicate Stop. Its own confirmed or explicitly failed outcome resolves
+the request; an uncertain cancellation remains visibly unconfirmed after relaunch,
+without replaying the abort or enabling another Stop.
+
+NavigationSplitView and system toolbars adapt the session list, conversation
+and inspector to available space. Component readers remain native modal sheets
+at every window width, rather than replacing or narrowing the conversation.
+iOS 27.1
+`GeometryProxy.reservedRegions(kind:)` informs split sizing when available without
+hardcoded hinge dimensions; iOS 27.0 uses normal native width and safe-area
+adaptation. Native containers handle the reserved regions. Every reader
+has one Close action, and local chart/table viewing state survives resizing.
+Closing restores the conversation's reading anchor and draft. This is not
+physical folding, touch, performance or every device/window configuration acceptance.
+The installed simulator runtime must actually support the chosen device.
+Use an eligible iOS 27.0 runtime for ordinary iPhone/iPad and iOS 27.1 for Duo;
+each result must retain its actual device and runtime identity.
+
+On macOS the App Sandbox outgoing-network capability is needed by the observed
+WebKit helper startup path, even for offline resources. It permits the **whole Mac
+app sandbox** to make outbound connections; it is not a helper-only entitlement.
+The milestone remains offline through its implementation: no native networking
+client, a five-resource custom-scheme allowlist, WK resource-blocking rules, CSP,
+navigation denial and a narrowly validated presentation bridge. External links
+require a native confirmation. Do not treat the entitlement as permission to
+connect a real service, or the UI restrictions as an OS-level network prohibition.
+
+The Swift Testing suite covers combined library filters, metadata-only actions,
+attention navigation, old-store compatibility, exact bytes, host-message/resource
+boundaries, immutable operations, references, stop/decision confirmation,
+persistence and real WK rendering. XCTest UI cases exercise native library,
+settings and conversation controls. Dynamic Type
+is checked against UIKit's actual font metrics in every standard and
+accessibility size category, including wrapped metadata and reachable composer
+controls; native accessibility audits separately check hit regions and descriptions.
+Retain actual
+results and platform gaps; a successful build or a skipped/unrun UI test is not
+acceptance. Use the source-selected Apple platform gate with the actual
+native qualification request passed through `-AppleEvidence`. Shared changes in
+the fixed-base cumulative diff still retain their affected-platform checks.
+
+Local Mac UI automation needs an unlocked, interactive desktop. It keeps the
+user's input source: the input helper sends the first real key, waits for the
+transient input-source hint to disappear, then types and commits the remaining
+fixture text. Chinese language launch arguments do not select the keyboard input
+source. Do not switch that source, bypass native permissions, or treat ASCII
+fixture checks under Pinyin as complete Chinese/third-party input-method acceptance.
+
+The selected Glass Workbench requirements remain in
+[docs/APPLE-CLIENT.md](docs/APPLE-CLIENT.md). Preserve the self-contained visual
+reference in `docs/prototypes/apple-client`: `node serve.mjs` starts its loopback
+preview without a build. Its device frames and simulation toolbar are design
+tools, not the native application. Custom transitions remain deferred.
 
 ## Layout
 
 ```text
 android\             Native app, Kotlin state/storage/network, Compose UI, tests
+apple\               Native SwiftUI offline fixtures, restricted WK host and tests
 backend\src\         Protocol, independent relay, Copilot adapter and outbound bridge
 backend\tests\       Real HTTP/WSS contract tests and focused runtime-adapter tests
 backend\integration\ New ordinary CLI integration harness (opt-in, local only)
@@ -335,6 +454,14 @@ limits/cancellation without a project-default time, credit or repair-round cap.
 Apple-only feature changes use the [Apple platform gate](docs/DEVELOPMENT-WORKFLOW.md#apple-platform-verification)
 locally and in CI. Shared renderer/protocol/infrastructure changes retain their
 cross-platform requirements; this is not a blanket directory-based execution grant.
+For a full local suite that exceeds one Xcode MCP call, use
+[Complete local batches](docs/DEVELOPMENT-WORKFLOW.md#complete-local-batches):
+fresh native catalogues and complete RunSomeTests coverage, without dropping a
+role, changing the scheme or counting a timeout as success.
+When explicitly selected, [local xcodebuild acceptance](docs/DEVELOPMENT-WORKFLOW.md#local-xcodebuild-acceptance)
+uses owned native commands and isolated artifacts for the same full matrix;
+development and previews remain in Xcode MCP. Adopting and executing that route
+requires its exact local control/target scope, not a rewritten MCP or CI receipt.
 For local Apple presentation follow-ups after a fully accepted checkpoint, use
 [Local Apple refinement](docs/DEVELOPMENT-WORKFLOW.md#local-apple-refinement).
 It keeps Xcode MCP execution in the owning session and avoids unrelated full-stack

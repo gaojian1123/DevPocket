@@ -1092,3 +1092,194 @@ relay and owned emulator were stopped, the host credential removed, and the
 original App runtime was unchanged. That preparation is not live acceptance.
 The repaired source needs fresh qualification and review; a rebuilt bridge does
 not inherit the prior artifact-bound live-experiment permission.
+
+## Apple offline milestone: sidebar transition known issue
+
+Opening or closing the left sidebar can transiently fade or displace the shared
+Files/Changes toolbar controls on iPad. Earlier native endpoint assertions passed
+while actual-frame analysis still found missing or displaced controls during the
+transition. Those failed recordings and reports remain retained under
+`.data/apple/sidebar-toolbar-20/`; passing endpoint checks do not prove smooth
+rendered transitions. The later constant native inline-large title is not a
+verified fix for this issue.
+
+The user explicitly accepted this as a **non-blocking known issue** for the
+current Apple milestone and requested no further repair in this delivery.
+Keep functional coverage of settled toolbar placement, unique reachable controls,
+inspector switching/dismissal and draft preservation. This scoped decision does
+not waive other required checks or turn the earlier failures into passes.
+The underlying cause remains unconfirmed; no physical Duo result or platform-bug
+conclusion is claimed.
+
+## Apple hosted graphics evidence limitation
+
+The initial hosted attempts
+[40706524808](https://github.com/gaojian1123/DevPocket/actions/runs/40706524808)
+and [40722017341](https://github.com/gaojian1123/DevPocket/actions/runs/40722017341)
+remain failed evidence. On the `xcode-27` virtual Mac running macOS 27.0.1,
+the real WK pixel check reported `InvalidStateError`; its retained WebKit log
+also reported `IOSurface open failed: e00002e2 (likely sandbox violation)`.
+Mounting the WK view in a native window did not resolve that hosted failure.
+Successful local rendering on macOS 27.2 is not a successful result on that image.
+
+The second attempt retained its complete native file manifest outside the
+unchanged report budget, preserving the original test failures rather than
+replacing them with an oversized-report error.
+
+The user selected complete, source-bound local verification and independent
+review as the delivery route, with merging conditional on repository rules.
+The WK pixel checks, App Sandbox and complete selected platform matrix remain
+required. This decision does not relabel either hosted run or authorize a new
+runner, skipped checks or a native-permission bypass.
+
+## Mac local acceptance recovery
+
+The first local fallback run under `.data/verification/apple-local-fallback-1/`
+remains failed: the Mac console was observed locked after repeated foreground
+activation failures and the owned test command timed out. The original source
+and ordinary fixture stores were unchanged. A lingering task-owned test-store
+app was subsequently identified by its exact producing path, launch arguments
+and process start time, then normally closed; the ordinary store remained intact.
+
+The next complete Mac command under
+`.data/verification/apple-local-fallback-2/` completed with 44 passing and two
+failing tests, not acceptance. It exposed a keyboard-search failure and a combined
+library scenario exceeding the unchanged 120-second per-test allowance.
+The metadata and independent project/host filter scenarios are now separate,
+with their original assertions retained; native scope selection waits for the
+requested visible state rather than assuming menu dismissal is synchronous.
+
+A separate native control regression reproduced a focus request arriving before
+the search control had a window. The control now retries the pending request
+when attached, and the same regression passed with that lifecycle callback.
+The UI regression repeats narrow-window shortcut navigation without clicking
+the search field before typing.
+
+Input-source behavior was isolated separately. With the same instrumented source
+and single native case, Simplified Pinyin (`com.apple.inputmethod.SCIM.ITABC`)
+produced `ffline` instead of `offline` before the value reached the model; focus
+had already been granted. After the user manually selected ABC, that unchanged
+case passed. The original incomplete/timed-out MCP completions and late-readable
+diagnostic results remain distinct under
+`.data/apple/ios-delivery-1/local-fallback-2/macos-diagnosis-1/`.
+No system input source was changed automatically.
+
+These are source-bound diagnostic records, not a substitute for the fresh
+complete native matrix, ordinary gate and independent review required for
+delivery. ASCII automation under ABC does not establish real Chinese or
+third-party input-method compatibility, physical Duo behavior or hosted success.
+
+## iPhone local acceptance recovery
+
+The third complete local attempt under
+`.data/verification/apple-local-fallback-3/` passed its Mac command but failed
+three iPhone UI cases; the remaining native roles were not completed by that run.
+It remains a failed matrix, not acceptance.
+
+Focused replays distinguished two test-readiness defects from a form-layout
+defect. Reader-anchor capture now uses one immutable accessibility snapshot,
+rather than index-bound live elements that disappear during lazy layout.
+Session selection checks the real library footer before tapping a partly
+covered row. Returning to the library waits for its native toolbar: a retained
+diagnostic proved the inset scope menu opened normally even while its
+accessibility hit-state reported false. The offline draft and reader assertions
+were not removed.
+
+Actual touch records and the native recording showed a post-keyboard Submit
+tap inside the reported button bounds without a button callback. On that
+iPhone, the lazy timeline retained an offset of 515 while its legal maximum was
+487.67; the next touch initiated a rebound instead of submitting. A lower-input
+comparison also exposed lost keyboard focus. Keeping the decision-form fixture
+thread mounted passed both interactions. Ordinary component threads remain lazy,
+preserving their renderer lifetime policy rather than eagerly mounting every
+WebView. Typing still does not submit; the case requires one separate Submit
+and the exact confirmed answer in history.
+
+The temporary touch probes were removed from application and test sources.
+Original failures, rejected layout comparisons and source-bound native results
+remain under
+`.data/apple/ios-delivery-1/local-fallback-3/iphone-event-route-1/`.
+The user disabled the simulator's physical-keyboard feature for the replays;
+the agent did not change that system setting. These diagnostic observations do
+not replace a fresh complete native matrix, ordinary gate, independent review
+or physical-device acceptance.
+
+The fourth complete attempt passed Mac and the three repaired iPhone cases.
+Its remaining iPhone failure was the combined Dynamic Type case: the largest
+category reached repeated library scrolling and the unchanged two-minute limit.
+Requiring the entire session row to fit above the footer was incorrect when
+accessibility text made that row taller than the viewport. The library controls
+and status expose their actual native bounds; selection uses a visible hit
+region between them instead of the full row. Standard and accessibility font
+categories are separate cases with all original categories, metric assertions
+and execution allowances retained.
+
+A separate post-run guard detected changed bytes in the ordinary Mac fixture
+store. Comparison with a retained backup matching the exact pre-run hash found
+no semantic JSON changes; the failed byte guard remains failed and the current
+store was not restored or overwritten. The write occurred during native host
+startup, but its writer was not independently attributed. Debug unit-test hosts
+now use in-memory fixtures; an explicit UI-test-store argument still selects the
+isolated persistent store used for relaunch checks. A native regression verifies
+the test-host marker and each storage-routing choice.
+
+The sixth complete attempt passed Mac and iPhone. Its iPad failure was an
+inspector-test assumption, not the waived toolbar flicker: settled-state
+diagnostics showed the native inspector had already been dismissed and its
+Files toggle deselected when the sidebar reclaimed its column. The test's
+unconditional final toggle therefore reopened it. The case now checks that
+native dismissal removed the content, explicitly reopens when necessary, then
+still verifies an explicit close, unique reachable controls and settled toolbar
+placement. No product transition code or flicker acceptance limit was changed.
+
+The seventh complete attempt passed Mac, iPhone and iPad. Duo failures shared
+a viewport assumption: its native scroll-view accessibility frame included the
+composer and reserved side-toolbar area. The recorded drag began inside the
+composer, leaving the timeline stationary; a card-open control was likewise
+reported inside that frame while covered by the composer. Timeline reveal and
+reading-context checks now intersect the native conversation pane with its
+header and composer bounds. The composer exposes one containing accessibility
+group, and no Duo hardware dimensions or posture changes are introduced.
+Mobile session selection also waits for its real composer to become reachable before
+the next action, rather than mistaking the outgoing library toolbar for the
+settled conversation when immediately opening Settings.
+
+## Mac Pinyin automation input recovery
+
+The user explicitly chose to keep Simplified Pinyin and repair automated input,
+rather than authorize temporary input-source switching. The original bulk
+`typeText("offline")` reproduced `ffline` on that input source. Sending every key
+separately progressed through repeated exact-text assertions but exceeded the
+native-client invocation limit; its canceled result remains failed.
+
+The input helper now sends the first actual character as a native key, waits
+for the transient `InputSource` indicator, and batches the remainder before the
+existing Return/Tab commit sequence. A retained numeric-input failure showed
+XCTest treating that indicator as a dialog and trying to resolve a disappearing
+button; the added wait observes its disappearance without clicking it.
+Repeated search, numeric answers, uppercase/underscore drafts, references and
+reader resizing passed focused native checks with Pinyin retained. Expected
+strings and time allowances were not weakened. Records remain under
+`.data/apple/ios-delivery-1/mac-pinyin-input-1/`; these checks do not claim complete
+Chinese composition, third-party IME or physical-device compatibility.
+
+The ninth complete attempt retained two Mac window-state failures. The draft
+relaunch snapshot had an application menu but no accessible window; it did not
+establish lost draft content. The display-edge case still had its chosen right
+resize border at the screen boundary after native tiling. Both cases passed in
+an unchanged focused replay. The UI harness now uses its existing native
+activation/window-focus path after every Mac launch, including relaunch, and
+chooses an on-screen left or right resize border from actual display bounds.
+Native tiling is reserved for the case where neither border is available, with
+an observed-frame wait. Draft equality, narrow/wide thresholds and time
+allowances remain unchanged.
+
+The tenth complete attempt passed Mac, iPhone and iPad. Its only Duo failure
+was XCTest's hit-point accessor throwing after native sheet swipe dismissal;
+the retained hierarchy still had unique, nonempty, in-window toolbar controls,
+and an unchanged focused replay passed. The inspector test now checks enabled
+state, bounds, uniqueness and toggle state, then uses actual native frame-based
+clicks/taps. After sheet dismissal it explicitly opens and closes both Files and
+Changes and retains the draft and settled-placement checks. This replaces a
+fragile accessibility inference with observable control behavior, not a skipped
+interaction or a change to the waived sidebar animation.

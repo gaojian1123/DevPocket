@@ -1,0 +1,70 @@
+[
+  {
+    "id": "fixture-overview",
+    "spec": {
+      "type": "markdown",
+      "title": "展示说明",
+      "content": "## 进展不只是一段文字\n\n**本地虚构数据**，不是 GitHub Copilot 的回答，也不来自任何工作账户。\n\n前一周 39 项，后一周 48 项，两周合计 87 项。日期仅用于演示，不是实际项目统计。\n\n趋势、模块表和解读沿同一次示例回复排列。筛选只改变阅读视图，不修改数据。\n\n`所有操作都留在这台设备上。`\n\n[SwiftUI 官方文档](https://developer.apple.com/documentation/swiftui)"
+    }
+  },
+  {
+    "id": "fixture-trend",
+    "spec": {
+      "type": "line",
+      "title": "任务完成趋势",
+      "source": "本地虚构数据 · 9/28–10/11 · 14 天 · 只读",
+      "xAxisKey": "day",
+      "yAxisLabel": "示例任务",
+      "series": [{"dataKey": "tasks", "name": "完成数", "color": "#007aff"}],
+      "data": [
+        {"day": "9/28", "tasks": 4}, {"day": "9/29", "tasks": 6},
+        {"day": "9/30", "tasks": 5}, {"day": "10/1", "tasks": 7},
+        {"day": "10/2", "tasks": 5}, {"day": "10/3", "tasks": 6},
+        {"day": "10/4", "tasks": 6},
+        {"day": "10/5", "tasks": 5}, {"day": "10/6", "tasks": 8},
+        {"day": "10/7", "tasks": 4}, {"day": "10/8", "tasks": 10},
+        {"day": "10/9", "tasks": 6}, {"day": "10/10", "tasks": 8},
+        {"day": "10/11", "tasks": 7}
+      ]
+    }
+  },
+  {
+    "id": "fixture-modules",
+    "spec": {
+      "type": "datagrid",
+      "title": "模块工作分布",
+      "source": "本地虚构数据 · 48 项示例任务 · 只读",
+      "columns": [
+        {"key": "module", "label": "模块", "type": "string"},
+        {"key": "tasks", "label": "任务数", "type": "number"},
+        {"key": "share", "label": "占比", "type": "string", "align": "right"}
+      ],
+      "rows": [
+        {"module": "Android 界面", "tasks": 20, "share": "42%"}, {"module": "会话与同步", "tasks": 14, "share": "29%"},
+        {"module": "Relay 与协议", "tasks": 9, "share": "19%"}, {"module": "文档与构建", "tasks": 5, "share": "10%"}
+      ],
+      "pageSize": 10
+    }
+  },
+  {
+    "id": "fixture-bars",
+    "spec": {
+      "type": "bar",
+      "title": "任务完成趋势 · 新的柱状图",
+      "source": "本地虚构数据 · 后续追加的独立卡片，原折线图仍然保留",
+      "xAxisKey": "day",
+      "yAxisLabel": "示例任务",
+      "series": [{"dataKey": "tasks", "name": "完成数", "color": "#007aff"}],
+      "data": [
+        {"day": "9/28", "tasks": 4}, {"day": "9/29", "tasks": 6},
+        {"day": "9/30", "tasks": 5}, {"day": "10/1", "tasks": 7},
+        {"day": "10/2", "tasks": 5}, {"day": "10/3", "tasks": 6},
+        {"day": "10/4", "tasks": 6},
+        {"day": "10/5", "tasks": 5}, {"day": "10/6", "tasks": 8},
+        {"day": "10/7", "tasks": 4}, {"day": "10/8", "tasks": 10},
+        {"day": "10/9", "tasks": 6}, {"day": "10/10", "tasks": 8},
+        {"day": "10/11", "tasks": 7}
+      ]
+    }
+  }
+]

@@ -30,7 +30,10 @@ export async function appleVerification(root, check, plan, options) {
       const report = await readDiagnosticReport(reportFile, { maximum: 512 * 1024 });
       const evidence = ci ? report : report?.kind === "local-apple-verification" && report.appleEvidence;
       if (!evidence) throw verificationFault("apple-evidence", { check: check.id });
-      try { validateAppleNativeEvidence(evidence, plan, ci ? "ci-xcodebuild" : "local-xcode-mcp"); }
+      try {
+        if (!ci && !["local-xcode-mcp", "local-xcodebuild"].includes(evidence.origin)) throw verificationFault("execution-origin");
+        validateAppleNativeEvidence(evidence, plan, ci ? "ci-xcodebuild" : evidence.origin);
+      }
       catch (error) { throw verificationFault("apple-evidence", { check: check.id }, error); }
       check.appleEvidence = evidence;
       check.cleanup = evidence.cleanup;
