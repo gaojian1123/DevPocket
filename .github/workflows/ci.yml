@@ -519,7 +519,6 @@ jobs:
         env:
           BASE_SHA: ${{ needs.plan.outputs.base }}
           XDG_CACHE_HOME: ${{ runner.temp }}/devpocket-cache
-          DEVPOCKET_APPLE_OWNER_DEBUG: '1'
         run: |
           node scripts/verify.mjs --base "$BASE_SHA" --group apple --apple-role "$APPLE_ROLE" --report .data/ci/apple/report.json
       - name: Bind Apple evidence to this CI attempt

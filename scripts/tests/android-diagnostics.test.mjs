@@ -238,7 +238,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(workflow, /^permissions:\n  contents: read\n/m);
   assert.doesNotMatch(workflow, /continue-on-error:|FORCE_JAVASCRIPT_ACTIONS_TO_NODE20|ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION/);
   assert.doesNotMatch(workflow, /^\s+(?:merge-multiple|overwrite|archive|digest-mismatch):/m);
-  assert.equal([...normalWorkflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 21);
+  assert.equal([...normalWorkflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 23);
 
   const backend = workflow.split("\n  backend:")[1].split("\n  android:")[0];
   assert.match(backend, /\$env:DEVPOCKET_PROBE_PYTHON = \(Get-Command python -CommandType Application -ErrorAction Stop \| Select-Object -First 1\)\.Source\n\s+node scripts\\verify\.mjs/);

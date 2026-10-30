@@ -384,6 +384,7 @@ async function runAppleNative(options, local) {
   const controller = new AbortController();
   const environment = { ...process.env, TMPDIR: path.join(output, "scratch") + path.sep,
     TMP: path.join(output, "scratch"), TEMP: path.join(output, "scratch") };
+  if (!local) environment.DEVPOCKET_APPLE_OWNER_DEBUG = "1";
   const execute = async (id, file, args, { timeoutMs = 30_000, cleanup = false } = {}) => {
     if (!cleanup && (overflowed || Buffer.byteLength(appleJSON(report)) > APPLE_NATIVE_REPORT_MAX_BYTES)) throw overflowError();
     requireApple(!report.commands.some((item) => item.id === id) && /^[a-z0-9-]+$/.test(id),
