@@ -490,6 +490,7 @@ jobs:
     name: Apple native verification (${{ matrix.role }})
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         role: [mac, iphone, ipad, duo]
     runs-on: xcode-27

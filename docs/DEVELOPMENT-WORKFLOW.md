@@ -811,7 +811,9 @@ A runtime availability guard and deployment target 27.0 do not make an older SDK
 The native Mac host must also meet the app's macOS minimum.
 
 CI restores locked Node dependencies and runs Mac, ordinary iPhone, iPad and Duo
-as independent roles. Each role retains its normal builds, fresh complete test
+as independent roles, with at most one Apple role job executing at a time.
+This scheduling limit does not change per-command deadlines or required coverage.
+Each role retains its normal builds, fresh complete test
 catalogue for its declared hosted targets, actual selected cases and original
 command/resource evidence. A failing role does not prevent the other roles from
 producing their results. Only uniquely
