@@ -1289,8 +1289,7 @@ final class DevPocketUITests: XCTestCase {
         let reader = element("component-reader")
         let filter = reader.searchFields.firstMatch
         activate(filter)
-        // HTML filtering reacts to input and needs no native IME commit sequence.
-        filter.typeText("20")
+        enter("20", into: filter)
         XCTAssertEqual(filter.value as? String, "20")
         assertModalReader()
         try await setWindowLayout(wide: false)
