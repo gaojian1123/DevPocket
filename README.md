@@ -394,13 +394,15 @@ results and platform gaps; a successful build or a skipped/unrun UI test is not
 acceptance. Use the source-selected Apple platform gate with the actual
 native qualification request passed through `-AppleEvidence`. Shared changes in
 the fixed-base cumulative diff still retain their affected-platform checks.
-Hosted CI runs the Apple roles independently and retains normal builds, full test
-compilation, mobile model/WK/security tests and supported Mac functional/UI checks.
-Mobile catalogues enumerate exactly the complete model/WK targets that execute
+Hosted CI runs Mac, iPhone and iPad as independent roles and retains normal builds,
+full test compilation, iPhone/iPad model/WK/security tests and supported Mac
+functional/UI checks. Duo execution is explicitly deferred to the same-candidate
+complete local native matrix, including its model/WK and UI tests.
+Hosted mobile catalogues enumerate exactly the complete model/WK targets that execute
 online, without launching a deferred UI runner just for discovery. Complete mobile
 UI catalogues and interaction tests, plus the separate Mac chart-pixel assertion,
 remain part of same-candidate complete native acceptance, not deleted tests or
-hosted passes. Catalogue scope and deferred targets/cases are explicit in CI evidence.
+hosted passes. Catalogue scope and deferred roles/targets/cases are explicit in CI evidence.
 Follow the [hosted Apple coverage contract](docs/DEVELOPMENT-WORKFLOW.md#hosted-apple-ci)
 before treating a green CI matrix as ready for delivery.
 

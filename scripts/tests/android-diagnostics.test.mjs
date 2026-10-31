@@ -289,7 +289,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
     apple.indexOf("name: Verify the selected Apple platform"));
   assert.doesNotMatch(apple, /-downloadAllPlatforms/);
   assert.match(apple, /npm_config_registry: https:\/\/packagefeedproxy\.microsoft\.io\/npm\//);
-  assert.match(apple, /role: \[mac, iphone, ipad, duo\]/);
+  assert.match(apple, /role: \[mac, iphone, ipad\]/);
   assert.match(apple, /fail-fast: false/);
   assert.match(apple, /node scripts\/verify\.mjs --base "\$BASE_SHA" --group apple --apple-role "\$APPLE_ROLE" --report \.data\/ci\/apple\/report\.json/);
   assert.match(apple, /--seal --unit "apple-\$APPLE_ROLE"/);
@@ -312,6 +312,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   const gate = workflow.split("\n  gate:")[1];
   assert.match(gate, /needs: \[plan, tooling, macos, backend, android, device, apple\]\n\s+if: always\(\)/);
   assert.ok(gate.includes("APPLE_RESULT: ${{ needs.apple.result }}"));
+  assert.ok(gate.includes("including the full Duo role, all mobile UI interactions and Mac WK pixels"));
   assert.doesNotMatch(gate, /ISOLATION_REQUIRED|ISOLATION_RESULT|isolated-boundary/);
   assert.match(gate, /- uses: actions\/download-artifact@v8\n\s+with:\n\s+pattern: verification-\*\n\s+path: \.data\\ci\\inputs/);
   assert.ok(gate.includes("'scripts\\verification-ci.mjs', '--base', $env:BASE_SHA, '--collect'"));

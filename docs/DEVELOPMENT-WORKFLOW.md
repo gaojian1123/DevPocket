@@ -762,6 +762,14 @@ beside each original xcresult. Reports keep their path, byte count, SHA256, file
 count and Info.plist digest instead of inlining thousands of attachment names.
 Qualification reopens the complete manifest and hashes every file in both the
 original and copied bundle; missing, altered or mismatched manifests fail closed.
+Local simulator observations use version-2 projections containing exactly the
+plan's three simulator IDs, while preserving all runtime/device-type validation
+metadata. The full original inventories remain hash-bound log artifacts; local
+qualification reopens and reprojects them against the exact plan IDs. Unrelated
+developer devices no longer multiply the inline report size across every state
+check. Version-1 full inventories remain readable, and CI keeps its full inventories
+for creation/cleanup ownership checks. Missing, duplicated or substituted local
+targets still fail; projection does not alter any simulator.
 The report budget and native case/coverage requirements are unchanged.
 The report origin is `local-xcodebuild`; `GITHUB_ACTIONS` is never set to enable
 the hosted runner. CI retains its separate `ci-xcodebuild` lifecycle.
@@ -810,7 +818,7 @@ still fails closed when a required variant is missing or incompatible.
 A runtime availability guard and deployment target 27.0 do not make an older SDK sufficient.
 The native Mac host must also meet the app's macOS minimum.
 
-CI restores locked Node dependencies and runs Mac, ordinary iPhone, iPad and Duo
+CI restores locked Node dependencies and runs Mac, ordinary iPhone and iPad
 as independent roles, with at most one Apple role job executing at a time.
 This scheduling limit does not change per-command deadlines or required coverage.
 Each role retains its normal builds, fresh complete test
@@ -818,6 +826,13 @@ catalogue for its declared hosted targets, actual selected cases and original
 command/resource evidence. A failing role does not prevent the other roles from
 producing their results. Only uniquely
 named run-owned simulators are created and cleaned; developer UDIDs are not CI inputs.
+
+The user-selected hosted scope defers the entire Duo runtime role to the
+same-candidate complete local matrix. Its normal iOS code and model/UI test
+products still compile in hosted builds. No hosted Duo pass is claimed; local
+Duo catalogue, model/WK and UI execution remain mandatory before delivery.
+The original hosted readiness/cleanup failures remain failed or unknown evidence,
+not passing results or permission for an automatic fallback.
 
 The declared hosted case exception is the Mac
 `DevPocketTests/actualWKWebViewRendersChartPixels()` case. The full catalogue must
@@ -852,12 +867,14 @@ After mobile runtime work and discovery finish, CI confirms cleanup of its owned
 simulator before exporting the host-side result bundle. Cleanup runs once; a
 failed or unknown cleanup is not retried into a successful receipt. Local
 acceptance never shuts down its already-running developer targets.
-The gate requires the exact four-role union and preserves each native owner,
+The gate requires the exact Mac/iPhone/iPad hosted union and preserves each native owner,
 workflow context and execution interval in `apple-native-matrix` / `apple-shards`
 records. Missing, duplicate, filtered beyond policy, failed or skipped required
 results do not qualify. Version-3 hosted role evidence explicitly records
 `catalogScope: "runtime-targets"` for mobile and `"full-scheme"` for Mac; older
-role evidence is not silently reinterpreted under this policy. Local evidence
+role evidence is not silently reinterpreted under this policy. Version-2 matrix
+evidence explicitly records `deferredRoles: ["duo"]`; missing or altered deferrals
+are rejected. Local evidence
 still requires the full unfiltered scheme. Role and matrix evidence retain
 `deferredTargets` and `deferredTests`; the matrix and live qualifier explicitly report
 `nativeAcceptanceRequired: true`.

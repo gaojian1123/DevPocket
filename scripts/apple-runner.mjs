@@ -169,7 +169,9 @@ export async function validateAppleLocalArtifacts(root, evidence, renderer) {
     const response = JSON.parse(await retained(command.response)), { response: _response, ...expected } = command;
     requireApple(equal(response, expected), "The original command completion changed.", "execution-origin");
     const stdout = await retained(command.stdout), stderr = await retained(command.stderr);
-    requireApple(equal(projectAppleCommandOutput(command, stdout, stderr), command.output),
+    const simulatorIds = command.output?.version === 2 ? evidence.local.targets
+      .filter((target) => target.role !== "mac").map((target) => target.deviceId) : undefined;
+    requireApple(equal(projectAppleCommandOutput(command, stdout, stderr, simulatorIds), command.output),
       "A command projection differs from its retained output.", "artifact-changed");
   }
   for (const item of [...evidence.builds, ...evidence.tests]) {
@@ -416,7 +418,8 @@ async function runAppleNative(options, local) {
         await writeFile(path.join(root, file), text, { flag: "wx", mode: 0o600 });
         entry[stream] = { path: file, bytes: Buffer.byteLength(text), sha256: appleDigest(text) };
       }
-      entry.output = projectAppleCommandOutput(entry, outcome?.stdout ?? "", outcome?.stderr ?? "");
+      entry.output = projectAppleCommandOutput(entry, outcome?.stdout ?? "", outcome?.stderr ?? "",
+        local?.selection.tests.filter((target) => target.role !== "mac").map((target) => target.deviceId));
     } catch (collectorError) {
       if (error) failure(collectorError, "command-artifact");
       else error = collectorError;
@@ -613,6 +616,7 @@ async function runAppleNative(options, local) {
         failure(error, phase, item.role);
         error.appleFailureRecorded = true;
       }
+      if (originalFailure && !item.execution) throw originalFailure;
       try {
         requireApple(!originalFailure || report.commands.find((command) => command.id === phase)?.cleanup === "completed",
           "Cannot inspect xcresult while test command cleanup is unconfirmed.", "cleanup-failed");

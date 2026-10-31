@@ -224,7 +224,7 @@ function evidenceFixture(modelCases = 2, ciRole) {
   return report;
 }
 
-function localCommandFixture(modelCases = 2) {
+function localCommandFixture(modelCases = 2, unrelatedDeviceCount = 0) {
   const workspace = "/synthetic-checkout", directory = ".data/verification/local-command-synthetic";
   const inventory = inventoryFixture(), probes = probeFixture();
   const requested = APPLE_REQUIREMENTS.targets.map((target, index) => ({
@@ -234,6 +234,12 @@ function localCommandFixture(modelCases = 2) {
     const runtime = inventory.runtimes.find((item) => item.supportedDeviceTypes.some((entry) => entry.identifier === type.identifier));
     inventory.devices[runtime.identifier].push({ udid: uuid(index + 1), name: `Existing synthetic ${type.name}`,
       state: "Booted", deviceTypeIdentifier: type.identifier });
+  }
+  for (let index = 0; index < unrelatedDeviceCount; index++) {
+    inventory.devices[inventory.runtimes[0].identifier].push({
+      udid: uuid(index + 100), name: `Unrelated synthetic simulator ${index}`, state: "Shutdown",
+      deviceTypeIdentifier: inventory.devicetypes[0].identifier,
+    });
   }
   probes.simulators = appleJSON(inventory);
   const targets = selectAppleLocalTargets(inventory, inspectAppleToolchain(probes), requested, true);
@@ -258,7 +264,8 @@ function localCommandFixture(modelCases = 2) {
         capturedBytes: Buffer.byteLength(stdout), outputTruncated: false, cleanupFailure: null },
       request: outputFile(`${directory}/logs/${id}.request.json`, appleJSON(request)),
       stdout: outputFile(`${directory}/logs/${id}.stdout.txt`, stdout), stderr: outputFile(`${directory}/logs/${id}.stderr.txt`, "") };
-    value.output = projectAppleCommandOutput(value, stdout, "");
+    value.output = projectAppleCommandOutput(value, stdout, "", targets.filter((target) => target.role !== "mac")
+      .map((target) => target.deviceId));
     value.response = outputFile(`${directory}/logs/${id}.response.json`, appleJSON(value));
     report.commands.push(value);
     return value;
@@ -335,6 +342,88 @@ test("local full commands have their own origin, exact existing targets, complet
   assert.throws(() => validateAppleNativeEvidence(report, plan, "local-xcode-mcp"), /origin/);
   assert.equal(report.commands.some((item) => item.args[0] === "simctl" &&
     ["create", "boot", "shutdown", "delete"].includes(item.args[1])), false);
+});
+
+test("local simulator summaries stay bounded as unrelated devices grow, while raw inventories remain bound", () => {
+  const report = localCommandFixture(48, 200);
+  const ids = report.local.targets.filter((target) => target.role !== "mac").map((target) => target.deviceId).sort();
+  for (const command of report.commands.filter((command) => command.output.kind === "simulators")) {
+    assert.equal(command.output.version, 2);
+    assert.deepEqual(command.output.simulatorIds, ids);
+    const devices = Object.values(command.output.data.devices).flat();
+    assert.deepEqual(devices.map((device) => device.udid).sort(), ids);
+    assert.ok(command.stdout.bytes > Buffer.byteLength(appleJSON(command.output.data)) * 10);
+    assert.equal(command.output.stdoutSha256, command.stdout.sha256);
+  }
+  assert.ok(Buffer.byteLength(appleJSON(report)) <= APPLE_NATIVE_REPORT_MAX_BYTES);
+  assert.equal(validateAppleNativeEvidence(report, plan, "local-xcodebuild"), report);
+  for (const change of [
+    (value) => { value.commands.find((command) => command.output.kind === "simulators").output.simulatorIds[0] = uuid(99); },
+    (value) => { value.commands.find((command) => command.output.kind === "simulators").output.simulatorIds.pop(); },
+    (value) => { value.local.targets[1].deviceId = uuid(99); },
+  ]) {
+    const invalid = structuredClone(report);
+    change(invalid);
+    assert.throws(() => validateAppleNativeEvidence(invalid, plan, "local-xcodebuild"));
+  }
+  const ci = evidenceFixture(2, "iphone");
+  assert.equal(ci.commands.find((command) => command.id === "probe-simulators").output.version, 1);
+  assert.ok(Object.values(ci.commands.find((command) => command.id === "probe-simulators").output.data.devices)
+    .flat().some((device) => device.udid === uuid(99)));
+  assert.equal(validateAppleNativeEvidence(ci, plan), ci);
+});
+
+test("scoped simulator projection cannot change raw hashes, omit a target or apply to CI", () => {
+  const report = localCommandFixture(), data = report.commands.find((command) => command.id === "probe-simulators").output.data;
+  const ids = report.local.targets.filter((target) => target.role !== "mac").map((target) => target.deviceId);
+  const command = { origin: "local-xcodebuild", status: "passed", file: "/usr/bin/xcrun", args: ["simctl", "list", "--json"] };
+  const raw = appleJSON(data), scoped = projectAppleCommandOutput(command, raw, "", ids);
+  assert.equal(scoped.stdoutSha256, appleDigest(raw));
+  assert.deepEqual(scoped.data.runtimes, data.runtimes);
+  assert.deepEqual(scoped.data.devicetypes, data.devicetypes);
+  assert.equal(projectAppleCommandOutput(command, raw, "").version, 1);
+  assert.throws(() => projectAppleCommandOutput({ ...command, origin: "ci-xcodebuild" }, raw, "", ids));
+  for (const invalid of [[], ids.slice(1), [ids[0], ids[0], ids[2]], [...ids, uuid(99)]]) {
+    assert.throws(() => projectAppleCommandOutput(command, raw, "", invalid));
+  }
+});
+
+test("local qualification reopens the full inventory and derives scope from the plan, not the projection", async (t) => {
+  await mkdir(".data/tests", { recursive: true });
+  const root = await mkdtemp(path.resolve(".data/tests/apple-scoped-inventory-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const report = localCommandFixture(), command = report.commands.find((item) => item.id === "probe-simulators");
+  const ids = report.local.targets.filter((target) => target.role !== "mac").map((target) => target.deviceId);
+  const inventory = structuredClone(command.output.data);
+  Object.values(inventory.devices)[0].push({ udid: uuid(99), name: "Unrelated synthetic simulator", state: "Shutdown",
+    deviceTypeIdentifier: inventory.devicetypes[0].identifier });
+  const stdout = appleJSON(inventory), request = {
+    id: command.id, kind: command.kind, origin: command.origin, file: command.file, args: command.args,
+    cwd: command.cwd, startedAt: command.startedAt, completedAt: null, status: "running", cleanup: "unknown",
+  };
+  await mkdir(path.dirname(path.join(root, command.request.path)), { recursive: true });
+  const save = async (file, bytes) => {
+    await writeFile(path.join(root, file), bytes);
+    return outputFile(file, bytes);
+  };
+  command.request = await save(command.request.path, appleJSON(request));
+  command.stdout = await save(command.stdout.path, stdout);
+  command.stderr = await save(command.stderr.path, "");
+  command.outcome.capturedBytes = Buffer.byteLength(stdout);
+  command.output = projectAppleCommandOutput(command, stdout, "", ids);
+  const complete = async () => {
+    const { response, ...value } = command;
+    command.response = await save(response.path, appleJSON(value));
+  };
+  await complete();
+  const evidence = { local: report.local, commands: [command], builds: [], tests: [] };
+  await validateAppleLocalArtifacts(root, evidence, []);
+  await save(command.stdout.path, stdout.replace("Unrelated synthetic simulator", "Changed unrelated simulator"));
+  await assert.rejects(validateAppleLocalArtifacts(root, evidence, []), { diagnosticCode: "artifact-changed" });
+  await save(command.stdout.path, stdout);
+  command.output = projectAppleCommandOutput(command, stdout, "", [uuid(99), ...ids.slice(1)]);
+  await complete();
+  await assert.rejects(validateAppleLocalArtifacts(root, evidence, []), { diagnosticCode: "artifact-changed" });
 });
 
 test("cleanup evidence preserves exact JSON identity without inventing lifecycle references", async () => {
@@ -899,6 +988,7 @@ test("Mac and local discovery is awaited before constructing the native invocati
   assert.match(source, /if \(selection\.deferred\.length\) return selection\.tests;\n\s+}\n {6}};\n {6}const selectedTests = local \|\| ciRole === "mac" \? await discover\(\) : undefined;\n {6}item\.commandId = phase;/);
   assert.match(source, /if \(ciRole && !mac\) \{\n\s+if \(!originalFailure\) await discover\(\);\n\s+const cleaned = await finishSimulators\(\);/);
   assert.match(source, /const finishSimulators = \(\) => simulatorCleanup \?\?=/);
+  assert.match(source, /if \(originalFailure && !item\.execution\) throw originalFailure;\n\s+try \{/);
 });
 
 test("CI discovery reuses prepared test products without replacing normal App builds", () => {
@@ -950,7 +1040,9 @@ test("CI discovery reuses prepared test products without replacing normal App bu
     destination: "generic/platform=iOS Simulator", action: "build", selectedTargets: ["DevPocketTests"] }), /Invalid/);
 });
 
-test("Apple matrix aggregation requires every role and preserves each real execution origin", () => {
+test("Apple matrix requires every hosted role and explicitly defers full Duo execution to local acceptance", () => {
+  assert.deepEqual(APPLE_CI_ROLES, ["mac", "iphone", "ipad"]);
+  assert.throws(() => appleCIShardDescriptor("duo"), /Unknown Apple CI role/);
   const selected = { ...plan, version: 6, layouts: false, requiredChecks: ["apple-native"], requiredGroups: ["apple"] };
   const reports = APPLE_CI_ROLES.map((role) => {
     const evidence = evidenceFixture(4, role);
@@ -972,6 +1064,8 @@ test("Apple matrix aggregation requires every role and preserves each real execu
   assert.equal(check.execution.kind, "apple-shards");
   assert.deepEqual(check.execution.parts.map((part) => part.shard.role), APPLE_CI_ROLES);
   assert.equal(check.appleEvidence.kind, "apple-native-matrix");
+  assert.equal(check.appleEvidence.version, 2);
+  assert.deepEqual(check.appleEvidence.deferredRoles, ["duo"]);
   assert.equal(check.appleEvidence.nativeAcceptanceRequired, true);
   assert.deepEqual(combineVerification(selected, [aggregate]), aggregate);
   assert.throws(() => combineVerification(selected, reports.slice(1)));
@@ -993,6 +1087,10 @@ test("Apple matrix aggregation requires every role and preserves each real execu
   }
   for (const change of [
     (value) => { value.checks[0].appleEvidence.nativeAcceptanceRequired = false; },
+    (value) => { value.checks[0].appleEvidence.version = 1; },
+    (value) => { delete value.checks[0].appleEvidence.deferredRoles; },
+    (value) => { value.checks[0].appleEvidence.deferredRoles = []; },
+    (value) => { value.checks[0].appleEvidence.deferredRoles.push("iphone"); },
     (value) => { value.checks[0].execution.parts.reverse(); },
     (value) => { value.checks[0].appleEvidence.parts.pop(); },
   ]) {
@@ -1000,6 +1098,11 @@ test("Apple matrix aggregation requires every role and preserves each real execu
     change(invalid);
     assert.throws(() => combineVerification(selected, [invalid]));
   }
+  const local = localCommandFixture();
+  assert.deepEqual(local.tests.map(({ role }) => role), ["mac", "iphone", "ipad", "duo"]);
+  assert.equal(validateAppleNativeEvidence(local, plan, "local-xcodebuild"), local);
+  local.tests = local.tests.filter(({ role }) => role !== "duo");
+  assert.throws(() => validateAppleNativeEvidence(local, plan, "local-xcodebuild"));
 });
 
 test("role-owned evidence stays bounded without increasing the native or outer publication limits", () => {

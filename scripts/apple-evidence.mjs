@@ -21,7 +21,7 @@ export const APPLE_REQUIREMENTS = freeze({
   ],
 });
 
-export const APPLE_CI_ROLES = Object.freeze(APPLE_REQUIREMENTS.targets.map(({ role }) => role));
+export const APPLE_CI_ROLES = Object.freeze(["mac", "iphone", "ipad"]);
 const macPixelTest = freeze({
   targetName: "DevPocketTests",
   testIdentifier: "DevPocketTests/actualWKWebViewRendersChartPixels()",
@@ -75,13 +75,14 @@ export function combineAppleCIEvidence(plan, parts) {
     ordered.every((part) => ["repository", "runId", "sha", "job"].every((key) => part.ci[key] === ordered[0].ci[key])),
   "Apple roles must retain distinct native owners in the same CI workflow run.", "execution-origin");
   const matrix = {
-    version: 1, kind: "apple-native-matrix", origin: "ci-xcodebuild",
+    version: 2, kind: "apple-native-matrix", origin: "ci-xcodebuild",
     base: plan.base, source: structuredClone(plan.source), apple: structuredClone(plan.apple),
     status: "passed", cleanup: "completed", nativeAcceptanceRequired: true,
     startedAt: ordered.map((part) => part.startedAt).sort()[0],
     completedAt: ordered.map((part) => part.completedAt).sort().at(-1),
     deferredTests: APPLE_CI_ROLES.flatMap((role) => appleCIDeferredTests(role).map((test) => ({ role, ...test }))),
     deferredTargets: APPLE_CI_ROLES.flatMap((role) => appleCIDeferredTargets(role).map((targetName) => ({ role, targetName }))),
+    deferredRoles: APPLE_REQUIREMENTS.targets.map(({ role }) => role).filter((role) => !APPLE_CI_ROLES.includes(role)),
     parts: ordered,
   };
   requireApple(Buffer.byteLength(appleJSON(matrix)) <= 512 * 1024,
@@ -127,10 +128,19 @@ export function projectAppleCleanupEvidence(cleanup) {
   return fields(cleanup, ["beforeCommandId", "afterCommandId"]);
 }
 
-function projectSimulatorInventory(value) {
+function simulatorProjectionIds(ids) {
+  requireApple(Array.isArray(ids) && ids.length === APPLE_REQUIREMENTS.targets.filter((target) => target.role !== "mac").length &&
+    ids.every(appleDeviceId) && new Set(ids).size === ids.length,
+  "A scoped inventory requires every unique local simulator ID.", "artifact-changed");
+  return [...ids].sort();
+}
+
+function projectSimulatorInventory(value, simulatorIds) {
   appleDevices(value);
-  const result = { devices: Object.fromEntries(Object.entries(value.devices).map(([runtime, devices]) => [runtime,
-    devices.map((device) => fields(device, ["udid", "name", "state", "deviceTypeIdentifier"]))])) };
+  const devices = Object.entries(value.devices).map(([runtime, devices]) => [runtime,
+    devices.filter((device) => simulatorIds === undefined || simulatorIds.includes(device.udid))
+      .map((device) => fields(device, ["udid", "name", "state", "deviceTypeIdentifier"]))]);
+  const result = { devices: Object.fromEntries(devices.filter(([, items]) => simulatorIds === undefined || items.length > 0)) };
   if (Object.hasOwn(value, "runtimes") || Object.hasOwn(value, "devicetypes")) {
     requireApple(Array.isArray(value.runtimes) && Array.isArray(value.devicetypes), "Incomplete simulator inventory.", "preflight-sdk");
     const names = APPLE_REQUIREMENTS.targets.map((target) => target.deviceTypeName).filter(Boolean);
@@ -173,7 +183,7 @@ export function projectAppleXcresult(kind, value) {
   return { ...fields(value, ["devices"]), testNodes: value.testNodes.map((value) => node(value)) };
 }
 
-export function projectAppleCommandOutput(command, stdout, stderr) {
+export function projectAppleCommandOutput(command, stdout, stderr, simulatorIds) {
   const result = { version: 1, kind: "logs", stdoutSha256: appleDigest(stdout), stderrSha256: appleDigest(stderr) };
   if (command.status === "failed") return result;
   const { file, args } = command;
@@ -189,7 +199,13 @@ export function projectAppleCommandOutput(command, stdout, stderr) {
   } else if (file === "/usr/bin/xcrun" && equal(args.slice(0, 2), ["simctl", "list"])) {
     result.kind = "simulators";
     const inventory = JSON.parse(stdout);
-    result.data = projectSimulatorInventory(args[2] === "devices" ? { devices: inventory.devices } : inventory);
+    if (simulatorIds !== undefined) {
+      requireApple(command.origin === "local-xcodebuild",
+        "Only local command evidence may scope simulator observations.", "execution-origin");
+      result.version = 2;
+      result.simulatorIds = simulatorProjectionIds(simulatorIds);
+    }
+    result.data = projectSimulatorInventory(args[2] === "devices" ? { devices: inventory.devices } : inventory, result.simulatorIds);
   } else if (file === "/usr/bin/xcrun" && equal(args.slice(0, 3), ["xcresulttool", "get", "test-results"])) {
     requireApple(["summary", "tests"].includes(args[3]), "Unknown xcresult projection.", "case-evidence");
     result.kind = `xcresult-${args[3]}`;
@@ -209,10 +225,15 @@ export function projectAppleCommandOutput(command, stdout, stderr) {
 
 function commandProjection(command, kind) {
   const value = command.output;
-  requireApple(value?.version === 1 && value.kind === kind &&
+  const scoped = Object.hasOwn(value ?? {}, "simulatorIds");
+  requireApple(value?.version === (scoped ? 2 : 1) && value.kind === kind &&
     value.stdoutSha256 === command.stdout.sha256 && value.stderrSha256 === command.stderr.sha256 &&
-    Object.keys(value).every((key) => ["version", "kind", "stdoutSha256", "stderrSha256", "data", "dataSha256"].includes(key)),
+    Object.keys(value).every((key) => ["version", "kind", "stdoutSha256", "stderrSha256", "data", "dataSha256",
+      ...(scoped ? ["simulatorIds"] : [])].includes(key)),
   "Apple output projection is not bound to its original logs.", "artifact-changed");
+  if (scoped) requireApple(kind === "simulators" && command.origin === "local-xcodebuild" &&
+    equal(value.simulatorIds, simulatorProjectionIds(value.simulatorIds)),
+  "Simulator observation scope is invalid.", "artifact-changed");
   if (kind === "logs") {
     requireApple(!Object.hasOwn(value, "data") && !Object.hasOwn(value, "dataSha256"),
       "Verbose command logs must remain separate artifacts.", "artifact-changed");
@@ -225,7 +246,7 @@ function commandProjection(command, kind) {
     if (kind === "text") requireApple(typeof value.data === "string" && Buffer.byteLength(value.data) <= 8192 &&
       Buffer.byteLength(value.data) === command.stdout.bytes && appleDigest(value.data) === command.stdout.sha256,
     "Apple probe text differs from its original output.", "artifact-changed");
-    if (kind === "simulators") requireApple(equal(value.data, projectSimulatorInventory(value.data)),
+    if (kind === "simulators") requireApple(equal(value.data, projectSimulatorInventory(value.data, value.simulatorIds)),
       "Simulator projection contains unvalidated data.", "artifact-changed");
   }
   return value;
@@ -759,7 +780,7 @@ export function validateAppleBatchCatalog(catalog, evidence, target) {
 export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci-xcodebuild") {
   validateApplePlan(plan);
   if (evidence?.kind === "apple-native-matrix") {
-    requireApple(expectedOrigin === "ci-xcodebuild" && evidence.version === 1 &&
+    requireApple(expectedOrigin === "ci-xcodebuild" && evidence.version === 2 &&
       Array.isArray(evidence.parts) && evidence.parts.every((part) =>
         part?.kind === "apple-native-evidence" && part.version === 3 && APPLE_CI_ROLES.includes(part.ciRole)),
     "A hosted matrix requires its original role-scoped invocations.", "execution-origin");
@@ -834,6 +855,10 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
       ...(local ? ["product-info"] : [])].includes(command.output?.kind),
       "Unknown Apple command projection.", "artifact-changed");
     commandProjection(command, command.output.kind);
+    if (command.output.version === 2) requireApple(local &&
+      equal(command.output.simulatorIds, evidence.local.targets.filter((target) => target.role !== "mac")
+        .map((target) => target.deviceId).sort()),
+    "Simulator observations do not cover the exact local plan targets.", "device-evidence");
   }
   const command = (id, file, args) => {
     const value = commands.get(id);
