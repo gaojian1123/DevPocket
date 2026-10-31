@@ -292,6 +292,9 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(apple, /role: \[mac, iphone, ipad, duo\]/);
   assert.match(apple, /fail-fast: false/);
   assert.match(apple, /node scripts\/verify\.mjs --base "\$BASE_SHA" --group apple --apple-role "\$APPLE_ROLE" --report \.data\/ci\/apple\/report\.json/);
+  assert.match(apple, /"acceptance": False/);
+  assert.match(apple, /"tag": "apple-service-observation"/);
+  assert.match(apple, /observer_pid=\$!\n\s+trap 'kill "\$observer_pid"/);
   assert.match(apple, /--seal --unit "apple-\$APPLE_ROLE"/);
   assert.match(apple, /name: verification-apple-\$\{\{ matrix\.role \}\}-attempt-[^\n]+\n\s+path: \|\n\s+\.data\/ci\/apple\/report\.json\n\s+\.data\/ci\/apple\/ci-report\.json\n\s+if-no-files-found: error/);
   assert.doesNotMatch(workflow.replace(apple, ""), /^\s+include-hidden-files:/m);
@@ -307,6 +310,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
     ".data/ci/apple/apple/test-*/catalog/enumeration.json",
     ".data/ci/apple/apple/test-*/catalog/result.xcresult/",
     ".data/ci/apple/apple/build-*/derived/Build/Products/**/DevPocket.app/",
+    ".data/ci/apple-service-observation/",
   ]);
 
   const gate = workflow.split("\n  gate:")[1];
