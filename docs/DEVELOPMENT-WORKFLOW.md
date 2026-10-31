@@ -830,6 +830,10 @@ inside the existing test invocation, not the shorter discovery allowance.
 Every passing role requires exact equality with the runtime portion of its fresh
 full catalogue. Per-case filters cannot narrow mobile execution. Post-run
 discovery does not apply to Mac's case-filtered invocation or local acceptance.
+After mobile runtime work and discovery finish, CI confirms cleanup of its owned
+simulator before exporting the host-side result bundle. Cleanup runs once; a
+failed or unknown cleanup is not retried into a successful receipt. Local
+acceptance never shuts down its already-running developer targets.
 The gate requires the exact four-role union and preserves each native owner,
 workflow context and execution interval in `apple-native-matrix` / `apple-shards`
 records. Missing, duplicate, filtered beyond policy, failed or skipped required

@@ -454,7 +454,9 @@ async function runAppleNative(options, local) {
     requireApple(equal(targets, local.selection.tests), "A planned local target changed or stopped.", "device-evidence");
     return checked.id;
   };
-  let phase = "preflight", active, inventory = { devices: {} }, localTargetsBound = false;
+  let phase = "preflight", active, inventory = { devices: {} }, localTargetsBound = false, simulatorCleanup;
+  const finishSimulators = () => simulatorCleanup ??=
+    cleanupAppleSimulators(report.resources, inventory, simulatorCommand(true));
   const stopCancellation = listenForCommandCancellation(controller);
   const cancel = () => controller.abort(options.signal.reason);
   if (options.signal?.aborted) cancel();
@@ -610,6 +612,11 @@ async function runAppleNative(options, local) {
       try {
         requireApple(!originalFailure || report.commands.find((command) => command.id === phase)?.cleanup === "completed",
           "Cannot inspect xcresult while test command cleanup is unconfirmed.", "cleanup-failed");
+        if (ciRole && !mac) {
+          if (!originalFailure) await discover();
+          const cleaned = await finishSimulators();
+          requireApple(cleaned.status === "completed", "Owned simulators must finish cleanup before offline result export.", "cleanup-failed");
+        }
         if (local) item.readiness = await waitForAppleResult(root, `${relative}/result.xcresult`, phase,
           originalFailure ? undefined : controller.signal);
         await checkedPath(root, `${relative}/result.xcresult`, true);
@@ -637,7 +644,6 @@ async function runAppleNative(options, local) {
             ? normalizeAppleCITestResult(item.summary, item.testTree, target, execution, report.scheme.targets, ciRole)
             : normalizeAppleTestResult(item.summary, item.testTree, target, execution, report.scheme.targets);
           item.target = { ...target, deviceId: item.result.device.deviceId };
-          if (ciRole && !mac) await discover();
           if (local || ciRole) {
             requireApple(equal(appleTestSelection(item.result.cases.map((test) =>
               ({ targetName: test.target, testIdentifier: test.identifier }))),
@@ -660,7 +666,7 @@ async function runAppleNative(options, local) {
   } finally {
     try {
       const cleaned = local ? { status: "completed", failures: [] }
-        : await cleanupAppleSimulators(report.resources, inventory, simulatorCommand(true));
+        : await finishSimulators();
       if (local && localTargetsBound && report.commands.every((command) => command.cleanup === "completed")) {
         try {
           const checked = await execute("local-targets-after", "/usr/bin/xcrun", ["simctl", "list", "--json"], { cleanup: true });

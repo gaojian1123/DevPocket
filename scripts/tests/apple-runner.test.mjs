@@ -135,7 +135,7 @@ function evidenceFixture(modelCases = 2, ciRole) {
       resultBundle: treeFixture(`${relative}/result.xcresult`, id, ["Info.plist", "Data/synthetic"]),
       product: treeFixture(product, id, platform === "ios" ? ["Info.plist", "DevPocket"] : ["Contents/Info.plist", "Contents/MacOS/DevPocket"]) });
   }
-  const inventory = inventoryFixture();
+  const inventory = inventoryFixture(), deferredExports = [];
   for (const [index, requirement] of APPLE_REQUIREMENTS.targets.entries()) {
     if (ciRole && requirement.role !== ciRole) continue;
     const mac = requirement.role === "mac";
@@ -187,8 +187,12 @@ function evidenceFixture(modelCases = 2, ciRole) {
     }), "** TEST SUCCEEDED **\n");
     const native = nativeFixture(target, execution, modelCases, Boolean(ciRole) && !mac,
       ciRole ? appleCITestTargets(ciRole, report.scheme.targets) : undefined);
-    for (const kind of ["summary", "tests"]) command(`${id}-${kind}`, "/usr/bin/xcrun",
-      ["xcresulttool", "get", "test-results", kind, "--path", `${workspace}/${relative}/result.xcresult`, "--compact"], appleJSON(native[kind]));
+    const exportResults = () => {
+      for (const kind of ["summary", "tests"]) command(`${id}-${kind}`, "/usr/bin/xcrun",
+        ["xcresulttool", "get", "test-results", kind, "--path", `${workspace}/${relative}/result.xcresult`, "--compact"], appleJSON(native[kind]));
+    };
+    if (ciRole && !mac) deferredExports.push(exportResults);
+    else exportResults();
     if (ciRole && !mac) command(`${id}-catalog`, "/usr/bin/xcrun",
       appleEnumerationArguments(workspace, catalogDirectory, target), "Synthetic unfiltered enumeration\n");
     const summary = projectAppleXcresult("summary", native.summary), testTree = projectAppleXcresult("tests", native.tests);
@@ -212,6 +216,7 @@ function evidenceFixture(modelCases = 2, ciRole) {
   } else {
     report.cleanupEvidence = { beforeCommandId: null, afterCommandId: null };
   }
+  for (const exportResults of deferredExports) exportResults();
   report.completedAt = new Date(clock + 1000).toISOString();
   return report;
 }
@@ -804,10 +809,20 @@ test("hosted roles preserve the declared runtime targets and the complete native
   assert.throws(() => validateAppleNativeEvidence(mac, plan));
 });
 
+test("failed JSON commands retain raw evidence without inventing a successful projection", () => {
+  const command = { status: "failed", file: "/usr/bin/xcrun",
+    args: ["xcresulttool", "get", "test-results", "summary", "--path", "/synthetic/result.xcresult", "--compact"] };
+  assert.deepEqual(projectAppleCommandOutput(command, "", "Synthetic export timeout"), {
+    version: 1, kind: "logs", stdoutSha256: appleDigest(""), stderrSha256: appleDigest("Synthetic export timeout"),
+  });
+  assert.throws(() => projectAppleCommandOutput({ ...command, status: "passed" }, "", ""), SyntaxError);
+});
+
 test("Mac and local discovery is awaited before constructing the native invocation", async () => {
   const source = await readFile("scripts/apple-runner.mjs", "utf8");
   assert.match(source, /if \(selection\.deferred\.length\) return selection\.tests;\n\s+}\n {6}};\n {6}const selectedTests = local \|\| ciRole === "mac" \? await discover\(\) : undefined;\n {6}item\.commandId = phase;/);
-  assert.ok(source.includes('if (ciRole && !mac) await discover();'));
+  assert.match(source, /if \(ciRole && !mac\) \{\n\s+if \(!originalFailure\) await discover\(\);\n\s+const cleaned = await finishSimulators\(\);/);
+  assert.match(source, /const finishSimulators = \(\) => simulatorCleanup \?\?=/);
 });
 
 test("CI discovery reuses prepared test products without replacing normal App builds", () => {
@@ -826,6 +841,7 @@ test("CI discovery reuses prepared test products without replacing normal App bu
       assert.ok(discovered.startedAt >= tested.completedAt);
       assert.deepEqual(tested.args.filter((arg) => /^-only-testing:|-skip-testing:/.test(arg)),
         ["-only-testing:DevPocketTests"]);
+      assert.ok(command(evidence, item.summaryCommandId).startedAt >= command(evidence, "cleanup-after").completedAt);
     }
     assert.equal(validateAppleNativeEvidence(evidence, plan), evidence);
     for (const change of [
@@ -838,6 +854,10 @@ test("CI discovery reuses prepared test products without replacing normal App bu
       (value) => { command(value, item.buildForTestingCommandId).cleanup = "unknown"; },
       (value) => { const invocation = command(value, item.catalogCommandId);
         invocation.startedAt = tested.startedAt; invocation.completedAt = tested.completedAt; },
+      ...(role === "mac" ? [] : [
+        (value) => { command(value, item.summaryCommandId).startedAt = tested.completedAt; },
+        (value) => { command(value, "cleanup-before").startedAt = tested.completedAt; },
+      ]),
     ]) {
       const invalid = structuredClone(evidence);
       change(invalid);

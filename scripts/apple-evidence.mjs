@@ -176,6 +176,7 @@ export function projectAppleXcresult(kind, value) {
 
 export function projectAppleCommandOutput(command, stdout, stderr) {
   const result = { version: 1, kind: "logs", stdoutSha256: appleDigest(stdout), stderrSha256: appleDigest(stderr) };
+  if (command.status === "failed") return result;
   const { file, args } = command;
   if (file === "/usr/bin/xcrun" && args[0] === "xcodebuild" && args.at(-1) === "build") {
     result.kind = "build";
@@ -990,6 +991,8 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
       const read = command(item[`${kind}CommandId`], "/usr/bin/xcrun",
         ["xcresulttool", "get", "test-results", kind, "--path", bundle, "--compact"]);
       requireApple(read.startedAt >= value.completedAt, "xcresult was read before its test invocation completed.", "execution-origin");
+      if (ciRole && !mac) requireApple(read.startedAt >= cleanupAfter.completedAt,
+        "Mobile hosted result export must follow confirmed simulator cleanup.", "execution-origin");
       const data = kind === "summary" ? item.summary : item.testTree;
       requireApple(equal(data, projectAppleXcresult(kind, data)) &&
         commandProjection(read, `xcresult-${kind}`).dataSha256 === appleDigest(appleJSON(data)),
@@ -1014,7 +1017,8 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
       fileReference(catalog, evidence.directory);
       requireApple(catalog.path === `${catalogDirectory}/enumeration.json` &&
         discovered.startedAt >= preparation.completedAt &&
-        (local || ciRole === "mac" ? discovered.completedAt <= value.startedAt : discovered.startedAt >= value.completedAt),
+        (local || ciRole === "mac" ? discovered.completedAt <= value.startedAt
+          : discovered.startedAt >= value.completedAt && discovered.completedAt <= cleanupBefore.startedAt),
       "The full command requires its own fresh, unfiltered native catalogue.", "discovery");
       for (const [id, followedBy] of local
         ? [[item.beforeCatalogCommandId, discovered], [item.beforeTestCommandId, value]] : []) {
