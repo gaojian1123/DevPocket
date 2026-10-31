@@ -12,7 +12,7 @@ import {
   APPLE_NATIVE_REPORT_MAX_BYTES, APPLE_PROBES, APPLE_REQUIREMENTS, APPLE_RESULT_READINESS_MS,
   appleCIShardDescriptor, appleCIDeferredTests, appleCIDeferredTargets, appleCITestSelection, appleCITestTargets,
   appleDeviceId, appleDevices, appleDigest, appleEnumerationArguments, appleJSON, appleResultManifestReference, appleTestSelection,
-  appleXcodeArguments, inspectAppleScheme, inspectAppleToolchain, localAppleToolchain,
+  appleXcodeArguments, appleCIEnumerationArguments, inspectAppleScheme, inspectAppleToolchain, localAppleToolchain,
   normalizeAppleTestCatalog, normalizeAppleTestResult, normalizeAppleCITestResult, selectAppleLocalTargets,
   projectAppleCleanupEvidence, projectAppleCommandOutput, projectAppleXcresult,
   requireApple, validateAppleNativeEvidence, validateApplePlan,
@@ -331,8 +331,9 @@ async function runAppleNative(options, local) {
   await mkdir(path.join(output, "logs"));
   await mkdir(path.join(output, "scratch"));
   const report = {
-    version: ciRole ? 2 : 1, kind: "apple-native-evidence", origin: local ? "local-xcodebuild" : "ci-xcodebuild",
-    ...(ciRole ? { ciRole, nativeAcceptanceRequired: true, deferredTests: appleCIDeferredTests(ciRole),
+    version: ciRole ? 3 : 1, kind: "apple-native-evidence", origin: local ? "local-xcodebuild" : "ci-xcodebuild",
+    ...(ciRole ? { ciRole, catalogScope: ciRole === "mac" ? "full-scheme" : "runtime-targets",
+      nativeAcceptanceRequired: true, deferredTests: appleCIDeferredTests(ciRole),
       deferredTargets: appleCIDeferredTargets(ciRole) } : {}),
     runId, workspace: root, directory,
     base: plan.base, source: plan.source, sourceBefore: null, sourceAfter: null, apple: APPLE_REQUIREMENTS,
@@ -579,14 +580,17 @@ async function runAppleNative(options, local) {
         if (local) await mkdir(path.join(root, catalogDirectory));
         if (local) item.beforeCatalogCommandId = await confirmLocalTargets(`${phase}-before-catalog`);
         item.catalogCommandId = `${phase}-catalog`;
-        await execute(item.catalogCommandId, "/usr/bin/xcrun", appleEnumerationArguments(root, catalogDirectory, target, ciRole === "mac"),
+        const args = ciRole ? appleCIEnumerationArguments(root, catalogDirectory, target, ciRole, report.scheme.targets)
+          : appleEnumerationArguments(root, catalogDirectory, target);
+        await execute(item.catalogCommandId, "/usr/bin/xcrun", args,
           { timeoutMs: 180_000 });
         const bytes = await smallFile(root, `${catalogDirectory}/enumeration.json`);
         item.catalog = { path: `${catalogDirectory}/enumeration.json`, bytes: Buffer.byteLength(bytes),
           sha256: appleDigest(bytes), data: JSON.parse(bytes) };
-        normalizeAppleTestCatalog(item.catalog.data, report.scheme.targets);
-        if (local) item.beforeTestCommandId = await confirmLocalTargets(`${phase}-before-test`);
-        else {
+        if (local) {
+          normalizeAppleTestCatalog(item.catalog.data, report.scheme.targets);
+          item.beforeTestCommandId = await confirmLocalTargets(`${phase}-before-test`);
+        } else {
           const selection = appleCITestSelection(item.catalog.data, report.scheme.targets, ciRole);
           if (selection.deferred.length) return selection.tests;
         }

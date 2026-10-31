@@ -811,9 +811,10 @@ A runtime availability guard and deployment target 27.0 do not make an older SDK
 The native Mac host must also meet the app's macOS minimum.
 
 CI restores locked Node dependencies and runs Mac, ordinary iPhone, iPad and Duo
-as independent roles. Each role retains its normal builds, fresh unfiltered test
-catalogue, actual selected cases and original command/resource evidence. A failing
-role does not prevent the other roles from producing their results. Only uniquely
+as independent roles. Each role retains its normal builds, fresh complete test
+catalogue for its declared hosted targets, actual selected cases and original
+command/resource evidence. A failing role does not prevent the other roles from
+producing their results. Only uniquely
 named run-owned simulators are created and cleaned; developer UDIDs are not CI inputs.
 
 The declared hosted case exception is the Mac
@@ -822,23 +823,29 @@ still contain it. Mac CI selects every other catalogue entry explicitly.
 The user-selected mobile scope executes the complete model/WK test targets,
 including their pixel, CSP and navigation checks, and defers only the
 `DevPocketUITests` target to same-candidate full local native acceptance. The
-unfiltered catalogue and compiled UI test products remain present. Supported
-Mac functional/UI tests stay online. Other failures remain failures, not new
-exclusions; changing this declared scope requires a user policy decision.
+compiled UI test products remain present, but hosted mobile discovery enumerates
+only the complete model/WK targets that execute online. It must not launch the
+deferred UI runner just to enumerate it. The complete unfiltered UI catalogue
+and its execution remain mandatory in the same-candidate local native evidence.
+Mac discovery still covers the full scheme, and supported Mac functional/UI tests
+stay online. Other failures remain failures, not new exclusions; changing this
+declared scope requires a user policy decision.
 
 Role reports are partial verification inputs, not independent whole-group passes.
 Each CI role prepares its test bundles before simulator startup, then reuses that
-test-only DerivedData for fresh unfiltered discovery and execution. This keeps
+test-only DerivedData for fresh declared-target discovery and execution. This keeps
 cold compilation out of the discovery allowance without extending it. The two
 normal App builds and their original products remain separate; a
 `build-for-testing` result cannot replace either normal build.
 Mac discovers first to select its exact pixel exception. Mobile roles execute
-every case in their declared runtime targets first, retain the native results, then enumerate the
-same prepared scheme and target independently. Thus cold test-host startup stays
-inside the existing test invocation, not the shorter discovery allowance.
-Every passing role requires exact equality with the runtime portion of its fresh
-full catalogue. Per-case filters cannot narrow mobile execution. Post-run
-discovery does not apply to Mac's case-filtered invocation or local acceptance.
+every case in their declared runtime targets first, retain the native results, then
+independently enumerate those complete targets from the same prepared scheme and
+destination. Thus cold test-host startup stays inside the existing test invocation,
+not the shorter discovery allowance.
+Every passing role requires exact equality with its fresh hosted runtime catalogue.
+Only the declared target-level filters may narrow mobile discovery or execution;
+per-case filters are rejected. Post-run discovery does not apply to Mac's
+case-filtered invocation or local acceptance.
 After mobile runtime work and discovery finish, CI confirms cleanup of its owned
 simulator before exporting the host-side result bundle. Cleanup runs once; a
 failed or unknown cleanup is not retried into a successful receipt. Local
@@ -846,8 +853,11 @@ acceptance never shuts down its already-running developer targets.
 The gate requires the exact four-role union and preserves each native owner,
 workflow context and execution interval in `apple-native-matrix` / `apple-shards`
 records. Missing, duplicate, filtered beyond policy, failed or skipped required
-results do not qualify. Role and matrix evidence retain `deferredTargets` and
-`deferredTests`; the matrix and live qualifier explicitly report
+results do not qualify. Version-3 hosted role evidence explicitly records
+`catalogScope: "runtime-targets"` for mobile and `"full-scheme"` for Mac; older
+role evidence is not silently reinterpreted under this policy. Local evidence
+still requires the full unfiltered scheme. Role and matrix evidence retain
+`deferredTargets` and `deferredTests`; the matrix and live qualifier explicitly report
 `nativeAcceptanceRequired: true`.
 
 **Complete native acceptance remains a delivery requirement.** Before independent

@@ -379,7 +379,7 @@ function validatedReportChecks(plan, report, inputIndex, allowShards = false) {
       if (!allowShards || check.id !== "apple-native" || report.group !== "apple" ||
           report.status !== "partial" || report.complete !== false ||
           JSON.stringify(check.appleShard) !== JSON.stringify(appleCIShardDescriptor(check.appleShard.role)) ||
-          check.appleEvidence?.version !== 2 || check.appleEvidence.ciRole !== check.appleShard.role ||
+          check.appleEvidence?.version !== 3 || check.appleEvidence.ciRole !== check.appleShard.role ||
           check.executionState !== "exited" || check.privateLog?.availability !== "retained" ||
           check.commandOutcome?.observedProcess !== "owned-command-supervisor" ||
           check.commandOutcome.reason !== "exit" || check.commandOutcome.exitCode !== 0 ||

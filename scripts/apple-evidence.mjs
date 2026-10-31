@@ -51,12 +51,11 @@ export function appleCITestTargets(role, targets) {
 }
 
 export function appleCITestSelection(catalog, targets, role) {
-  const all = normalizeAppleTestCatalog(catalog, targets), excluded = appleCIDeferredTests(role);
-  const deferredTargets = appleCIDeferredTargets(role), runtimeTargets = appleCITestTargets(role, targets);
+  const runtimeTargets = appleCITestTargets(role, targets);
+  const all = normalizeAppleCatalog(catalog, runtimeTargets), excluded = appleCIDeferredTests(role);
   requireApple(all.some((test) => testKey(test) === testKey(macPixelTest)),
-    "The full catalogue must retain the native pixel test.", "case-evidence");
-  const deferred = all.filter((test) => deferredTargets.includes(test.targetName) ||
-    excluded.some((item) => testKey(item) === testKey(test)));
+    "The hosted catalogue must retain the native pixel test.", "case-evidence");
+  const deferred = all.filter((test) => excluded.some((item) => testKey(item) === testKey(test)));
   const tests = all.filter((test) => !deferred.some((item) => testKey(item) === testKey(test)));
   requireApple(runtimeTargets.every((target) => tests.some((test) => test.targetName === target)),
     "Hosted coverage must retain every declared runtime target.", "case-evidence");
@@ -416,6 +415,14 @@ export function appleEnumerationArguments(workspace, directory, target, macByArc
     "CODE_SIGN_IDENTITY=-", "CODE_SIGNING_REQUIRED=YES", "DEVELOPMENT_TEAM=", "test"];
 }
 
+export function appleCIEnumerationArguments(workspace, directory, target, role, schemeTargets) {
+  requireApple(target?.role === role, "The hosted catalogue role differs from its destination.", "configuration");
+  const targets = appleCITestTargets(role, schemeTargets);
+  const args = appleEnumerationArguments(workspace, directory, target, role === "mac");
+  if (role !== "mac") args.splice(-1, 0, ...targets.sort().map((name) => `-only-testing:${name}`));
+  return args;
+}
+
 const testKey = (item) => `${item.targetName}/${item.testIdentifier}`;
 
 export function appleTestSelection(tests) {
@@ -429,6 +436,12 @@ export function appleTestSelection(tests) {
 }
 
 export function normalizeAppleTestCatalog(data, targets) {
+  requireApple(Array.isArray(targets) && targets.length >= 2,
+    "A full native catalogue requires the model and UI scheme targets.", "discovery");
+  return normalizeAppleCatalog(data, targets);
+}
+
+function normalizeAppleCatalog(data, targets) {
   const value = data?.values?.[0];
   requireApple(Array.isArray(data?.errors) && data.errors.length === 0 &&
     Array.isArray(data.values) && data.values.length === 1 && text(value?.testPlan) &&
@@ -442,7 +455,7 @@ export function normalizeAppleTestCatalog(data, targets) {
     const slash = item.identifier.indexOf("/");
     return { targetName: item.identifier.slice(0, slash), testIdentifier: item.identifier.slice(slash + 1) };
   }));
-  requireApple(Array.isArray(targets) && targets.length >= 2 &&
+  requireApple(Array.isArray(targets) && targets.length > 0 &&
     targets.every((target) => tests.some((item) => item.targetName === target)) &&
     tests.every((item) => targets.includes(item.targetName)),
   "The native catalogue must cover exactly the enabled scheme targets.", "discovery");
@@ -748,18 +761,19 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
   if (evidence?.kind === "apple-native-matrix") {
     requireApple(expectedOrigin === "ci-xcodebuild" && evidence.version === 1 &&
       Array.isArray(evidence.parts) && evidence.parts.every((part) =>
-        part?.kind === "apple-native-evidence" && part.version === 2 && APPLE_CI_ROLES.includes(part.ciRole)),
+        part?.kind === "apple-native-evidence" && part.version === 3 && APPLE_CI_ROLES.includes(part.ciRole)),
     "A hosted matrix requires its original role-scoped invocations.", "execution-origin");
     requireApple(equal(evidence, combineAppleCIEvidence(plan, evidence.parts)),
       "The Apple matrix or deferred native requirement changed.", "case-evidence");
     return evidence;
   }
-  const ciRole = evidence?.version === 2 ? evidence.ciRole : undefined;
+  const ciRole = evidence?.version === 3 ? evidence.ciRole : undefined;
   requireApple((evidence?.version === 1 && evidence.ciRole === undefined ||
-    evidence?.version === 2 && expectedOrigin === "ci-xcodebuild" && APPLE_CI_ROLES.includes(ciRole)) &&
+    evidence?.version === 3 && expectedOrigin === "ci-xcodebuild" && APPLE_CI_ROLES.includes(ciRole)) &&
     evidence.kind === "apple-native-evidence" &&
     evidence.origin === expectedOrigin, "Apple evidence has the wrong version or execution origin.", "execution-origin");
   if (ciRole) requireApple(evidence.nativeAcceptanceRequired === true &&
+    evidence.catalogScope === (ciRole === "mac" ? "full-scheme" : "runtime-targets") &&
     equal(evidence.deferredTests, appleCIDeferredTests(ciRole)) &&
     equal(evidence.deferredTargets, appleCIDeferredTargets(ciRole)),
   "Hosted CI must preserve its separately required complete native runtime coverage.", "case-evidence");
@@ -1003,7 +1017,8 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
       const catalog = item.catalog, catalogDirectory = `${directory}/catalog`;
       const catalogTarget = ciRole === "mac" ? { ...target, deviceId: undefined } : target;
       const discovered = command(item.catalogCommandId, "/usr/bin/xcrun",
-        appleEnumerationArguments(evidence.workspace, catalogDirectory, catalogTarget, ciRole === "mac"));
+        ciRole ? appleCIEnumerationArguments(evidence.workspace, catalogDirectory, catalogTarget, ciRole, evidence.scheme.targets)
+          : appleEnumerationArguments(evidence.workspace, catalogDirectory, catalogTarget));
       if (ciRole) {
         const built = command(item.buildForTestingCommandId, "/usr/bin/xcrun",
           appleXcodeArguments({ workspace: evidence.workspace, directory: catalogDirectory, action: "build-for-testing",
@@ -1019,7 +1034,7 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
         discovered.startedAt >= preparation.completedAt &&
         (local || ciRole === "mac" ? discovered.completedAt <= value.startedAt
           : discovered.startedAt >= value.completedAt && discovered.completedAt <= cleanupBefore.startedAt),
-      "The full command requires its own fresh, unfiltered native catalogue.", "discovery");
+      "The native command requires its own fresh catalogue for its declared scope.", "discovery");
       for (const [id, followedBy] of local
         ? [[item.beforeCatalogCommandId, discovered], [item.beforeTestCommandId, value]] : []) {
         const check = command(id, "/usr/bin/xcrun", ["simctl", "list", "--json"]);

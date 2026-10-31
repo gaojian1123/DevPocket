@@ -52,7 +52,7 @@ function macosReport(plan, report) {
 }
 
 function requireAppleCIContext(evidence, context, attempt, role) {
-  if (!APPLE_CI_ROLES.includes(role) || evidence?.version !== 2 || evidence.ciRole !== role ||
+  if (!APPLE_CI_ROLES.includes(role) || evidence?.version !== 3 || evidence.ciRole !== role ||
       evidence.origin !== "ci-xcodebuild" || evidence.ci?.repository !== context.repository ||
       evidence.ci.runId !== context.runId || evidence.ci.runAttempt !== String(attempt) ||
       evidence.ci.job !== "apple" || evidence.ci.sha !== context.tested.head) throw fail();

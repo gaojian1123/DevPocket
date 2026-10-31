@@ -525,84 +525,6 @@ jobs:
           BASE_SHA: ${{ needs.plan.outputs.base }}
           XDG_CACHE_HOME: ${{ runner.temp }}/devpocket-cache
         run: |
-          mkdir -p .data/ci/apple-service-observation
-          python3 -u - <<'PY' > .data/ci/apple-service-observation/observations.jsonl &
-          import json, os, signal, subprocess, time
-          from datetime import datetime, timezone
-          from pathlib import Path
-          stopped = False
-          def stop(_signal, _frame):
-              global stopped
-              stopped = True
-          signal.signal(signal.SIGTERM, stop)
-          root = Path(".data/ci/apple-service-observation")
-          report = Path(".data/ci/apple/apple/apple-report.json")
-          names = {"simctl", "launchd_sim", "SimulatorTrampoline", "DTServiceHub",
-                   "com.apple.CoreSimulator.CoreSimulatorService"}
-          observed, sampled, ticks = set(), set(), 0
-          def command(args, limit=32768):
-              try:
-                  result = subprocess.run(args, capture_output=True, text=True, timeout=8)
-                  return {"exitCode": result.returncode, "stdout": result.stdout[:limit],
-                          "stderr": result.stderr[:2048], "truncated": len(result.stdout) > limit or len(result.stderr) > 2048}
-              except subprocess.TimeoutExpired:
-                  return {"status": "timeout"}
-          while not stopped and ticks < 150:
-              ticks += 1
-              entry = {"timestamp": datetime.now(timezone.utc).isoformat(), "acceptance": False,
-                       "tag": "apple-service-observation", "load": os.getloadavg()}
-              active = None
-              try:
-                  if report.exists() and report.stat().st_size <= 262144:
-                      value = json.loads(report.read_text())
-                      active = next((item for item in reversed(value.get("commands", []))
-                                     if item.get("status") == "running"), None)
-              except (OSError, ValueError) as error:
-                  entry["reportReadError"] = type(error).__name__
-              identity = active["id"] if active else "before-native-report"
-              age = (datetime.now(timezone.utc) -
-                     datetime.fromisoformat(active["startedAt"].replace("Z", "+00:00"))).total_seconds() if active else 0
-              waiting = identity.startswith(("boot-", "ready-", "cleanup-"))
-              if identity not in observed or waiting:
-                  observed.add(identity)
-                  entry.update(command=identity, commandAgeSeconds=age,
-                               swap=command(["/usr/sbin/sysctl", "-n", "vm.swapusage"]))
-                  processes = command(["/bin/ps", "-axo", "pid=,ppid=,stat=,%cpu=,etime=,comm="], 1048576)
-                  entry["processListTruncated"] = processes.get("truncated")
-                  rows = []
-                  if processes.get("exitCode") == 0:
-                      for line in processes["stdout"].splitlines():
-                          fields = line.strip().split(None, 5)
-                          if len(fields) == 6 and Path(fields[5]).name in names:
-                              rows.append({"pid": int(fields[0]), "parent": int(fields[1]),
-                                           "state": fields[2], "cpu": fields[3], "elapsed": fields[4],
-                                           "name": Path(fields[5]).name})
-                  else:
-                      entry["processObservation"] = processes
-                  entry["processes"] = rows
-                  if waiting and age >= 60 and identity not in sampled:
-                      sampled.add(identity)
-                      for row in rows:
-                          if row["name"] not in ("simctl", "com.apple.CoreSimulator.CoreSimulatorService"):
-                              continue
-                          current = command(["/bin/ps", "-p", str(row["pid"]), "-o", "comm="])
-                          if current.get("exitCode") != 0 or Path(current["stdout"].strip()).name != row["name"]:
-                              entry.setdefault("changedSampleTargets", []).append(row)
-                              continue
-                          destination = root / f"{identity}-{row['pid']}.sample.txt"
-                          result = command(["/usr/bin/sample", str(row["pid"]), "1", "10",
-                                            "-file", str(destination)])
-                          entry.setdefault("samples", []).append({"process": row, "result": result,
-                                                                  "path": str(destination)})
-                  print(json.dumps(entry), flush=True)
-              for _ in range(10):
-                  if stopped:
-                      break
-                  time.sleep(1)
-          print(json.dumps({"tag": "apple-service-observation", "stopped": stopped, "ticks": ticks}), flush=True)
-          PY
-          observer_pid=$!
-          trap 'kill "$observer_pid" 2>/dev/null || echo "Apple observation process already exited"; wait "$observer_pid" || echo "Apple observation process exited unsuccessfully"' EXIT
           node scripts/verify.mjs --base "$BASE_SHA" --group apple --apple-role "$APPLE_ROLE" --report .data/ci/apple/report.json
       - name: Bind Apple evidence to this CI attempt
         if: always() && hashFiles('scripts/verification-ci.mjs') != ''
@@ -645,7 +567,6 @@ jobs:
             .data/ci/apple/apple/test-*/catalog/enumeration.json
             .data/ci/apple/apple/test-*/catalog/result.xcresult/
             .data/ci/apple/apple/build-*/derived/Build/Products/**/DevPocket.app/
-            .data/ci/apple-service-observation/
           if-no-files-found: error
 
   gate:
