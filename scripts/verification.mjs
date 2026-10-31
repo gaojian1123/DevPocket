@@ -5,7 +5,8 @@ import { deviceSourceCatalogue } from "./device-diagnostics.mjs";
 import { diagnosticError, failureDetails, ownValue, diagnosticVersion } from "./diagnostic-errors.mjs";
 import { CHECKS, CHECK_GROUPS, VERIFICATION_REPORT_VERSION, verificationGroups, verificationImpact } from "./verification-policy.mjs";
 import { requireToolingCatalogue, requireToolingShard, toolingCatalogue } from "./verification-tooling.mjs";
-import { APPLE_REQUIREMENTS, validateAppleNativeEvidence } from "./apple-evidence.mjs";
+import { APPLE_REQUIREMENTS, APPLE_CI_ROLES, appleCIShardDescriptor, combineAppleCIEvidence,
+  validateAppleNativeEvidence } from "./apple-evidence.mjs";
 export { CHECKS } from "./verification-policy.mjs";
 export { git, readOnlyGit, sourceSnapshot } from "./git-state.mjs";
 
@@ -213,10 +214,18 @@ export function requireCheckPolicy(plan) {
 export function combineVerification(plan, reports) {
   requirePlanCollection(plan);
   requireCheckPolicy(plan);
-  const passed = new Map(), toolingParts = new Map();
+  const passed = new Map(), toolingParts = new Map(), appleParts = new Map();
   for (const [inputIndex, report] of reports.entries()) {
     for (const check of validatedReportChecks(plan, report, inputIndex, true)) {
       const context = { inputIndex, group: report.group };
+      if (check.appleShard) {
+        if (passed.has(check.id) || appleParts.has(check.appleShard.role)) {
+          throw verificationFault("check-duplicate", { ...context, check: check.id });
+        }
+        appleParts.set(check.appleShard.role, { shard: structuredClone(check.appleShard),
+          execution: checkExecution(check, plan.source, plan), evidence: structuredClone(check.appleEvidence) });
+        continue;
+      }
       if (check.toolingShard) {
         if (passed.has(check.id) || toolingParts.has(check.toolingShard.id)) {
           throw verificationFault("check-duplicate", { ...context, check: check.id });
@@ -225,7 +234,8 @@ export function combineVerification(plan, reports) {
           execution: checkExecution(check, plan.source, plan) });
         continue;
       }
-      if (passed.has(check.id) || check.id === "tooling-tests" && toolingParts.size) {
+      if (passed.has(check.id) || check.id === "tooling-tests" && toolingParts.size ||
+          check.id === "apple-native" && appleParts.size) {
         throw verificationFault("check-duplicate", { ...context, check: check.id });
       }
       passed.set(check.id, {
@@ -247,14 +257,51 @@ export function combineVerification(plan, reports) {
       execution: { kind: "tooling-shards", source: structuredClone(plan.source),
         parts: expected.map((part) => toolingParts.get(part.id)) } });
   }
+  if (appleParts.size) {
+    if (appleParts.size !== APPLE_CI_ROLES.length || APPLE_CI_ROLES.some((role) => !appleParts.has(role))) {
+      throw verificationFault("shard-missing", { missing: ["apple-native"] });
+    }
+    const parts = APPLE_CI_ROLES.map((role) => appleParts.get(role));
+    passed.set("apple-native", { id: "apple-native", status: "passed", exitCode: 0,
+      execution: { kind: "apple-shards", source: structuredClone(plan.source),
+        parts: parts.map(({ shard, execution }) => ({ shard, execution })) },
+      appleEvidence: combineAppleCIEvidence(plan, parts.map(({ evidence }) => evidence)) });
+  }
   const missing = plan.requiredChecks.filter((id) => !passed.has(id));
   if (missing.length) throw verificationFault("shard-missing", { missing });
   return { ...plan, group: "all", status: "passed", complete: true,
     checks: plan.requiredChecks.map((id) => passed.get(id)) };
 }
 
+export function serializeVerificationReport(report) {
+  let bytes = JSON.stringify(report, null, 2) + "\n";
+  if (Buffer.byteLength(bytes) > 512 * 1024) bytes = JSON.stringify(report) + "\n";
+  if (Buffer.byteLength(bytes) > 512 * 1024) throw verificationFault("output-limit");
+  return bytes;
+}
+
 function checkExecution(check, source, plan) {
   const value = check.execution;
+  if (value?.kind === "apple-shards") {
+    if (check.id !== "apple-native" || check.appleShard || !Array.isArray(value.parts) ||
+        value.parts.length !== APPLE_CI_ROLES.length ||
+        value.source?.head !== source.head || value.source?.fingerprint !== source.fingerprint ||
+        check.appleEvidence?.kind !== "apple-native-matrix" || !Array.isArray(check.appleEvidence.parts) ||
+        check.appleEvidence.parts.length !== APPLE_CI_ROLES.length) {
+      throw verificationFault("execution-origin", { check: check.id });
+    }
+    return { kind: "apple-shards", source: structuredClone(source),
+      parts: value.parts.map((part, index) => {
+        const role = APPLE_CI_ROLES[index], native = check.appleEvidence.parts[index];
+        if (JSON.stringify(part?.shard) !== JSON.stringify(appleCIShardDescriptor(role)) ||
+            part.execution?.kind || native?.ciRole !== role) throw verificationFault("execution-origin", { check: check.id });
+        const execution = checkExecution({ id: check.id, execution: part.execution }, source, plan);
+        if (native.startedAt < execution.startedAt || native.completedAt > execution.completedAt) {
+          throw verificationFault("execution-origin", { check: check.id });
+        }
+        return { shard: structuredClone(part.shard), execution };
+      }) };
+  }
   if (value?.kind === "tooling-shards") {
     if (check.id !== "tooling-tests" || check.toolingShard || !Array.isArray(value.parts) ||
         value.source?.head !== source.head || value.source?.fingerprint !== source.fingerprint) {
@@ -286,7 +333,7 @@ function checkExecution(check, source, plan) {
     startedAt: value.startedAt, completedAt: value.completedAt };
 }
 
-function validatedReportChecks(plan, report, inputIndex, allowToolingShard = false) {
+function validatedReportChecks(plan, report, inputIndex, allowShards = false) {
   const context = { inputIndex, group: report?.group };
   if (!report || typeof report !== "object" || !Array.isArray(report.checks)) throw verificationFault("report-invalid", context);
   if (report.version !== plan.version) throw verificationFault("policy-mismatch", context);
@@ -322,11 +369,23 @@ function validatedReportChecks(plan, report, inputIndex, allowToolingShard = fal
     if (report.group !== "all" && definition.group !== report.group) throw verificationFault("check-group", { ...context, check: check.id });
     if (check.status !== "passed" || check.exitCode !== 0) throw verificationFault("check-failed", { ...context, check: check.id });
     if (check.toolingShard) {
-      if (!allowToolingShard || check.id !== "tooling-tests" || report.group !== "tooling" ||
+      if (!allowShards || check.id !== "tooling-tests" || report.group !== "tooling" ||
           report.status !== "partial" || report.complete !== false) {
         throw verificationFault("shard-missing", { ...context, missing: ["tooling-tests"] });
       }
       requireToolingShard(plan, check.toolingShard);
+    }
+    if (check.appleShard) {
+      if (!allowShards || check.id !== "apple-native" || report.group !== "apple" ||
+          report.status !== "partial" || report.complete !== false ||
+          JSON.stringify(check.appleShard) !== JSON.stringify(appleCIShardDescriptor(check.appleShard.role)) ||
+          check.appleEvidence?.version !== 3 || check.appleEvidence.ciRole !== check.appleShard.role ||
+          check.executionState !== "exited" || check.privateLog?.availability !== "retained" ||
+          check.commandOutcome?.observedProcess !== "owned-command-supervisor" ||
+          check.commandOutcome.reason !== "exit" || check.commandOutcome.exitCode !== 0 ||
+          check.commandOutcome.signal !== "none" || check.commandOutcome.cleanupFailure !== null) {
+        throw verificationFault("shard-missing", { ...context, missing: ["apple-native"] });
+      }
     }
     checkExecution(check, plan.source, plan);
     if (check.collectionStatus === "failed" || check.reportedDeviceCollectionStatus === "failed" ||
@@ -340,7 +399,12 @@ function validatedReportChecks(plan, report, inputIndex, allowToolingShard = fal
       }
       try { validateAppleNativeEvidence(check.appleEvidence, plan, check.appleEvidence?.origin); }
       catch (error) { throw verificationFault("apple-evidence", { check: check.id }, error); }
+      if (check.appleEvidence.ciRole && !check.appleShard ||
+          check.appleEvidence.kind === "apple-native-matrix" && check.execution?.kind !== "apple-shards") {
+        throw verificationFault("shard-missing", { ...context, missing: ["apple-native"] });
+      }
       if (check.appleEvidence.origin === "ci-xcodebuild" &&
+          check.execution.kind !== "apple-shards" &&
           (check.appleEvidence.startedAt < check.execution.startedAt ||
             check.appleEvidence.completedAt > check.execution.completedAt)) {
         throw verificationFault("execution-origin", { check: check.id });
@@ -355,6 +419,13 @@ export function requireToolingShardReport(plan, report) {
   requireCheckPolicy(plan);
   const checks = validatedReportChecks(plan, report, undefined, true);
   if (checks.length !== 1 || !checks[0].toolingShard) throw verificationFault("report-invalid");
+  return checks;
+}
+
+export function requireAppleShardReport(plan, report) {
+  requireCheckPolicy(plan);
+  const checks = validatedReportChecks(plan, report, undefined, true);
+  if (checks.length !== 1 || !checks[0].appleShard) throw verificationFault("report-invalid");
   return checks;
 }
 

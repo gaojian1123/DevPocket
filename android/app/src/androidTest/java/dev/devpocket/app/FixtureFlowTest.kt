@@ -237,16 +237,36 @@ class FixtureFlowTest {
         assertEquals(1, state().outbox.count { (it.command.action as? Action.Message)?.componentReference == table.selection().reference })
         compose.onNodeWithTag("component_reference").assertDoesNotExist()
         for (kind in List(2) { listOf("choice", "text", "form", "race", "uncertain") }.flatten()) {
-            compose.onNodeWithTag("message_input").performTextReplacement("native fixture ask $kind")
+            val prompt = "native fixture ask $kind"
+            val previousCommands = state().outbox.map { it.command.commandId }.toSet()
+            compose.onNodeWithTag("message_input").performTextReplacement(prompt)
             compose.waitUntil(20_000) {
                 compose.onAllNodes(hasContentDescription("发送到原始 GitHub Copilot 会话") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
             }
             compose.onNodeWithContentDescription("发送到原始 GitHub Copilot 会话").performClick()
-            compose.waitUntil(30_000) {
-                val current = state()
-                !current.busy && current.requests.any {
-                    it.type == "question" && it.detail.contains("Fixture $kind question") && it.supported
+            try {
+                compose.waitUntil(30_000) {
+                    val current = state()
+                    !current.busy && current.requests.any {
+                        it.type == "question" && it.detail.contains("Fixture $kind question") && it.supported
+                    }
                 }
+            } catch (error: ComposeTimeoutException) {
+                val current = state()
+                val sent = current.outbox.singleOrNull {
+                    it.command.commandId !in previousCommands && (it.command.action as? Action.Message)?.text == prompt
+                }
+                assertNotNull("A fresh fixture-question operation must have been staged.", sent)
+                assertTrue("The fixture-question operation must reach admission.",
+                    sent!!.status in setOf("admitted", "queued", "processing", "completed"))
+                assertTrue("The fixture session must remain online.", current.session?.online == true)
+                assertFalse("An unrelated local operation is still blocking question controls.", current.busy)
+                val question = current.requests.singleOrNull {
+                    it.type == "question" && it.detail.contains("Fixture $kind question")
+                }
+                assertNotNull("The requested fixture question was not synchronized.", question)
+                assertTrue("The fixture question must retain a supported shape.", question!!.supported)
+                throw error
             }
             val before = state()
             val request = before.requests.single { it.type == "question" }

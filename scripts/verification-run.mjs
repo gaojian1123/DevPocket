@@ -4,8 +4,9 @@ import path from "node:path";
 import { diagnosticDirectory } from "./diagnostic-publication.mjs";
 import { diagnosticError } from "./diagnostic-errors.mjs";
 import { CHECKS, CHECK_GROUPS } from "./verification-policy.mjs";
-import { requireCheckPolicy, requireCompletedVerificationGroup, requireToolingShardReport, requireVerificationOutputDirectory,
+import { requireCheckPolicy, requireCompletedVerificationGroup, requireToolingShardReport, requireAppleShardReport, requireVerificationOutputDirectory,
   verificationFault, verificationStorageLocation } from "./verification.mjs";
+import { APPLE_CI_ROLES } from "./apple-evidence.mjs";
 export { verificationStorageLocation } from "./verification.mjs";
 
 const version = 2;
@@ -18,10 +19,14 @@ const pathKey = (value) => process.platform === "win32" ? value.toLowerCase() : 
 
 function binding(plan, group, policy, options) {
   if (options.trustedToolingRunner !== undefined || options.trustedTooling === true) throw diagnosticError("configuration");
+  if (options.appleRole !== undefined && (group !== "apple" || !APPLE_CI_ROLES.includes(options.appleRole))) {
+    throw diagnosticError("configuration");
+  }
   return { base: plan.base, source: plan.source, version: plan.version,
     requiredChecks: plan.requiredChecks, requiredGroups: plan.requiredGroups, layouts: plan.layouts, ciMacos: plan.ciMacos ?? false,
     trustedDeviceClasses: plan.trustedDeviceClasses ?? [], group, policy,
     backendDiagnostics: Boolean(options.backendDiagnostics), toolingShard: options.toolingShard ?? null,
+    ...(options.appleRole !== undefined ? { appleRole: options.appleRole } : {}),
     ...(plan.apple ? { apple: plan.apple } : {}),
     ...(options.captureRefinementContext === true ? { captureRefinementContext: true } : {}) };
 }
@@ -303,6 +308,10 @@ export async function openVerificationRun(root, plan, options, policy, promotion
       if (["passed", "partial"].includes(report.status)) {
         if (report.checks.some((check) => check.toolingShard)) {
           requireToolingShardReport(plan, report);
+          reusable = false;
+        } else if (report.checks.some((check) => check.appleShard)) {
+          const [check] = requireAppleShardReport(plan, report);
+          if (check.appleShard.role !== options.appleRole) throw diagnosticError("run-invalid");
           reusable = false;
         } else requireCompletedVerificationGroup(plan, report, report.group, validatedReuse);
       }

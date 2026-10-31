@@ -221,7 +221,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   for (const action of actions) counts[action] = (counts[action] ?? 0) + 1;
   assert.deepEqual(counts, {
     "actions/checkout@v7": 8, "actions/setup-node@v7": 8, "actions/setup-python@v7": 4,
-    "actions/upload-artifact@v7": 22, "actions/setup-java@v6": 2, "actions/download-artifact@v8": 1,
+    "actions/upload-artifact@v7": 24, "actions/setup-java@v6": 2, "actions/download-artifact@v8": 1,
   });
   assert.equal([...normalWorkflow.matchAll(
     /- uses: actions\/checkout@v7\n\s+with:\n\s+fetch-depth: 0\n\s+persist-credentials: false/g,
@@ -238,7 +238,7 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   assert.match(workflow, /^permissions:\n  contents: read\n/m);
   assert.doesNotMatch(workflow, /continue-on-error:|FORCE_JAVASCRIPT_ACTIONS_TO_NODE20|ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION/);
   assert.doesNotMatch(workflow, /^\s+(?:merge-multiple|overwrite|archive|digest-mismatch):/m);
-  assert.equal([...normalWorkflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 21);
+  assert.equal([...normalWorkflow.matchAll(/^\s+if-no-files-found: error$/gm)].length, 23);
 
   const backend = workflow.split("\n  backend:")[1].split("\n  android:")[0];
   assert.match(backend, /\$env:DEVPOCKET_PROBE_PYTHON = \(Get-Command python -CommandType Application -ErrorAction Stop \| Select-Object -First 1\)\.Source\n\s+node scripts\\verify\.mjs/);
@@ -282,14 +282,21 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   const apple = workflow.split("\n  apple:")[1].split("\n  gate:")[0];
   assert.match(apple, /needs\.plan\.outputs\.apple == 'true'/);
   assert.match(apple, /runs-on: xcode-27/);
-  assert.match(apple, /DEVELOPER_DIR: \/Applications\/Xcode_27\.1\.app\/Contents\/Developer/);
+  assert.match(apple, /DEVELOPER_DIR: \/Applications\/Xcode_27\.2\.app\/Contents\/Developer/);
+  assert.match(apple, /xcodebuild -downloadPlatform iOS -buildVersion 24B8117 -architectureVariant arm64/);
+  assert.match(apple, /xcodebuild -downloadPlatform iOS -buildVersion 24B91016s -architectureVariant arm64/);
+  assert.ok(apple.indexOf("name: Install the required iOS 27.2 runtimes") <
+    apple.indexOf("name: Verify the selected Apple platform"));
+  assert.doesNotMatch(apple, /-downloadAllPlatforms/);
   assert.match(apple, /npm_config_registry: https:\/\/packagefeedproxy\.microsoft\.io\/npm\//);
-  assert.match(apple, /node scripts\/verify\.mjs --base \$env:BASE_SHA --group apple --report \.data\/ci\/apple\/report\.json/);
-  assert.match(apple, /--seal --unit apple/);
-  assert.match(apple, /name: verification-apple-attempt-[^\n]+\n\s+path: \|\n\s+\.data\/ci\/apple\/report\.json\n\s+\.data\/ci\/apple\/ci-report\.json\n\s+if-no-files-found: error/);
+  assert.match(apple, /role: \[mac, iphone, ipad\]/);
+  assert.match(apple, /fail-fast: false/);
+  assert.match(apple, /node scripts\/verify\.mjs --base "\$BASE_SHA" --group apple --apple-role "\$APPLE_ROLE" --report \.data\/ci\/apple\/report\.json/);
+  assert.match(apple, /--seal --unit "apple-\$APPLE_ROLE"/);
+  assert.match(apple, /name: verification-apple-\$\{\{ matrix\.role \}\}-attempt-[^\n]+\n\s+path: \|\n\s+\.data\/ci\/apple\/report\.json\n\s+\.data\/ci\/apple\/ci-report\.json\n\s+if-no-files-found: error/);
   assert.doesNotMatch(workflow.replace(apple, ""), /^\s+include-hidden-files:/m);
   assert.equal([...apple.matchAll(/^\s+include-hidden-files:/gm)].length, 1);
-  const nativeArtifacts = apple.split("name: apple-native-evidence-attempt-")[1];
+  const nativeArtifacts = apple.split("name: apple-native-evidence-${{ matrix.role }}-attempt-")[1];
   assert.match(nativeArtifacts, /include-hidden-files: true/);
   assert.deepEqual([...nativeArtifacts.matchAll(/^\s+(\.data\/[^\r\n]+)$/gm)].map((match) => match[1]), [
     ".data/ci/apple/apple/apple-owner.json",
@@ -297,12 +304,15 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
     ".data/ci/apple/apple/logs/",
     ".data/ci/apple/apple/*/result.xcresult/",
     ".data/ci/apple/apple/test-*/result-files.json",
+    ".data/ci/apple/apple/test-*/catalog/enumeration.json",
+    ".data/ci/apple/apple/test-*/catalog/result.xcresult/",
     ".data/ci/apple/apple/build-*/derived/Build/Products/**/DevPocket.app/",
   ]);
 
   const gate = workflow.split("\n  gate:")[1];
   assert.match(gate, /needs: \[plan, tooling, macos, backend, android, device, apple\]\n\s+if: always\(\)/);
   assert.ok(gate.includes("APPLE_RESULT: ${{ needs.apple.result }}"));
+  assert.ok(gate.includes("including the full Duo role, all mobile UI interactions and Mac WK pixels"));
   assert.doesNotMatch(gate, /ISOLATION_REQUIRED|ISOLATION_RESULT|isolated-boundary/);
   assert.match(gate, /- uses: actions\/download-artifact@v8\n\s+with:\n\s+pattern: verification-\*\n\s+path: \.data\\ci\\inputs/);
   assert.ok(gate.includes("'scripts\\verification-ci.mjs', '--base', $env:BASE_SHA, '--collect'"));
@@ -346,8 +356,11 @@ test("the independent tooling CI job runs the complete tooling suite without app
   const adapter = executor.split('definition.group === "tooling" ? {')[1]?.split('} : definition.group === "backend"')[0];
   assert.ok(adapter);
   assert.ok(executor.includes('const npm = process.platform === "win32" ? "npm.cmd" : "npm"'));
-  assert.ok(adapter.includes("& ${npm} run test:tooling; exit $LASTEXITCODE"));
-  assert.ok(adapter.includes("& ${npm} run test:tooling -- --tooling-shard ${check.toolingShard.id}; exit $LASTEXITCODE"));
+  assert.ok(adapter.includes('& ${npm} run test:tooling${progress ? ` --${progressArgument}` : ""}; exit $LASTEXITCODE'));
+  assert.ok(adapter.includes("& ${npm} run test:tooling -- --tooling-shard ${check.toolingShard.id}${progressArgument}; exit $LASTEXITCODE"));
+  assert.ok(executor.includes('process.env.GITHUB_ACTIONS === "true"'));
+  assert.ok(executor.includes('tooling-progress.jsonl'));
+  assert.match(adapter, /timeoutMs: progress \? 25 \* 60_000 : 60 \* 60_000/);
 });
 
 test("native startup diagnostics are manual-only, reuse the owned entry and never become a verification shard", async () => {
@@ -378,6 +391,17 @@ test("native startup diagnostics are manual-only, reuse the owned entry and neve
   assert.match(startup, /name: native-startup-diagnostic\n\s+path: \.data\/ci\/native-startup\/public\/startup-report\.json/);
   assert.match(startup, /if-no-files-found: error/);
   assert.doesNotMatch(startup, /Required verification|name: verification-|continue-on-error|pull_request|pull_request_target|push:|schedule:|workflow_run:|workflow_call:|container:|self-hosted/);
+});
+
+test("Mac CI cache paths use a step context while preserving private profile gathering settings", async () => {
+  const workflow = await readFile(".github/workflows/ci.yml", "utf8");
+  for (const job of ["macos", "apple"]) {
+    const body = workflow.split(`\n  ${job}:`)[1].split(/\n  [a-z][a-z-]*:/)[0];
+    const header = body.split("\n    steps:")[0];
+    assert.doesNotMatch(header, /\$\{\{\s*runner\./);
+    assert.match(header, /DOTNET_MultiCoreJitNoProfileGather: '1'/);
+    assert.match(body, /\n {10}XDG_CACHE_HOME: \$\{\{ runner\.temp \}\}\/devpocket-cache/);
+  }
 });
 
 test("CI binds exactly the first Python executable when command discovery returns multiple matches", async (t) => {

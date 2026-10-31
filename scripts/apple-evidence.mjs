@@ -10,16 +10,85 @@ const freeze = (value) => {
 export const APPLE_REQUIREMENTS = freeze({
   project: "apple/DevPocket/DevPocket.xcodeproj",
   scheme: "DevPocket",
-  xcodeMinimum: "27.1",
-  iosSDKMinimum: "27.1",
+  xcodeMinimum: "27.2",
+  iosSDKMinimum: "27.2",
   macOSMinimum: "27.0",
   targets: [
     { role: "mac", platform: "macOS", osMinimum: "27.0" },
-    { role: "iphone", platform: "iOS Simulator", runtimeVersion: "27.0", deviceTypeName: "iPhone 18 Pro" },
-    { role: "ipad", platform: "iOS Simulator", runtimeVersion: "27.0", deviceTypeName: "iPad Pro 11-inch (M5)" },
-    { role: "duo", platform: "iOS Simulator", runtimeVersion: "27.1", deviceTypeName: "iPhone Duo" },
+    { role: "iphone", platform: "iOS Simulator", runtimeVersion: "27.2", deviceTypeName: "iPhone 18 Pro" },
+    { role: "ipad", platform: "iOS Simulator", runtimeVersion: "27.2", deviceTypeName: "iPad Pro 11-inch (M5)" },
+    { role: "duo", platform: "iOS Simulator", runtimeVersion: "27.2", deviceTypeName: "iPhone Duo" },
   ],
 });
+
+export const APPLE_CI_ROLES = Object.freeze(["mac", "iphone", "ipad"]);
+const macPixelTest = freeze({
+  targetName: "DevPocketTests",
+  testIdentifier: "DevPocketTests/actualWKWebViewRendersChartPixels()",
+});
+
+export function appleCIShardDescriptor(role) {
+  requireApple(APPLE_CI_ROLES.includes(role), "Unknown Apple CI role.", "configuration");
+  return { version: 1, role };
+}
+
+export function appleCIDeferredTests(role) {
+  appleCIShardDescriptor(role);
+  return role === "mac" ? [macPixelTest] : [];
+}
+
+export function appleCIDeferredTargets(role) {
+  appleCIShardDescriptor(role);
+  return role === "mac" ? [] : ["DevPocketUITests"];
+}
+
+export function appleCITestTargets(role, targets) {
+  const deferred = appleCIDeferredTargets(role);
+  requireApple(Array.isArray(targets) && targets.includes("DevPocketTests") && targets.includes("DevPocketUITests") &&
+    targets.every((target) => typeof target === "string" && text(target)) && new Set(targets).size === targets.length,
+  "Hosted target coverage requires the complete enabled scheme.", "case-evidence");
+  return targets.filter((target) => !deferred.includes(target));
+}
+
+export function appleCITestSelection(catalog, targets, role) {
+  const runtimeTargets = appleCITestTargets(role, targets);
+  const all = normalizeAppleCatalog(catalog, runtimeTargets), excluded = appleCIDeferredTests(role);
+  requireApple(all.some((test) => testKey(test) === testKey(macPixelTest)),
+    "The hosted catalogue must retain the native pixel test.", "case-evidence");
+  const deferred = all.filter((test) => excluded.some((item) => testKey(item) === testKey(test)));
+  const tests = all.filter((test) => !deferred.some((item) => testKey(item) === testKey(test)));
+  requireApple(runtimeTargets.every((target) => tests.some((test) => test.targetName === target)),
+    "Hosted coverage must retain every declared runtime target.", "case-evidence");
+  return { tests, deferred };
+}
+
+export function combineAppleCIEvidence(plan, parts) {
+  requireApple(Array.isArray(parts) && parts.length === APPLE_CI_ROLES.length,
+    "Every Apple CI role is required.", "shard-missing");
+  const ordered = APPLE_CI_ROLES.map((role) => {
+    const matches = parts.filter((part) => part?.ciRole === role);
+    requireApple(matches.length === 1, "An Apple CI role is missing or duplicated.", "shard-missing");
+    validateAppleNativeEvidence(matches[0], plan, "ci-xcodebuild");
+    return matches[0];
+  });
+  requireApple(new Set(ordered.map((part) => part.runId)).size === ordered.length &&
+    ordered.every((part) => ["repository", "runId", "sha", "job"].every((key) => part.ci[key] === ordered[0].ci[key])),
+  "Apple roles must retain distinct native owners in the same CI workflow run.", "execution-origin");
+  const matrix = {
+    version: 2, kind: "apple-native-matrix", origin: "ci-xcodebuild",
+    base: plan.base, source: structuredClone(plan.source), apple: structuredClone(plan.apple),
+    status: "passed", cleanup: "completed", nativeAcceptanceRequired: true,
+    startedAt: ordered.map((part) => part.startedAt).sort()[0],
+    completedAt: ordered.map((part) => part.completedAt).sort().at(-1),
+    deferredTests: APPLE_CI_ROLES.flatMap((role) => appleCIDeferredTests(role).map((test) => ({ role, ...test }))),
+    deferredTargets: APPLE_CI_ROLES.flatMap((role) => appleCIDeferredTargets(role).map((targetName) => ({ role, targetName }))),
+    deferredRoles: APPLE_REQUIREMENTS.targets.map(({ role }) => role).filter((role) => !APPLE_CI_ROLES.includes(role)),
+    parts: ordered,
+  };
+  requireApple(Buffer.byteLength(appleJSON(matrix)) <= 512 * 1024,
+    "Combined Apple CI evidence exceeds the enclosing report budget.", "output-limit");
+  return matrix;
+}
 
 export const APPLE_PROBES = freeze([
   { id: "xcode", file: "/usr/bin/xcrun", args: ["xcodebuild", "-version"] },
@@ -59,10 +128,19 @@ export function projectAppleCleanupEvidence(cleanup) {
   return fields(cleanup, ["beforeCommandId", "afterCommandId"]);
 }
 
-function projectSimulatorInventory(value) {
+function simulatorProjectionIds(ids) {
+  requireApple(Array.isArray(ids) && ids.length === APPLE_REQUIREMENTS.targets.filter((target) => target.role !== "mac").length &&
+    ids.every(appleDeviceId) && new Set(ids).size === ids.length,
+  "A scoped inventory requires every unique local simulator ID.", "artifact-changed");
+  return [...ids].sort();
+}
+
+function projectSimulatorInventory(value, simulatorIds) {
   appleDevices(value);
-  const result = { devices: Object.fromEntries(Object.entries(value.devices).map(([runtime, devices]) => [runtime,
-    devices.map((device) => fields(device, ["udid", "name", "state", "deviceTypeIdentifier"]))])) };
+  const devices = Object.entries(value.devices).map(([runtime, devices]) => [runtime,
+    devices.filter((device) => simulatorIds === undefined || simulatorIds.includes(device.udid))
+      .map((device) => fields(device, ["udid", "name", "state", "deviceTypeIdentifier"]))]);
+  const result = { devices: Object.fromEntries(devices.filter(([, items]) => simulatorIds === undefined || items.length > 0)) };
   if (Object.hasOwn(value, "runtimes") || Object.hasOwn(value, "devicetypes")) {
     requireApple(Array.isArray(value.runtimes) && Array.isArray(value.devicetypes), "Incomplete simulator inventory.", "preflight-sdk");
     const names = APPLE_REQUIREMENTS.targets.map((target) => target.deviceTypeName).filter(Boolean);
@@ -105,8 +183,9 @@ export function projectAppleXcresult(kind, value) {
   return { ...fields(value, ["devices"]), testNodes: value.testNodes.map((value) => node(value)) };
 }
 
-export function projectAppleCommandOutput(command, stdout, stderr) {
+export function projectAppleCommandOutput(command, stdout, stderr, simulatorIds) {
   const result = { version: 1, kind: "logs", stdoutSha256: appleDigest(stdout), stderrSha256: appleDigest(stderr) };
+  if (command.status === "failed") return result;
   const { file, args } = command;
   if (file === "/usr/bin/xcrun" && args[0] === "xcodebuild" && args.at(-1) === "build") {
     result.kind = "build";
@@ -120,7 +199,13 @@ export function projectAppleCommandOutput(command, stdout, stderr) {
   } else if (file === "/usr/bin/xcrun" && equal(args.slice(0, 2), ["simctl", "list"])) {
     result.kind = "simulators";
     const inventory = JSON.parse(stdout);
-    result.data = projectSimulatorInventory(args[2] === "devices" ? { devices: inventory.devices } : inventory);
+    if (simulatorIds !== undefined) {
+      requireApple(command.origin === "local-xcodebuild",
+        "Only local command evidence may scope simulator observations.", "execution-origin");
+      result.version = 2;
+      result.simulatorIds = simulatorProjectionIds(simulatorIds);
+    }
+    result.data = projectSimulatorInventory(args[2] === "devices" ? { devices: inventory.devices } : inventory, result.simulatorIds);
   } else if (file === "/usr/bin/xcrun" && equal(args.slice(0, 3), ["xcresulttool", "get", "test-results"])) {
     requireApple(["summary", "tests"].includes(args[3]), "Unknown xcresult projection.", "case-evidence");
     result.kind = `xcresult-${args[3]}`;
@@ -140,10 +225,15 @@ export function projectAppleCommandOutput(command, stdout, stderr) {
 
 function commandProjection(command, kind) {
   const value = command.output;
-  requireApple(value?.version === 1 && value.kind === kind &&
+  const scoped = Object.hasOwn(value ?? {}, "simulatorIds");
+  requireApple(value?.version === (scoped ? 2 : 1) && value.kind === kind &&
     value.stdoutSha256 === command.stdout.sha256 && value.stderrSha256 === command.stderr.sha256 &&
-    Object.keys(value).every((key) => ["version", "kind", "stdoutSha256", "stderrSha256", "data", "dataSha256"].includes(key)),
+    Object.keys(value).every((key) => ["version", "kind", "stdoutSha256", "stderrSha256", "data", "dataSha256",
+      ...(scoped ? ["simulatorIds"] : [])].includes(key)),
   "Apple output projection is not bound to its original logs.", "artifact-changed");
+  if (scoped) requireApple(kind === "simulators" && command.origin === "local-xcodebuild" &&
+    equal(value.simulatorIds, simulatorProjectionIds(value.simulatorIds)),
+  "Simulator observation scope is invalid.", "artifact-changed");
   if (kind === "logs") {
     requireApple(!Object.hasOwn(value, "data") && !Object.hasOwn(value, "dataSha256"),
       "Verbose command logs must remain separate artifacts.", "artifact-changed");
@@ -156,7 +246,7 @@ function commandProjection(command, kind) {
     if (kind === "text") requireApple(typeof value.data === "string" && Buffer.byteLength(value.data) <= 8192 &&
       Buffer.byteLength(value.data) === command.stdout.bytes && appleDigest(value.data) === command.stdout.sha256,
     "Apple probe text differs from its original output.", "artifact-changed");
-    if (kind === "simulators") requireApple(equal(value.data, projectSimulatorInventory(value.data)),
+    if (kind === "simulators") requireApple(equal(value.data, projectSimulatorInventory(value.data, value.simulatorIds)),
       "Simulator projection contains unvalidated data.", "artifact-changed");
   }
   return value;
@@ -302,38 +392,56 @@ export function inspectAppleScheme(xml) {
   return targets;
 }
 
-export function appleXcodeArguments({ workspace, directory, action, platform, destination, testDiagnostics }) {
-  requireApple(["build", "test"].includes(action) && ["ios", "macos"].includes(platform) &&
+export function appleXcodeArguments({ workspace, directory, action, platform, destination, testDiagnostics, selectedTests, selectedTargets, derivedDataDirectory }) {
+  requireApple(["build", "build-for-testing", "test"].includes(action) && ["ios", "macos"].includes(platform) &&
     text(destination) && relative(directory) &&
-    (testDiagnostics === undefined || action === "test" && testDiagnostics === "never"),
+    (testDiagnostics === undefined || action === "test" && testDiagnostics === "never") &&
+    (selectedTests === undefined || action === "test") &&
+    (selectedTargets === undefined || action === "test" && selectedTests === undefined &&
+      Array.isArray(selectedTargets) && selectedTargets.length > 0 && new Set(selectedTargets).size === selectedTargets.length &&
+      selectedTargets.every((target) => typeof target === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(target))) &&
+    (derivedDataDirectory === undefined || action === "test" && relative(derivedDataDirectory)),
   "Invalid Apple build/test arguments.", "configuration");
   return ["xcodebuild", "-project", path.posix.join(workspace, APPLE_REQUIREMENTS.project),
     "-scheme", APPLE_REQUIREMENTS.scheme, "-configuration", "Debug",
     "-sdk", platform === "ios" ? "iphonesimulator" : "macosx",
     "-destination", destination, "-destination-timeout", "120",
-    "-derivedDataPath", path.posix.join(workspace, directory, "derived"),
+    "-derivedDataPath", path.posix.join(workspace, derivedDataDirectory ?? `${directory}/derived`),
     "-resultBundlePath", path.posix.join(workspace, directory, "result.xcresult"),
     "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile", "-skipPackageUpdates",
     ...(action === "test" ? ["-parallel-testing-enabled", "NO", "-test-timeouts-enabled", "YES",
       "-default-test-execution-time-allowance", "120", "-maximum-test-execution-time-allowance", "300"] : []),
     ...(testDiagnostics === "never" ? ["-collect-test-diagnostics", "never"] : []),
+    ...(selectedTests === undefined ? [] : appleTestSelection(selectedTests)
+      .map((test) => `-only-testing:${test.targetName}/${test.testIdentifier}`)),
+    ...(selectedTargets === undefined ? [] : [...selectedTargets].sort().map((target) => `-only-testing:${target}`)),
     "CODE_SIGN_IDENTITY=-", "CODE_SIGNING_REQUIRED=YES", "DEVELOPMENT_TEAM=", action];
 }
 
-export function appleEnumerationArguments(workspace, directory, target) {
-  requireApple(relative(directory) && text(workspace) && workspace.startsWith("/") &&
+export function appleEnumerationArguments(workspace, directory, target, macByArchitecture = false) {
+  const architectureTarget = macByArchitecture === true && target?.role === "mac" &&
+    target.deviceId === undefined && ["arm64", "x86_64"].includes(target.architecture);
+  requireApple(typeof macByArchitecture === "boolean" && relative(directory) && text(workspace) && workspace.startsWith("/") &&
     APPLE_REQUIREMENTS.targets.some((item) => item.role === target?.role && item.platform === target.platform) &&
-    /^[A-Za-z0-9-]{1,128}$/.test(target.deviceId ?? ""),
+    (architectureTarget || /^[A-Za-z0-9-]{1,128}$/.test(target.deviceId ?? "")),
   "A catalogue requires an exact Apple destination.", "configuration");
   return ["xcodebuild", "-project", path.posix.join(workspace, APPLE_REQUIREMENTS.project),
     "-scheme", APPLE_REQUIREMENTS.scheme, "-configuration", "Debug",
     "-sdk", target.role === "mac" ? "macosx" : "iphonesimulator",
-    "-destination", `platform=${target.platform},id=${target.deviceId}`,
+    "-destination", architectureTarget ? `platform=macOS,arch=${target.architecture}` : `platform=${target.platform},id=${target.deviceId}`,
     "-derivedDataPath", path.posix.join(workspace, directory, "derived"),
     "-disableAutomaticPackageResolution", "-onlyUsePackageVersionsFromResolvedFile", "-skipPackageUpdates",
     "-parallel-testing-enabled", "NO", "-enumerate-tests", "-test-enumeration-style", "flat",
     "-test-enumeration-format", "json", "-test-enumeration-output-path", path.posix.join(workspace, directory, "enumeration.json"),
     "CODE_SIGN_IDENTITY=-", "CODE_SIGNING_REQUIRED=YES", "DEVELOPMENT_TEAM=", "test"];
+}
+
+export function appleCIEnumerationArguments(workspace, directory, target, role, schemeTargets) {
+  requireApple(target?.role === role, "The hosted catalogue role differs from its destination.", "configuration");
+  const targets = appleCITestTargets(role, schemeTargets);
+  const args = appleEnumerationArguments(workspace, directory, target, role === "mac");
+  if (role !== "mac") args.splice(-1, 0, ...targets.sort().map((name) => `-only-testing:${name}`));
+  return args;
 }
 
 const testKey = (item) => `${item.targetName}/${item.testIdentifier}`;
@@ -349,6 +457,12 @@ export function appleTestSelection(tests) {
 }
 
 export function normalizeAppleTestCatalog(data, targets) {
+  requireApple(Array.isArray(targets) && targets.length >= 2,
+    "A full native catalogue requires the model and UI scheme targets.", "discovery");
+  return normalizeAppleCatalog(data, targets);
+}
+
+function normalizeAppleCatalog(data, targets) {
   const value = data?.values?.[0];
   requireApple(Array.isArray(data?.errors) && data.errors.length === 0 &&
     Array.isArray(data.values) && data.values.length === 1 && text(value?.testPlan) &&
@@ -362,7 +476,7 @@ export function normalizeAppleTestCatalog(data, targets) {
     const slash = item.identifier.indexOf("/");
     return { targetName: item.identifier.slice(0, slash), testIdentifier: item.identifier.slice(slash + 1) };
   }));
-  requireApple(Array.isArray(targets) && targets.length >= 2 &&
+  requireApple(Array.isArray(targets) && targets.length > 0 &&
     targets.every((target) => tests.some((item) => item.targetName === target)) &&
     tests.every((item) => targets.includes(item.targetName)),
   "The native catalogue must cover exactly the enabled scheme targets.", "discovery");
@@ -432,6 +546,14 @@ export function normalizeAppleTestResult(summary, tests, target, execution, requ
   return nativeTestResult(summary, tests, target, execution, requiredTargets);
 }
 
+export function normalizeAppleCITestResult(summary, tests, target, execution, targets, role) {
+  const required = appleCITestTargets(role, targets);
+  const result = nativeTestResult(summary, tests, target, execution, required);
+  requireApple(result.cases.every((item) => required.includes(item.target)),
+    "Hosted execution included an undeclared runtime target.", "case-evidence");
+  return result;
+}
+
 export function normalizeAppleBatchResult(summary, tests, target, execution, selected) {
   selected = appleTestSelection(selected);
   const result = nativeTestResult(summary, tests, target, execution, [...new Set(selected.map((item) => item.targetName))]);
@@ -491,6 +613,7 @@ function copiedTreeReference(value, expectedPath, original) {
 
 function sharedAppleOutcomes(evidence) {
   const toolchain = evidence.toolchain;
+  const requiredTargets = APPLE_REQUIREMENTS.targets.filter((target) => !evidence.ciRole || target.role === evidence.ciRole);
   requireApple(toolchain && text(toolchain.xcode?.build) && text(toolchain.xcode?.executable) &&
     text(toolchain.swift?.version) && ["arm64", "x86_64"].includes(toolchain.architecture),
   "Native Apple toolchain identity is incomplete.", "preflight-version");
@@ -506,7 +629,7 @@ function sharedAppleOutcomes(evidence) {
   "The shared scheme evidence is incomplete.", "case-evidence");
   requireApple(Array.isArray(toolchain.simulators) && toolchain.simulators.length === 3 &&
     Array.isArray(evidence.builds) && evidence.builds.length === 2 &&
-    Array.isArray(evidence.tests) && evidence.tests.length === 4,
+    Array.isArray(evidence.tests) && evidence.tests.length === requiredTargets.length,
   "Required Apple native outcomes are missing.", "shard-missing");
   const ids = new Set(), resultPaths = new Set(), originalPaths = new Set();
   const invocation = (item, action, tool = action === "build" ? "BuildProject" : "RunAllTests") => {
@@ -538,7 +661,7 @@ function sharedAppleOutcomes(evidence) {
       ? ["Info.plist", "DevPocket"] : ["Contents/Info.plist", "Contents/MacOS/DevPocket"]);
   }
   const deviceIds = new Set();
-  for (const requirement of APPLE_REQUIREMENTS.targets) {
+  for (const requirement of requiredTargets) {
     const matches = evidence.tests.filter((item) => item.role === requirement.role);
     requireApple(matches.length === 1, "A native Apple role is missing or duplicated.", "shard-missing");
     const item = matches[0], target = item.target;
@@ -570,7 +693,9 @@ function sharedAppleOutcomes(evidence) {
         evidence.origin === "ci-xcodebuild" || evidence.origin === "local-xcodebuild");
       const result = selected
         ? normalizeAppleBatchResult(test.summary, test.testTree, target, test.execution, selected)
-        : normalizeAppleTestResult(test.summary, test.testTree, target, test.execution, evidence.scheme.targets);
+        : evidence.ciRole
+          ? normalizeAppleCITestResult(test.summary, test.testTree, target, test.execution, evidence.scheme.targets, evidence.ciRole)
+          : normalizeAppleTestResult(test.summary, test.testTree, target, test.execution, evidence.scheme.targets);
       requireApple(equal(test.result, result), "Native results differ from their xcresult projections.", "case-evidence");
     };
     if (item.mode === "batches") {
@@ -602,7 +727,7 @@ function sharedAppleOutcomes(evidence) {
         "Batches must cover the entire native catalogue exactly once; retries cannot hide a prior failure.", "case-evidence");
     } else {
       requireApple(item.mode === undefined && !item.batches &&
-        (evidence.origin === "local-xcodebuild" ? Boolean(item.catalog) : !item.catalog),
+        (evidence.origin === "local-xcodebuild" || evidence.ciRole ? Boolean(item.catalog) : !item.catalog),
         "Unknown Apple test execution mode.", "execution-origin");
       outcome(item);
     }
@@ -654,8 +779,25 @@ export function validateAppleBatchCatalog(catalog, evidence, target) {
  */
 export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci-xcodebuild") {
   validateApplePlan(plan);
-  requireApple(evidence?.version === 1 && evidence.kind === "apple-native-evidence" &&
+  if (evidence?.kind === "apple-native-matrix") {
+    requireApple(expectedOrigin === "ci-xcodebuild" && evidence.version === 2 &&
+      Array.isArray(evidence.parts) && evidence.parts.every((part) =>
+        part?.kind === "apple-native-evidence" && part.version === 3 && APPLE_CI_ROLES.includes(part.ciRole)),
+    "A hosted matrix requires its original role-scoped invocations.", "execution-origin");
+    requireApple(equal(evidence, combineAppleCIEvidence(plan, evidence.parts)),
+      "The Apple matrix or deferred native requirement changed.", "case-evidence");
+    return evidence;
+  }
+  const ciRole = evidence?.version === 3 ? evidence.ciRole : undefined;
+  requireApple((evidence?.version === 1 && evidence.ciRole === undefined ||
+    evidence?.version === 3 && expectedOrigin === "ci-xcodebuild" && APPLE_CI_ROLES.includes(ciRole)) &&
+    evidence.kind === "apple-native-evidence" &&
     evidence.origin === expectedOrigin, "Apple evidence has the wrong version or execution origin.", "execution-origin");
+  if (ciRole) requireApple(evidence.nativeAcceptanceRequired === true &&
+    evidence.catalogScope === (ciRole === "mac" ? "full-scheme" : "runtime-targets") &&
+    equal(evidence.deferredTests, appleCIDeferredTests(ciRole)) &&
+    equal(evidence.deferredTargets, appleCIDeferredTargets(ciRole)),
+  "Hosted CI must preserve its separately required complete native runtime coverage.", "case-evidence");
   requireApple(["ci-xcodebuild", "local-xcode-mcp", "local-xcodebuild"].includes(expectedOrigin),
     "Unknown Apple evidence origin.", "execution-origin");
   requireApple(Buffer.byteLength(appleJSON(evidence)) <= APPLE_NATIVE_REPORT_MAX_BYTES,
@@ -713,6 +855,10 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
       ...(local ? ["product-info"] : [])].includes(command.output?.kind),
       "Unknown Apple command projection.", "artifact-changed");
     commandProjection(command, command.output.kind);
+    if (command.output.version === 2) requireApple(local &&
+      equal(command.output.simulatorIds, evidence.local.targets.filter((target) => target.role !== "mac")
+        .map((target) => target.deviceId).sort()),
+    "Simulator observations do not cover the exact local plan targets.", "device-evidence");
   }
   const command = (id, file, args) => {
     const value = commands.get(id);
@@ -743,7 +889,8 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
   "Apple renderer preparation was not executed after preflight.", "execution-origin");
   const inventory = JSON.parse(outputs.simulators), baseline = appleDevices(inventory);
   const nativeTargets = local ? localTargets
-    : [{ role: "mac", platform: "macOS", osVersion: toolchain.macOS, architecture: toolchain.architecture }];
+    : !ciRole || ciRole === "mac"
+      ? [{ role: "mac", platform: "macOS", osVersion: toolchain.macOS, architecture: toolchain.architecture }] : [];
   let cleanupBefore, cleanupAfter;
   if (local) {
     requireApple(Array.isArray(evidence.resources) && evidence.resources.length === 0 &&
@@ -753,14 +900,20 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
     requireApple(equal(selectAppleLocalTargets(commandProjection(cleanupAfter, "simulators").data,
       baselineToolchain, localTargets, true), localTargets), "Local target identity changed after execution.", "device-evidence");
   } else {
-    requireApple(Array.isArray(evidence.resources) && evidence.resources.length === 3 &&
-      new Set(evidence.resources.map((item) => item.deviceId)).size === 3,
+    const simulatorTargets = toolchain.simulators.filter((target) => !ciRole || target.role === ciRole);
+    requireApple(Array.isArray(evidence.resources) && evidence.resources.length === simulatorTargets.length &&
+      new Set(evidence.resources.map((item) => item.deviceId)).size === simulatorTargets.length,
     "The owned simulator set is incomplete.", "ownership-mismatch");
-    cleanupBefore = command(evidence.cleanupEvidence?.beforeCommandId, "/usr/bin/xcrun", ["simctl", "list", "devices", "--json"]);
-    cleanupAfter = command(evidence.cleanupEvidence?.afterCommandId, "/usr/bin/xcrun", ["simctl", "list", "devices", "--json"]);
-    const beforeDevices = appleDevices(commandProjection(cleanupBefore, "simulators").data);
-    const remaining = appleDevices(commandProjection(cleanupAfter, "simulators").data);
-    for (const selection of toolchain.simulators) {
+    if (ciRole === "mac") {
+      requireApple(evidence.cleanupEvidence?.beforeCommandId === null && evidence.cleanupEvidence.afterCommandId === null,
+        "A Mac-only role does not own a simulator lifecycle.", "ownership-mismatch");
+    } else {
+      cleanupBefore = command(evidence.cleanupEvidence?.beforeCommandId, "/usr/bin/xcrun", ["simctl", "list", "devices", "--json"]);
+      cleanupAfter = command(evidence.cleanupEvidence?.afterCommandId, "/usr/bin/xcrun", ["simctl", "list", "devices", "--json"]);
+    }
+    const beforeDevices = cleanupBefore ? appleDevices(commandProjection(cleanupBefore, "simulators").data) : [];
+    const remaining = cleanupAfter ? appleDevices(commandProjection(cleanupAfter, "simulators").data) : [];
+    for (const selection of simulatorTargets) {
       const matching = evidence.resources.filter((item) => item.role === selection.role);
       requireApple(matching.length === 1, "A simulator role is missing or duplicated.", "ownership-mismatch");
       const resource = matching[0], name = `DevPocket-${evidence.runId}-${selection.role}`;
@@ -791,14 +944,20 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
     }
   }
   requireApple(Array.isArray(evidence.builds) && evidence.builds.length === 2 &&
-    Array.isArray(evidence.tests) && evidence.tests.length === 4, "Required Apple builds or targets are missing.", "shard-missing");
+    Array.isArray(evidence.tests) && evidence.tests.length === (ciRole ? 1 : 4),
+  "Required Apple builds or targets are missing.", "shard-missing");
   const nativeCommands = new Set(), resultPaths = new Set();
   const execution = (item, action, platform, destination, label) => {
     requireApple(item?.status === "passed", "An Apple build or test was not completed.", "check-failed");
     const directory = `${evidence.directory}/${label}`;
     const value = command(item.commandId, "/usr/bin/xcrun",
       appleXcodeArguments({ workspace: evidence.workspace, directory, action, platform, destination,
-        ...(local && action === "test" ? { testDiagnostics: "never" } : {}) }));
+        ...(local && action === "test" ? { testDiagnostics: "never" } : {}),
+        ...(ciRole && action === "test" ? { derivedDataDirectory: `${directory}/catalog/derived` } : {}),
+        ...(ciRole && ciRole !== "mac" && action === "test"
+          ? { selectedTargets: appleCITestTargets(ciRole, evidence.scheme.targets) } : {}),
+        ...(ciRole === "mac" && action === "test"
+          ? { selectedTests: appleCITestSelection(item.catalog?.data, evidence.scheme.targets, ciRole).tests } : {}) }));
     requireApple(!nativeCommands.has(value.id) && value.startedAt >= preparation.completedAt &&
       item.execution.startedAt === value.startedAt && item.execution.completedAt === value.completedAt,
       "A native invocation was reused or preceded preparation.", "execution-origin");
@@ -871,39 +1030,62 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
       const read = command(item[`${kind}CommandId`], "/usr/bin/xcrun",
         ["xcresulttool", "get", "test-results", kind, "--path", bundle, "--compact"]);
       requireApple(read.startedAt >= value.completedAt, "xcresult was read before its test invocation completed.", "execution-origin");
+      if (ciRole && !mac) requireApple(read.startedAt >= cleanupAfter.completedAt,
+        "Mobile hosted result export must follow confirmed simulator cleanup.", "execution-origin");
       const data = kind === "summary" ? item.summary : item.testTree;
       requireApple(equal(data, projectAppleXcresult(kind, data)) &&
         commandProjection(read, `xcresult-${kind}`).dataSha256 === appleDigest(appleJSON(data)),
       "The xcresult projection differs from its original export.", "artifact-changed");
       return data;
     });
-    if (local) {
+    if (local || ciRole) {
       const catalog = item.catalog, catalogDirectory = `${directory}/catalog`;
+      const catalogTarget = ciRole === "mac" ? { ...target, deviceId: undefined } : target;
       const discovered = command(item.catalogCommandId, "/usr/bin/xcrun",
-        appleEnumerationArguments(evidence.workspace, catalogDirectory, target));
+        ciRole ? appleCIEnumerationArguments(evidence.workspace, catalogDirectory, catalogTarget, ciRole, evidence.scheme.targets)
+          : appleEnumerationArguments(evidence.workspace, catalogDirectory, catalogTarget));
+      if (ciRole) {
+        const built = command(item.buildForTestingCommandId, "/usr/bin/xcrun",
+          appleXcodeArguments({ workspace: evidence.workspace, directory: catalogDirectory, action: "build-for-testing",
+            platform: mac ? "macos" : "ios",
+            destination: mac ? `platform=macOS,arch=${toolchain.architecture}` : "generic/platform=iOS Simulator" }));
+        requireApple(built.startedAt >= evidence.builds.map((build) => commands.get(build.commandId).completedAt).sort().at(-1) &&
+          built.completedAt <= discovered.startedAt &&
+          (mac || built.completedAt <= commands.get(evidence.resources.find((entry) => entry.role === target.role).createCommandId).startedAt),
+        "CI test products must be prepared after normal builds and before simulator startup/discovery.", "execution-origin");
+      }
       fileReference(catalog, evidence.directory);
       requireApple(catalog.path === `${catalogDirectory}/enumeration.json` &&
-        discovered.startedAt >= preparation.completedAt && discovered.completedAt <= value.startedAt,
-      "The full command requires its own fresh, unfiltered native catalogue.", "discovery");
-      for (const [id, followedBy] of [[item.beforeCatalogCommandId, discovered], [item.beforeTestCommandId, value]]) {
+        discovered.startedAt >= preparation.completedAt &&
+        (local || ciRole === "mac" ? discovered.completedAt <= value.startedAt
+          : discovered.startedAt >= value.completedAt && discovered.completedAt <= cleanupBefore.startedAt),
+      "The native command requires its own fresh catalogue for its declared scope.", "discovery");
+      for (const [id, followedBy] of local
+        ? [[item.beforeCatalogCommandId, discovered], [item.beforeTestCommandId, value]] : []) {
         const check = command(id, "/usr/bin/xcrun", ["simctl", "list", "--json"]);
         requireApple(check.startedAt >= preparation.completedAt && check.completedAt <= followedBy.startedAt &&
           equal(selectAppleLocalTargets(commandProjection(check, "simulators").data, baselineToolchain, localTargets, true), localTargets),
         "The exact targets must already be booted before catalogue/test execution.", "device-evidence");
       }
-      const expected = normalizeAppleTestCatalog(catalog.data, evidence.scheme.targets);
-      const actual = normalizeAppleTestResult(exports[0], exports[1], target, value, evidence.scheme.targets);
+      const expected = ciRole ? appleCITestSelection(catalog.data, evidence.scheme.targets, ciRole).tests
+        : normalizeAppleTestCatalog(catalog.data, evidence.scheme.targets);
+      const actual = ciRole
+        ? normalizeAppleCITestResult(exports[0], exports[1], target, value, evidence.scheme.targets, ciRole)
+        : normalizeAppleTestResult(exports[0], exports[1], target, value, evidence.scheme.targets);
       requireApple(equal(expected, appleTestSelection(actual.cases.map((test) =>
         ({ targetName: test.target, testIdentifier: test.identifier })))),
       "The native command did not execute the entire fresh catalogue.", "case-evidence");
     }
-    const result = normalizeAppleTestResult(exports[0], exports[1], target, value, evidence.scheme.targets);
+    const result = ciRole
+      ? normalizeAppleCITestResult(exports[0], exports[1], target, value, evidence.scheme.targets, ciRole)
+      : normalizeAppleTestResult(exports[0], exports[1], target, value, evidence.scheme.targets);
     requireApple(equal(item.summary, exports[0]) && equal(item.testTree, exports[1]) && equal(item.result, result),
       "The normalized native result differs from actual xcresult data.", "case-evidence");
-    requireApple(local ? cleanupAfter.startedAt >= value.completedAt
-      : cleanupBefore.startedAt >= value.completedAt && cleanupAfter.startedAt >= cleanupBefore.completedAt,
+    requireApple(ciRole === "mac" || (local ? cleanupAfter.startedAt >= value.completedAt
+      : cleanupBefore.startedAt >= value.completedAt && cleanupAfter.startedAt >= cleanupBefore.completedAt),
       "Cleanup evidence predates native execution.", "execution-origin");
   }
-  if (local) requireApple(consumed.size === commands.size, "Local command evidence contains an unrequested invocation.", "execution-origin");
+  if (local || ciRole) requireApple(consumed.size === commands.size,
+    "Command evidence contains an unrequested invocation.", "execution-origin");
   return evidence;
 }

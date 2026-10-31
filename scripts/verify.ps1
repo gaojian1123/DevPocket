@@ -9,6 +9,7 @@ param(
     [string]$Promote,
     [string]$CandidateRequest,
     [string]$ToolingShard,
+    [ValidateSet('mac', 'iphone', 'ipad', 'duo')][string]$AppleRole,
     [ValidateSet('all', 'tooling', 'backend', 'android', 'device', 'apple')][string]$Group = 'all',
     [string]$Jdk = $env:DEVPOCKET_JDK,
     [string]$Sdk = $env:DEVPOCKET_ANDROID_SDK,
@@ -31,6 +32,7 @@ if ($CaptureRefinementContext) { $arguments += '--capture-refinement-context' }
 if ($Promote) { $arguments += @('--promote', $Promote) }
 if ($CandidateRequest) { $arguments += @('--candidate-request', $CandidateRequest) }
 if ($ToolingShard) { $arguments += @('--tooling-shard', $ToolingShard) }
+if ($PSBoundParameters.ContainsKey('AppleRole')) { $arguments += @('--apple-role', $AppleRole) }
 if ($Jdk -and -not ($Refinement -or $AppleRequest)) { $arguments += @('--jdk', $Jdk) }
 if ($Sdk -and -not ($Refinement -or $AppleRequest)) { $arguments += @('--sdk', $Sdk) }
 if ($Image -and -not ($Refinement -or $AppleRequest)) { $arguments += @('--image', $Image) }

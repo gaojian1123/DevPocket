@@ -18,6 +18,7 @@ export async function appleVerification(root, check, plan, options) {
     const planFile = path.join(options.directory, "apple-plan.json");
     await writeFile(planFile, JSON.stringify(plan) + "\n", { flag: "wx", mode: 0o600 });
     args = [path.join(root, "scripts", "apple-runner.mjs"), "--repo", root, "--plan", planFile, "--directory", directory];
+    if (check.appleShard) args.push("--role", check.appleShard.role);
     reportFile = path.join(directory, "apple-report.json");
   } else {
     reportFile = path.join(directory, "apple-local-report.json");
@@ -33,6 +34,7 @@ export async function appleVerification(root, check, plan, options) {
       try {
         if (!ci && !["local-xcode-mcp", "local-xcodebuild"].includes(evidence.origin)) throw verificationFault("execution-origin");
         validateAppleNativeEvidence(evidence, plan, ci ? "ci-xcodebuild" : evidence.origin);
+        if (check.appleShard && evidence.ciRole !== check.appleShard.role) throw verificationFault("apple-evidence");
       }
       catch (error) { throw verificationFault("apple-evidence", { check: check.id }, error); }
       check.appleEvidence = evidence;

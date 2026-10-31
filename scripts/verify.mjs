@@ -3,7 +3,7 @@ import { lstat, mkdir, open } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { executeVerification, validateVerificationEvidence, verificationPlan, verificationFailure, verificationFault,
-  requirePlanCollection, requireVerificationReportPath } from "./verification.mjs";
+  requirePlanCollection, requireVerificationReportPath, serializeVerificationReport } from "./verification.mjs";
 import { readDiagnosticReport } from "./worker-diagnostics.mjs";
 import { CHECK_GROUPS, VERIFICATION_REPORT_VERSION } from "./verification-policy.mjs";
 
@@ -18,6 +18,7 @@ async function main() {
     all: { type: "boolean", default: false },
     group: { type: "string", default: "all" },
     "tooling-shard": { type: "string" },
+    "apple-role": { type: "string" },
     resume: { type: "string" },
     refinement: { type: "string" },
     "apple-request": { type: "string" },
@@ -71,6 +72,7 @@ async function main() {
       if (values.refinement || values["apple-request"]) {
         if (values.refinement && values["apple-request"] || values["apple-evidence"]) throw verificationFault("configuration");
         if (values.plan || values.all || values["capture-refinement-context"] || values.group !== "all" || values["tooling-shard"] ||
+            values["apple-role"] !== undefined ||
             values.resume || values.promote || values["candidate-request"] || values["candidate-evidence"] ||
             values.combine || values.input.length || values.upstream.length || values["backend-diagnostics"] ||
             values.jdk || values.sdk || values.image) throw verificationFault("configuration");
@@ -90,6 +92,10 @@ async function main() {
         }
         if (!["all", ...CHECK_GROUPS].includes(values.group)) throw verificationFault("configuration");
         if (values["tooling-shard"] && (values.group !== "tooling" || values.plan || values.combine || values.promote)) {
+          throw verificationFault("configuration");
+        }
+        if (values["apple-role"] !== undefined && (values.group !== "apple" || values.plan || values.combine ||
+            values.promote || values.resume || values["apple-evidence"] || process.env.GITHUB_ACTIONS !== "true")) {
           throw verificationFault("configuration");
         }
         if (values.plan && values.combine || values.resume && (values.plan || values.combine || values.input.length)) {
@@ -127,6 +133,7 @@ async function main() {
           report = values.plan ? { ...plan, status: "planned", complete: false, checks: [] }
             : await executeVerification(root, plan, { ...values, backendDiagnostics: values["backend-diagnostics"],
               toolingShard: values["tooling-shard"],
+              appleRole: values["apple-role"],
               captureRefinementContext: values["capture-refinement-context"],
               appleEvidence: values["apple-evidence"],
               candidateRequest: values["candidate-request"],
@@ -146,8 +153,7 @@ async function main() {
       process.exitCode = 1;
     }
     try {
-      const bytes = JSON.stringify(report, null, 2) + "\n";
-      if (Buffer.byteLength(bytes) > 512 * 1024) throw verificationFault("output-limit");
+      const bytes = serializeVerificationReport(report);
       await output.truncate(0);
       await output.writeFile(bytes);
       await output.sync();

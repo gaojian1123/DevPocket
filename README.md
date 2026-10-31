@@ -316,7 +316,7 @@ component data; it does not add fields to the component transport.
 Reader range and chart/data controls change only local viewing state, preserving
 the original card and its payload when closing, reopening or resizing the reader.
 
-On a Mac with Xcode 27.1, Node 26.12.1+ and npm 12.2.1:
+On a Mac with Xcode 27.2, Node 26.12.1+ and npm 12.2.1:
 
 ```sh
 npm ci --registry=https://packagefeedproxy.microsoft.io/npm/
@@ -367,8 +367,10 @@ has one Close action, and local chart/table viewing state survives resizing.
 Closing restores the conversation's reading anchor and draft. This is not
 physical folding, touch, performance or every device/window configuration acceptance.
 The installed simulator runtime must actually support the chosen device.
-Use an eligible iOS 27.0 runtime for ordinary iPhone/iPad and iOS 27.1 for Duo;
-each result must retain its actual device and runtime identity.
+Local and hosted acceptance use iOS/iPadOS 27.2 for iPhone, iPad and Duo.
+The standard and Duo-specific 27.2 runtimes must support their exact device types;
+each result retains its actual device, runtime and build identity. This acceptance
+target does not raise the app's minimum deployment versions or relabel older results.
 
 On macOS the App Sandbox outgoing-network capability is needed by the observed
 WebKit helper startup path, even for offline resources. It permits the **whole Mac
@@ -392,6 +394,17 @@ results and platform gaps; a successful build or a skipped/unrun UI test is not
 acceptance. Use the source-selected Apple platform gate with the actual
 native qualification request passed through `-AppleEvidence`. Shared changes in
 the fixed-base cumulative diff still retain their affected-platform checks.
+Hosted CI runs Mac, iPhone and iPad as independent roles and retains normal builds,
+full test compilation, iPhone/iPad model/WK/security tests and supported Mac
+functional/UI checks. Duo execution is explicitly deferred to the same-candidate
+complete local native matrix, including its model/WK and UI tests.
+Hosted mobile catalogues enumerate exactly the complete model/WK targets that execute
+online, without launching a deferred UI runner just for discovery. Complete mobile
+UI catalogues and interaction tests, plus the separate Mac chart-pixel assertion,
+remain part of same-candidate complete native acceptance, not deleted tests or
+hosted passes. Catalogue scope and deferred roles/targets/cases are explicit in CI evidence.
+Follow the [hosted Apple coverage contract](docs/DEVELOPMENT-WORKFLOW.md#hosted-apple-ci)
+before treating a green CI matrix as ready for delivery.
 
 Local Mac UI automation needs an unlocked, interactive desktop. It keeps the
 user's input source: the input helper sends the first real key, waits for the
@@ -1016,6 +1029,10 @@ ordinary documentation changes do not start the Mac job. This is targeted host
 coverage, not a second complete Android gate: emulator instrumentation and
 layouts remain on Ubuntu/KVM, and the local macOS HVF path still needs Mac
 hardware acceptance.
+
+The Apple acceptance-contract regressions use separate Node test files for
+batch/command, presentation, checkpoint/context and native-result evidence. All cases remain
+in the native shard; each file keeps serial tests and its own isolated process.
 
 The macOS command owner uses kernel responsibility scopes and PID-version-bound
 signals, including nested command ownership; missing native APIs fail closed.

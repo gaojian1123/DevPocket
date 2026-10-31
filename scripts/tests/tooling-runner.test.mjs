@@ -5,7 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
-import { TOOLING_TEST_FILES, TOOLING_TEST_SHARDS } from "../test-tooling.mjs";
+import { TOOLING_TEST_FILES, TOOLING_TEST_SHARDS, toolingProgressRecord } from "../test-tooling.mjs";
 
 const exec = promisify(execFile);
 
@@ -31,11 +31,78 @@ async function run(item, args) {
   }
 }
 
+test("public tooling progress contains source locations, not dynamic names or failure contents", () => {
+  const root = path.resolve(".data/tests/progress-source");
+  const file = TOOLING_TEST_FILES[0];
+  const value = toolingProgressRecord({ type: "test:fail", data: {
+    file: path.join(root, file), line: 42, column: 3,
+    name: "PRIVATE_DYNAMIC_TEST_NAME", details: { error: "PRIVATE_FAILURE_CONTENT" },
+  } }, root);
+  assert.deepEqual(value, { version: 1, kind: "tooling-progress", event: "test:fail", file, line: 42, column: 3 });
+  assert.equal(toolingProgressRecord({ type: "test:stdout", data: { file: path.join(root, file), message: "PRIVATE" } }, root), undefined);
+  assert.equal(toolingProgressRecord({ type: "test:start", data: { file: path.join(root, "../private.mjs") } }, root), undefined);
+  assert.equal(toolingProgressRecord(null, root), undefined);
+});
+
+test("the native test reporter retains bounded progress without changing case selection or failure exit", async (t) => {
+  const item = await fixture(t);
+  item.env.GITHUB_ACTIONS = "true";
+  for (const file of ["diagnostic-publication.mjs", "diagnostic-errors.mjs"]) {
+    await copyFile(path.join("scripts", file), path.join(item.root, "scripts", file));
+  }
+  const files = TOOLING_TEST_SHARDS.find((part) => part.id === "candidate").files;
+  for (const [index, file] of files.entries()) {
+    await writeFile(path.join(item.root, file), [
+      'import assert from "node:assert/strict";',
+      'import { test } from "node:test";',
+      `test("PRIVATE_NAME_${index}", () => {`,
+      '  console.log("PRIVATE_STDOUT");',
+      `  if (process.env.PROGRESS_FAILURE === "true" && ${index} === 0) assert.fail("PRIVATE_ERROR");`,
+      '});',
+    ].join("\n"));
+  }
+  for (const failing of [false, true]) {
+    item.env.PROGRESS_FAILURE = String(failing);
+    const destination = `.data/ci/progress-${failing}/tooling-progress.jsonl`;
+    const result = await run(item, [item.entry, "--tooling-shard", "candidate", "--progress", destination]);
+    assert.equal(result.code, failing ? 1 : 0, result.stdout + result.stderr);
+    const bytes = await readFile(path.join(item.root, destination), "utf8");
+    assert.doesNotMatch(bytes, /PRIVATE_NAME|PRIVATE_STDOUT|PRIVATE_ERROR/);
+    const events = bytes.trim().split("\n").map((line) => JSON.parse(line));
+    assert.ok(events.some((event) => event.event === "test:start"));
+    assert.ok(events.some((event) => event.event === (failing ? "test:fail" : "test:pass")));
+    assert.deepEqual([...new Set(events.map((event) => event.file))].sort(), [...files].sort());
+    assert.ok(events.every((event) => Object.keys(event).every((key) =>
+      ["version", "kind", "event", "file", "line", "column", "observedAt"].includes(key))));
+    const duplicate = await run(item, [item.entry, "--tooling-shard", "candidate", "--progress", destination]);
+    assert.ok(Number.isInteger(duplicate.code) && duplicate.code > 0, duplicate.stderr + duplicate.stdout);
+    assert.equal(duplicate.signal, null);
+    assert.equal(await readFile(path.join(item.root, destination), "utf8"), bytes);
+  }
+});
+
+test("tooling progress refuses local execution, missing arguments and unrelated output paths", async (t) => {
+  const item = await fixture(t);
+  for (const [hosted, args] of [
+    [false, ["--progress", ".data/ci/progress/tooling-progress.jsonl"]],
+    [true, ["--progress"]],
+    [true, ["--progress", "../outside/tooling-progress.jsonl"]],
+    [true, ["--progress", ".data/ci/progress/report.json"]],
+    [true, ["--progress", ".data/ci/progress/tooling-progress.jsonl", "--progress", ".data/ci/second/tooling-progress.jsonl"]],
+  ]) {
+    item.env.GITHUB_ACTIONS = String(hosted);
+    const result = await run(item, [item.entry, ...args]);
+    assert.equal(result.code, 1, result.stderr + result.stdout);
+    assert.equal(result.signal, null);
+  }
+});
+
 test("the dedicated tooling entry retains the complete explicit suite without directory discovery", async () => {
   const manifest = JSON.parse(await readFile("package.json", "utf8"));
   assert.equal(manifest.scripts["test:tooling"], "node scripts/test-tooling.mjs");
   assert.deepEqual(TOOLING_TEST_FILES, [
-    "verification", "verification-execution", "verification-refinement", "verification-diagnostics", "apple-selection", "apple-local", "apple-runner",
+    "verification", "verification-execution", "verification-refinement", "verification-refinement-context", "verification-refinement-evidence", "verification-apple-batches",
+    "verification-diagnostics", "apple-selection", "apple-local", "apple-runner",
     "android-runner", "android-build", "android-diagnostics",
     "device-diagnostics", "platform-diagnostics", "backend-diagnostics", "worker-diagnostics", "native-lifecycle",
     "bounded-worker-log", "development-tools", "development-approval", "process", "emulator-resources", "manual-emulator",
@@ -45,7 +112,15 @@ test("the dedicated tooling entry retains the complete explicit suite without di
   assert.deepEqual(TOOLING_TEST_SHARDS.flatMap((part) => part.files).sort(), [...TOOLING_TEST_FILES].sort());
   assert.deepEqual(TOOLING_TEST_SHARDS.find((part) => part.id === "candidate").files,
     ["scripts/tests/development-tools.test.mjs", "scripts/tests/development-approval.test.mjs"]);
-  assert.ok(TOOLING_TEST_SHARDS.find((part) => part.id === "native").files.includes("scripts/tests/verification-refinement.test.mjs"));
+  const refinementFiles = ["verification-refinement", "verification-refinement-context", "verification-refinement-evidence", "verification-apple-batches"]
+    .map((name) => `scripts/tests/${name}.test.mjs`);
+  const nativeFiles = TOOLING_TEST_SHARDS.find((part) => part.id === "native").files;
+  for (const file of refinementFiles) assert.ok(nativeFiles.includes(file));
+  const refinement = await Promise.all(refinementFiles.map((file) => readFile(file, "utf8")));
+  const refinementNames = refinement.flatMap((source) => [...source.matchAll(/^(?:nativeTest|test)\("([^"]+)"/gm)]
+    .map((match) => match[1]));
+  assert.equal(new Set(refinementNames).size, refinementNames.length);
+  assert.doesNotMatch(await readFile("scripts/tests/fixtures/apple-refinement.mjs", "utf8"), /^(?:nativeTest|test)\(/m);
   for (const file of TOOLING_TEST_FILES) await readFile(file);
   const development = await readFile("scripts/tests/development-tools.test.mjs", "utf8");
   assert.doesNotMatch(development, /import\(["']\.\/xcode-mcp\.test\.mjs["']\)/);

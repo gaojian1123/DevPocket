@@ -309,6 +309,13 @@ narrower. Local unsharded verification still covers its current host, not every
 CI platform. Device instrumentation and layouts remain on Ubuntu/KVM; this Mac
 job does not claim the local HVF emulator path has been exercised.
 
+CI tooling commands have an earlier deadline than their enclosing job so cleanup,
+report sealing and diagnostic publication can finish. The optional CI progress
+artifact records native Node test events with allowlisted source files/locations,
+not dynamic test names, output or assertion contents. Queue events are not proof
+of execution. Mac jobs use job-private PowerShell caches with startup-profile
+gathering disabled; test selection, assertions and native ownership checks remain.
+
 Sealing and collecting CI evidence accepts fork PR heads for eligible checks,
 while retaining the base-repository identity and exact merge-parent checks.
 This lets documentation/tooling-only fork PRs reach their normal gate. It does
@@ -360,6 +367,9 @@ source/index/branch/config checks refuse concurrent changes.
 
 `kind: ci-qualification`, `status: verified` means **CI checks qualified**.
 It is not independent review, a human decision or permission to publish ready work.
+When `nativeAcceptanceRequired` is true, collect the same-candidate complete
+native evidence in [Hosted Apple CI](#hosted-apple-ci) before final review or
+ready delivery. A green hosted matrix does not satisfy that separate requirement.
 The local `candidate` and actual CI `tested` source remain separate: a PR merge
 SHA or LF checkout fingerprint is never rewritten to look like execution on the
 local branch/CRLF checkout. The referenced envelope and ZIP remain evidence
@@ -688,8 +698,12 @@ This is an explicitly selected local full-gate route. It does not impersonate a
 successful MCP call or a hosted-CI run. Keep failed MCP invocations and any
 late-readable native results under their original identities.
 
-Prepare the same four exact task-owned targets and an `apple-plan` request with
+Prepare the four exact task-owned targets and an `apple-plan` request with
 `"testMode": "xcodebuild"`. All required simulators must already be booted.
+Local and hosted iPhone/iPad/Duo acceptance requires iOS/iPadOS 27.2, including
+the Duo-compatible runtime variant. Existing 27.0/27.1 devices cannot be reused
+by relabelling their evidence; selecting or creating replacement targets needs
+its own applicable scope. The app's minimum deployment versions remain unchanged.
 Development and previews continue to use Xcode MCP; this route changes acceptance
 execution only. Its current command inputs, destination scope and process effects
 need the receiving worktree's applicable approval before execution.
@@ -748,6 +762,14 @@ beside each original xcresult. Reports keep their path, byte count, SHA256, file
 count and Info.plist digest instead of inlining thousands of attachment names.
 Qualification reopens the complete manifest and hashes every file in both the
 original and copied bundle; missing, altered or mismatched manifests fail closed.
+Local simulator observations use version-2 projections containing exactly the
+plan's three simulator IDs, while preserving all runtime/device-type validation
+metadata. The full original inventories remain hash-bound log artifacts; local
+qualification reopens and reprojects them against the exact plan IDs. Unrelated
+developer devices no longer multiply the inline report size across every state
+check. Version-1 full inventories remain readable, and CI keeps its full inventories
+for creation/cleanup ownership checks. Missing, duplicated or substituted local
+targets still fail; projection does not alter any simulator.
 The report budget and native case/coverage requirements are unchanged.
 The report origin is `local-xcodebuild`; `GITHUB_ACTIONS` is never set to enable
 the hosted runner. CI retains its separate `ci-xcodebuild` lifecycle.
@@ -781,31 +803,101 @@ MCP completion is never a successful command receipt on this route.
 
 The existing workflow has an `apple` job and includes it in `Required verification`
 only when the shared planner selects it. It uses the official `xcode-27` runner,
-currently a public-preview macOS 27 image, and the Xcode 27.1 installation. The job
+currently a public-preview macOS 27 image, and the Xcode 27.2 installation. The job
 checks its actual Xcode/Swift/SDK, host OS and supported simulator device types
 before execution; image changes or missing prerequisites fail explicitly.
 See the [runner manifest](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md)
 and [published label](https://github.com/actions/runner-images/issues/14404).
 
-The compile SDK must provide the iOS 27.1 reserved-region symbols; a runtime
-availability guard and deployment target 27.0 do not make an older SDK sufficient.
+Acceptance requires Xcode and the iOS Simulator/iPhoneOS SDKs at 27.2 or newer.
+The shared runtime matrix pins iPhone, iPad and Duo to 27.2. The workflow prepares
+both standard (`24B8117`) and Duo-specific (`24B91016s`) arm64 simulator builds
+with Xcode's platform downloader before verification; having the SDK alone does
+not prove either runtime is installed. Actual runtime/device-type validation
+still fails closed when a required variant is missing or incompatible.
+A runtime availability guard and deployment target 27.0 do not make an older SDK sufficient.
 The native Mac host must also meet the app's macOS minimum.
 
-CI restores locked Node dependencies, prepares the existing component renderer,
-performs fresh normal builds and full-scheme tests with isolated derived data, and
-collects actual xcresult evidence for Mac, ordinary iPhone, iPad and Duo. It creates
-only uniquely named run-owned simulators and confirms their cleanup. Developer
-UDIDs are never used in CI. Native UI/desktop failures remain failures, not
-model-only or skipped-platform success.
+CI restores locked Node dependencies and runs Mac, ordinary iPhone and iPad
+as independent roles, with at most one Apple role job executing at a time.
+This scheduling limit does not change per-command deadlines or required coverage.
+Each role retains its normal builds, fresh complete test
+catalogue for its declared hosted targets, actual selected cases and original
+command/resource evidence. A failing role does not prevent the other roles from
+producing their results. Only uniquely
+named run-owned simulators are created and cleaned; developer UDIDs are not CI inputs.
+
+The user-selected hosted scope defers the entire Duo runtime role to the
+same-candidate complete local matrix. Its normal iOS code and model/UI test
+products still compile in hosted builds. No hosted Duo pass is claimed; local
+Duo catalogue, model/WK and UI execution remain mandatory before delivery.
+The original hosted readiness/cleanup failures remain failed or unknown evidence,
+not passing results or permission for an automatic fallback.
+
+The declared hosted case exception is the Mac
+`DevPocketTests/actualWKWebViewRendersChartPixels()` case. The full catalogue must
+still contain it. Mac CI selects every other catalogue entry explicitly.
+The user-selected mobile scope executes the complete model/WK test targets,
+including their pixel, CSP and navigation checks, and defers only the
+`DevPocketUITests` target to same-candidate full local native acceptance. The
+compiled UI test products remain present, but hosted mobile discovery enumerates
+only the complete model/WK targets that execute online. It must not launch the
+deferred UI runner just to enumerate it. The complete unfiltered UI catalogue
+and its execution remain mandatory in the same-candidate local native evidence.
+Mac discovery still covers the full scheme, and supported Mac functional/UI tests
+stay online. Other failures remain failures, not new exclusions; changing this
+declared scope requires a user policy decision.
+
+Role reports are partial verification inputs, not independent whole-group passes.
+Each CI role prepares its test bundles before simulator startup, then reuses that
+test-only DerivedData for fresh declared-target discovery and execution. This keeps
+cold compilation out of the discovery allowance without extending it. The two
+normal App builds and their original products remain separate; a
+`build-for-testing` result cannot replace either normal build.
+Mac discovers first to select its exact pixel exception. Mobile roles execute
+every case in their declared runtime targets first, retain the native results, then
+independently enumerate those complete targets from the same prepared scheme and
+destination. Thus cold test-host startup stays inside the existing test invocation,
+not the shorter discovery allowance.
+Every passing role requires exact equality with its fresh hosted runtime catalogue.
+Only the declared target-level filters may narrow mobile discovery or execution;
+per-case filters are rejected. Post-run discovery does not apply to Mac's
+case-filtered invocation or local acceptance.
+After mobile runtime work and discovery finish, CI confirms cleanup of its owned
+simulator before exporting the host-side result bundle. Cleanup runs once; a
+failed or unknown cleanup is not retried into a successful receipt. Local
+acceptance never shuts down its already-running developer targets.
+The gate requires the exact Mac/iPhone/iPad hosted union and preserves each native owner,
+workflow context and execution interval in `apple-native-matrix` / `apple-shards`
+records. Missing, duplicate, filtered beyond policy, failed or skipped required
+results do not qualify. Version-3 hosted role evidence explicitly records
+`catalogScope: "runtime-targets"` for mobile and `"full-scheme"` for Mac; older
+role evidence is not silently reinterpreted under this policy. Version-2 matrix
+evidence explicitly records `deferredRoles: ["duo"]`; missing or altered deferrals
+are rejected. Local evidence
+still requires the full unfiltered scheme. Role and matrix evidence retain
+`deferredTargets` and `deferredTests`; the matrix and live qualifier explicitly report
+`nativeAcceptanceRequired: true`.
+
+**Complete native acceptance remains a delivery requirement.** Before independent
+review or marking the PR ready, obtain the existing complete native qualification
+for the same candidate: all four roles, both normal products and all cases,
+including mobile UI interactions and Mac pixels. Retain the original invocation/copy/source bindings and
+repeat qualification after review. Keep the local candidate and CI merge-ref
+identities distinct; verify their relevant Apple/renderer input correspondence
+instead of rewriting either head. The native evidence and actual user decisions
+must accompany the CI envelope in the review. A green hosted check alone is not
+ready delivery.
 
 The Apple job keeps raw logs/artifacts separately and publishes a bounded
 source-bound native report. Hosted test results use complete external file
 manifests, included with the raw artifacts, so each bounded result retains its
 digest, file count and Info.plist binding without inlining thousands of attachment
-names. The report budget, native contents and required case coverage stay unchanged.
-Aggregation requires the actual hosted execution
-origin, complete selected matrix and cleanup; local MCP reports cannot impersonate
-that CI job. A workflow-only branch without the uncommitted Apple implementation
+names. Each role keeps the 256-KiB native-report bound, and the enclosing verification
+report keeps its 512-KiB bound. Compact JSON may carry the combined records without
+discarding invocation or case details. Aggregation requires actual hosted execution
+origins, the complete declared hosted matrix and cleanup; local MCP reports cannot
+impersonate those CI jobs. A workflow-only branch without the uncommitted Apple implementation
 can validate selectors and runner contracts, but cannot claim a real Apple-client
 CI run. Publishing that source remains separately authorized.
 
@@ -818,6 +910,10 @@ entry refuses GitHub Actions and combinations with ordinary planning, aggregatio
 recovery, promotion or Android toolchain flags.
 Native refinement runs on macOS. Its integration regressions use the existing
 macOS native tooling shard; portable CI-refusal checks also run on other hosts.
+Batch/command, presentation, checkpoint/context and native-result contracts use separate Node
+test files so one serial file does not consume the whole hosted deadline.
+The complete catalogue remains selected, with serial tests inside each isolated
+file and unchanged command/job limits.
 
 Use the owning session and its original Xcode MCP tools. The refinement actions capture
 source/evidence and reads retained `.xcresult` bundles with `xcresulttool`; it never
@@ -1159,6 +1255,9 @@ Read the new report: require `status: passed`, `complete: true` and every requir
 check, platform/device result and per-shard execution origin. A plan, focused
 check, build-only result, preflight or partial shard is not completed verification.
 Retain the report path, original base, `source.head` and `source.fingerprint`.
+The publication limit counts serialized UTF-8 bytes; compact JSON is used when
+indentation alone would exceed it. Report fields and acceptance checks are unchanged,
+and checkpoint subject digests always bind the bytes actually written.
 Local candidate evidence must have `source.head === CANDIDATE_COMMIT`; CI uses
 its separate qualification of the tested merge ref instead.
 For cleanup-confirmed environment failures on unchanged source, use the explicit

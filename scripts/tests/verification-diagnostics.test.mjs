@@ -280,6 +280,25 @@ test("check log hints accept only source-indexed locations and fixed exception/c
   assert.ok(!JSON.stringify(result).includes("PRIVATE_"));
 });
 
+test("PowerShell and lease hints publish fixed reasons without dynamic error identifiers", async () => {
+  const { checkLogHints } = await import("../verification-diagnostics.mjs");
+  for (const [id, reason] of [
+    ["NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand", "process-not-found"],
+    ["GetValueInvocationException", "property-read-failed"],
+    ["MethodInvocationException", "method-call-failed"],
+    ["PreparationWorkerIdentityMismatch", "worker-identity-mismatch"],
+    ["PreparationWorkerExited", "worker-exited-before-observation"],
+    ["PRIVATE_ERROR_ID_WITH_SECRET", "unclassified"],
+    ["GetValueInvocationException PRIVATE_SUFFIX", "unclassified"],
+  ]) {
+    const result = checkLogHints(`    + FullyQualifiedErrorId : ${id}`, process.cwd(), new Set());
+    assert.deepEqual(result, [{ kind: "powershell-failure", reason }]);
+    assert.ok(!JSON.stringify(result).includes("PRIVATE_"));
+  }
+  assert.deepEqual(checkLogHints("  code: 'EMULATOR_SLOT_TIMEOUT',", process.cwd(), new Set()),
+    [{ kind: "error-code", code: "EMULATOR_SLOT_TIMEOUT" }]);
+});
+
 test("macOS owner log hints distinguish fixed terminal failures without publishing exception text", async () => {
   const { checkLogHints } = await import("../verification-diagnostics.mjs");
   for (const [type, message, reason] of [
