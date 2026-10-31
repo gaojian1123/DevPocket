@@ -37,13 +37,29 @@ export function appleCIDeferredTests(role) {
   return role === "mac" ? [macPixelTest] : [];
 }
 
+export function appleCIDeferredTargets(role) {
+  appleCIShardDescriptor(role);
+  return role === "mac" ? [] : ["DevPocketUITests"];
+}
+
+export function appleCITestTargets(role, targets) {
+  const deferred = appleCIDeferredTargets(role);
+  requireApple(Array.isArray(targets) && targets.includes("DevPocketTests") && targets.includes("DevPocketUITests") &&
+    targets.every((target) => typeof target === "string" && text(target)) && new Set(targets).size === targets.length,
+  "Hosted target coverage requires the complete enabled scheme.", "case-evidence");
+  return targets.filter((target) => !deferred.includes(target));
+}
+
 export function appleCITestSelection(catalog, targets, role) {
-  const all = normalizeAppleTestCatalog(catalog, targets), deferred = appleCIDeferredTests(role);
-  requireApple(deferred.every((test) => all.some((item) => testKey(item) === testKey(test))),
-    "The full catalogue must retain the separately required native pixel test.", "case-evidence");
+  const all = normalizeAppleTestCatalog(catalog, targets), excluded = appleCIDeferredTests(role);
+  const deferredTargets = appleCIDeferredTargets(role), runtimeTargets = appleCITestTargets(role, targets);
+  requireApple(all.some((test) => testKey(test) === testKey(macPixelTest)),
+    "The full catalogue must retain the native pixel test.", "case-evidence");
+  const deferred = all.filter((test) => deferredTargets.includes(test.targetName) ||
+    excluded.some((item) => testKey(item) === testKey(test)));
   const tests = all.filter((test) => !deferred.some((item) => testKey(item) === testKey(test)));
-  requireApple(targets.every((target) => tests.some((test) => test.targetName === target)),
-    "Hosted coverage must retain every model/WK and UI target.", "case-evidence");
+  requireApple(runtimeTargets.every((target) => tests.some((test) => test.targetName === target)),
+    "Hosted coverage must retain every declared runtime target.", "case-evidence");
   return { tests, deferred };
 }
 
@@ -66,6 +82,7 @@ export function combineAppleCIEvidence(plan, parts) {
     startedAt: ordered.map((part) => part.startedAt).sort()[0],
     completedAt: ordered.map((part) => part.completedAt).sort().at(-1),
     deferredTests: APPLE_CI_ROLES.flatMap((role) => appleCIDeferredTests(role).map((test) => ({ role, ...test }))),
+    deferredTargets: APPLE_CI_ROLES.flatMap((role) => appleCIDeferredTargets(role).map((targetName) => ({ role, targetName }))),
     parts: ordered,
   };
   requireApple(Buffer.byteLength(appleJSON(matrix)) <= 512 * 1024,
@@ -354,11 +371,14 @@ export function inspectAppleScheme(xml) {
   return targets;
 }
 
-export function appleXcodeArguments({ workspace, directory, action, platform, destination, testDiagnostics, selectedTests, derivedDataDirectory }) {
+export function appleXcodeArguments({ workspace, directory, action, platform, destination, testDiagnostics, selectedTests, selectedTargets, derivedDataDirectory }) {
   requireApple(["build", "build-for-testing", "test"].includes(action) && ["ios", "macos"].includes(platform) &&
     text(destination) && relative(directory) &&
     (testDiagnostics === undefined || action === "test" && testDiagnostics === "never") &&
     (selectedTests === undefined || action === "test") &&
+    (selectedTargets === undefined || action === "test" && selectedTests === undefined &&
+      Array.isArray(selectedTargets) && selectedTargets.length > 0 && new Set(selectedTargets).size === selectedTargets.length &&
+      selectedTargets.every((target) => typeof target === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(target))) &&
     (derivedDataDirectory === undefined || action === "test" && relative(derivedDataDirectory)),
   "Invalid Apple build/test arguments.", "configuration");
   return ["xcodebuild", "-project", path.posix.join(workspace, APPLE_REQUIREMENTS.project),
@@ -373,6 +393,7 @@ export function appleXcodeArguments({ workspace, directory, action, platform, de
     ...(testDiagnostics === "never" ? ["-collect-test-diagnostics", "never"] : []),
     ...(selectedTests === undefined ? [] : appleTestSelection(selectedTests)
       .map((test) => `-only-testing:${test.targetName}/${test.testIdentifier}`)),
+    ...(selectedTargets === undefined ? [] : [...selectedTargets].sort().map((target) => `-only-testing:${target}`)),
     "CODE_SIGN_IDENTITY=-", "CODE_SIGNING_REQUIRED=YES", "DEVELOPMENT_TEAM=", action];
 }
 
@@ -488,6 +509,14 @@ export function normalizeAppleTestResult(summary, tests, target, execution, requ
   requireApple(Array.isArray(requiredTargets) && requiredTargets.length >= 2,
     "Full Apple tests require model/WK and UI targets.", "case-evidence");
   return nativeTestResult(summary, tests, target, execution, requiredTargets);
+}
+
+export function normalizeAppleCITestResult(summary, tests, target, execution, targets, role) {
+  const required = appleCITestTargets(role, targets);
+  const result = nativeTestResult(summary, tests, target, execution, required);
+  requireApple(result.cases.every((item) => required.includes(item.target)),
+    "Hosted execution included an undeclared runtime target.", "case-evidence");
+  return result;
 }
 
 export function normalizeAppleBatchResult(summary, tests, target, execution, selected) {
@@ -629,7 +658,9 @@ function sharedAppleOutcomes(evidence) {
         evidence.origin === "ci-xcodebuild" || evidence.origin === "local-xcodebuild");
       const result = selected
         ? normalizeAppleBatchResult(test.summary, test.testTree, target, test.execution, selected)
-        : normalizeAppleTestResult(test.summary, test.testTree, target, test.execution, evidence.scheme.targets);
+        : evidence.ciRole
+          ? normalizeAppleCITestResult(test.summary, test.testTree, target, test.execution, evidence.scheme.targets, evidence.ciRole)
+          : normalizeAppleTestResult(test.summary, test.testTree, target, test.execution, evidence.scheme.targets);
       requireApple(equal(test.result, result), "Native results differ from their xcresult projections.", "case-evidence");
     };
     if (item.mode === "batches") {
@@ -728,8 +759,9 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
     evidence.kind === "apple-native-evidence" &&
     evidence.origin === expectedOrigin, "Apple evidence has the wrong version or execution origin.", "execution-origin");
   if (ciRole) requireApple(evidence.nativeAcceptanceRequired === true &&
-    equal(evidence.deferredTests, appleCIDeferredTests(ciRole)),
-  "Hosted CI must preserve its separately required native pixel coverage.", "case-evidence");
+    equal(evidence.deferredTests, appleCIDeferredTests(ciRole)) &&
+    equal(evidence.deferredTargets, appleCIDeferredTargets(ciRole)),
+  "Hosted CI must preserve its separately required complete native runtime coverage.", "case-evidence");
   requireApple(["ci-xcodebuild", "local-xcode-mcp", "local-xcodebuild"].includes(expectedOrigin),
     "Unknown Apple evidence origin.", "execution-origin");
   requireApple(Buffer.byteLength(appleJSON(evidence)) <= APPLE_NATIVE_REPORT_MAX_BYTES,
@@ -882,6 +914,8 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
       appleXcodeArguments({ workspace: evidence.workspace, directory, action, platform, destination,
         ...(local && action === "test" ? { testDiagnostics: "never" } : {}),
         ...(ciRole && action === "test" ? { derivedDataDirectory: `${directory}/catalog/derived` } : {}),
+        ...(ciRole && ciRole !== "mac" && action === "test"
+          ? { selectedTargets: appleCITestTargets(ciRole, evidence.scheme.targets) } : {}),
         ...(ciRole === "mac" && action === "test"
           ? { selectedTests: appleCITestSelection(item.catalog?.data, evidence.scheme.targets, ciRole).tests } : {}) }));
     requireApple(!nativeCommands.has(value.id) && value.startedAt >= preparation.completedAt &&
@@ -991,12 +1025,16 @@ export function validateAppleNativeEvidence(evidence, plan, expectedOrigin = "ci
       }
       const expected = ciRole ? appleCITestSelection(catalog.data, evidence.scheme.targets, ciRole).tests
         : normalizeAppleTestCatalog(catalog.data, evidence.scheme.targets);
-      const actual = normalizeAppleTestResult(exports[0], exports[1], target, value, evidence.scheme.targets);
+      const actual = ciRole
+        ? normalizeAppleCITestResult(exports[0], exports[1], target, value, evidence.scheme.targets, ciRole)
+        : normalizeAppleTestResult(exports[0], exports[1], target, value, evidence.scheme.targets);
       requireApple(equal(expected, appleTestSelection(actual.cases.map((test) =>
         ({ targetName: test.target, testIdentifier: test.identifier })))),
       "The native command did not execute the entire fresh catalogue.", "case-evidence");
     }
-    const result = normalizeAppleTestResult(exports[0], exports[1], target, value, evidence.scheme.targets);
+    const result = ciRole
+      ? normalizeAppleCITestResult(exports[0], exports[1], target, value, evidence.scheme.targets, ciRole)
+      : normalizeAppleTestResult(exports[0], exports[1], target, value, evidence.scheme.targets);
     requireApple(equal(item.summary, exports[0]) && equal(item.testTree, exports[1]) && equal(item.result, result),
       "The normalized native result differs from actual xcresult data.", "case-evidence");
     requireApple(ciRole === "mac" || (local ? cleanupAfter.startedAt >= value.completedAt

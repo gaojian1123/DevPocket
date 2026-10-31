@@ -807,12 +807,15 @@ catalogue, actual selected cases and original command/resource evidence. A faili
 role does not prevent the other roles from producing their results. Only uniquely
 named run-owned simulators are created and cleaned; developer UDIDs are not CI inputs.
 
-The declared hosted exception is the Mac
+The declared hosted case exception is the Mac
 `DevPocketTests/actualWKWebViewRendersChartPixels()` case. The full catalogue must
-still contain it. Mac CI selects every other catalogue entry explicitly; mobile
-roles retain their full catalogue. Real WK loading, presentation, CSP/navigation
-checks and supported desktop UI tests remain required online. Other failures stay
-failures, rather than becoming additional exclusions.
+still contain it. Mac CI selects every other catalogue entry explicitly.
+The user-selected mobile scope executes the complete model/WK test targets,
+including their pixel, CSP and navigation checks, and defers only the
+`DevPocketUITests` target to same-candidate full local native acceptance. The
+unfiltered catalogue and compiled UI test products remain present. Supported
+Mac functional/UI tests stay online. Other failures remain failures, not new
+exclusions; changing this declared scope requires a user policy decision.
 
 Role reports are partial verification inputs, not independent whole-group passes.
 Each CI role prepares its test bundles before simulator startup, then reuses that
@@ -820,22 +823,24 @@ test-only DerivedData for fresh unfiltered discovery and execution. This keeps
 cold compilation out of the discovery allowance without extending it. The two
 normal App builds and their original products remain separate; a
 `build-for-testing` result cannot replace either normal build.
-Mac discovers first to select its exact pixel exception. Mobile roles execute the
-entire unfiltered scheme first, retain the native results, then enumerate the
+Mac discovers first to select its exact pixel exception. Mobile roles execute
+every case in their declared runtime targets first, retain the native results, then enumerate the
 same prepared scheme and target independently. Thus cold test-host startup stays
 inside the existing test invocation, not the shorter discovery allowance.
-Every passing role still requires exact equality with its fresh full catalogue;
-post-run discovery is not permitted for a filtered invocation or local acceptance.
+Every passing role requires exact equality with the runtime portion of its fresh
+full catalogue. Per-case filters cannot narrow mobile execution. Post-run
+discovery does not apply to Mac's case-filtered invocation or local acceptance.
 The gate requires the exact four-role union and preserves each native owner,
 workflow context and execution interval in `apple-native-matrix` / `apple-shards`
 records. Missing, duplicate, filtered beyond policy, failed or skipped required
-results do not qualify. The matrix and live qualifier explicitly report
+results do not qualify. Role and matrix evidence retain `deferredTargets` and
+`deferredTests`; the matrix and live qualifier explicitly report
 `nativeAcceptanceRequired: true`.
 
 **Complete native acceptance remains a delivery requirement.** Before independent
 review or marking the PR ready, obtain the existing complete native qualification
 for the same candidate: all four roles, both normal products and all cases,
-including Mac pixels. Retain the original invocation/copy/source bindings and
+including mobile UI interactions and Mac pixels. Retain the original invocation/copy/source bindings and
 repeat qualification after review. Keep the local candidate and CI merge-ref
 identities distinct; verify their relevant Apple/renderer input correspondence
 instead of rewriting either head. The native evidence and actual user decisions

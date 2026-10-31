@@ -10,10 +10,10 @@ import { readOnlyGit, sourceSnapshot } from "./git-state.mjs";
 import { requireVerificationOutputDirectory } from "./verification.mjs";
 import {
   APPLE_NATIVE_REPORT_MAX_BYTES, APPLE_PROBES, APPLE_REQUIREMENTS, APPLE_RESULT_READINESS_MS,
-  appleCIShardDescriptor, appleCIDeferredTests, appleCITestSelection,
+  appleCIShardDescriptor, appleCIDeferredTests, appleCIDeferredTargets, appleCITestSelection, appleCITestTargets,
   appleDeviceId, appleDevices, appleDigest, appleEnumerationArguments, appleJSON, appleResultManifestReference, appleTestSelection,
   appleXcodeArguments, inspectAppleScheme, inspectAppleToolchain, localAppleToolchain,
-  normalizeAppleTestCatalog, normalizeAppleTestResult, selectAppleLocalTargets,
+  normalizeAppleTestCatalog, normalizeAppleTestResult, normalizeAppleCITestResult, selectAppleLocalTargets,
   projectAppleCleanupEvidence, projectAppleCommandOutput, projectAppleXcresult,
   requireApple, validateAppleNativeEvidence, validateApplePlan,
 } from "./apple-evidence.mjs";
@@ -332,7 +332,8 @@ async function runAppleNative(options, local) {
   await mkdir(path.join(output, "scratch"));
   const report = {
     version: ciRole ? 2 : 1, kind: "apple-native-evidence", origin: local ? "local-xcodebuild" : "ci-xcodebuild",
-    ...(ciRole ? { ciRole, nativeAcceptanceRequired: true, deferredTests: appleCIDeferredTests(ciRole) } : {}),
+    ...(ciRole ? { ciRole, nativeAcceptanceRequired: true, deferredTests: appleCIDeferredTests(ciRole),
+      deferredTargets: appleCIDeferredTargets(ciRole) } : {}),
     runId, workspace: root, directory,
     base: plan.base, source: plan.source, sourceBefore: null, sourceAfter: null, apple: APPLE_REQUIREMENTS,
     startedAt: new Date().toISOString(), completedAt: null, status: "blocked", cleanup: "unknown",
@@ -384,7 +385,6 @@ async function runAppleNative(options, local) {
   const controller = new AbortController();
   const environment = { ...process.env, TMPDIR: path.join(output, "scratch") + path.sep,
     TMP: path.join(output, "scratch"), TEMP: path.join(output, "scratch") };
-  if (!local) environment.DEVPOCKET_APPLE_OWNER_DEBUG = "1";
   const execute = async (id, file, args, { timeoutMs = 30_000, cleanup = false } = {}) => {
     if (!cleanup && (overflowed || Buffer.byteLength(appleJSON(report)) > APPLE_NATIVE_REPORT_MAX_BYTES)) throw overflowError();
     requireApple(!report.commands.some((item) => item.id === id) && /^[a-z0-9-]+$/.test(id),
@@ -572,7 +572,6 @@ async function runAppleNative(options, local) {
         target = { ...selection, deviceId: resource.deviceId, architecture: report.toolchain.architecture };
       }
       const destination = mac && !local ? `platform=macOS,arch=${target.architecture}` : `platform=${target.platform},id=${target.deviceId}`;
-      let selectedTests;
       const discover = async () => {
         const catalogDirectory = `${relative}/catalog`;
         if (local) await mkdir(path.join(root, catalogDirectory));
@@ -587,10 +586,10 @@ async function runAppleNative(options, local) {
         if (local) item.beforeTestCommandId = await confirmLocalTargets(`${phase}-before-test`);
         else {
           const selection = appleCITestSelection(item.catalog.data, report.scheme.targets, ciRole);
-          if (selection.deferred.length) selectedTests = selection.tests;
-        };
-        if (local || ciRole === "mac") await discover();
-      }
+          if (selection.deferred.length) return selection.tests;
+        }
+      };
+      const selectedTests = local || ciRole === "mac" ? await discover() : undefined;
       item.commandId = phase;
       let execution, originalFailure;
       try {
@@ -598,6 +597,7 @@ async function runAppleNative(options, local) {
           action: "test", platform: mac ? "macos" : "ios", destination,
           ...(local ? { testDiagnostics: "never" } : {}),
           ...(ciRole ? { derivedDataDirectory: `${relative}/catalog/derived` } : {}),
+          ...(ciRole && !mac ? { selectedTargets: appleCITestTargets(ciRole, report.scheme.targets) } : {}),
           ...(selectedTests ? { selectedTests } : {}) }), { timeoutMs: 20 * 60_000 });
         item.execution = nativeExecution(execution);
       } catch (error) {
@@ -633,7 +633,9 @@ async function runAppleNative(options, local) {
             "The original native result and retained copy differ.", "artifact-changed");
         }
         if (!originalFailure) {
-          item.result = normalizeAppleTestResult(item.summary, item.testTree, target, execution, report.scheme.targets);
+          item.result = ciRole
+            ? normalizeAppleCITestResult(item.summary, item.testTree, target, execution, report.scheme.targets, ciRole)
+            : normalizeAppleTestResult(item.summary, item.testTree, target, execution, report.scheme.targets);
           item.target = { ...target, deviceId: item.result.device.deviceId };
           if (ciRole && !mac) await discover();
           if (local || ciRole) {

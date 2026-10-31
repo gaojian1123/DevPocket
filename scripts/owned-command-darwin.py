@@ -39,45 +39,6 @@ class UnstableOwnershipError(RuntimeError):
     pass
 
 
-DEBUG_APPLE_OWNER = (os.getenv("DEVPOCKET_APPLE_OWNER_DEBUG") == "1" and
-                     os.getenv("GITHUB_ACTIONS") == "true" and os.getenv("RUNNER_ENVIRONMENT") == "github-hosted")
-
-
-def debug_apple_owner(phase, **facts):
-    if DEBUG_APPLE_OWNER:
-        print("[DEBUG-ci-sim-owner] " + json.dumps({"phase": phase, "observedAt": time.time(), **facts}),
-              file=sys.stderr, flush=True)
-
-
-def debug_apple_resources():
-    if not DEBUG_APPLE_OWNER:
-        return
-    facts = {"logicalCpus": os.cpu_count()}
-    try:
-        facts["loadAverage"] = os.getloadavg()
-        result = subprocess.run(["/usr/bin/vm_stat"], stdin=subprocess.DEVNULL, capture_output=True,
-                                text=True, timeout=2, check=True)
-        page_size = re.search(r"page size of (\d+) bytes", result.stdout)
-        wanted = {"Pages free", "Pages active", "Pages inactive", "Pages speculative",
-                  "Pages wired down", "Pages occupied by compressor", "Pageouts", "Swapouts"}
-        pages = {}
-        for line in result.stdout.splitlines():
-            name, separator, value = line.partition(":")
-            if separator and name in wanted:
-                pages[name] = int(value.strip().rstrip("."))
-        if page_size is None or set(pages) != wanted:
-            raise ValueError("Unrecognized virtual-memory counters.")
-        facts["memory"] = {"pageSize": int(page_size.group(1)), "pages": pages}
-    except subprocess.TimeoutExpired:
-        facts["measurementUnavailable"] = "timeout"
-    except subprocess.CalledProcessError as error:
-        facts["measurementUnavailable"] = "command-failed"
-        facts["measurementExitCode"] = error.returncode
-    except (OSError, ValueError) as error:
-        facts["measurementUnavailable"] = type(error).__name__
-    debug_apple_owner("resources", **facts)
-
-
 class Darwin:
     def __init__(self):
         if sys.platform != "darwin":
@@ -342,7 +303,6 @@ class Scope:
         deadline = time.monotonic() + 15
         signalled = set()
         failure = None
-        observed_members = False
         while True:
             try:
                 if child is not None:
@@ -378,14 +338,6 @@ class Scope:
                 snapshot_error = error
             except (OSError, ValueError, RuntimeError) as error:
                 failure = failure or error
-            if DEBUG_APPLE_OWNER and owned is not None and not observed_members:
-                categories = {"CoreSimulator": 0, "launchd_sim": 0, "simctl": 0, "other": 0}
-                for info in owned:
-                    name = bytes(info.bsd.name).split(b"\0", 1)[0].decode(errors="replace")
-                    category = next((key for key in categories if key != "other" and key in name), "other")
-                    categories[category] += 1
-                debug_apple_owner("cleanup-members", categories=categories, nested=len(self.nested))
-                observed_members = True
             for info in owned or []:
                 if info.bsd.pid not in protected:
                     try:
@@ -395,7 +347,6 @@ class Scope:
             if owned == [] and not pending:
                 if failure is not None:
                     raise failure
-                debug_apple_owner("cleanup-complete")
                 return
             if time.monotonic() >= deadline:
                 raise RuntimeError("Owned macOS processes did not confirm exit.") from (failure or snapshot_error)
@@ -474,11 +425,8 @@ def supervise(native, bootstrap_pid):
         if state["stop"]:
             control("cancel-accepted")
             return 130
-        debug_apple_resources()
         child = subprocess.Popen([request["file"], *request["arguments"]], stdin=subprocess.PIPE,
                                  start_new_session=True, close_fds=True, env=scope.environment())
-        debug_apple_owner("target-started")
-        next_debug_sample = time.monotonic() + 30
         control("active")
         while True:
             scope.poll()
@@ -501,7 +449,6 @@ def supervise(native, bootstrap_pid):
                     pass
             result = child.poll()
             if result is not None:
-                debug_apple_owner("target-exited", exitCode=result)
                 try:
                     finished = not request.get("persistent") or not native.owned()
                 except UnstableOwnershipError:
@@ -512,9 +459,6 @@ def supervise(native, bootstrap_pid):
                     break
             if stopping_at is not None and now >= stopping_at:
                 break
-            if DEBUG_APPLE_OWNER and not state["stop"] and now >= next_debug_sample:
-                debug_apple_resources()
-                next_debug_sample = time.monotonic() + 30
             time.sleep(0.02)
     except (OSError, ValueError, RuntimeError, AttributeError) as error:
         # The cleanup receipt must remain the final output for this command.

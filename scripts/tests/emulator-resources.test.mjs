@@ -475,12 +475,16 @@ test("killing only a lease controller cannot admit another worktree while its pr
     assert.match(workerStarted, /^\d{10,20}$/);
   }
   // Windows can recycle the PID; observe and stop only the original native process.
+  // An expected absent PID also needs an explicit success after handling its specific lookup error.
   const workerCommand = (stop) => workerStarted === undefined
     ? `if (Get-Process -Id ${worker.pid} -ErrorAction SilentlyContinue) { ${stop ? `Stop-Process -Id ${worker.pid} -Force` : "'alive'"} }`
-    : `$ErrorActionPreference='Stop'; $ErrorView='NormalView'; $p=Get-Process -Id ${worker.pid} -ErrorAction SilentlyContinue; ` +
+    : `$ErrorActionPreference='Stop'; $ErrorView='NormalView'; $lookupErrors=@(); ` +
+      `$p=Get-Process -Id ${worker.pid} -ErrorAction SilentlyContinue -ErrorVariable lookupErrors; ` +
+      "foreach($e in $lookupErrors) { if($e.FullyQualifiedErrorId -cne " +
+      "'NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand') { throw $e } }; " +
       `if($null -ne $p) { try { if(-not $p.HasExited) { $null=$p.SafeHandle; ` +
       `if(-not $p.HasExited -and $p.StartTime.ToUniversalTime().Ticks.ToString() -ceq '${workerStarted}') ` +
-      `{ ${stop ? "$p.Kill()" : "'alive'"} } } } finally { $p.Dispose() } }`;
+      `{ ${stop ? "$p.Kill()" : "'alive'"} } } } finally { $p.Dispose() } }; exit 0`;
   pool.cleanup(async () => {
     await assert.doesNotReject(exec("pwsh", ["-NoProfile", "-Command", workerCommand(true)]));
   });

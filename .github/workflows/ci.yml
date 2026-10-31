@@ -610,7 +610,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Required verification is incomplete. Missing or failed device evidence is a blocker, not a skipped success.' }
           $collected = Get-Content -LiteralPath .data\ci\ci-report.json -Raw | ConvertFrom-Json
           if ($collected.report.checks | Where-Object { $_.id -eq 'apple-native' -and $_.appleEvidence.nativeAcceptanceRequired -eq $true }) {
-            'Hosted CI checks passed. Same-commit complete native Apple acceptance, including Mac WK pixel checks, is still required before delivery.' >> $env:GITHUB_STEP_SUMMARY
+            'Hosted CI checks passed. Same-commit complete native Apple acceptance, including mobile UI interactions and Mac WK pixels, is still required before delivery.' >> $env:GITHUB_STEP_SUMMARY
           }
       - name: Explain aggregate outcome
         id: diagnostics

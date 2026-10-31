@@ -4,9 +4,9 @@ import path from "node:path";
 import { test } from "node:test";
 import {
   APPLE_NATIVE_REPORT_MAX_BYTES, APPLE_PROBES, APPLE_REQUIREMENTS, APPLE_RESULT_READINESS_MS, APPLE_CI_ROLES,
-  appleCIShardDescriptor, appleCIDeferredTests, appleCITestSelection, combineAppleCIEvidence,
+  appleCIShardDescriptor, appleCIDeferredTests, appleCIDeferredTargets, appleCITestSelection, appleCITestTargets, combineAppleCIEvidence,
   appleDigest, appleEnumerationArguments, appleJSON, appleResultManifestReference, appleTestInterval, appleXcodeArguments,
-  inspectAppleScheme, inspectAppleToolchain, normalizeAppleBatchResult, normalizeAppleTestResult, selectAppleSimulators,
+  inspectAppleScheme, inspectAppleToolchain, normalizeAppleBatchResult, normalizeAppleTestResult, normalizeAppleCITestResult, selectAppleSimulators,
   localAppleToolchain, normalizeAppleTestCatalog, projectAppleCleanupEvidence, projectAppleCommandOutput, projectAppleXcresult,
   selectAppleLocalTargets, validateAppleNativeEvidence, validateApplePlan,
 } from "../apple-evidence.mjs";
@@ -53,7 +53,7 @@ function probeFixture() {
     simulators: appleJSON(inventoryFixture()) };
 }
 
-function nativeFixture(target, execution, modelCases = 2, pixel = false) {
+function nativeFixture(target, execution, modelCases = 2, pixel = false, targets = ["DevPocketTests", "DevPocketUITests"]) {
   const device = { deviceId: target.deviceId ?? "synthetic-native-mac-id", deviceName: "Synthetic test destination",
     platform: target.platform, osVersion: target.osVersion, architecture: target.architecture };
   const cases = (name, count) => Array.from({ length: count }, (_, index) =>
@@ -62,8 +62,8 @@ function nativeFixture(target, execution, modelCases = 2, pixel = false) {
     { nodeType: "Unit test bundle", name: "DevPocketTests", children: [...cases("ModelAndWKFixtures", modelCases),
       ...(pixel ? [{ nodeType: "Test Case", nodeIdentifier: "DevPocketTests/actualWKWebViewRendersChartPixels()", result: "Passed" }] : [])] },
     { nodeType: "UI test bundle", name: "DevPocketUITests", children: cases("DevPocketUITests", 1) },
-  ] }];
-  const passedTests = modelCases + 1 + Number(pixel);
+  ].filter((bundle) => targets.includes(bundle.name)) }];
+  const passedTests = testNodes[0].children.reduce((count, bundle) => count + bundle.children.length, 0);
   const summary = { result: "Passed", failedTests: 0, skippedTests: 0, expectedFailures: 0,
     passedTests, totalTestCount: passedTests, testFailures: [],
     startTime: Date.parse(execution.startedAt) / 1000 + 0.01,
@@ -90,7 +90,7 @@ function evidenceFixture(modelCases = 2, ciRole) {
   const report = {
     version: ciRole ? 2 : 1, kind: "apple-native-evidence", origin: "ci-xcodebuild", workspace, directory,
     runId: ciRole ? uuid(43 + APPLE_CI_ROLES.indexOf(ciRole)) : owner,
-    ...(ciRole ? { ciRole, nativeAcceptanceRequired: true, deferredTests: ciRole === "mac"
+    ...(ciRole ? { ciRole, nativeAcceptanceRequired: true, deferredTargets: appleCIDeferredTargets(ciRole), deferredTests: ciRole === "mac"
       ? [{ targetName: "DevPocketTests", testIdentifier: "DevPocketTests/actualWKWebViewRendersChartPixels()" }] : [] } : {}),
     ...structuredClone(plan), sourceBefore: structuredClone(plan.source), sourceAfter: structuredClone(plan.source),
     startedAt: new Date(clock).toISOString(), completedAt: null, status: "passed", cleanup: "completed", failures: [],
@@ -182,9 +182,11 @@ function evidenceFixture(modelCases = 2, ciRole) {
     const execution = command(id, "/usr/bin/xcrun", appleXcodeArguments({
       workspace, directory: relative, action: "test", platform: mac ? "macos" : "ios", destination,
       ...(ciRole ? { derivedDataDirectory: `${catalogDirectory}/derived` } : {}),
+      ...(ciRole && !mac ? { selectedTargets: appleCITestTargets(ciRole, report.scheme.targets) } : {}),
       ...(selectedTests ? { selectedTests } : {}),
     }), "** TEST SUCCEEDED **\n");
-    const native = nativeFixture(target, execution, modelCases, Boolean(ciRole) && !mac);
+    const native = nativeFixture(target, execution, modelCases, Boolean(ciRole) && !mac,
+      ciRole ? appleCITestTargets(ciRole, report.scheme.targets) : undefined);
     for (const kind of ["summary", "tests"]) command(`${id}-${kind}`, "/usr/bin/xcrun",
       ["xcresulttool", "get", "test-results", kind, "--path", `${workspace}/${relative}/result.xcresult`, "--compact"], appleJSON(native[kind]));
     if (ciRole && !mac) command(`${id}-catalog`, "/usr/bin/xcrun",
@@ -195,7 +197,8 @@ function evidenceFixture(modelCases = 2, ciRole) {
       summary, testTree, summaryCommandId: `${id}-summary`, testsCommandId: `${id}-tests`,
       ...(catalog ? { catalog, catalogCommandId: `${id}-catalog`, buildForTestingCommandId } : {}),
       resultBundle: treeFixture(`${relative}/result.xcresult`, id, ["Info.plist", "Data/synthetic"]),
-      result: normalizeAppleTestResult(summary, testTree, target, execution, report.scheme.targets) });
+      result: ciRole ? normalizeAppleCITestResult(summary, testTree, target, execution, report.scheme.targets, ciRole)
+        : normalizeAppleTestResult(summary, testTree, target, execution, report.scheme.targets) });
   }
   if (report.resources.length) {
     report.cleanupEvidence = { beforeCommandId: "cleanup-before", afterCommandId: "cleanup-after" };
@@ -773,7 +776,7 @@ test("Apple role evidence joins the ordinary gate and CI without losing shared m
   assert.equal(gate.report.checks.find((check) => check.id === "apple-native").appleEvidence.nativeAcceptanceRequired, true);
 });
 
-test("hosted role selection defers only the declared Mac pixel case and retains complete native catalogues", () => {
+test("hosted roles preserve the declared runtime targets and the complete native catalogues", () => {
   for (const role of APPLE_CI_ROLES) {
     const evidence = evidenceFixture(2, role);
     assert.equal(validateAppleNativeEvidence(evidence, plan), evidence);
@@ -781,8 +784,16 @@ test("hosted role selection defers only the declared Mac pixel case and retains 
     assert.equal(evidence.tests[0].role, role);
     const item = evidence.tests[0], expected = normalizeAppleTestCatalog(item.catalog.data, evidence.scheme.targets);
     const selection = appleCITestSelection(item.catalog.data, evidence.scheme.targets, role);
-    assert.deepEqual(selection.deferred, appleCIDeferredTests(role));
-    assert.equal(selection.deferred.length, role === "mac" ? 1 : 0);
+    assert.deepEqual(evidence.deferredTests, appleCIDeferredTests(role));
+    assert.deepEqual(evidence.deferredTargets, appleCIDeferredTargets(role));
+    if (role === "mac") assert.deepEqual(selection.deferred, appleCIDeferredTests(role));
+    else {
+      assert.deepEqual(selection.deferred, expected.filter((test) => test.targetName === "DevPocketUITests"));
+      assert.ok(item.result.cases.every((test) => test.target === "DevPocketTests"));
+      assert.ok(item.result.cases.some((test) => test.identifier.includes("actualWKWebViewRendersChartPixels")));
+      assert.throws(() => normalizeAppleTestResult(item.summary, item.testTree, item.target,
+        item.execution, evidence.scheme.targets), /target coverage/);
+    }
     assert.equal(item.result.cases.length + selection.deferred.length, expected.length);
     assert.equal(item.summary.skippedTests, 0);
     assert.equal(evidence.nativeAcceptanceRequired, true);
@@ -791,6 +802,12 @@ test("hosted role selection defers only the declared Mac pixel case and retains 
   mac.tests[0].catalog.data.values[0].enabledTests =
     mac.tests[0].catalog.data.values[0].enabledTests.filter((test) => !test.identifier.includes("RendersChartPixels"));
   assert.throws(() => validateAppleNativeEvidence(mac, plan));
+});
+
+test("Mac and local discovery is awaited before constructing the native invocation", async () => {
+  const source = await readFile("scripts/apple-runner.mjs", "utf8");
+  assert.match(source, /if \(selection\.deferred\.length\) return selection\.tests;\n\s+}\n {6}};\n {6}const selectedTests = local \|\| ciRole === "mac" \? await discover\(\) : undefined;\n {6}item\.commandId = phase;/);
+  assert.ok(source.includes('if (ciRole && !mac) await discover();'));
 });
 
 test("CI discovery reuses prepared test products without replacing normal App builds", () => {
@@ -807,7 +824,8 @@ test("CI discovery reuses prepared test products without replacing normal App bu
     if (role === "mac") assert.ok(discovered.completedAt <= tested.startedAt);
     else {
       assert.ok(discovered.startedAt >= tested.completedAt);
-      assert.ok(tested.args.every((arg) => !/^-only-testing:|-skip-testing:/.test(arg)));
+      assert.deepEqual(tested.args.filter((arg) => /^-only-testing:|-skip-testing:/.test(arg)),
+        ["-only-testing:DevPocketTests"]);
     }
     assert.equal(validateAppleNativeEvidence(evidence, plan), evidence);
     for (const change of [
@@ -831,6 +849,8 @@ test("CI discovery reuses prepared test products without replacing normal App bu
   assert.ok(local.tests.every((item) => item.buildForTestingCommandId === undefined));
   assert.throws(() => appleXcodeArguments({ workspace: "/fixture", directory: ".data/test", platform: "ios",
     destination: "generic/platform=iOS Simulator", action: "build", derivedDataDirectory: ".data/test/derived" }), /Invalid/);
+  assert.throws(() => appleXcodeArguments({ workspace: "/fixture", directory: ".data/test", platform: "ios",
+    destination: "generic/platform=iOS Simulator", action: "build", selectedTargets: ["DevPocketTests"] }), /Invalid/);
 });
 
 test("Apple matrix aggregation requires every role and preserves each real execution origin", () => {
@@ -866,6 +886,8 @@ test("Apple matrix aggregation requires every role and preserves each real execu
     (value) => { value[0].checks[0].execution.source = { ...plan.source, head: "9".repeat(40) }; },
     (value) => { value[0].checks[0].appleEvidence.ci.runId = "999"; },
     (value) => { value[0].checks[0].appleEvidence.deferredTests = []; },
+    (value) => { value[1].checks[0].appleEvidence.deferredTargets = []; },
+    (value) => { value[1].checks[0].appleEvidence.deferredTargets.push("DevPocketTests"); },
     (value) => { value[0].checks[0].appleEvidence.commands.find((item) => item.id === "test-mac").args.push("-skip-testing:DevPocketUITests"); },
   ]) {
     const invalid = structuredClone(reports);
