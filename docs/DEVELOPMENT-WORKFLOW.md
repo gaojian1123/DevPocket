@@ -698,8 +698,12 @@ This is an explicitly selected local full-gate route. It does not impersonate a
 successful MCP call or a hosted-CI run. Keep failed MCP invocations and any
 late-readable native results under their original identities.
 
-Prepare the same four exact task-owned targets and an `apple-plan` request with
+Prepare the four exact task-owned targets and an `apple-plan` request with
 `"testMode": "xcodebuild"`. All required simulators must already be booted.
+Local and hosted iPhone/iPad/Duo acceptance requires iOS/iPadOS 27.2, including
+the Duo-compatible runtime variant. Existing 27.0/27.1 devices cannot be reused
+by relabelling their evidence; selecting or creating replacement targets needs
+its own applicable scope. The app's minimum deployment versions remain unchanged.
 Development and previews continue to use Xcode MCP; this route changes acceptance
 execution only. Its current command inputs, destination scope and process effects
 need the receiving worktree's applicable approval before execution.
@@ -791,14 +795,19 @@ MCP completion is never a successful command receipt on this route.
 
 The existing workflow has an `apple` job and includes it in `Required verification`
 only when the shared planner selects it. It uses the official `xcode-27` runner,
-currently a public-preview macOS 27 image, and the Xcode 27.1 installation. The job
+currently a public-preview macOS 27 image, and the Xcode 27.2 installation. The job
 checks its actual Xcode/Swift/SDK, host OS and supported simulator device types
 before execution; image changes or missing prerequisites fail explicitly.
 See the [runner manifest](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md)
 and [published label](https://github.com/actions/runner-images/issues/14404).
 
-The compile SDK must provide the iOS 27.1 reserved-region symbols; a runtime
-availability guard and deployment target 27.0 do not make an older SDK sufficient.
+Acceptance requires Xcode and the iOS Simulator/iPhoneOS SDKs at 27.2 or newer.
+The shared runtime matrix pins iPhone, iPad and Duo to 27.2. The workflow prepares
+both standard (`24B8117`) and Duo-specific (`24B91016s`) arm64 simulator builds
+with Xcode's platform downloader before verification; having the SDK alone does
+not prove either runtime is installed. Actual runtime/device-type validation
+still fails closed when a required variant is missing or incompatible.
+A runtime availability guard and deployment target 27.0 do not make an older SDK sufficient.
 The native Mac host must also meet the app's macOS minimum.
 
 CI restores locked Node dependencies and runs Mac, ordinary iPhone, iPad and Duo

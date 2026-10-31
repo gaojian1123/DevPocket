@@ -35,9 +35,9 @@ ${["DevPocketTests", "DevPocketUITests"].map((target) =>
 function inventoryFixture() {
   const types = APPLE_REQUIREMENTS.targets.filter((item) => item.role !== "mac").map((target) =>
     ({ name: target.deviceTypeName, identifier: `com.apple.CoreSimulator.SimDeviceType.fixture-${target.role}` }));
-  const runtimes = ["27.0", "27.1"].map((version) => ({ name: `iOS ${version}`, version, isAvailable: true,
-    identifier: `com.apple.CoreSimulator.SimRuntime.iOS-${version.replaceAll(".", "-")}`,
-    supportedDeviceTypes: version === "27.0" ? types.slice(0, 2) : types.slice(2) }));
+  const runtimes = ["", "-iPhone19-4"].map((suffix, index) => ({ name: "iOS 27.2", version: "27.2", isAvailable: true,
+    identifier: `com.apple.CoreSimulator.SimRuntime.iOS-27-2${suffix}`,
+    supportedDeviceTypes: index === 0 ? types.slice(0, 2) : types.slice(2) }));
   return { devicetypes: types, runtimes, devices: {
     [runtimes[0].identifier]: [{ udid: uuid(99), name: "Unrelated synthetic simulator", state: "Booted",
       deviceTypeIdentifier: types[0].identifier }],
@@ -46,9 +46,9 @@ function inventoryFixture() {
 }
 
 function probeFixture() {
-  return { xcode: "Xcode 27.1\nBuild version 18B123\n",
-    "xcode-path": "/Applications/Xcode_27.1.app/Contents/Developer/usr/bin/xcodebuild\n",
-    "ios-sdk": "27.1\n", "simulator-sdk": "27.1\n", "macos-sdk": "27.1\n",
+  return { xcode: "Xcode 27.2\nBuild version SyntheticFixture\n",
+    "xcode-path": "/Applications/Xcode_27.2.app/Contents/Developer/usr/bin/xcodebuild\n",
+    "ios-sdk": "27.2\n", "simulator-sdk": "27.2\n", "macos-sdk": "27.2\n",
     macos: "27.0.1\n", architecture: "arm64\n", swift: "Apple Swift version 7.0 (synthetic test fixture)\n",
     simulators: appleJSON(inventoryFixture()) };
 }
@@ -575,10 +575,19 @@ test("Apple requirements are immutable and require exact target/runtime policy",
   assert.ok(Object.isFrozen(APPLE_REQUIREMENTS));
   assert.ok(Object.isFrozen(APPLE_REQUIREMENTS.targets));
   assert.ok(APPLE_REQUIREMENTS.targets.every(Object.isFrozen));
+  assert.equal(APPLE_REQUIREMENTS.xcodeMinimum, "27.2");
+  assert.equal(APPLE_REQUIREMENTS.iosSDKMinimum, "27.2");
+  assert.deepEqual(APPLE_REQUIREMENTS.targets.slice(1).map(({ runtimeVersion }) => runtimeVersion),
+    ["27.2", "27.2", "27.2"]);
   assert.equal(validateApplePlan(plan), plan);
   const weakened = structuredClone(plan);
   weakened.apple.xcodeMinimum = "27.0";
   assert.throws(() => validateApplePlan(weakened), /requirements/);
+  for (const runtime of ["27.0", "27.1"]) {
+    const previous = structuredClone(plan);
+    previous.apple.targets[1].runtimeVersion = runtime;
+    assert.throws(() => validateApplePlan(previous), /requirements/);
+  }
   assert.throws(() => validateApplePlan({ ...plan, base: "HEAD" }), /exact base/);
 });
 
@@ -656,26 +665,48 @@ test("normal builds and full-scheme native tests never request a test plan or su
 
 test("toolchain requires the newer compile SDK as well as host and Xcode versions", () => {
   assert.equal(inspectAppleToolchain(probeFixture()).macOS, "27.0.1");
-  for (const [key, value] of [["xcode", "Xcode 27.0\nBuild version 18A1\n"], ["ios-sdk", "27.0"],
-    ["simulator-sdk", "27.0"], ["macos", "26.9"], ["macos-sdk", "26.9"], ["swift", ""], ["architecture", "unknown"]]) {
+  for (const [key, value] of [["xcode", "Xcode 27.1\nBuild version SyntheticPreviousFixture\n"], ["ios-sdk", "27.1"],
+    ["simulator-sdk", "27.1"], ["macos", "26.9"], ["macos-sdk", "26.9"], ["swift", ""], ["architecture", "unknown"]]) {
     assert.throws(() => inspectAppleToolchain({ ...probeFixture(), [key]: value }));
   }
 });
 
 test("runtime selection resolves actual IDs and requires supportedDeviceTypes without substituting a phone", () => {
   const inventory = inventoryFixture(), selected = selectAppleSimulators(inventory);
-  assert.deepEqual(selected.map((item) => [item.role, item.osVersion]), [["iphone", "27.0"], ["ipad", "27.0"], ["duo", "27.1"]]);
+  assert.deepEqual(selected.map((item) => [item.role, item.osVersion]), [["iphone", "27.2"], ["ipad", "27.2"], ["duo", "27.2"]]);
+  assert.deepEqual(selected.map((item) => item.runtimeIdentifier),
+    [inventory.runtimes[0].identifier, inventory.runtimes[0].identifier, inventory.runtimes[1].identifier]);
   assert.equal(selected[2].deviceTypeIdentifier, inventory.devicetypes[2].identifier);
   for (const alter of [
     (data) => { data.runtimes[1].isAvailable = false; },
     (data) => { data.runtimes[1].supportedDeviceTypes = []; },
     (data) => { delete data.runtimes[1].supportedDeviceTypes; },
+    (data) => { data.runtimes[0].version = "27.1"; },
     (data) => { data.runtimes[1].version = "27.0"; },
     (data) => { data.devicetypes[2].name = "A different iPhone"; },
     (data) => { data.devicetypes.push({ ...data.devicetypes[2] }); },
   ]) {
     const changed = structuredClone(inventory); alter(changed);
     assert.throws(() => selectAppleSimulators(changed));
+  }
+});
+
+test("local destinations require 27.2 and never reuse older-runtime devices", () => {
+  const inventory = inventoryFixture(), toolchain = inspectAppleToolchain(probeFixture());
+  const requested = [{ role: "mac", deviceId: "synthetic-native-mac-id" }];
+  for (const [index, target] of selectAppleSimulators(inventory).entries()) {
+    const deviceId = uuid(index + 1);
+    inventory.devices[target.runtimeIdentifier].push({ udid: deviceId, name: `Synthetic ${target.role}`,
+      state: "Booted", deviceTypeIdentifier: target.deviceTypeIdentifier });
+    requested.push({ role: target.role, deviceId });
+  }
+  assert.deepEqual(selectAppleLocalTargets(inventory, toolchain, requested, true).slice(1).map((target) => target.osVersion),
+    ["27.2", "27.2", "27.2"]);
+  for (const version of ["27.0", "27.1"]) {
+    const older = structuredClone(inventory);
+    older.runtimes.forEach((runtime) => { runtime.version = version; });
+    assert.throws(() => selectAppleSimulators(older), /runtime/);
+    assert.throws(() => selectAppleLocalTargets(older, toolchain, requested, true), /runtime/);
   }
 });
 

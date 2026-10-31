@@ -66,7 +66,7 @@ async function fixture(t, fullApple = false) {
   }
   const decoder = `const fs = require("node:fs"), path = require("node:path");
 const args = process.argv.slice(2), kind = args[args.indexOf("test-results") + 1];
-if (args[0] === "xcodebuild" && args.includes("-version")) { console.log("Xcode 27.1\\nBuild version SyntheticFixture"); process.exit(0); }
+if (args[0] === "xcodebuild" && args.includes("-version")) { console.log("Xcode 27.2\\nBuild version SyntheticFixture"); process.exit(0); }
 if (fs.existsSync(".data/native-probes.json")) {
   const probes = JSON.parse(fs.readFileSync(".data/native-probes.json"));
   if (args.includes("-enumerate-tests")) {
@@ -221,7 +221,7 @@ const fixtureDevice = (index) => `00000000-0000-4000-8000-${String(index).padSta
 function nativeProbes() {
   const types = APPLE_REQUIREMENTS.targets.slice(1).map((target) =>
     ({ name: target.deviceTypeName, identifier: `synthetic.type.${target.role}` }));
-  const runtimes = ["27.0", "27.1"].map((version) => ({ version, isAvailable: true,
+  const runtimes = ["27.2"].map((version) => ({ version, isAvailable: true,
     identifier: `com.apple.CoreSimulator.SimRuntime.iOS-${version.replaceAll(".", "-")}`,
     supportedDeviceTypes: types }));
   const devices = Object.fromEntries(runtimes.map((runtime) => [runtime.identifier, []]));
@@ -233,9 +233,9 @@ function nativeProbes() {
   return {
     outputs: Object.fromEntries([
       [["--find", "xcodebuild"], "/Applications/Synthetic.app/Contents/Developer/usr/bin/xcodebuild\n"],
-      [["--sdk", "iphoneos", "--show-sdk-version"], "27.1\n"],
-      [["--sdk", "iphonesimulator", "--show-sdk-version"], "27.1\n"],
-      [["--sdk", "macosx", "--show-sdk-version"], "27.1\n"],
+      [["--sdk", "iphoneos", "--show-sdk-version"], "27.2\n"],
+      [["--sdk", "iphonesimulator", "--show-sdk-version"], "27.2\n"],
+      [["--sdk", "macosx", "--show-sdk-version"], "27.2\n"],
       [["swift", "-version"], "Apple Swift version 7.0 (synthetic)\n"],
       [["simctl", "list", "--json"], JSON.stringify({ devices, runtimes, devicetypes: types })],
     ].map(([args, output]) => [JSON.stringify(args), output])),
@@ -333,7 +333,7 @@ function selected(paths = [view]) {
   return {
     reason: "Remove the duplicate promotional entry; session navigation remains covered.",
     unchangedCoverage: "Retain original native evidence for unchanged model/renderer/platform inputs; do not boot Duo.",
-    tests: [{ platform: "iOS Simulator", deviceId: "fixture-iphone", osVersion: "27.0", identifiers: [nativeCase] }],
+    tests: [{ platform: "iOS Simulator", deviceId: "fixture-iphone", osVersion: "27.2", identifiers: [nativeCase] }],
     coverage: paths.map((file) => ({ path: file, tests: [nativeCase], reason: "Exercises the affected workbench and navigation." })),
   };
 }
@@ -359,7 +359,7 @@ async function nativeEvidence(f, plan) {
   const directory = ".data/apple/fresh";
   const before = await f.invoke({ action: "binding", plan: ".data/verification/plan.json" });
   await save(f.root, directory + "/before.json", before);
-  const device = { deviceId: "fixture-iphone", platform: "iOS Simulator", osVersion: "27.0", architecture: "arm64" };
+  const device = { deviceId: "fixture-iphone", platform: "iOS Simulator", osVersion: "27.2", architecture: "arm64" };
   const now = Date.now() / 1000;
   const originalBundle = path.join(f.root, directory, "original", "result.xcresult");
   const summary = { result: "Passed", failedTests: 0, skippedTests: 0, expectedFailures: 0,

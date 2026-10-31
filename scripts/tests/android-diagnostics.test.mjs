@@ -282,7 +282,12 @@ test("CI Action upgrades preserve toolchain selection, artifact isolation and th
   const apple = workflow.split("\n  apple:")[1].split("\n  gate:")[0];
   assert.match(apple, /needs\.plan\.outputs\.apple == 'true'/);
   assert.match(apple, /runs-on: xcode-27/);
-  assert.match(apple, /DEVELOPER_DIR: \/Applications\/Xcode_27\.1\.app\/Contents\/Developer/);
+  assert.match(apple, /DEVELOPER_DIR: \/Applications\/Xcode_27\.2\.app\/Contents\/Developer/);
+  assert.match(apple, /xcodebuild -downloadPlatform iOS -buildVersion 24B8117 -architectureVariant arm64/);
+  assert.match(apple, /xcodebuild -downloadPlatform iOS -buildVersion 24B91016s -architectureVariant arm64/);
+  assert.ok(apple.indexOf("name: Install the required iOS 27.2 runtimes") <
+    apple.indexOf("name: Verify the selected Apple platform"));
+  assert.doesNotMatch(apple, /-downloadAllPlatforms/);
   assert.match(apple, /npm_config_registry: https:\/\/packagefeedproxy\.microsoft\.io\/npm\//);
   assert.match(apple, /role: \[mac, iphone, ipad, duo\]/);
   assert.match(apple, /fail-fast: false/);

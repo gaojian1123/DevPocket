@@ -316,7 +316,7 @@ component data; it does not add fields to the component transport.
 Reader range and chart/data controls change only local viewing state, preserving
 the original card and its payload when closing, reopening or resizing the reader.
 
-On a Mac with Xcode 27.1, Node 26.12.1+ and npm 12.2.1:
+On a Mac with Xcode 27.2, Node 26.12.1+ and npm 12.2.1:
 
 ```sh
 npm ci --registry=https://packagefeedproxy.microsoft.io/npm/
@@ -367,8 +367,10 @@ has one Close action, and local chart/table viewing state survives resizing.
 Closing restores the conversation's reading anchor and draft. This is not
 physical folding, touch, performance or every device/window configuration acceptance.
 The installed simulator runtime must actually support the chosen device.
-Use an eligible iOS 27.0 runtime for ordinary iPhone/iPad and iOS 27.1 for Duo;
-each result must retain its actual device and runtime identity.
+Local and hosted acceptance use iOS/iPadOS 27.2 for iPhone, iPad and Duo.
+The standard and Duo-specific 27.2 runtimes must support their exact device types;
+each result retains its actual device, runtime and build identity. This acceptance
+target does not raise the app's minimum deployment versions or relabel older results.
 
 On macOS the App Sandbox outgoing-network capability is needed by the observed
 WebKit helper startup path, even for offline resources. It permits the **whole Mac

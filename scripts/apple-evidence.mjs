@@ -10,14 +10,14 @@ const freeze = (value) => {
 export const APPLE_REQUIREMENTS = freeze({
   project: "apple/DevPocket/DevPocket.xcodeproj",
   scheme: "DevPocket",
-  xcodeMinimum: "27.1",
-  iosSDKMinimum: "27.1",
+  xcodeMinimum: "27.2",
+  iosSDKMinimum: "27.2",
   macOSMinimum: "27.0",
   targets: [
     { role: "mac", platform: "macOS", osMinimum: "27.0" },
-    { role: "iphone", platform: "iOS Simulator", runtimeVersion: "27.0", deviceTypeName: "iPhone 18 Pro" },
-    { role: "ipad", platform: "iOS Simulator", runtimeVersion: "27.0", deviceTypeName: "iPad Pro 11-inch (M5)" },
-    { role: "duo", platform: "iOS Simulator", runtimeVersion: "27.1", deviceTypeName: "iPhone Duo" },
+    { role: "iphone", platform: "iOS Simulator", runtimeVersion: "27.2", deviceTypeName: "iPhone 18 Pro" },
+    { role: "ipad", platform: "iOS Simulator", runtimeVersion: "27.2", deviceTypeName: "iPad Pro 11-inch (M5)" },
+    { role: "duo", platform: "iOS Simulator", runtimeVersion: "27.2", deviceTypeName: "iPhone Duo" },
   ],
 });
 

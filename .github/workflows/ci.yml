@@ -495,7 +495,7 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 45
     env:
-      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
       npm_config_registry: https://packagefeedproxy.microsoft.io/npm/
       DOTNET_MultiCoreJitNoProfileGather: '1'
       APPLE_ROLE: ${{ matrix.role }}
@@ -513,6 +513,11 @@ jobs:
           python-version: '3.12'
       - run: npm install --global npm@12.2.1 --ignore-scripts --no-audit --no-fund
       - run: npm ci --no-audit --no-fund
+      - name: Install the required iOS 27.2 runtimes
+        shell: bash
+        run: |
+          xcodebuild -downloadPlatform iOS -buildVersion 24B8117 -architectureVariant arm64
+          xcodebuild -downloadPlatform iOS -buildVersion 24B91016s -architectureVariant arm64
       - name: Verify the selected Apple platform
         id: verify
         shell: bash
